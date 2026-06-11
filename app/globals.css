@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-feature-settings: "tnum" 1;
+  }
+}
+
+@layer components {
+  .num {
+    @apply font-mono tabular-nums;
+  }
+  .card {
+    @apply bg-ink-soft border border-ink-line rounded-xl;
+  }
+  .bead {
+    @apply inline-block w-2 h-2 rounded-full bg-brass align-middle;
+  }
+  .label {
+    @apply text-xs uppercase tracking-[0.14em] text-paper-dim;
+  }
+  .field {
+    @apply w-full bg-ink border border-ink-line rounded-lg px-3 py-2.5 text-paper placeholder:text-paper-dim/60 focus:outline-none focus:border-brass;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 font-medium bg-brass text-ink hover:bg-brass-soft transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 font-medium border border-ink-line text-paper hover:border-brass/60 transition-colors;
+  }
+}
