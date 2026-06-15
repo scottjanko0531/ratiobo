@@ -32,9 +32,9 @@ export default function Shell({ children }) {
   }
 
   return (
-    <>
+    <div className="md:flex md:min-h-screen">
       <Nav />
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">{children}</main>
-    </>
+      <main className="flex-1 min-w-0 max-w-6xl mx-auto px-4 sm:px-6 py-8 w-full">{children}</main>
+    </div>
   );
 }

@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase";
+import { CASH_LEG_TYPES, cashAmount } from "../../../lib/cash";
 import Shell from "../../../components/Shell";
 
 export default function NewTransactionPage() {
@@ -22,7 +23,7 @@ export default function NewTransactionPage() {
 
   useEffect(() => {
     Promise.all([
-      supabase.from("holdings").select("id, symbol, name").order("symbol"),
+      supabase.from("holdings").select("id, symbol, name, asset_type, account_id, accounts(name)").order("symbol"),
       supabase
         .from("transaction_types")
         .select("code, label, affects_quantity")
@@ -35,7 +36,19 @@ export default function NewTransactionPage() {
   }, []);
 
   const selectedType = txnTypes.find((t) => t.code === form.txn_type);
-  const isUnitTxn = selectedType?.affects_quantity !== 0 && selectedType != null;
+  const selectedHolding = holdings.find((h) => h.id === form.holding_id);
+  const isCashHolding = selectedHolding?.asset_type === "cash";
+  const isUnitTxn = selectedType?.affects_quantity !== 0 && selectedType != null && !isCashHolding;
+
+  // For a security held in an account, buy/sell/dividend/interest also move
+  // money in or out of that account's cash holding — auto-resolved, not user-editable.
+  const cashLeg =
+    !isCashHolding && selectedHolding?.account_id && CASH_LEG_TYPES.has(form.txn_type)
+      ? holdings.find((h) => h.asset_type === "cash" && h.account_id === selectedHolding.account_id)
+      : null;
+
+  const holdingLabel = (h) =>
+    h.asset_type === "cash" ? `Cash — ${h.accounts?.name ?? "Unassigned"}` : `${h.symbol}${h.name ? ` — ${h.name}` : ""}`;
 
   // Auto-compute amount when quantity and price are present
   const computedAmount =
@@ -48,21 +61,26 @@ export default function NewTransactionPage() {
     setError("");
     const { data: { user } } = await supabase.auth.getUser();
 
-    const quantity = form.quantity === "" ? null : Number(form.quantity);
+    const amount =
+      form.amount !== ""
+        ? Number(form.amount)
+        : computedAmount !== ""
+        ? Number(computedAmount)
+        : null;
+    const fees = form.fees === "" ? 0 : Number(form.fees);
+    // For a cash holding, "quantity" tracks dollars 1:1 with amount.
+    const quantity = isCashHolding ? amount : form.quantity === "" ? null : Number(form.quantity);
+
     const txn = {
       user_id: user.id,
       holding_id: form.holding_id,
+      cash_holding_id: cashLeg?.id ?? null,
       txn_type: form.txn_type,
       txn_date: form.txn_date,
       quantity,
       price_per_unit: form.price_per_unit === "" ? null : Number(form.price_per_unit),
-      amount:
-        form.amount !== ""
-          ? Number(form.amount)
-          : computedAmount !== ""
-          ? Number(computedAmount)
-          : null,
-      fees: form.fees === "" ? 0 : Number(form.fees)
+      amount,
+      fees
     };
 
     const { error: txnErr } = await supabase.from("transactions").insert(txn);
@@ -72,8 +90,10 @@ export default function NewTransactionPage() {
       return;
     }
 
-    // Keep holdings.quantity in step with unit-affecting transactions
-    const delta = (selectedType?.affects_quantity ?? 0) * (quantity ?? 0);
+    // Keep the primary holding's quantity in step with the transaction
+    const delta = isCashHolding
+      ? cashAmount(form.txn_type, amount, fees)
+      : (selectedType?.affects_quantity ?? 0) * (quantity ?? 0);
     if (delta !== 0) {
       const { data: h } = await supabase
         .from("holdings")
@@ -85,6 +105,24 @@ export default function NewTransactionPage() {
           .from("holdings")
           .update({ quantity: Number(h.quantity) + delta })
           .eq("id", form.holding_id);
+      }
+    }
+
+    // Apply the auto-resolved cash leg, if any
+    if (cashLeg) {
+      const cashDelta = cashAmount(form.txn_type, amount, fees);
+      if (cashDelta !== 0) {
+        const { data: ch } = await supabase
+          .from("holdings")
+          .select("quantity")
+          .eq("id", cashLeg.id)
+          .single();
+        if (ch) {
+          await supabase
+            .from("holdings")
+            .update({ quantity: Number(ch.quantity) + cashDelta })
+            .eq("id", cashLeg.id);
+        }
       }
     }
 
@@ -107,7 +145,7 @@ export default function NewTransactionPage() {
             <option value="">Select a holding…</option>
             {holdings.map((h) => (
               <option key={h.id} value={h.id}>
-                {h.symbol}{h.name ? ` — ${h.name}` : ""}
+                {holdingLabel(h)}
               </option>
             ))}
           </select>
@@ -138,6 +176,12 @@ export default function NewTransactionPage() {
             />
           </div>
         </div>
+
+        {cashLeg && (
+          <p className="text-xs text-paper-dim">
+            Cash leg: <span className="text-paper">{holdingLabel(cashLeg)}</span>
+          </p>
+        )}
 
         {isUnitTxn && (
           <div className="grid grid-cols-2 gap-3">
