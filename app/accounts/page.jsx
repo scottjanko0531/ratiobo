@@ -15,6 +15,11 @@ const MARKET_TYPES = new Set(["equity", "etf", "mutual_fund", "bond", "crypto", 
 // Types with no live feed — user sets current price per unit manually.
 const MANUAL_PRICE_TYPES = new Set(["real_estate", "loan", "other"]);
 
+const TAG_COLORS = [
+  "#ef4444", "#f97316", "#eab308", "#22c55e",
+  "#14b8a6", "#3b82f6", "#8b5cf6", "#ec4899",
+];
+
 function KebabIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -81,19 +86,44 @@ export default function AccountsPage() {
   const [addHoldingError, setAddHoldingError] = useState("");
   const [addHoldingBusy, setAddHoldingBusy] = useState(false);
 
+  // Tags
+  const [tags, setTags] = useState([]);
+  const [accountTagMap, setAccountTagMap] = useState({});
+  const [managingTags, setManagingTags] = useState(false);
+  const [newTagForm, setNewTagForm] = useState({ name: "", color: "#3b82f6" });
+  const [newTagError, setNewTagError] = useState("");
+  const [newTagBusy, setNewTagBusy] = useState(false);
+  const [editingTag, setEditingTag] = useState(null);
+  const [editTagForm, setEditTagForm] = useState({ name: "", color: "" });
+  const [editTagError, setEditTagError] = useState("");
+  const [editTagBusy, setEditTagBusy] = useState(false);
+  const [editAccountTags, setEditAccountTags] = useState([]);
+
   async function load() {
-    const [{ data: accts, error: aErr }, { data: t }, { data: hv }, { data: tt }, { data: at }] = await Promise.all([
+    const [
+      { data: accts, error: aErr }, { data: t }, { data: hv }, { data: tt },
+      { data: at }, { data: tgs }, { data: acctTags }
+    ] = await Promise.all([
       supabase.from("accounts").select("*").order("created_at"),
       supabase.from("account_types").select("code, label").eq("is_active", true).order("sort_order"),
       supabase.from("holdings_valued").select("account_id, asset_type, current_value"),
       supabase.from("transaction_types").select("code, label, affects_quantity").eq("is_active", true).order("sort_order"),
-      supabase.from("asset_types").select("code, label").eq("is_active", true).order("sort_order")
+      supabase.from("asset_types").select("code, label").eq("is_active", true).order("sort_order"),
+      supabase.from("tags").select("id, name, color").order("name"),
+      supabase.from("account_tags").select("account_id, tag_id")
     ]);
     if (aErr) setError(aErr.message);
     setAccounts(accts ?? []);
     setTypes(t ?? []);
     setTxnTypes(tt ?? []);
     setAssetTypes(at ?? []);
+    setTags(tgs ?? []);
+    const tagMap = {};
+    for (const row of acctTags ?? []) {
+      if (!tagMap[row.account_id]) tagMap[row.account_id] = [];
+      tagMap[row.account_id].push(row.tag_id);
+    }
+    setAccountTagMap(tagMap);
 
     const totals = {};
     for (const h of hv ?? []) {
@@ -368,6 +398,7 @@ export default function AccountsPage() {
       institution: account.institution ?? "",
       account_type: account.account_type
     });
+    setEditAccountTags(accountTagMap[account.id] ?? []);
     setEditError("");
     setMenuOpenId(null);
   }
@@ -387,12 +418,18 @@ export default function AccountsPage() {
         account_type: editForm.account_type
       })
       .eq("id", editing.id);
-    setEditBusy(false);
-    if (error) setEditError(error.message);
-    else {
-      setEditing(null);
-      load();
+    if (error) { setEditBusy(false); setEditError(error.message); return; }
+
+    await supabase.from("account_tags").delete().eq("account_id", editing.id);
+    if (editAccountTags.length > 0) {
+      await supabase.from("account_tags").insert(
+        editAccountTags.map((tag_id) => ({ account_id: editing.id, tag_id }))
+      );
     }
+
+    setEditBusy(false);
+    setEditing(null);
+    load();
   }
 
   function openEditTransaction(txn) {
@@ -529,6 +566,41 @@ export default function AccountsPage() {
     await openDetail(viewingAccount);
   }
 
+  async function createTag() {
+    if (!newTagForm.name.trim()) return;
+    setNewTagBusy(true);
+    setNewTagError("");
+    const { data: { user } } = await supabase.auth.getUser();
+    const { error } = await supabase.from("tags").insert({
+      user_id: user.id,
+      name: newTagForm.name.trim(),
+      color: newTagForm.color
+    });
+    setNewTagBusy(false);
+    if (error) { setNewTagError(error.message); return; }
+    setNewTagForm({ name: "", color: "#3b82f6" });
+    load();
+  }
+
+  async function saveEditTag() {
+    if (!editTagForm.name.trim()) return;
+    setEditTagBusy(true);
+    setEditTagError("");
+    const { error } = await supabase.from("tags")
+      .update({ name: editTagForm.name.trim(), color: editTagForm.color })
+      .eq("id", editingTag.id);
+    setEditTagBusy(false);
+    if (error) { setEditTagError(error.message); return; }
+    setEditingTag(null);
+    load();
+  }
+
+  async function deleteTag(tag) {
+    if (!confirm(`Delete tag "${tag.name}"? It will be removed from all accounts.`)) return;
+    await supabase.from("tags").delete().eq("id", tag.id);
+    load();
+  }
+
   async function deleteAccount(account) {
     setMenuOpenId(null);
     if (!confirm(`Delete account "${account.name}"? Holdings linked to it will become unassigned.`)) return;
@@ -637,7 +709,26 @@ export default function AccountsPage() {
                       document.body
                     )}
                   </td>
-                  <td className="px-4 py-3 font-medium">{a.name}</td>
+                  <td className="px-4 py-3">
+                    <div className="font-medium">{a.name}</div>
+                    {(accountTagMap[a.id]?.length > 0) && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {accountTagMap[a.id].map((tid) => {
+                          const tag = tags.find((t) => t.id === tid);
+                          if (!tag) return null;
+                          return (
+                            <span
+                              key={tid}
+                              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium leading-none"
+                              style={{ backgroundColor: tag.color + "33", color: tag.color }}
+                            >
+                              {tag.name}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-paper-dim">{a.institution ?? "—"}</td>
                   <td className="px-4 py-3">{typeLabel(a.account_type)}</td>
                   <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.cash ?? 0)}</td>
@@ -706,6 +797,12 @@ export default function AccountsPage() {
             disabled={busy || !form.name || !form.account_type}
           >
             {busy ? "Saving…" : "Add account"}
+          </button>
+          <button
+            className="btn-ghost w-full text-sm"
+            onClick={() => setManagingTags(true)}
+          >
+            Manage tags
           </button>
         </div>
       </div>
@@ -1534,6 +1631,37 @@ export default function AccountsPage() {
               ))}
             </select>
           </div>
+          {tags.length > 0 && (
+            <div>
+              <label className="label block mb-2">Tags</label>
+              <div className="flex flex-wrap gap-2">
+                {tags.map((tag) => {
+                  const active = editAccountTags.includes(tag.id);
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() =>
+                        setEditAccountTags(
+                          active
+                            ? editAccountTags.filter((id) => id !== tag.id)
+                            : [...editAccountTags, tag.id]
+                        )
+                      }
+                      className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all border"
+                      style={
+                        active
+                          ? { backgroundColor: tag.color + "33", borderColor: tag.color, color: tag.color }
+                          : { borderColor: "var(--color-ink-line)", color: "var(--color-paper-dim)" }
+                      }
+                    >
+                      {tag.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {editError && <p className="text-loss text-sm">{editError}</p>}
           <div className="flex gap-3">
             <button
@@ -1545,6 +1673,120 @@ export default function AccountsPage() {
             </button>
             <button className="btn-ghost flex-1" onClick={closeEdit}>
               Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Manage Tags drawer */}
+      <div className={`fixed inset-0 z-30 ${managingTags ? "" : "pointer-events-none"}`}>
+        <div
+          className={`absolute inset-0 bg-ink/70 transition-opacity ${managingTags ? "opacity-100" : "opacity-0"}`}
+          onClick={() => setManagingTags(false)}
+        />
+        <div
+          className={`absolute right-0 top-0 h-full w-full max-w-sm bg-ink-soft border-l border-ink-line p-5 space-y-4 overflow-y-auto transition-transform duration-300 ${
+            managingTags ? "translate-x-0" : "translate-x-full"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <p className="font-medium">Manage tags</p>
+            <button onClick={() => setManagingTags(false)} className="text-paper-dim hover:text-paper" aria-label="Close">✕</button>
+          </div>
+
+          {/* Existing tags */}
+          <div className="space-y-1">
+            {tags.length === 0 && <p className="text-sm text-paper-dim">No tags yet. Create one below.</p>}
+            {tags.map((tag) => (
+              <div key={tag.id} className="rounded-lg border border-ink-line p-2.5 space-y-2">
+                {editingTag?.id === tag.id ? (
+                  <>
+                    <input
+                      className="field text-sm"
+                      value={editTagForm.name}
+                      onChange={(e) => setEditTagForm({ ...editTagForm, name: e.target.value })}
+                      autoFocus
+                    />
+                    <div className="flex gap-1.5 flex-wrap">
+                      {TAG_COLORS.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => setEditTagForm({ ...editTagForm, color: c })}
+                          className="w-5 h-5 rounded-full transition-transform hover:scale-110"
+                          style={{
+                            backgroundColor: c,
+                            outline: editTagForm.color === c ? `2px solid ${c}` : "none",
+                            outlineOffset: "2px"
+                          }}
+                        />
+                      ))}
+                    </div>
+                    {editTagError && <p className="text-loss text-xs">{editTagError}</p>}
+                    <div className="flex gap-2">
+                      <button className="btn text-xs px-3 py-1.5 flex-1" onClick={saveEditTag} disabled={editTagBusy}>
+                        {editTagBusy ? "Saving…" : "Save"}
+                      </button>
+                      <button className="btn-ghost text-xs px-3 py-1.5 flex-1" onClick={() => setEditingTag(null)}>Cancel</button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="w-3 h-3 rounded-full shrink-0"
+                      style={{ backgroundColor: tag.color }}
+                    />
+                    <span className="text-sm flex-1 truncate">{tag.name}</span>
+                    <button
+                      onClick={() => { setEditingTag(tag); setEditTagForm({ name: tag.name, color: tag.color }); setEditTagError(""); }}
+                      className="text-xs text-paper-dim hover:text-paper px-1.5 py-0.5 rounded transition-colors"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => deleteTag(tag)}
+                      className="text-xs text-loss hover:text-loss/80 px-1.5 py-0.5 rounded transition-colors"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Create new tag */}
+          <div className="border-t border-ink-line pt-4 space-y-3">
+            <p className="label">New tag</p>
+            <input
+              className="field text-sm"
+              placeholder="Tag name"
+              value={newTagForm.name}
+              onChange={(e) => setNewTagForm({ ...newTagForm, name: e.target.value })}
+              onKeyDown={(e) => { if (e.key === "Enter") createTag(); }}
+            />
+            <div className="flex gap-1.5 flex-wrap">
+              {TAG_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setNewTagForm({ ...newTagForm, color: c })}
+                  className="w-5 h-5 rounded-full transition-transform hover:scale-110"
+                  style={{
+                    backgroundColor: c,
+                    outline: newTagForm.color === c ? `2px solid ${c}` : "none",
+                    outlineOffset: "2px"
+                  }}
+                />
+              ))}
+            </div>
+            {newTagError && <p className="text-loss text-xs">{newTagError}</p>}
+            <button
+              className="btn w-full text-sm"
+              onClick={createTag}
+              disabled={newTagBusy || !newTagForm.name.trim()}
+            >
+              {newTagBusy ? "Saving…" : "Add tag"}
             </button>
           </div>
         </div>
