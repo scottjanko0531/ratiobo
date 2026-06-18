@@ -113,7 +113,7 @@ export default function AccountsPage() {
     ] = await Promise.all([
       supabase.from("accounts").select("*").order("created_at"),
       supabase.from("account_types").select("code, label").eq("is_active", true).order("sort_order"),
-      supabase.from("holdings_valued").select("account_id, asset_type, current_value"),
+      supabase.from("holdings_valued").select("account_id, asset_type, current_value, net_gain"),
       supabase.from("transaction_types").select("code, label, affects_quantity").eq("is_active", true).order("sort_order"),
       supabase.from("asset_types").select("code, label").eq("is_active", true).order("sort_order"),
       supabase.from("tags").select("id, name, color").order("name"),
@@ -135,9 +135,10 @@ export default function AccountsPage() {
     const totals = {};
     for (const h of hv ?? []) {
       if (!h.account_id) continue;
-      const bucket = totals[h.account_id] ?? { cash: 0, holdings: 0 };
+      const bucket = totals[h.account_id] ?? { cash: 0, holdings: 0, net_gain: 0 };
       if (h.asset_type === "cash") bucket.cash += Number(h.current_value ?? 0);
       else bucket.holdings += Number(h.current_value ?? 0);
+      bucket.net_gain += Number(h.net_gain ?? 0);
       totals[h.account_id] = bucket;
     }
     setTotalsByAccount(totals);
@@ -620,6 +621,11 @@ export default function AccountsPage() {
   const typeLabel = (code) => types.find((t) => t.code === code)?.label ?? code;
 
   const uniqueInstitutions = [...new Set((accounts ?? []).map((a) => a.institution).filter(Boolean))].sort();
+
+  const grandTotalCash     = Object.values(totalsByAccount).reduce((s, b) => s + (b.cash     ?? 0), 0);
+  const grandTotalHoldings = Object.values(totalsByAccount).reduce((s, b) => s + (b.holdings ?? 0), 0);
+  const grandTotalValue    = grandTotalCash + grandTotalHoldings;
+  const grandTotalNetGain  = Object.values(totalsByAccount).reduce((s, b) => s + (b.net_gain ?? 0), 0);
   const accountFiltersActive =
     filterAccountTypes.length > 0 || filterAccountTags.length > 0 || filterAccountInstitution !== "";
   const filteredAccounts = (accounts ?? []).filter((a) => {
@@ -687,6 +693,28 @@ export default function AccountsPage() {
           >
             Tags
           </button>
+        </div>
+      </div>
+
+      {/* Summary panel */}
+      <div className="card mb-4 grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-ink-line">
+        <div className="px-5 py-4">
+          <p className="label text-xs">Cash</p>
+          <p className="num text-lg font-semibold mt-1">{usd(grandTotalCash)}</p>
+        </div>
+        <div className="px-5 py-4">
+          <p className="label text-xs">Holdings</p>
+          <p className="num text-lg font-semibold mt-1">{usd(grandTotalHoldings)}</p>
+        </div>
+        <div className="px-5 py-4">
+          <p className="label text-xs">Total value</p>
+          <p className="num text-lg font-semibold mt-1">{usd(grandTotalValue)}</p>
+        </div>
+        <div className="px-5 py-4">
+          <p className="label text-xs">Net gain</p>
+          <p className={`num text-lg font-semibold mt-1 ${grandTotalNetGain > 0 ? "text-gain" : grandTotalNetGain < 0 ? "text-loss" : ""}`}>
+            {usd(grandTotalNetGain)}
+          </p>
         </div>
       </div>
 
