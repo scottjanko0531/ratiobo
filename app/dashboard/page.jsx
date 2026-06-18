@@ -1,5 +1,10 @@
 "use client";
 import { useEffect, useState } from "react";
+import {
+  ResponsiveContainer,
+  PieChart, Pie, Cell,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+} from "recharts";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 
@@ -27,30 +32,79 @@ function GainText({ value, pct }) {
   );
 }
 
+// Design-system colors for pie slices
+const SLICE_COLORS = [
+  "#C9A227", "#3FB984", "#3b82f6", "#8b5cf6",
+  "#f97316", "#14b8a6", "#ec4899", "#E0635C",
+];
+
+function ChartTooltip({ active, payload, formatter }) {
+  if (!active || !payload?.length) return null;
+  const { name, value } = payload[0];
+  return (
+    <div className="bg-[#1B212B] border border-[#2A3240] rounded-lg px-3 py-2 text-xs shadow-lg">
+      <p className="text-[#A8ADB8] mb-0.5">{name}</p>
+      <p className="text-[#F6F4EE] font-medium">{formatter ? formatter(value) : value}</p>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [rows, setRows] = useState(null);
+  const [snapMap, setSnapMap] = useState({});
+  const [assetTypeLabels, setAssetTypeLabels] = useState({});
+  const [portfolioHistory, setPortfolioHistory] = useState([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    supabase
-      .from("holdings_valued")
-      .select("*")
-      .order("current_value", { ascending: false })
-      .then(({ data, error }) => {
-        if (error) setError(error.message);
-        else setRows(data ?? []);
-      });
+    const today = new Date().toISOString().slice(0, 10);
+    Promise.all([
+      supabase.from("holdings_valued").select("*").order("current_value", { ascending: false }),
+      supabase.from("portfolio_snapshots").select("holding_id, market_value").eq("snapshot_date", today),
+      supabase.from("asset_types").select("code, label").eq("is_active", true),
+      supabase.from("portfolio_snapshots").select("snapshot_date, market_value").order("snapshot_date", { ascending: true }),
+    ]).then(([{ data, error: err }, { data: snaps }, { data: at }, { data: hist }]) => {
+      if (err) setError(err.message);
+      else setRows(data ?? []);
+
+      const map = {};
+      for (const s of snaps ?? []) map[s.holding_id] = Number(s.market_value ?? 0);
+      setSnapMap(map);
+
+      const labelMap = {};
+      for (const t of at ?? []) labelMap[t.code] = t.label;
+      setAssetTypeLabels(labelMap);
+
+      // Aggregate snapshots by date → total portfolio value per day
+      const byDate = {};
+      for (const s of hist ?? []) {
+        byDate[s.snapshot_date] = (byDate[s.snapshot_date] ?? 0) + Number(s.market_value ?? 0);
+      }
+      setPortfolioHistory(
+        Object.entries(byDate)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([date, value]) => ({
+            date,
+            value,
+            label: new Date(date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+          }))
+      );
+    });
   }, []);
 
   const totals = (rows ?? []).reduce(
-    (t, r) => ({
-      value: t.value + Number(r.current_value ?? 0),
-      basis: t.basis + Number(r.cost_basis ?? 0),
-      gain: t.gain + Number(r.net_gain ?? 0),
-      income:
-        t.income + Number(r.total_dividends ?? 0) + Number(r.total_interest ?? 0)
-    }),
-    { value: 0, basis: 0, gain: 0, income: 0 }
+    (t, r) => {
+      const snap = snapMap[r.id];
+      const dc = snap != null ? Number(r.current_value ?? 0) - snap : null;
+      return {
+        value: t.value + Number(r.current_value ?? 0),
+        basis: t.basis + Number(r.cost_basis ?? 0),
+        gain: t.gain + Number(r.net_gain ?? 0),
+        income: t.income + Number(r.total_dividends ?? 0) + Number(r.total_interest ?? 0),
+        dayChange: dc != null ? (t.dayChange ?? 0) + dc : t.dayChange
+      };
+    },
+    { value: 0, basis: 0, gain: 0, income: 0, dayChange: null }
   );
 
   const lastSync = (rows ?? [])
@@ -58,6 +112,17 @@ export default function Dashboard() {
     .filter(Boolean)
     .sort()
     .pop();
+
+  // Aggregate current_value by asset_type for the pie chart
+  const allocationData = Object.entries(
+    (rows ?? []).reduce((acc, r) => {
+      if (!r.asset_type || Number(r.current_value ?? 0) <= 0) return acc;
+      acc[r.asset_type] = (acc[r.asset_type] ?? 0) + Number(r.current_value);
+      return acc;
+    }, {})
+  )
+    .map(([code, value]) => ({ code, name: assetTypeLabels[code] ?? code, value }))
+    .sort((a, b) => b.value - a.value);
 
   return (
     <Shell>
@@ -70,7 +135,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-8">
         <div className="card p-4">
           <p className="label mb-1">Total value</p>
           <p className="num text-xl">{usd(totals.value)}</p>
@@ -89,6 +154,112 @@ export default function Dashboard() {
           <p className="label mb-1">Income received</p>
           <p className="num text-xl">{usd(totals.income)}</p>
         </div>
+        <div className="card p-4">
+          <p className="label mb-1">Day change</p>
+          <p className="num text-xl">
+            <GainText value={totals.dayChange} />
+          </p>
+        </div>
+      </div>
+
+      {/* Charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
+        {/* Allocation by type — pie / donut */}
+        <div className="card p-5">
+          <p className="label mb-4">Allocation by type</p>
+          {allocationData.length === 0 ? (
+            <p className="text-paper-dim text-sm py-8 text-center">No holdings data.</p>
+          ) : (
+            <div className="flex items-center gap-4">
+              <ResponsiveContainer width="55%" height={220}>
+                <PieChart>
+                  <Pie
+                    data={allocationData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={100}
+                    paddingAngle={2}
+                    dataKey="value"
+                  >
+                    {allocationData.map((entry, i) => (
+                      <Cell key={entry.code} fill={SLICE_COLORS[i % SLICE_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    content={<ChartTooltip formatter={(v) => usd(v)} />}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="flex-1 space-y-2 min-w-0">
+                {allocationData.map((entry, i) => {
+                  const pct = totals.value > 0 ? (entry.value / totals.value) * 100 : 0;
+                  return (
+                    <div key={entry.code} className="flex items-center gap-2 text-xs">
+                      <span
+                        className="w-2.5 h-2.5 rounded-sm shrink-0"
+                        style={{ backgroundColor: SLICE_COLORS[i % SLICE_COLORS.length] }}
+                      />
+                      <span className="text-paper-dim truncate flex-1">{entry.name}</span>
+                      <span className="num text-paper shrink-0">{pct.toFixed(1)}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Portfolio value over time — line chart */}
+        <div className="card p-5">
+          <p className="label mb-4">Portfolio value over time</p>
+          {portfolioHistory.length < 2 ? (
+            <div className="flex items-center justify-center h-[220px]">
+              <p className="text-paper-dim text-sm text-center">
+                {portfolioHistory.length === 0
+                  ? "No snapshot history yet."
+                  : "Collecting data — check back tomorrow."}
+              </p>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={portfolioHistory} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: "#A8ADB8", fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  tick={{ fill: "#A8ADB8", fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={72}
+                  tickFormatter={(v) =>
+                    v >= 1_000_000
+                      ? `$${(v / 1_000_000).toFixed(1)}M`
+                      : v >= 1_000
+                      ? `$${(v / 1_000).toFixed(0)}K`
+                      : usd(v)
+                  }
+                />
+                <Tooltip
+                  content={<ChartTooltip formatter={(v) => usd(v)} />}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="value"
+                  stroke="#C9A227"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4, fill: "#C9A227", stroke: "#1B212B", strokeWidth: 2 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
       </div>
 
       <div className="card overflow-x-auto">
@@ -101,38 +272,46 @@ export default function Dashboard() {
               <th className="label text-right font-medium px-4 py-3">Cost basis</th>
               <th className="label text-right font-medium px-4 py-3">Value</th>
               <th className="label text-right font-medium px-4 py-3">Net gain</th>
+              <th className="label text-right font-medium px-4 py-3">Day Chg</th>
             </tr>
           </thead>
           <tbody>
             {rows === null && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-paper-dim">Loading…</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-paper-dim">Loading…</td></tr>
             )}
             {rows?.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-10 text-center text-paper-dim">
+                <td colSpan={7} className="px-4 py-10 text-center text-paper-dim">
                   No holdings yet. Add your first holding to start the ledger.
                 </td>
               </tr>
             )}
             {error && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-loss">{error}</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-loss">{error}</td></tr>
             )}
-            {rows?.map((r) => (
-              <tr key={r.id} className="border-b border-ink-line/60 last:border-0">
-                <td className="px-4 py-3">
-                  <span className="font-medium">{r.symbol}</span>
-                  <span className="text-paper-dim ml-2">{r.name}</span>
-                  <span className="label ml-2">{r.asset_type}</span>
-                </td>
-                <td className="num text-right px-4 py-3">{qty(r.quantity)}</td>
-                <td className="num text-right px-4 py-3">{usd(r.market_price)}</td>
-                <td className="num text-right px-4 py-3">{usd(r.cost_basis)}</td>
-                <td className="num text-right px-4 py-3">{usd(r.current_value)}</td>
-                <td className="num text-right px-4 py-3">
-                  <GainText value={r.net_gain} pct={r.net_gain_pct} />
-                </td>
-              </tr>
-            ))}
+            {rows?.map((r) => {
+              const snap = snapMap[r.id];
+              const dayChg = snap != null ? Number(r.current_value ?? 0) - snap : null;
+              return (
+                <tr key={r.id} className="border-b border-ink-line/60 last:border-0">
+                  <td className="px-4 py-3">
+                    <span className="font-medium">{r.symbol}</span>
+                    <span className="text-paper-dim ml-2">{r.name}</span>
+                    <span className="label ml-2">{r.asset_type}</span>
+                  </td>
+                  <td className="num text-right px-4 py-3">{qty(r.quantity)}</td>
+                  <td className="num text-right px-4 py-3">{usd(r.market_price)}</td>
+                  <td className="num text-right px-4 py-3">{usd(r.cost_basis)}</td>
+                  <td className="num text-right px-4 py-3">{usd(r.current_value)}</td>
+                  <td className="num text-right px-4 py-3">
+                    <GainText value={r.net_gain} pct={r.net_gain_pct} />
+                  </td>
+                  <td className="num text-right px-4 py-3">
+                    <GainText value={dayChg} />
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

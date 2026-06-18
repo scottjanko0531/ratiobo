@@ -106,10 +106,14 @@ export default function AccountsPage() {
   const [editTagBusy, setEditTagBusy] = useState(false);
   const [editAccountTags, setEditAccountTags] = useState([]);
 
+  const [holdingSnapshots, setHoldingSnapshots] = useState({});
+  const [accountSnapshotTotals, setAccountSnapshotTotals] = useState({});
+
   async function load() {
+    const today = new Date().toISOString().slice(0, 10);
     const [
       { data: accts, error: aErr }, { data: t }, { data: hv }, { data: tt },
-      { data: at }, { data: tgs }, { data: acctTags }
+      { data: at }, { data: tgs }, { data: acctTags }, { data: snaps }
     ] = await Promise.all([
       supabase.from("accounts").select("*").order("created_at"),
       supabase.from("account_types").select("code, label").eq("is_active", true).order("sort_order"),
@@ -117,7 +121,8 @@ export default function AccountsPage() {
       supabase.from("transaction_types").select("code, label, affects_quantity").eq("is_active", true).order("sort_order"),
       supabase.from("asset_types").select("code, label").eq("is_active", true).order("sort_order"),
       supabase.from("tags").select("id, name, color").order("name"),
-      supabase.from("account_tags").select("account_id, tag_id")
+      supabase.from("account_tags").select("account_id, tag_id"),
+      supabase.from("portfolio_snapshots").select("account_id, market_value").eq("snapshot_date", today)
     ]);
     if (aErr) setError(aErr.message);
     setAccounts(accts ?? []);
@@ -142,6 +147,13 @@ export default function AccountsPage() {
       totals[h.account_id] = bucket;
     }
     setTotalsByAccount(totals);
+
+    const snapTotals = {};
+    for (const s of snaps ?? []) {
+      if (!s.account_id) continue;
+      snapTotals[s.account_id] = (snapTotals[s.account_id] ?? 0) + Number(s.market_value ?? 0);
+    }
+    setAccountSnapshotTotals(snapTotals);
   }
 
   useEffect(() => {
@@ -251,13 +263,24 @@ export default function AccountsPage() {
   async function openDetail(account) {
     setViewingAccount(account);
     setDetailBusy(true);
-    const { data } = await supabase
-      .from("holdings_valued")
-      .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain")
-      .eq("account_id", account.id)
-      .order("asset_type")
-      .order("symbol");
+    const today = new Date().toISOString().slice(0, 10);
+    const [{ data }, { data: snaps }] = await Promise.all([
+      supabase
+        .from("holdings_valued")
+        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain")
+        .eq("account_id", account.id)
+        .order("asset_type")
+        .order("symbol"),
+      supabase
+        .from("portfolio_snapshots")
+        .select("holding_id, market_value")
+        .eq("account_id", account.id)
+        .eq("snapshot_date", today)
+    ]);
     setAccountHoldings(data ?? []);
+    const snapMap = {};
+    for (const s of snaps ?? []) snapMap[s.holding_id] = Number(s.market_value ?? 0);
+    setHoldingSnapshots(snapMap);
     setDetailBusy(false);
   }
 
@@ -272,6 +295,7 @@ export default function AccountsPage() {
     setAddingHolding(false);
     setAddHoldingForm({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "" });
     setAddHoldingError("");
+    setHoldingSnapshots({});
   }
 
   async function openHoldingDetail(holding) {
@@ -635,6 +659,13 @@ export default function AccountsPage() {
   const grandTotalHoldings = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.holdings ?? 0), 0);
   const grandTotalValue    = grandTotalCash + grandTotalHoldings;
   const grandTotalNetGain  = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.net_gain ?? 0), 0);
+  const grandTotalDayChange = filteredAccounts.reduce((s, a) => {
+    const snap = accountSnapshotTotals[a.id];
+    if (snap == null) return s;
+    const cur = (totalsByAccount[a.id]?.cash ?? 0) + (totalsByAccount[a.id]?.holdings ?? 0);
+    return s + (cur - snap);
+  }, 0);
+  const hasDayChange = filteredAccounts.some((a) => accountSnapshotTotals[a.id] != null);
 
   const uniqueTxnTypeCodes = [...new Set(holdingTransactions.map((t) => t.txn_type))].sort();
   const filteredTransactions = filterTxnTypes.length === 0
@@ -698,7 +729,7 @@ export default function AccountsPage() {
       </div>
 
       {/* Summary panel */}
-      <div className="card mb-4 grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-ink-line">
+      <div className="card mb-4 grid grid-cols-2 sm:grid-cols-5 divide-x divide-y sm:divide-y-0 divide-ink-line">
         <div className="px-5 py-4">
           <p className="label text-xs">Cash</p>
           <p className="num text-lg font-semibold mt-1">{usd(grandTotalCash)}</p>
@@ -716,6 +747,16 @@ export default function AccountsPage() {
           <p className={`num text-lg font-semibold mt-1 ${grandTotalNetGain > 0 ? "text-gain" : grandTotalNetGain < 0 ? "text-loss" : ""}`}>
             {usd(grandTotalNetGain)}
           </p>
+        </div>
+        <div className="px-5 py-4">
+          <p className="label text-xs">Day change</p>
+          {hasDayChange ? (
+            <p className={`num text-lg font-semibold mt-1 ${grandTotalDayChange > 0 ? "text-gain" : grandTotalDayChange < 0 ? "text-loss" : ""}`}>
+              {grandTotalDayChange > 0 ? "+" : ""}{usd(grandTotalDayChange)}
+            </p>
+          ) : (
+            <p className="num text-lg font-semibold mt-1 text-paper-dim">—</p>
+          )}
         </div>
       </div>
 
@@ -829,15 +870,16 @@ export default function AccountsPage() {
                   <th className="label text-right font-medium px-4 py-3">Cash</th>
                   <th className="label text-right font-medium px-4 py-3">Holdings</th>
                   <th className="label text-right font-medium px-4 py-3">Total</th>
+                  <th className="label text-right font-medium px-4 py-3">Day Chg</th>
                 </tr>
               </thead>
               <tbody>
                 {accounts === null && (
-                  <tr><td colSpan={7} className="px-4 py-8 text-center text-paper-dim">Loading…</td></tr>
+                  <tr><td colSpan={8} className="px-4 py-8 text-center text-paper-dim">Loading…</td></tr>
                 )}
                 {accounts !== null && filteredAccounts.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-10 text-center text-paper-dim">
+                    <td colSpan={8} className="px-4 py-10 text-center text-paper-dim">
                       {accountFiltersActive ? "No accounts match the current filters." : "No accounts yet. Use + Add to create one."}
                     </td>
                   </tr>
@@ -915,6 +957,19 @@ export default function AccountsPage() {
                     <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.holdings ?? 0)}</td>
                     <td className="num text-right px-4 py-3 font-medium">
                       {usd((totalsByAccount[a.id]?.cash ?? 0) + (totalsByAccount[a.id]?.holdings ?? 0))}
+                    </td>
+                    <td className="num text-right px-4 py-3">
+                      {(() => {
+                        const snap = accountSnapshotTotals[a.id];
+                        if (snap == null) return <span className="text-paper-dim">—</span>;
+                        const cur = (totalsByAccount[a.id]?.cash ?? 0) + (totalsByAccount[a.id]?.holdings ?? 0);
+                        const dc = cur - snap;
+                        return (
+                          <span className={dc > 0 ? "text-gain" : dc < 0 ? "text-loss" : "text-paper-dim"}>
+                            {dc > 0 ? "+" : ""}{usd(dc)}
+                          </span>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}
@@ -1040,17 +1095,31 @@ export default function AccountsPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-px border-b border-ink-line">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-px border-b border-ink-line">
                 {[
-                  { label: "Cash", value: totalsByAccount[viewingAccount.id]?.cash ?? 0 },
-                  { label: "Holdings", value: totalsByAccount[viewingAccount.id]?.holdings ?? 0 },
-                  { label: "Total", value: (totalsByAccount[viewingAccount.id]?.cash ?? 0) + (totalsByAccount[viewingAccount.id]?.holdings ?? 0) }
+                  { label: "Cash", value: totalsByAccount[viewingAccount.id]?.cash ?? 0, colored: false },
+                  { label: "Holdings", value: totalsByAccount[viewingAccount.id]?.holdings ?? 0, colored: false },
+                  { label: "Total", value: (totalsByAccount[viewingAccount.id]?.cash ?? 0) + (totalsByAccount[viewingAccount.id]?.holdings ?? 0), colored: false },
                 ].map(({ label, value }) => (
                   <div key={label} className="px-5 py-4">
                     <p className="label mb-1">{label}</p>
                     <p className="num text-base font-medium">{usd(value)}</p>
                   </div>
                 ))}
+                <div className="px-5 py-4">
+                  <p className="label mb-1">Day Chg</p>
+                  {(() => {
+                    const snap = accountSnapshotTotals[viewingAccount.id];
+                    if (snap == null) return <p className="num text-base font-medium text-paper-dim">—</p>;
+                    const cur = (totalsByAccount[viewingAccount.id]?.cash ?? 0) + (totalsByAccount[viewingAccount.id]?.holdings ?? 0);
+                    const dc = cur - snap;
+                    return (
+                      <p className={`num text-base font-medium ${dc > 0 ? "text-gain" : dc < 0 ? "text-loss" : ""}`}>
+                        {dc > 0 ? "+" : ""}{usd(dc)}
+                      </p>
+                    );
+                  })()}
+                </div>
               </div>
 
               <div className="px-5 py-4">
@@ -1128,12 +1197,15 @@ export default function AccountsPage() {
                           <th className="label text-left font-medium py-2 pr-4">Type</th>
                           <th className="label text-right font-medium py-2 pr-2">Qty</th>
                           <th className="label text-right font-medium py-2 pr-2">Value</th>
-                          <th className="label text-right font-medium py-2">Gain</th>
+                          <th className="label text-right font-medium py-2 pr-2">Gain</th>
+                          <th className="label text-right font-medium py-2">Day Chg</th>
                         </tr>
                       </thead>
                       <tbody>
                         {filteredHoldings.map((h) => {
                           const gain = Number(h.net_gain ?? 0);
+                          const snapVal = holdingSnapshots[h.id];
+                          const dayChg = snapVal != null ? Number(h.current_value ?? 0) - snapVal : null;
                           return (
                             <tr
                               key={h.id}
@@ -1180,8 +1252,11 @@ export default function AccountsPage() {
                               <td className="py-2.5 pr-4 label">{h.asset_type}</td>
                               <td className="num text-right py-2.5 pr-2">{Number(h.quantity ?? 0).toLocaleString("en-US", { maximumFractionDigits: 8 })}</td>
                               <td className="num text-right py-2.5 pr-2">{usd(h.current_value)}</td>
-                              <td className={`num text-right py-2.5 ${gain > 0 ? "text-gain" : gain < 0 ? "text-loss" : "text-paper-dim"}`}>
+                              <td className={`num text-right py-2.5 pr-2 ${gain > 0 ? "text-gain" : gain < 0 ? "text-loss" : "text-paper-dim"}`}>
                                 {gain > 0 ? "+" : ""}{usd(gain)}
+                              </td>
+                              <td className={`num text-right py-2.5 ${dayChg == null ? "text-paper-dim" : dayChg > 0 ? "text-gain" : dayChg < 0 ? "text-loss" : "text-paper-dim"}`}>
+                                {dayChg == null ? "—" : `${dayChg > 0 ? "+" : ""}${usd(dayChg)}`}
                               </td>
                             </tr>
                           );
