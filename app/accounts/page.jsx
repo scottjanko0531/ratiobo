@@ -10,6 +10,11 @@ const usd = (n) =>
     ? "—"
     : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" });
 
+// Types priced by the market data feed — quantity is transaction-driven, no manual price.
+const MARKET_TYPES = new Set(["equity", "etf", "mutual_fund", "bond", "crypto", "metal"]);
+// Types with no live feed — user sets current price per unit manually.
+const MANUAL_PRICE_TYPES = new Set(["real_estate", "loan", "other"]);
+
 function KebabIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -48,7 +53,7 @@ export default function AccountsPage() {
   const [holdingMenuOpenId, setHoldingMenuOpenId] = useState(null);
   const [holdingMenuPos, setHoldingMenuPos] = useState({ top: 0, left: 0 });
   const [editingHolding, setEditingHolding] = useState(null);
-  const [editHoldingForm, setEditHoldingForm] = useState({ symbol: "", name: "", asset_type: "", quantity: "" });
+  const [editHoldingForm, setEditHoldingForm] = useState({ symbol: "", name: "", asset_type: "", quantity: "", price_override: "" });
   const [editHoldingError, setEditHoldingError] = useState("");
   const [editHoldingBusy, setEditHoldingBusy] = useState(false);
 
@@ -72,7 +77,7 @@ export default function AccountsPage() {
   const [addTxnBusy, setAddTxnBusy] = useState(false);
 
   const [addingHolding, setAddingHolding] = useState(false);
-  const [addHoldingForm, setAddHoldingForm] = useState({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "" });
+  const [addHoldingForm, setAddHoldingForm] = useState({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "" });
   const [addHoldingError, setAddHoldingError] = useState("");
   const [addHoldingBusy, setAddHoldingBusy] = useState(false);
 
@@ -209,7 +214,7 @@ export default function AccountsPage() {
     setDetailBusy(true);
     const { data } = await supabase
       .from("holdings_valued")
-      .select("id, symbol, name, asset_type, quantity, cost_basis, current_value, net_gain")
+      .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain")
       .eq("account_id", account.id)
       .order("asset_type")
       .order("symbol");
@@ -226,7 +231,7 @@ export default function AccountsPage() {
     setFilterTypes([]);
     setFilterSymbols([]);
     setAddingHolding(false);
-    setAddHoldingForm({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "" });
+    setAddHoldingForm({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "" });
     setAddHoldingError("");
   }
 
@@ -241,7 +246,7 @@ export default function AccountsPage() {
         .order("txn_date", { ascending: false }),
       supabase
         .from("holdings_valued")
-        .select("id, symbol, name, asset_type, quantity, cost_basis, current_value, net_gain")
+        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain")
         .eq("id", holding.id)
         .single()
     ]);
@@ -315,7 +320,8 @@ export default function AccountsPage() {
       symbol: holding.symbol ?? "",
       name: holding.name ?? "",
       asset_type: holding.asset_type ?? "",
-      quantity: holding.quantity != null ? String(holding.quantity) : ""
+      quantity: holding.quantity != null ? String(holding.quantity) : "",
+      price_override: holding.price_override != null ? String(holding.price_override) : ""
     });
     setEditHoldingError("");
     setHoldingMenuOpenId(null);
@@ -328,14 +334,22 @@ export default function AccountsPage() {
   async function saveEditHolding() {
     setEditHoldingBusy(true);
     setEditHoldingError("");
+    const isMarket = MARKET_TYPES.has(editHoldingForm.asset_type);
+    const isManual = MANUAL_PRICE_TYPES.has(editHoldingForm.asset_type);
+    const updates = {
+      symbol: editHoldingForm.symbol,
+      name: editHoldingForm.name || null,
+      asset_type: editHoldingForm.asset_type,
+      price_override: isManual && editHoldingForm.price_override !== ""
+        ? Number(editHoldingForm.price_override)
+        : null
+    };
+    if (!isMarket) {
+      updates.quantity = editHoldingForm.quantity === "" ? 0 : Number(editHoldingForm.quantity);
+    }
     const { error } = await supabase
       .from("holdings")
-      .update({
-        symbol: editHoldingForm.symbol,
-        name: editHoldingForm.name || null,
-        asset_type: editHoldingForm.asset_type,
-        quantity: editHoldingForm.quantity === "" ? 0 : Number(editHoldingForm.quantity)
-      })
+      .update(updates)
       .eq("id", editingHolding.id);
     setEditHoldingBusy(false);
     if (error) {
@@ -470,6 +484,10 @@ export default function AccountsPage() {
 
     const qty = addHoldingForm.quantity === "" ? 0 : Number(addHoldingForm.quantity);
     const costBasis = addHoldingForm.cost_basis === "" ? null : Number(addHoldingForm.cost_basis);
+    const isManual = MANUAL_PRICE_TYPES.has(addHoldingForm.asset_type);
+    const priceOverride = isManual && addHoldingForm.price_override !== ""
+      ? Number(addHoldingForm.price_override)
+      : null;
 
     const { data: holding, error: hErr } = await supabase
       .from("holdings")
@@ -479,7 +497,8 @@ export default function AccountsPage() {
         symbol: addHoldingForm.symbol.trim().toUpperCase(),
         name: addHoldingForm.name || null,
         asset_type: addHoldingForm.asset_type,
-        quantity: 0
+        quantity: 0,
+        price_override: priceOverride
       })
       .select()
       .single();
@@ -504,7 +523,7 @@ export default function AccountsPage() {
 
     setAddHoldingBusy(false);
     setAddingHolding(false);
-    setAddHoldingForm({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "" });
+    setAddHoldingForm({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "" });
     load();
     await openDetail(viewingAccount);
   }
@@ -1321,17 +1340,33 @@ export default function AccountsPage() {
               ))}
             </select>
           </div>
-          <div>
-            <label className="label block mb-1.5" htmlFor="eh-qty">Quantity</label>
-            <input
-              id="eh-qty"
-              className="field num"
-              type="number"
-              step="any"
-              value={editHoldingForm.quantity}
-              onChange={(e) => setEditHoldingForm({ ...editHoldingForm, quantity: e.target.value })}
-            />
-          </div>
+          {!MARKET_TYPES.has(editHoldingForm.asset_type) && (
+            <div>
+              <label className="label block mb-1.5" htmlFor="eh-qty">Quantity</label>
+              <input
+                id="eh-qty"
+                className="field num"
+                type="number"
+                step="any"
+                value={editHoldingForm.quantity}
+                onChange={(e) => setEditHoldingForm({ ...editHoldingForm, quantity: e.target.value })}
+              />
+            </div>
+          )}
+          {MANUAL_PRICE_TYPES.has(editHoldingForm.asset_type) && (
+            <div>
+              <label className="label block mb-1.5" htmlFor="eh-price">Current price per unit</label>
+              <input
+                id="eh-price"
+                className="field num"
+                type="number"
+                step="any"
+                placeholder="0.00"
+                value={editHoldingForm.price_override}
+                onChange={(e) => setEditHoldingForm({ ...editHoldingForm, price_override: e.target.value })}
+              />
+            </div>
+          )}
           {editHoldingError && <p className="text-loss text-sm">{editHoldingError}</p>}
           <div className="flex gap-3">
             <button
@@ -1422,6 +1457,20 @@ export default function AccountsPage() {
               onChange={(e) => setAddHoldingForm({ ...addHoldingForm, cost_basis: e.target.value })}
             />
           </div>
+          {MANUAL_PRICE_TYPES.has(addHoldingForm.asset_type) && (
+            <div>
+              <label className="label block mb-1.5" htmlFor="ah-price">Current price per unit (optional)</label>
+              <input
+                id="ah-price"
+                className="field num"
+                type="number"
+                step="any"
+                placeholder="0.00"
+                value={addHoldingForm.price_override}
+                onChange={(e) => setAddHoldingForm({ ...addHoldingForm, price_override: e.target.value })}
+              />
+            </div>
+          )}
           {addHoldingError && <p className="text-loss text-sm">{addHoldingError}</p>}
           <div className="flex gap-3">
             <button
