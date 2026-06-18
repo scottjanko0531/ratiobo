@@ -719,207 +719,209 @@ export default function AccountsPage() {
         </div>
       </div>
 
-      {/* Filter bar */}
-      {showAccountFilter && (
-        <div className="card p-4 mb-4 space-y-4">
-          <div className="grid sm:grid-cols-3 gap-4">
-            {/* Account type */}
-            <div>
-              <p className="label mb-2">Account type</p>
-              <div className="space-y-1.5">
-                {types.map((t) => (
-                  <label key={t.code} className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={filterAccountTypes.includes(t.code)}
-                      onChange={() =>
-                        setFilterAccountTypes((prev) =>
-                          prev.includes(t.code) ? prev.filter((c) => c !== t.code) : [...prev, t.code]
-                        )
-                      }
-                      className="accent-brass"
-                    />
-                    {t.label}
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {/* Tags */}
-            {tags.length > 0 && (
+      {/* Accounts table — filter sidebar slides in on the left, same pattern as Holdings drawer */}
+      <div className="card">
+        <div className="flex">
+          {showAccountFilter && (
+            <div className="w-48 shrink-0 border-r border-ink-line p-4 space-y-5">
               <div>
-                <p className="label mb-2">Tags</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {tags.map((tag) => {
-                    const active = filterAccountTags.includes(tag.id);
-                    return (
-                      <button
-                        key={tag.id}
-                        type="button"
-                        onClick={() =>
-                          setFilterAccountTags((prev) =>
-                            active ? prev.filter((id) => id !== tag.id) : [...prev, tag.id]
-                          )
-                        }
-                        className="px-2 py-0.5 rounded text-xs font-medium transition-all border"
-                        style={
-                          active
-                            ? { backgroundColor: tag.color + "33", borderColor: tag.color, color: tag.color }
-                            : { borderColor: "var(--color-ink-line)", color: "var(--color-paper-dim)" }
-                        }
-                      >
-                        {tag.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Institution */}
-            <div>
-              <p className="label mb-2">Institution</p>
-              {uniqueInstitutions.length > 0 ? (
+                <p className="label mb-2">Account type</p>
                 <div className="space-y-1.5">
-                  {uniqueInstitutions.map((inst) => (
-                    <label key={inst} className="flex items-center gap-2 text-sm cursor-pointer">
+                  {types.map((t) => (
+                    <label key={t.code} className="flex items-center gap-2 text-sm cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={filterAccountInstitution === inst}
-                        onChange={() =>
-                          setFilterAccountInstitution((prev) => (prev === inst ? "" : inst))
-                        }
                         className="accent-brass"
+                        checked={filterAccountTypes.includes(t.code)}
+                        onChange={() =>
+                          setFilterAccountTypes((prev) =>
+                            prev.includes(t.code) ? prev.filter((c) => c !== t.code) : [...prev, t.code]
+                          )
+                        }
                       />
-                      {inst}
+                      {t.label}
                     </label>
                   ))}
                 </div>
-              ) : (
-                <input
-                  className="field text-sm"
-                  placeholder="Search institution…"
-                  value={filterAccountInstitution}
-                  onChange={(e) => setFilterAccountInstitution(e.target.value)}
-                />
+              </div>
+
+              {tags.length > 0 && (
+                <div>
+                  <p className="label mb-2">Tags</p>
+                  <div className="space-y-1.5">
+                    {tags.map((tag) => {
+                      const active = filterAccountTags.includes(tag.id);
+                      return (
+                        <label key={tag.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input
+                            type="checkbox"
+                            className="accent-brass"
+                            checked={active}
+                            onChange={() =>
+                              setFilterAccountTags((prev) =>
+                                active ? prev.filter((id) => id !== tag.id) : [...prev, tag.id]
+                              )
+                            }
+                          />
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: tag.color }}
+                          />
+                          {tag.name}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <p className="label mb-2">Institution</p>
+                {uniqueInstitutions.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {uniqueInstitutions.map((inst) => (
+                      <label key={inst} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="accent-brass"
+                          checked={filterAccountInstitution === inst}
+                          onChange={() =>
+                            setFilterAccountInstitution((prev) => (prev === inst ? "" : inst))
+                          }
+                        />
+                        {inst}
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <input
+                    className="field text-sm"
+                    placeholder="Search…"
+                    value={filterAccountInstitution}
+                    onChange={(e) => setFilterAccountInstitution(e.target.value)}
+                  />
+                )}
+              </div>
+
+              {accountFiltersActive && (
+                <button
+                  className="text-xs text-paper-dim hover:text-paper transition-colors"
+                  onClick={() => { setFilterAccountTypes([]); setFilterAccountTags([]); setFilterAccountInstitution(""); }}
+                >
+                  Clear all
+                </button>
               )}
             </div>
-          </div>
-
-          {accountFiltersActive && (
-            <button
-              className="text-xs text-paper-dim hover:text-paper transition-colors"
-              onClick={() => { setFilterAccountTypes([]); setFilterAccountTags([]); setFilterAccountInstitution(""); }}
-            >
-              Clear all filters
-            </button>
           )}
-        </div>
-      )}
 
-      {/* Accounts table */}
-      <div className="card overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-ink-line">
-              <th className="w-10 px-2 py-3"></th>
-              <th className="label text-left font-medium px-4 py-3">Name</th>
-              <th className="label text-left font-medium px-4 py-3">Institution</th>
-              <th className="label text-left font-medium px-4 py-3">Type</th>
-              <th className="label text-right font-medium px-4 py-3">Cash</th>
-              <th className="label text-right font-medium px-4 py-3">Holdings</th>
-              <th className="label text-right font-medium px-4 py-3">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {accounts === null && (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-paper-dim">Loading…</td></tr>
-            )}
-            {accounts !== null && filteredAccounts.length === 0 && (
-              <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-paper-dim">
-                  {accountFiltersActive ? "No accounts match the current filters." : "No accounts yet. Use + Add to create one."}
-                </td>
-              </tr>
-            )}
-            {filteredAccounts.map((a) => (
-              <tr
-                key={a.id}
-                className="border-b border-ink-line/60 last:border-0 cursor-pointer hover:bg-ink-soft/40 transition-colors"
-                onClick={() => openDetail(a)}
-              >
-                <td className="px-2 py-3">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (menuOpenId === a.id) {
-                        setMenuOpenId(null);
-                      } else {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        setMenuPos({ top: rect.bottom + 4, left: rect.left });
-                        setMenuOpenId(a.id);
-                      }
-                    }}
-                    className="p-1.5 rounded-lg text-paper-dim hover:text-paper hover:bg-ink-soft transition-colors"
-                    aria-label={`Actions for ${a.name}`}
+          <div className="flex-1 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-ink-line">
+                  <th className="w-10 px-2 py-3"></th>
+                  <th className="label text-left font-medium px-4 py-3">
+                    {accountFiltersActive
+                      ? `Accounts · ${filteredAccounts.length} of ${(accounts ?? []).length}`
+                      : "Name"}
+                  </th>
+                  <th className="label text-left font-medium px-4 py-3">Institution</th>
+                  <th className="label text-left font-medium px-4 py-3">Type</th>
+                  <th className="label text-right font-medium px-4 py-3">Cash</th>
+                  <th className="label text-right font-medium px-4 py-3">Holdings</th>
+                  <th className="label text-right font-medium px-4 py-3">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {accounts === null && (
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-paper-dim">Loading…</td></tr>
+                )}
+                {accounts !== null && filteredAccounts.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-10 text-center text-paper-dim">
+                      {accountFiltersActive ? "No accounts match the current filters." : "No accounts yet. Use + Add to create one."}
+                    </td>
+                  </tr>
+                )}
+                {filteredAccounts.map((a) => (
+                  <tr
+                    key={a.id}
+                    className="border-b border-ink-line/60 last:border-0 cursor-pointer hover:bg-ink-soft/40 transition-colors"
+                    onClick={() => openDetail(a)}
                   >
-                    <KebabIcon />
-                  </button>
-                  {menuOpenId === a.id && typeof document !== "undefined" && createPortal(
-                    <>
-                      <div className="fixed inset-0 z-40" onClick={() => setMenuOpenId(null)} />
-                      <div
-                        className="fixed z-50 w-32 card p-1 shadow-lg"
-                        style={{ top: menuPos.top, left: menuPos.left }}
+                    <td className="px-2 py-3">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (menuOpenId === a.id) {
+                            setMenuOpenId(null);
+                          } else {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setMenuPos({ top: rect.bottom + 4, left: rect.left });
+                            setMenuOpenId(a.id);
+                          }
+                        }}
+                        className="p-1.5 rounded-lg text-paper-dim hover:text-paper hover:bg-ink-soft transition-colors"
+                        aria-label={`Actions for ${a.name}`}
                       >
-                        <button
-                          onClick={() => openEdit(a)}
-                          className="w-full text-left px-3 py-1.5 rounded-md text-sm hover:bg-ink-soft transition-colors"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => deleteAccount(a)}
-                          className="w-full text-left px-3 py-1.5 rounded-md text-sm text-loss hover:bg-ink-soft transition-colors"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </>,
-                    document.body
-                  )}
-                </td>
-                <td className="px-4 py-3">
-                  <div className="font-medium">{a.name}</div>
-                  {(accountTagMap[a.id]?.length > 0) && (
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {accountTagMap[a.id].map((tid) => {
-                        const tag = tags.find((t) => t.id === tid);
-                        if (!tag) return null;
-                        return (
-                          <span
-                            key={tid}
-                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium leading-none"
-                            style={{ backgroundColor: tag.color + "33", color: tag.color }}
+                        <KebabIcon />
+                      </button>
+                      {menuOpenId === a.id && typeof document !== "undefined" && createPortal(
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setMenuOpenId(null)} />
+                          <div
+                            className="fixed z-50 w-32 card p-1 shadow-lg"
+                            style={{ top: menuPos.top, left: menuPos.left }}
                           >
-                            {tag.name}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-paper-dim">{a.institution ?? "—"}</td>
-                <td className="px-4 py-3">{typeLabel(a.account_type)}</td>
-                <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.cash ?? 0)}</td>
-                <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.holdings ?? 0)}</td>
-                <td className="num text-right px-4 py-3 font-medium">
-                  {usd((totalsByAccount[a.id]?.cash ?? 0) + (totalsByAccount[a.id]?.holdings ?? 0))}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                            <button
+                              onClick={() => openEdit(a)}
+                              className="w-full text-left px-3 py-1.5 rounded-md text-sm hover:bg-ink-soft transition-colors"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => deleteAccount(a)}
+                              className="w-full text-left px-3 py-1.5 rounded-md text-sm text-loss hover:bg-ink-soft transition-colors"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </>,
+                        document.body
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium">{a.name}</div>
+                      {(accountTagMap[a.id]?.length > 0) && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {accountTagMap[a.id].map((tid) => {
+                            const tag = tags.find((t) => t.id === tid);
+                            if (!tag) return null;
+                            return (
+                              <span
+                                key={tid}
+                                className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium leading-none"
+                                style={{ backgroundColor: tag.color + "33", color: tag.color }}
+                              >
+                                {tag.name}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-paper-dim">{a.institution ?? "—"}</td>
+                    <td className="px-4 py-3">{typeLabel(a.account_type)}</td>
+                    <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.cash ?? 0)}</td>
+                    <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.holdings ?? 0)}</td>
+                    <td className="num text-right px-4 py-3 font-medium">
+                      {usd((totalsByAccount[a.id]?.cash ?? 0) + (totalsByAccount[a.id]?.holdings ?? 0))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
       {/* Add Account drawer */}
