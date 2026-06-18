@@ -622,10 +622,10 @@ export default function AccountsPage() {
 
   const uniqueInstitutions = [...new Set((accounts ?? []).map((a) => a.institution).filter(Boolean))].sort();
 
-  const grandTotalCash     = Object.values(totalsByAccount).reduce((s, b) => s + (b.cash     ?? 0), 0);
-  const grandTotalHoldings = Object.values(totalsByAccount).reduce((s, b) => s + (b.holdings ?? 0), 0);
+  const grandTotalCash     = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.cash     ?? 0), 0);
+  const grandTotalHoldings = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.holdings ?? 0), 0);
   const grandTotalValue    = grandTotalCash + grandTotalHoldings;
-  const grandTotalNetGain  = Object.values(totalsByAccount).reduce((s, b) => s + (b.net_gain ?? 0), 0);
+  const grandTotalNetGain  = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.net_gain ?? 0), 0);
   const accountFiltersActive =
     filterAccountTypes.length > 0 || filterAccountTags.length > 0 || filterAccountInstitution !== "";
   const filteredAccounts = (accounts ?? []).filter((a) => {
