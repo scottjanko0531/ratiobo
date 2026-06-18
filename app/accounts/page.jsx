@@ -622,10 +622,6 @@ export default function AccountsPage() {
 
   const uniqueInstitutions = [...new Set((accounts ?? []).map((a) => a.institution).filter(Boolean))].sort();
 
-  const grandTotalCash     = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.cash     ?? 0), 0);
-  const grandTotalHoldings = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.holdings ?? 0), 0);
-  const grandTotalValue    = grandTotalCash + grandTotalHoldings;
-  const grandTotalNetGain  = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.net_gain ?? 0), 0);
   const accountFiltersActive =
     filterAccountTypes.length > 0 || filterAccountTags.length > 0 || filterAccountInstitution !== "";
   const filteredAccounts = (accounts ?? []).filter((a) => {
@@ -634,6 +630,11 @@ export default function AccountsPage() {
     const instOk = filterAccountInstitution === ""  || (a.institution ?? "").toLowerCase().includes(filterAccountInstitution.toLowerCase());
     return typeOk && tagOk && instOk;
   });
+
+  const grandTotalCash     = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.cash     ?? 0), 0);
+  const grandTotalHoldings = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.holdings ?? 0), 0);
+  const grandTotalValue    = grandTotalCash + grandTotalHoldings;
+  const grandTotalNetGain  = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.net_gain ?? 0), 0);
 
   const uniqueTxnTypeCodes = [...new Set(holdingTransactions.map((t) => t.txn_type))].sort();
   const filteredTransactions = filterTxnTypes.length === 0
