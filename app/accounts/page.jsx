@@ -356,6 +356,7 @@ export default function AccountsPage() {
       setEditHoldingError(error.message);
     } else {
       setEditingHolding(null);
+      load();
       if (viewingAccount) await openDetail(viewingAccount);
     }
   }
