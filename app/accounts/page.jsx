@@ -86,6 +86,13 @@ export default function AccountsPage() {
   const [addHoldingError, setAddHoldingError] = useState("");
   const [addHoldingBusy, setAddHoldingBusy] = useState(false);
 
+  // Accounts-level add / filter / tags panel visibility
+  const [showAddAccount, setShowAddAccount] = useState(false);
+  const [showAccountFilter, setShowAccountFilter] = useState(false);
+  const [filterAccountTypes, setFilterAccountTypes] = useState([]);
+  const [filterAccountTags, setFilterAccountTags] = useState([]);
+  const [filterAccountInstitution, setFilterAccountInstitution] = useState("");
+
   // Tags
   const [tags, setTags] = useState([]);
   const [accountTagMap, setAccountTagMap] = useState({});
@@ -236,6 +243,7 @@ export default function AccountsPage() {
 
     setBusy(false);
     setForm({ name: "", institution: "", account_type: "", initial_cash: "" });
+    setShowAddAccount(false);
     load();
   }
 
@@ -611,6 +619,16 @@ export default function AccountsPage() {
 
   const typeLabel = (code) => types.find((t) => t.code === code)?.label ?? code;
 
+  const uniqueInstitutions = [...new Set((accounts ?? []).map((a) => a.institution).filter(Boolean))].sort();
+  const accountFiltersActive =
+    filterAccountTypes.length > 0 || filterAccountTags.length > 0 || filterAccountInstitution !== "";
+  const filteredAccounts = (accounts ?? []).filter((a) => {
+    const typeOk = filterAccountTypes.length === 0 || filterAccountTypes.includes(a.account_type);
+    const tagOk  = filterAccountTags.length === 0  || filterAccountTags.some((tid) => accountTagMap[a.id]?.includes(tid));
+    const instOk = filterAccountInstitution === ""  || (a.institution ?? "").toLowerCase().includes(filterAccountInstitution.toLowerCase());
+    return typeOk && tagOk && instOk;
+  });
+
   const uniqueTxnTypeCodes = [...new Set(holdingTransactions.map((t) => t.txn_type))].sort();
   const filteredTransactions = filterTxnTypes.length === 0
     ? holdingTransactions
@@ -635,115 +653,261 @@ export default function AccountsPage() {
 
   return (
     <Shell>
-      <h1 className="text-xl font-semibold tracking-tight mb-6">Accounts</h1>
-
-      <div className="grid lg:grid-cols-[1fr_360px] gap-6 items-start">
-        <div className="card overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-ink-line">
-                <th className="w-10 px-2 py-3"></th>
-                <th className="label text-left font-medium px-4 py-3">Name</th>
-                <th className="label text-left font-medium px-4 py-3">Institution</th>
-                <th className="label text-left font-medium px-4 py-3">Type</th>
-                <th className="label text-right font-medium px-4 py-3">Cash</th>
-                <th className="label text-right font-medium px-4 py-3">Holdings</th>
-                <th className="label text-right font-medium px-4 py-3">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {accounts === null && (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-paper-dim">Loading…</td></tr>
-              )}
-              {accounts?.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-paper-dim">
-                    No accounts yet. Add one to organize your holdings.
-                  </td>
-                </tr>
-              )}
-              {accounts?.map((a) => (
-                <tr
-                  key={a.id}
-                  className="border-b border-ink-line/60 last:border-0 cursor-pointer hover:bg-ink-soft/40 transition-colors"
-                  onClick={() => openDetail(a)}
-                >
-                  <td className="px-2 py-3">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (menuOpenId === a.id) {
-                          setMenuOpenId(null);
-                        } else {
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          setMenuPos({ top: rect.bottom + 4, left: rect.left });
-                          setMenuOpenId(a.id);
-                        }
-                      }}
-                      className="p-1.5 rounded-lg text-paper-dim hover:text-paper hover:bg-ink-soft transition-colors"
-                      aria-label={`Actions for ${a.name}`}
-                    >
-                      <KebabIcon />
-                    </button>
-                    {menuOpenId === a.id && typeof document !== "undefined" && createPortal(
-                      <>
-                        <div className="fixed inset-0 z-40" onClick={() => setMenuOpenId(null)} />
-                        <div
-                          className="fixed z-50 w-32 card p-1 shadow-lg"
-                          style={{ top: menuPos.top, left: menuPos.left }}
-                        >
-                          <button
-                            onClick={() => openEdit(a)}
-                            className="w-full text-left px-3 py-1.5 rounded-md text-sm hover:bg-ink-soft transition-colors"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => deleteAccount(a)}
-                            className="w-full text-left px-3 py-1.5 rounded-md text-sm text-loss hover:bg-ink-soft transition-colors"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </>,
-                      document.body
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="font-medium">{a.name}</div>
-                    {(accountTagMap[a.id]?.length > 0) && (
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {accountTagMap[a.id].map((tid) => {
-                          const tag = tags.find((t) => t.id === tid);
-                          if (!tag) return null;
-                          return (
-                            <span
-                              key={tid}
-                              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium leading-none"
-                              style={{ backgroundColor: tag.color + "33", color: tag.color }}
-                            >
-                              {tag.name}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-paper-dim">{a.institution ?? "—"}</td>
-                  <td className="px-4 py-3">{typeLabel(a.account_type)}</td>
-                  <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.cash ?? 0)}</td>
-                  <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.holdings ?? 0)}</td>
-                  <td className="num text-right px-4 py-3 font-medium">
-                    {usd((totalsByAccount[a.id]?.cash ?? 0) + (totalsByAccount[a.id]?.holdings ?? 0))}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Page header */}
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-xl font-semibold tracking-tight">Accounts</h1>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowAccountFilter((v) => !v)}
+            className={`px-3 py-1.5 rounded-lg text-sm transition-colors border ${
+              showAccountFilter || accountFiltersActive
+                ? "border-brass/60 text-brass-soft bg-ink-soft"
+                : "border-ink-line text-paper-dim hover:text-paper"
+            }`}
+          >
+            {accountFiltersActive ? `Filter (${filterAccountTypes.length + filterAccountTags.length + (filterAccountInstitution ? 1 : 0)})` : "Filter"}
+          </button>
+          <button
+            onClick={() => { setShowAddAccount((v) => !v); setManagingTags(false); }}
+            className={`px-3 py-1.5 rounded-lg text-sm transition-colors border ${
+              showAddAccount
+                ? "border-brass/60 text-brass-soft bg-ink-soft"
+                : "border-ink-line text-paper-dim hover:text-paper"
+            }`}
+          >
+            + Add
+          </button>
+          <button
+            onClick={() => { setManagingTags((v) => !v); setShowAddAccount(false); }}
+            className={`px-3 py-1.5 rounded-lg text-sm transition-colors border ${
+              managingTags
+                ? "border-brass/60 text-brass-soft bg-ink-soft"
+                : "border-ink-line text-paper-dim hover:text-paper"
+            }`}
+          >
+            Tags
+          </button>
         </div>
+      </div>
 
-        <div className="card p-5 space-y-4">
-          <p className="font-medium">Add account</p>
+      {/* Filter bar */}
+      {showAccountFilter && (
+        <div className="card p-4 mb-4 space-y-4">
+          <div className="grid sm:grid-cols-3 gap-4">
+            {/* Account type */}
+            <div>
+              <p className="label mb-2">Account type</p>
+              <div className="space-y-1.5">
+                {types.map((t) => (
+                  <label key={t.code} className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={filterAccountTypes.includes(t.code)}
+                      onChange={() =>
+                        setFilterAccountTypes((prev) =>
+                          prev.includes(t.code) ? prev.filter((c) => c !== t.code) : [...prev, t.code]
+                        )
+                      }
+                      className="accent-brass"
+                    />
+                    {t.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Tags */}
+            {tags.length > 0 && (
+              <div>
+                <p className="label mb-2">Tags</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {tags.map((tag) => {
+                    const active = filterAccountTags.includes(tag.id);
+                    return (
+                      <button
+                        key={tag.id}
+                        type="button"
+                        onClick={() =>
+                          setFilterAccountTags((prev) =>
+                            active ? prev.filter((id) => id !== tag.id) : [...prev, tag.id]
+                          )
+                        }
+                        className="px-2 py-0.5 rounded text-xs font-medium transition-all border"
+                        style={
+                          active
+                            ? { backgroundColor: tag.color + "33", borderColor: tag.color, color: tag.color }
+                            : { borderColor: "var(--color-ink-line)", color: "var(--color-paper-dim)" }
+                        }
+                      >
+                        {tag.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Institution */}
+            <div>
+              <p className="label mb-2">Institution</p>
+              {uniqueInstitutions.length > 0 ? (
+                <div className="space-y-1.5">
+                  {uniqueInstitutions.map((inst) => (
+                    <label key={inst} className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={filterAccountInstitution === inst}
+                        onChange={() =>
+                          setFilterAccountInstitution((prev) => (prev === inst ? "" : inst))
+                        }
+                        className="accent-brass"
+                      />
+                      {inst}
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <input
+                  className="field text-sm"
+                  placeholder="Search institution…"
+                  value={filterAccountInstitution}
+                  onChange={(e) => setFilterAccountInstitution(e.target.value)}
+                />
+              )}
+            </div>
+          </div>
+
+          {accountFiltersActive && (
+            <button
+              className="text-xs text-paper-dim hover:text-paper transition-colors"
+              onClick={() => { setFilterAccountTypes([]); setFilterAccountTags([]); setFilterAccountInstitution(""); }}
+            >
+              Clear all filters
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Accounts table */}
+      <div className="card overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-ink-line">
+              <th className="w-10 px-2 py-3"></th>
+              <th className="label text-left font-medium px-4 py-3">Name</th>
+              <th className="label text-left font-medium px-4 py-3">Institution</th>
+              <th className="label text-left font-medium px-4 py-3">Type</th>
+              <th className="label text-right font-medium px-4 py-3">Cash</th>
+              <th className="label text-right font-medium px-4 py-3">Holdings</th>
+              <th className="label text-right font-medium px-4 py-3">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {accounts === null && (
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-paper-dim">Loading…</td></tr>
+            )}
+            {accounts !== null && filteredAccounts.length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-4 py-10 text-center text-paper-dim">
+                  {accountFiltersActive ? "No accounts match the current filters." : "No accounts yet. Use + Add to create one."}
+                </td>
+              </tr>
+            )}
+            {filteredAccounts.map((a) => (
+              <tr
+                key={a.id}
+                className="border-b border-ink-line/60 last:border-0 cursor-pointer hover:bg-ink-soft/40 transition-colors"
+                onClick={() => openDetail(a)}
+              >
+                <td className="px-2 py-3">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (menuOpenId === a.id) {
+                        setMenuOpenId(null);
+                      } else {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setMenuPos({ top: rect.bottom + 4, left: rect.left });
+                        setMenuOpenId(a.id);
+                      }
+                    }}
+                    className="p-1.5 rounded-lg text-paper-dim hover:text-paper hover:bg-ink-soft transition-colors"
+                    aria-label={`Actions for ${a.name}`}
+                  >
+                    <KebabIcon />
+                  </button>
+                  {menuOpenId === a.id && typeof document !== "undefined" && createPortal(
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setMenuOpenId(null)} />
+                      <div
+                        className="fixed z-50 w-32 card p-1 shadow-lg"
+                        style={{ top: menuPos.top, left: menuPos.left }}
+                      >
+                        <button
+                          onClick={() => openEdit(a)}
+                          className="w-full text-left px-3 py-1.5 rounded-md text-sm hover:bg-ink-soft transition-colors"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => deleteAccount(a)}
+                          className="w-full text-left px-3 py-1.5 rounded-md text-sm text-loss hover:bg-ink-soft transition-colors"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </>,
+                    document.body
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-medium">{a.name}</div>
+                  {(accountTagMap[a.id]?.length > 0) && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {accountTagMap[a.id].map((tid) => {
+                        const tag = tags.find((t) => t.id === tid);
+                        if (!tag) return null;
+                        return (
+                          <span
+                            key={tid}
+                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium leading-none"
+                            style={{ backgroundColor: tag.color + "33", color: tag.color }}
+                          >
+                            {tag.name}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-paper-dim">{a.institution ?? "—"}</td>
+                <td className="px-4 py-3">{typeLabel(a.account_type)}</td>
+                <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.cash ?? 0)}</td>
+                <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.holdings ?? 0)}</td>
+                <td className="num text-right px-4 py-3 font-medium">
+                  {usd((totalsByAccount[a.id]?.cash ?? 0) + (totalsByAccount[a.id]?.holdings ?? 0))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Add Account drawer */}
+      <div className={`fixed inset-0 z-30 ${showAddAccount ? "" : "pointer-events-none"}`}>
+        <div
+          className={`absolute inset-0 bg-ink/70 transition-opacity ${showAddAccount ? "opacity-100" : "opacity-0"}`}
+          onClick={() => setShowAddAccount(false)}
+        />
+        <div
+          className={`absolute right-0 top-0 h-full w-full max-w-sm bg-ink-soft border-l border-ink-line p-5 space-y-4 overflow-y-auto transition-transform duration-300 ${
+            showAddAccount ? "translate-x-0" : "translate-x-full"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <p className="font-medium">Add account</p>
+            <button onClick={() => setShowAddAccount(false)} className="text-paper-dim hover:text-paper" aria-label="Close">✕</button>
+          </div>
           <div>
             <label className="label block mb-1.5" htmlFor="acct-name">Name</label>
             <input
@@ -797,12 +961,6 @@ export default function AccountsPage() {
             disabled={busy || !form.name || !form.account_type}
           >
             {busy ? "Saving…" : "Add account"}
-          </button>
-          <button
-            className="btn-ghost w-full text-sm"
-            onClick={() => setManagingTags(true)}
-          >
-            Manage tags
           </button>
         </div>
       </div>
