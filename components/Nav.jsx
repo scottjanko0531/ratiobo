@@ -8,7 +8,8 @@ const links = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/accounts", label: "Accounts" },
   { href: "/holdings", label: "Holdings" },
-  { href: "/transactions/new", label: "Add transaction" }
+  { href: "/macro", label: "Macro" },
+  { href: "/transactions/new", label: "Add transaction" },
 ];
 
 function Brand() {
