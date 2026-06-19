@@ -1,6 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+} from "recharts";
 import { supabase } from "../../lib/supabase";
 import { cashAmount, CASH_LEG_TYPES } from "../../lib/cash";
 import Shell from "../../components/Shell";
@@ -14,6 +17,41 @@ const usd = (n) =>
 const MARKET_TYPES = new Set(["equity", "etf", "mutual_fund", "bond", "crypto", "metal"]);
 // Types with no live feed — user sets current price per unit manually.
 const MANUAL_PRICE_TYPES = new Set(["real_estate", "loan", "other"]);
+
+const METAL_TV_SYMBOLS = { XAU: "TVC:GOLD", XAG: "TVC:SILVER", XPT: "TVC:PLATINUM", XPD: "TVC:PALLADIUM" };
+function getTVSymbol(symbol, assetType) {
+  const s = (symbol ?? "").toUpperCase();
+  if (assetType === "crypto") return `COINBASE:${s}USD`;
+  if (assetType === "metal") return METAL_TV_SYMBOLS[s] ?? `TVC:${s}`;
+  return s;
+}
+
+function EyeIcon({ open }) {
+  return open ? (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+      <path d="M1 8c1.5-3.5 4-5 7-5s5.5 1.5 7 5c-1.5 3.5-4 5-7 5s-5.5-1.5-7-5z"/>
+      <circle cx="8" cy="8" r="2"/>
+    </svg>
+  ) : (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+      <path d="M2 2l12 12"/>
+      <path d="M6.7 6.8A2 2 0 009.2 9.3M4.3 4.6C2.6 5.7 1.5 7 1.5 8c0 0 2 4.5 6.5 4.5 1.2 0 2.3-.3 3.2-.8M8.5 3.6C12.3 3.9 14.5 8 14.5 8s-.6 1.4-1.8 2.6"/>
+    </svg>
+  );
+}
+
+function ChartTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const { name, value } = payload[0];
+  return (
+    <div className="bg-[#1B212B] border border-[#2A3240] rounded-lg px-3 py-2 text-xs shadow-lg">
+      <p className="text-[#A8ADB8] mb-0.5">{name}</p>
+      <p className="text-[#F6F4EE] font-medium">
+        {Number(value).toLocaleString("en-US", { style: "currency", currency: "USD" })}
+      </p>
+    </div>
+  );
+}
 
 const TAG_COLORS = [
   "#ef4444", "#f97316", "#eab308", "#22c55e",
@@ -108,6 +146,10 @@ export default function AccountsPage() {
 
   const [holdingSnapshots, setHoldingSnapshots] = useState({});
   const [accountSnapshotTotals, setAccountSnapshotTotals] = useState({});
+  const [showTVChart, setShowTVChart] = useState(true);
+  const [showHoldingHistory, setShowHoldingHistory] = useState(true);
+  const [holdingHistory, setHoldingHistory] = useState([]);
+  const [historyRange, setHistoryRange] = useState("all");
 
   async function load() {
     const today = new Date().toISOString().slice(0, 10);
@@ -301,7 +343,7 @@ export default function AccountsPage() {
   async function openHoldingDetail(holding) {
     setViewingHolding(holding);
     setTxnBusy(true);
-    const [{ data: txns }, { data: fresh }] = await Promise.all([
+    const [{ data: txns }, { data: fresh }, { data: hist }] = await Promise.all([
       supabase
         .from("transactions")
         .select("id, txn_type, txn_date, quantity, price_per_unit, amount, fees, cash_holding_id")
@@ -311,10 +353,22 @@ export default function AccountsPage() {
         .from("holdings_valued")
         .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain")
         .eq("id", holding.id)
-        .single()
+        .single(),
+      supabase
+        .from("portfolio_snapshots")
+        .select("snapshot_date, market_value")
+        .eq("holding_id", holding.id)
+        .order("snapshot_date", { ascending: true })
     ]);
     setHoldingTransactions(txns ?? []);
     if (fresh) setViewingHolding(fresh);
+    setHoldingHistory(
+      (hist ?? []).map((s) => ({
+        date: s.snapshot_date,
+        value: Number(s.market_value ?? 0),
+        label: new Date(s.snapshot_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      }))
+    );
     setTxnBusy(false);
   }
 
@@ -326,6 +380,10 @@ export default function AccountsPage() {
     setAddingTransaction(false);
     setAddTxnForm({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "" });
     setAddTxnError("");
+    setHoldingHistory([]);
+    setShowTVChart(true);
+    setShowHoldingHistory(true);
+    setHistoryRange("all");
   }
 
   async function saveAddTransaction() {
@@ -1337,6 +1395,119 @@ export default function AccountsPage() {
                     </p>
                   </div>
                 ))}
+              </div>
+
+              {/* Charts */}
+              <div className="border-b border-ink-line">
+                {/* TradingView price chart */}
+                {MARKET_TYPES.has(viewingHolding.asset_type) && (
+                  <div className="border-b border-ink-line">
+                    <div className="flex items-center justify-between px-5 py-2.5">
+                      <p className="label text-xs">Price chart</p>
+                      <button
+                        onClick={() => setShowTVChart((v) => !v)}
+                        className={`p-1 rounded transition-colors ${showTVChart ? "text-paper hover:text-paper-dim" : "text-paper-dim hover:text-paper"}`}
+                        aria-label={showTVChart ? "Hide price chart" : "Show price chart"}
+                      >
+                        <EyeIcon open={showTVChart} />
+                      </button>
+                    </div>
+                    {showTVChart && (
+                      <iframe
+                        key={viewingHolding.symbol}
+                        src={`https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(getTVSymbol(viewingHolding.symbol, viewingHolding.asset_type))}&interval=D&theme=dark&style=1&locale=en&hide_top_toolbar=0&allow_symbol_change=0&save_image=0`}
+                        width="100%"
+                        height="380"
+                        frameBorder="0"
+                        allowTransparency="true"
+                        scrolling="no"
+                      />
+                    )}
+                  </div>
+                )}
+
+                {/* Holding value history */}
+                {(() => {
+                  const RANGES = [
+                    { key: "1W", days: 7 },
+                    { key: "1M", days: 30 },
+                    { key: "3M", days: 90 },
+                    { key: "6M", days: 180 },
+                    { key: "1Y", days: 365 },
+                    { key: "All", days: null },
+                  ];
+                  const cutoff = RANGES.find((r) => r.key === historyRange)?.days;
+                  const cutoffDate = cutoff
+                    ? new Date(Date.now() - cutoff * 86400000).toISOString().slice(0, 10)
+                    : null;
+                  const visibleHistory = cutoffDate
+                    ? holdingHistory.filter((p) => p.date >= cutoffDate)
+                    : holdingHistory;
+                  return (
+                    <div className="px-5 py-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <p className="label text-xs">Holding value history</p>
+                          <button
+                            onClick={() => setShowHoldingHistory((v) => !v)}
+                            className={`p-0.5 rounded transition-colors ${showHoldingHistory ? "text-paper hover:text-paper-dim" : "text-paper-dim hover:text-paper"}`}
+                            aria-label={showHoldingHistory ? "Hide value history" : "Show value history"}
+                          >
+                            <EyeIcon open={showHoldingHistory} />
+                          </button>
+                        </div>
+                        <div className="flex gap-0.5">
+                          {RANGES.map((r) => (
+                            <button
+                              key={r.key}
+                              onClick={() => setHistoryRange(r.key)}
+                              className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                                historyRange === r.key
+                                  ? "bg-ink text-brass-soft"
+                                  : "text-paper-dim hover:text-paper"
+                              }`}
+                            >
+                              {r.key}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {showHoldingHistory && visibleHistory.length < 2 ? (
+                        <p className="text-paper-dim text-xs py-4 text-center">
+                          {holdingHistory.length === 0 ? "No snapshot history yet." : "No data for this range."}
+                        </p>
+                      ) : showHoldingHistory ? (
+                        <ResponsiveContainer width="100%" height={180}>
+                          <LineChart data={visibleHistory} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                            <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                            <XAxis dataKey="label" tick={{ fill: "#A8ADB8", fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                            <YAxis
+                              tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                              axisLine={false}
+                              tickLine={false}
+                              width={64}
+                              tickFormatter={(v) =>
+                                v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M`
+                                : v >= 1_000 ? `$${(v / 1_000).toFixed(0)}K`
+                                : `$${v}`
+                              }
+                            />
+                            <Tooltip content={<ChartTooltip />} />
+                            <Line
+                              type="monotone"
+                              dataKey="value"
+                              name={viewingHolding.symbol}
+                              stroke="#C9A227"
+                              strokeWidth={2}
+                              dot={false}
+                              activeDot={{ r: 4, fill: "#C9A227", stroke: "#1B212B", strokeWidth: 2 }}
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      ) : null}
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="px-5 py-4">
