@@ -39,8 +39,8 @@ const QUADRANTS = {
 
 const STATUS_STYLE = {
   healthy: { text: "text-gain", bg: "bg-gain/10", border: "border-gain/20" },
-  watch: { text: "text-brass", bg: "bg-brass/10", border: "border-brass/20" },
-  danger: { text: "text-loss", bg: "bg-loss/10", border: "border-loss/20" },
+  watch:   { text: "text-brass", bg: "bg-brass/10", border: "border-brass/20" },
+  danger:  { text: "text-loss", bg: "bg-loss/10", border: "border-loss/20" },
   unknown: { text: "text-paper-dim", bg: "bg-ink-soft", border: "border-ink-line" },
 };
 
@@ -48,12 +48,15 @@ function formatValue(v, unit) {
   if (v == null) return "—";
   const n = Number(v);
   if (isNaN(n)) return "—";
-  if (unit === "%") return n.toFixed(2) + "%";
-  if (unit === "$B") return "$" + n.toFixed(1) + "B";
-  if (unit === "$M") return "$" + (n / 1_000_000).toFixed(2) + "T";
-  if (unit === "K") return n.toFixed(0) + "K";
+  if (unit === "%")       return n.toFixed(2) + "%";
+  if (unit === "$B")      return "$" + n.toFixed(1) + "B";
+  if (unit === "$M")      return "$" + (n / 1_000_000).toFixed(2) + "T";
+  if (unit === "K")       return n.toFixed(0) + "K";
+  if (unit === "tons")    return n.toFixed(0) + "t";
+  if (unit === "bps")     return n.toFixed(0) + "bps";
+  if (unit === "ratio")   return n.toFixed(2) + "x";
   if (unit === "z-score") return n.toFixed(3);
-  if (unit === "index") return n.toFixed(1);
+  if (unit === "index")   return n.toFixed(1);
   return n.toFixed(2);
 }
 
@@ -73,24 +76,136 @@ function StatusBadge({ status }) {
   const s = status ?? "unknown";
   const st = STATUS_STYLE[s] ?? STATUS_STYLE.unknown;
   return (
-    <span
-      className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full border ${st.text} ${st.bg} ${st.border}`}
-    >
+    <span className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full border ${st.text} ${st.bg} ${st.border}`}>
       {s.toUpperCase()}
     </span>
   );
 }
 
-function IndicatorCard({ ind }) {
+function PencilIcon() {
+  return (
+    <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8z" />
+    </svg>
+  );
+}
+
+function IndicatorCard({ ind, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [editVal, setEditVal] = useState("");
+  const [editStatus, setEditStatus] = useState("unknown");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
+  function startEdit() {
+    setEditVal(ind.current_value != null ? String(ind.current_value) : "");
+    setEditStatus(ind.status ?? "unknown");
+    setSaveError("");
+    setEditing(true);
+  }
+
+  async function saveEdit() {
+    const curr = parseFloat(editVal);
+    if (isNaN(curr)) { setSaveError("Enter a valid number."); return; }
+    setSaving(true);
+    setSaveError("");
+    const prev = ind.current_value != null ? Number(ind.current_value) : curr;
+    const { error } = await supabase
+      .from("macro_indicators")
+      .update({
+        current_value: curr,
+        previous_value: prev,
+        change_value: curr - prev,
+        status: editStatus,
+        last_fetched_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", ind.id);
+    setSaving(false);
+    if (error) { setSaveError(error.message); return; }
+    setEditing(false);
+    onSave?.();
+  }
+
+  if (editing) {
+    return (
+      <div className="card p-4 border border-brass/30">
+        <p className="text-sm font-medium mb-3 leading-snug">{ind.name}</p>
+        <div className="space-y-2">
+          <div>
+            <label className="label text-[10px] mb-1 block">Value ({ind.unit})</label>
+            <input
+              type="number"
+              value={editVal}
+              onChange={(e) => setEditVal(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEditing(false); }}
+              className="w-full bg-ink-soft border border-ink-line rounded px-2 py-1.5 text-sm num focus:outline-none focus:border-brass/60"
+              placeholder={`Enter ${ind.unit}`}
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="label text-[10px] mb-1 block">Signal</label>
+            <select
+              value={editStatus}
+              onChange={(e) => setEditStatus(e.target.value)}
+              className="w-full bg-ink-soft border border-ink-line rounded px-2 py-1.5 text-sm focus:outline-none focus:border-brass/60"
+            >
+              <option value="healthy">Healthy</option>
+              <option value="watch">Watch</option>
+              <option value="danger">Danger</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </div>
+          {saveError && <p className="text-loss text-xs">{saveError}</p>}
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={saveEdit}
+              disabled={saving || !editVal.trim()}
+              className="flex-1 py-1.5 text-xs font-medium rounded bg-brass/20 text-brass-soft border border-brass/40 hover:bg-brass/30 disabled:opacity-50 transition-colors"
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <button
+              onClick={() => setEditing(false)}
+              className="flex-1 py-1.5 text-xs rounded border border-ink-line text-paper-dim hover:text-paper transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="card p-4 flex flex-col gap-1.5">
       <div className="flex items-start justify-between gap-2">
         <p className="text-sm font-medium leading-snug">{ind.name}</p>
-        <StatusBadge status={ind.status} />
+        <div className="flex items-center gap-1.5 shrink-0">
+          <StatusBadge status={ind.status} />
+          {ind.is_manual && (
+            <button
+              onClick={startEdit}
+              className="text-paper-dim hover:text-brass transition-colors"
+              title="Update value"
+            >
+              <PencilIcon />
+            </button>
+          )}
+        </div>
       </div>
       <div className="flex items-baseline gap-2">
-        <p className="num text-xl">{formatValue(ind.current_value, ind.unit)}</p>
-        <ChangeArrow change={ind.change_value} unit={ind.unit} />
+        {ind.current_value != null ? (
+          <>
+            <p className="num text-xl">{formatValue(ind.current_value, ind.unit)}</p>
+            <ChangeArrow change={ind.change_value} unit={ind.unit} />
+          </>
+        ) : (
+          <p className="text-paper-dim text-sm italic">
+            {ind.is_manual ? "No data — click pencil to enter" : "Pending refresh"}
+          </p>
+        )}
       </div>
       <p className="text-paper-dim text-xs leading-snug line-clamp-2">{ind.description}</p>
     </div>
@@ -100,6 +215,7 @@ function IndicatorCard({ ind }) {
 function QuadrantCard({ indicators }) {
   const gdp = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi = indicators.find((i) => i.name === "CPI (YoY)");
+  const ism = indicators.find((i) => i.name === "ISM Manufacturing PMI");
 
   const growing = gdp?.current_value != null ? Number(gdp.current_value) > 0 : null;
   const risingInflation = cpi?.current_value != null ? Number(cpi.current_value) > 2.5 : null;
@@ -122,7 +238,8 @@ function QuadrantCard({ indicators }) {
             <div className="mt-3 flex flex-wrap gap-2">
               {[
                 { name: "GDP Growth", value: gdp?.current_value, unit: "%" },
-                { name: "CPI YoY", value: cpi?.current_value, unit: "%" },
+                { name: "CPI YoY",    value: cpi?.current_value, unit: "%" },
+                { name: "ISM PMI",    value: ism?.current_value, unit: "index" },
               ].map(({ name, value, unit }) => (
                 <div key={name} className="bg-ink-soft rounded-lg px-3 py-1.5">
                   <p className="label text-[10px]">{name}</p>
@@ -135,10 +252,7 @@ function QuadrantCard({ indicators }) {
             <p className="label mb-2">Positioning Signal</p>
             <div className="flex flex-wrap gap-2">
               {q.assets.map((a) => (
-                <span
-                  key={a}
-                  className="px-2.5 py-1 rounded-lg bg-brass/10 border border-brass/20 text-brass-soft text-xs font-medium"
-                >
+                <span key={a} className="px-2.5 py-1 rounded-lg bg-brass/10 border border-brass/20 text-brass-soft text-xs font-medium">
                   {a}
                 </span>
               ))}
@@ -149,7 +263,7 @@ function QuadrantCard({ indicators }) {
         <p className="text-paper-dim text-sm">
           {indicators.length === 0
             ? "No data yet — run the first data refresh."
-            : "Quadrant signals unclear — GDP or CPI data missing."}
+            : "Quadrant signals unclear — run Refresh Data to populate GDP and CPI."}
         </p>
       )}
     </div>
@@ -176,18 +290,16 @@ export default function MacroDashboard() {
 
   async function refreshData() {
     setRefreshing(true);
+    setError("");
     try {
       const res = await fetch(`${SUPABASE_URL}/functions/v1/fetch-macro-data`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setError(body.error ?? `Refresh failed (${res.status})`);
-      } else {
-        await fetchIndicators();
-      }
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) setError(body.error ?? `Refresh failed (${res.status})`);
+      else await fetchIndicators();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -221,14 +333,14 @@ export default function MacroDashboard() {
     return `${m}m ago`;
   };
 
+  const manualCount = (indicators ?? []).filter((i) => i.is_manual && i.current_value == null).length;
+
   return (
     <Shell>
       <div className="flex items-baseline justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Macro Dashboard</h1>
-          {lastFetched && (
-            <p className="label mt-0.5">Updated {timeAgo(lastFetched)}</p>
-          )}
+          {lastFetched && <p className="label mt-0.5">Updated {timeAgo(lastFetched)}</p>}
         </div>
         <button
           onClick={refreshData}
@@ -245,18 +357,24 @@ export default function MacroDashboard() {
         </div>
       )}
 
+      {manualCount > 0 && (
+        <div className="mb-5 px-4 py-3 rounded-lg bg-brass/5 border border-brass/20 text-brass-soft text-sm flex items-center gap-2">
+          <PencilIcon />
+          <span>{manualCount} manual indicator{manualCount !== 1 ? "s" : ""} need values — click the pencil icon on those cards to enter them.</span>
+        </div>
+      )}
+
       {indicators === null ? (
         <p className="text-paper-dim text-sm py-12 text-center">Loading…</p>
       ) : (
         <>
           <QuadrantCard indicators={indicators} />
 
-          {/* Status summary */}
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[
               { key: "healthy", label: "Healthy", style: STATUS_STYLE.healthy },
-              { key: "watch", label: "Watch", style: STATUS_STYLE.watch },
-              { key: "danger", label: "Danger", style: STATUS_STYLE.danger },
+              { key: "watch",   label: "Watch",   style: STATUS_STYLE.watch },
+              { key: "danger",  label: "Danger",  style: STATUS_STYLE.danger },
             ].map(({ key, label, style }) => (
               <div key={key} className={`card p-4 text-center border ${style.border}`}>
                 <p className={`text-3xl font-bold ${style.text}`}>{counts[key] ?? 0}</p>
@@ -265,7 +383,6 @@ export default function MacroDashboard() {
             ))}
           </div>
 
-          {/* Layers */}
           {[1, 2, 3, 4].map((layer) => (
             <div key={layer} className="mb-10">
               <div className="flex items-center gap-3 mb-3">
@@ -281,7 +398,7 @@ export default function MacroDashboard() {
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                   {byLayer[layer].map((ind) => (
-                    <IndicatorCard key={ind.id} ind={ind} />
+                    <IndicatorCard key={ind.id} ind={ind} onSave={fetchIndicators} />
                   ))}
                 </div>
               )}
