@@ -85,6 +85,7 @@ export default function HoldingsPage() {
   const [addForm, setAddForm] = useState({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", cost_basis: "", price_override: "" });
   const [addError, setAddError] = useState("");
   const [addBusy, setAddBusy] = useState(false);
+  const [addLookupBusy, setAddLookupBusy] = useState(false);
 
   // Edit holding drawer
   const [editingHolding, setEditingHolding] = useState(null);
@@ -166,6 +167,27 @@ export default function HoldingsPage() {
   }, [txnMenuOpenId]);
 
   // ── Add holding ───────────────────────────────────────────────────────────
+  async function lookupAddSymbol(symbol) {
+    if (!symbol.trim()) return;
+    setAddLookupBusy(true);
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/lookup-symbol?symbol=${encodeURIComponent(symbol.trim().toUpperCase())}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (!data.error) {
+          setAddForm((prev) => ({
+            ...prev,
+            name: prev.name || data.name || "",
+            asset_type: prev.asset_type || data.asset_type || "",
+          }));
+        }
+      }
+    } catch (_) {}
+    setAddLookupBusy(false);
+  }
+
   async function saveAdd() {
     setAddBusy(true);
     setAddError("");
@@ -682,6 +704,7 @@ export default function HoldingsPage() {
                 placeholder={isAddManual ? "" : "AAPL"}
                 value={addForm.symbol}
                 onChange={(e) => setAddForm({ ...addForm, symbol: e.target.value })}
+                onBlur={(e) => lookupAddSymbol(e.target.value)}
               />
             </div>
             <div>
@@ -704,9 +727,10 @@ export default function HoldingsPage() {
             </label>
             <input
               className="field"
-              placeholder={isAddManual ? "e.g. Primary Residence" : "Apple Inc."}
+              placeholder={addLookupBusy ? "Looking up…" : isAddManual ? "e.g. Primary Residence" : "Apple Inc."}
               value={addForm.name}
               onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
+              disabled={addLookupBusy}
             />
           </div>
           <div>

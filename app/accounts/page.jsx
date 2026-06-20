@@ -123,6 +123,7 @@ export default function AccountsPage() {
   const [addHoldingForm, setAddHoldingForm] = useState({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "" });
   const [addHoldingError, setAddHoldingError] = useState("");
   const [addHoldingBusy, setAddHoldingBusy] = useState(false);
+  const [addHoldingLookupBusy, setAddHoldingLookupBusy] = useState(false);
 
   // Accounts-level add / filter / tags panel visibility
   const [showAddAccount, setShowAddAccount] = useState(false);
@@ -604,6 +605,27 @@ export default function AccountsPage() {
     await supabase.from("transactions").delete().eq("id", txn.id);
     load();
     await openHoldingDetail(viewingHolding);
+  }
+
+  async function lookupHoldingSymbol(symbol) {
+    if (!symbol.trim()) return;
+    setAddHoldingLookupBusy(true);
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/lookup-symbol?symbol=${encodeURIComponent(symbol.trim().toUpperCase())}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (!data.error) {
+          setAddHoldingForm((prev) => ({
+            ...prev,
+            name: prev.name || data.name || "",
+            asset_type: prev.asset_type || data.asset_type || "",
+          }));
+        }
+      }
+    } catch (_) {}
+    setAddHoldingLookupBusy(false);
   }
 
   async function saveAddHolding() {
@@ -1985,6 +2007,7 @@ export default function AccountsPage() {
               placeholder="AAPL"
               value={addHoldingForm.symbol}
               onChange={(e) => setAddHoldingForm({ ...addHoldingForm, symbol: e.target.value })}
+              onBlur={(e) => lookupHoldingSymbol(e.target.value)}
             />
           </div>
           <div>
@@ -1992,9 +2015,10 @@ export default function AccountsPage() {
             <input
               id="ah-name"
               className="field"
-              placeholder="Apple Inc."
+              placeholder={addHoldingLookupBusy ? "Looking up…" : "Apple Inc."}
               value={addHoldingForm.name}
               onChange={(e) => setAddHoldingForm({ ...addHoldingForm, name: e.target.value })}
+              disabled={addHoldingLookupBusy}
             />
           </div>
           <div>
