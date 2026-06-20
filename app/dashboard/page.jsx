@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -79,7 +79,21 @@ export default function Dashboard() {
   const [snapMap, setSnapMap] = useState({});
   const [assetTypeLabels, setAssetTypeLabels] = useState({});
   const [portfolioHistory, setPortfolioHistory] = useState([]);
+  const [chartPeriod, setChartPeriod] = useState("All");
   const [error, setError] = useState("");
+
+  const chartData = useMemo(() => {
+    let filtered = portfolioHistory;
+    if (chartPeriod !== "All") {
+      const days = { "1D": 1, "1W": 7, "1M": 30, "1Y": 365 }[chartPeriod];
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - days);
+      const cutoffStr = cutoff.toISOString().slice(0, 10);
+      filtered = portfolioHistory.filter((e) => e.date >= cutoffStr);
+    }
+    const base = filtered[0]?.value ?? 0;
+    return filtered.map((e) => ({ ...e, change: e.value - base }));
+  }, [portfolioHistory, chartPeriod]);
 
   useEffect(() => {
     const today = new Date().toISOString().slice(0, 10);
@@ -105,15 +119,15 @@ export default function Dashboard() {
       for (const s of hist ?? []) {
         byDate[s.snapshot_date] = (byDate[s.snapshot_date] ?? 0) + Number(s.market_value ?? 0);
       }
-      const entries = Object.entries(byDate)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([date, value]) => ({
-          date,
-          value,
-          label: new Date(date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-        }));
-      const base = entries[0]?.value ?? 0;
-      setPortfolioHistory(entries.map((e) => ({ ...e, change: e.value - base })));
+      setPortfolioHistory(
+        Object.entries(byDate)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([date, value]) => ({
+            date,
+            value,
+            label: new Date(date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+          }))
+      );
     });
   }, []);
 
@@ -237,8 +251,25 @@ export default function Dashboard() {
 
         {/* Portfolio value over time — line chart */}
         <div className="card p-5">
-          <p className="label mb-4">Portfolio value over time</p>
-          {portfolioHistory.length < 2 ? (
+          <div className="flex items-center justify-between mb-4">
+            <p className="label">Portfolio value over time</p>
+            <div className="flex gap-0.5">
+              {["1D", "1W", "1M", "1Y", "All"].map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setChartPeriod(p)}
+                  className={`px-2.5 py-1 text-xs rounded transition-colors ${
+                    chartPeriod === p
+                      ? "bg-brass/20 text-brass-soft border border-brass/40"
+                      : "text-paper-dim hover:text-paper"
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+          {chartData.length < 2 ? (
             <div className="flex items-center justify-center h-[220px]">
               <p className="text-paper-dim text-sm text-center">
                 {portfolioHistory.length === 0
@@ -248,7 +279,7 @@ export default function Dashboard() {
             </div>
           ) : (
             <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={portfolioHistory} margin={{ top: 4, right: 68, left: 0, bottom: 0 }}>
+              <LineChart data={chartData} margin={{ top: 4, right: 68, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
                 <XAxis
                   dataKey="label"
