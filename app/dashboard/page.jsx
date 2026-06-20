@@ -49,6 +49,31 @@ function ChartTooltip({ active, payload, formatter }) {
   );
 }
 
+function PortfolioTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const val = payload.find((p) => p.dataKey === "value");
+  const chg = payload.find((p) => p.dataKey === "change");
+  const c = chg?.value ?? 0;
+  const sign = c > 0 ? "+" : "";
+  const chgColor = c >= 0 ? "#3FB984" : "#E0635C";
+  return (
+    <div className="bg-[#1B212B] border border-[#2A3240] rounded-lg px-3 py-2 text-xs shadow-lg space-y-1">
+      {val && (
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-[#A8ADB8]">Value</span>
+          <span className="text-[#F6F4EE] font-medium">{usd(val.value)}</span>
+        </div>
+      )}
+      {chg && (
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-[#A8ADB8]">Change</span>
+          <span className="font-medium" style={{ color: chgColor }}>{sign}{usd(c)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [rows, setRows] = useState(null);
   const [snapMap, setSnapMap] = useState({});
@@ -80,15 +105,15 @@ export default function Dashboard() {
       for (const s of hist ?? []) {
         byDate[s.snapshot_date] = (byDate[s.snapshot_date] ?? 0) + Number(s.market_value ?? 0);
       }
-      setPortfolioHistory(
-        Object.entries(byDate)
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([date, value]) => ({
-            date,
-            value,
-            label: new Date(date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-          }))
-      );
+      const entries = Object.entries(byDate)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, value]) => ({
+          date,
+          value,
+          label: new Date(date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+        }));
+      const base = entries[0]?.value ?? 0;
+      setPortfolioHistory(entries.map((e) => ({ ...e, change: e.value - base })));
     });
   }, []);
 
@@ -223,7 +248,7 @@ export default function Dashboard() {
             </div>
           ) : (
             <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={portfolioHistory} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+              <LineChart data={portfolioHistory} margin={{ top: 4, right: 68, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
                 <XAxis
                   dataKey="label"
@@ -233,6 +258,7 @@ export default function Dashboard() {
                   interval="preserveStartEnd"
                 />
                 <YAxis
+                  yAxisId="left"
                   tick={{ fill: "#A8ADB8", fontSize: 11 }}
                   axisLine={false}
                   tickLine={false}
@@ -245,16 +271,40 @@ export default function Dashboard() {
                       : usd(v)
                   }
                 />
-                <Tooltip
-                  content={<ChartTooltip formatter={(v) => usd(v)} />}
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fill: "#A8ADB8", fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={68}
+                  tickFormatter={(v) => {
+                    const abs = Math.abs(v);
+                    const sign = v > 0 ? "+" : v < 0 ? "-" : "";
+                    if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+                    if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(0)}K`;
+                    return `${sign}$${abs.toFixed(0)}`;
+                  }}
                 />
+                <Tooltip content={<PortfolioTooltip />} />
                 <Line
+                  yAxisId="left"
                   type="monotone"
                   dataKey="value"
                   stroke="#C9A227"
                   strokeWidth={2}
                   dot={false}
                   activeDot={{ r: 4, fill: "#C9A227", stroke: "#1B212B", strokeWidth: 2 }}
+                />
+                <Line
+                  yAxisId="right"
+                  type="monotone"
+                  dataKey="change"
+                  stroke="#3FB984"
+                  strokeWidth={1.5}
+                  strokeDasharray="4 3"
+                  dot={false}
+                  activeDot={{ r: 3, fill: "#3FB984", stroke: "#1B212B", strokeWidth: 2 }}
                 />
               </LineChart>
             </ResponsiveContainer>
