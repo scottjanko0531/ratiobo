@@ -13,7 +13,7 @@ const usd = (n) =>
     ? "—"
     : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" });
 
-const MARKET_TYPES = new Set(["equity", "etf", "mutual_fund", "bond", "crypto", "metal"]);
+const MARKET_TYPES = new Set(["equity", "etf", "mutual_fund", "money_market", "bond", "crypto", "metal"]);
 const MANUAL_PRICE_TYPES = new Set(["real_estate", "loan", "other"]);
 
 const METAL_TV_SYMBOLS = { XAU: "TVC:GOLD", XAG: "TVC:SILVER", XPT: "TVC:PLATINUM", XPD: "TVC:PALLADIUM" };
