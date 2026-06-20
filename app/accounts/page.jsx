@@ -1700,7 +1700,14 @@ export default function AccountsPage() {
                   type="number"
                   step="any"
                   value={addTxnForm.quantity}
-                  onChange={(e) => setAddTxnForm({ ...addTxnForm, quantity: e.target.value })}
+                  onChange={(e) => {
+                    const qty = e.target.value;
+                    const price = addTxnForm.price_per_unit;
+                    const amount = qty && price && !isNaN(parseFloat(qty)) && !isNaN(parseFloat(price))
+                      ? String(Math.round(parseFloat(qty) * parseFloat(price) * 100) / 100)
+                      : addTxnForm.amount;
+                    setAddTxnForm({ ...addTxnForm, quantity: qty, amount });
+                  }}
                 />
               </div>
               <div>
@@ -1711,7 +1718,14 @@ export default function AccountsPage() {
                   type="number"
                   step="any"
                   value={addTxnForm.price_per_unit}
-                  onChange={(e) => setAddTxnForm({ ...addTxnForm, price_per_unit: e.target.value })}
+                  onChange={(e) => {
+                    const price = e.target.value;
+                    const qty = addTxnForm.quantity;
+                    const amount = qty && price && !isNaN(parseFloat(qty)) && !isNaN(parseFloat(price))
+                      ? String(Math.round(parseFloat(qty) * parseFloat(price) * 100) / 100)
+                      : addTxnForm.amount;
+                    setAddTxnForm({ ...addTxnForm, price_per_unit: price, amount });
+                  }}
                 />
               </div>
             </div>
@@ -1796,11 +1810,29 @@ export default function AccountsPage() {
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="label block mb-1.5" htmlFor="et-qty">Quantity</label>
-                      <input id="et-qty" className="field num" type="number" step="any" value={editTxnForm.quantity} onChange={(e) => setEditTxnForm({ ...editTxnForm, quantity: e.target.value })} />
+                      <input id="et-qty" className="field num" type="number" step="any" value={editTxnForm.quantity}
+                        onChange={(e) => {
+                          const qty = e.target.value;
+                          const price = editTxnForm.price_per_unit;
+                          const amount = qty && price && !isNaN(parseFloat(qty)) && !isNaN(parseFloat(price))
+                            ? String(Math.round(parseFloat(qty) * parseFloat(price) * 100) / 100)
+                            : editTxnForm.amount;
+                          setEditTxnForm({ ...editTxnForm, quantity: qty, amount });
+                        }}
+                      />
                     </div>
                     <div>
                       <label className="label block mb-1.5" htmlFor="et-price">Price per unit</label>
-                      <input id="et-price" className="field num" type="number" step="any" value={editTxnForm.price_per_unit} onChange={(e) => setEditTxnForm({ ...editTxnForm, price_per_unit: e.target.value })} />
+                      <input id="et-price" className="field num" type="number" step="any" value={editTxnForm.price_per_unit}
+                        onChange={(e) => {
+                          const price = e.target.value;
+                          const qty = editTxnForm.quantity;
+                          const amount = qty && price && !isNaN(parseFloat(qty)) && !isNaN(parseFloat(price))
+                            ? String(Math.round(parseFloat(qty) * parseFloat(price) * 100) / 100)
+                            : editTxnForm.amount;
+                          setEditTxnForm({ ...editTxnForm, price_per_unit: price, amount });
+                        }}
+                      />
                     </div>
                   </div>
                 )}
