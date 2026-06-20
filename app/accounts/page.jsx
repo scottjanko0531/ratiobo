@@ -1756,6 +1756,19 @@ export default function AccountsPage() {
               />
             </div>
           </div>
+          {(() => {
+            const amt = parseFloat(addTxnForm.amount);
+            const fee = parseFloat(addTxnForm.fees) || 0;
+            const basis = !isNaN(amt) ? amt + fee : null;
+            return basis != null ? (
+              <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-ink border border-ink-line">
+                <p className="label text-xs">Cost basis</p>
+                <p className="num text-sm font-medium">
+                  {basis.toLocaleString("en-US", { style: "currency", currency: "USD" })}
+                </p>
+              </div>
+            ) : null;
+          })()}
           {addTxnError && <p className="text-loss text-sm">{addTxnError}</p>}
           <div className="flex gap-3">
             <button
