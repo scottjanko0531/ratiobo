@@ -58,11 +58,11 @@ const DEFAULT_WEIGHTS = { eq: 30, intl: 15, em: 5, nb: 25, tip: 10, com: 10, gld
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Convert fractional weights (0–1) from the solvers to integer slider values summing to 100. */
-function toSliderWeights(fractional) {
+function toSliderWeights(fractional, budget = 100) {
   const pct = Object.fromEntries(
-    Object.entries(fractional).map(([k, v]) => [k, Math.round(v * 100)])
+    Object.entries(fractional).map(([k, v]) => [k, Math.round(v * budget)])
   );
-  const drift = 100 - Object.values(pct).reduce((a, b) => a + b, 0);
+  const drift = budget - Object.values(pct).reduce((a, b) => a + b, 0);
   if (drift !== 0) {
     const top = Object.entries(pct).sort((a, b) => b[1] - a[1])[0][0];
     pct[top] += drift;
@@ -284,18 +284,25 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
   }
 
   function applyNaive() {
-    setWeights(toSliderWeights(applyNaiveRiskParity(assets)));
+    const riskAssets = assets.filter((a) => a.key !== "cash");
+    const cashPct = weights.cash ?? 0;
+    setWeights({ ...toSliderWeights(applyNaiveRiskParity(riskAssets), 100 - cashPct), cash: cashPct });
   }
 
   function applyTrue() {
-    setWeights(toSliderWeights(solveTrueRiskParity(assets, corrMatrix)));
+    const riskAssets = assets.filter((a) => a.key !== "cash");
+    const cashPct = weights.cash ?? 0;
+    setWeights({ ...toSliderWeights(solveTrueRiskParity(riskAssets, corrMatrix), 100 - cashPct), cash: cashPct });
   }
 
   function applyEqual() {
-    const base = Math.floor(100 / assets.length);
-    const eq = Object.fromEntries(assets.map((a) => [a.key, base]));
-    eq[assets[0].key] += 100 - base * assets.length;
-    setWeights(eq);
+    const riskAssets = assets.filter((a) => a.key !== "cash");
+    const cashPct = weights.cash ?? 0;
+    const budget = 100 - cashPct;
+    const base = Math.floor(budget / riskAssets.length);
+    const eq = Object.fromEntries(riskAssets.map((a) => [a.key, base]));
+    eq[riskAssets[0].key] += budget - base * riskAssets.length;
+    setWeights({ ...eq, cash: cashPct });
   }
 
   return (
@@ -426,7 +433,8 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
               <span className="text-paper-dim/80 font-medium">Naive</span> — weights ∝ 1/vol,
               ignoring correlation.{" "}
               <span className="text-paper-dim/80 font-medium">True</span> — iterative solver
-              equalising marginal risk contributions (correlation-aware).
+              equalising marginal risk contributions (correlation-aware). Cash is excluded from
+              all three presets — its slider stays where you set it.
             </p>
           </div>
 
