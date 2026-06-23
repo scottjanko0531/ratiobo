@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Macro Regime Portfolio Simulator</title>
+<style>
+  :root{
+    --bg: #11161c;
+    --panel: #161d26;
+    --line: #2a333f;
+    --ink: #e8ecf1;
+    --ink-dim: #8d99a8;
+    --amber: #d9a441;
+    --teal: #4fb6a8;
+    --rose: #c1685f;
+    --violet: #8b7fc7;
+    --good: #4fb6a8;
+    --bad: #c1685f;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family: 'Georgia', 'Times New Roman', serif;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 28px 60px;}
+  .masthead{
+    border-bottom:1px solid var(--line);
+    padding-bottom:18px;
+    margin-bottom:28px;
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    flex-wrap:wrap;
+    gap:10px;
+  }
+  .masthead h1{
+    font-size:26px;
+    margin:0;
+    font-weight:400;
+    letter-spacing:0.3px;
+  }
+  .masthead .tag{
+    font-family: 'Courier New', monospace;
+    font-size:11px;
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    color:var(--ink-dim);
+  }
+  .note{
+    font-family: 'Courier New', monospace;
+    font-size:12px;
+    color:var(--ink-dim);
+    line-height:1.6;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-left:3px solid var(--amber);
+    padding:12px 16px;
+    margin-bottom:30px;
+  }
+  .grid{
+    display:grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap:28px;
+  }
+  @media (max-width:820px){ .grid{grid-template-columns:1fr;} }
+
+  .panel{
+    background:var(--panel);
+    border:1px solid var(--line);
+    padding:22px 24px;
+  }
+  .panel h2{
+    font-size:14px;
+    text-transform:uppercase;
+    letter-spacing:1.5px;
+    font-weight:400;
+    color:var(--ink-dim);
+    margin:0 0 18px 0;
+    font-family:'Courier New', monospace;
+  }
+  .asset-row{
+    display:grid;
+    grid-template-columns: 120px 1fr 50px;
+    align-items:center;
+    gap:12px;
+    margin-bottom:14px;
+  }
+  .asset-row label{
+    font-size:14px;
+  }
+  .asset-row .val{
+    font-family:'Courier New', monospace;
+    font-size:13px;
+    text-align:right;
+    color:var(--ink-dim);
+  }
+  input[type=range]{
+    -webkit-appearance:none;
+    width:100%;
+    height:3px;
+    background:var(--line);
+    outline:none;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;
+    width:13px;height:13px;border-radius:50%;
+    background:var(--amber);
+    cursor:pointer;
+    margin-top:-5px;
+  }
+  .swatch{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;}
+  .total-line{
+    margin-top:16px;
+    padding-top:14px;
+    border-top:1px solid var(--line);
+    font-family:'Courier New', monospace;
+    font-size:13px;
+    display:flex;
+    justify-content:space-between;
+  }
+  .total-line.warn{color:var(--rose);}
+  .total-line.ok{color:var(--teal);}
+
+  .quad-grid{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    grid-template-rows:1fr 1fr;
+    gap:2px;
+    background:var(--line);
+    border:1px solid var(--line);
+    margin-bottom:16px;
+  }
+  .quad{
+    background:var(--bg);
+    padding:14px 16px;
+    cursor:pointer;
+    transition:background 0.15s;
+    position:relative;
+  }
+  .quad:hover{background:#1a222c;}
+  .quad.active{background:#1f2a35;box-shadow:inset 0 0 0 1px var(--amber);}
+  .quad .qtitle{
+    font-size:12px;
+    text-transform:uppercase;
+    letter-spacing:1px;
+    color:var(--ink-dim);
+    font-family:'Courier New', monospace;
+    margin-bottom:6px;
+  }
+  .quad .qdesc{font-size:13px;line-height:1.5;}
+  .axis-label{
+    font-family:'Courier New', monospace;
+    font-size:10px;
+    color:var(--ink-dim);
+    text-transform:uppercase;
+    letter-spacing:1px;
+  }
+  .axes{
+    display:flex;
+    justify-content:space-between;
+    margin-bottom:4px;
+  }
+
+  .result-block{
+    margin-top:22px;
+  }
+  .result-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding:10px 0;
+    border-bottom:1px solid var(--line);
+    font-family:'Courier New', monospace;
+    font-size:13px;
+  }
+  .result-row:last-child{border-bottom:none;}
+  .result-row .lbl{color:var(--ink-dim);}
+  .result-row .num{font-size:16px;}
+  .num.pos{color:var(--teal);}
+  .num.neg{color:var(--rose);}
+
+  .bar-track{
+    height:6px;background:var(--line);width:100%;margin-top:4px;position:relative;
+  }
+  .bar-fill{height:100%;position:absolute;left:50%;}
+
+  .footer-note{
+    margin-top:30px;
+    font-size:12px;
+    color:var(--ink-dim);
+    font-family:'Courier New', monospace;
+    line-height:1.7;
+    border-top:1px solid var(--line);
+    padding-top:16px;
+  }
+
+  .rp-controls{
+    display:flex;
+    gap:10px;
+    margin-top:18px;
+  }
+  .rp-btn{
+    flex:1;
+    background:transparent;
+    border:1px solid var(--amber);
+    color:var(--amber);
+    font-family:'Courier New', monospace;
+    font-size:11px;
+    letter-spacing:0.5px;
+    text-transform:uppercase;
+    padding:10px 8px;
+    cursor:pointer;
+    transition:background 0.15s, color 0.15s;
+  }
+  .rp-btn:hover{ background:var(--amber); color:#11161c; }
+  .rp-btn.secondary{ border-color:var(--line); color:var(--ink-dim); }
+  .rp-btn.secondary:hover{ background:var(--line); color:var(--ink); }
+
+  .rp-note{
+    margin-top:14px;
+    font-family:'Courier New', monospace;
+    font-size:11px;
+    color:var(--ink-dim);
+    line-height:1.7;
+  }
+  .vol-tags{ display:block; margin-top:6px; }
+  .vol-tag{
+    display:inline-block;
+    margin:3px 6px 0 0;
+    padding:2px 7px;
+    border:1px solid var(--line);
+    font-size:10px;
+  }
+
+  .rp-explain{
+    font-size:12px;
+    color:var(--ink-dim);
+    line-height:1.6;
+    margin-bottom:14px;
+  }
+  .risk-row{
+    margin-bottom:12px;
+  }
+  .risk-row .rr-top{
+    display:flex;
+    justify-content:space-between;
+    font-family:'Courier New', monospace;
+    font-size:12px;
+    margin-bottom:4px;
+  }
+  .risk-row .rr-top .rr-name{ color:var(--ink); }
+  .risk-row .rr-top .rr-pct{ color:var(--ink-dim); }
+  .rr-track{
+    height:5px;
+    background:var(--line);
+    width:100%;
+    position:relative;
+  }
+  .rr-fill{
+    height:100%;
+    position:absolute;
+    left:0; top:0;
+  }
+
+  .group-header{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    font-family:'Courier New', monospace;
+    font-size:11px;
+    letter-spacing:0.5px;
+    text-transform:uppercase;
+    color:var(--ink-dim);
+    border-bottom:1px solid var(--line);
+    padding-bottom:5px;
+    margin-bottom:10px;
+    margin-top:4px;
+  }
+  .group-header .gh-total{
+    color:var(--amber);
+    font-size:12px;
+  }
+  .asset-row.sub-row{
+    margin-left:18px;
+    margin-bottom:10px;
+  }
+  .asset-row.sub-row label{
+    color:var(--ink-dim);
+    font-size:13px;
+  }
+  .asset-row.sub-row label::before{
+    content:"— ";
+    color:var(--line);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="masthead">
+    <h1>Macro Regime Portfolio Simulator</h1>
+    <div class="tag">build · stress-test · compare</div>
+  </div>
+
+  <div class="note">
+    Returns below are illustrative regime estimates synthesized from published macro/asset-class research (not live market data or any proprietary dataset). Use this to test allocation logic and intuition — not as a forecasting tool.
+  </div>
+
+  <div class="panel" style="margin-bottom:28px;">
+    <h2>The Four Quadrants — How This Works</h2>
+    <p style="font-size:14px;line-height:1.7;color:var(--ink-dim);margin:0;">
+      Each quadrant below is defined by two variables: whether <strong style="color:var(--ink);">growth</strong> is coming in above or below what's priced in, and whether <strong style="color:var(--ink);">inflation</strong> is coming in above or below what's priced in. It's the surprise relative to expectations that moves asset prices — not the absolute level. That's why a "weak" economy that's still beating depressed expectations behaves like a growth-up quadrant, not a growth-down one.
+    </p>
+  </div>
+
+  <div class="grid">
+
+    <!-- LEFT: allocation -->
+    <div class="panel">
+      <h2>Your Allocation</h2>
+      <div id="sliders"></div>
+      <div class="total-line" id="totalLine">
+        <span>TOTAL WEIGHT</span><span id="totalVal">100%</span>
+      </div>
+
+      <div class="rp-controls">
+        <button class="rp-btn secondary" id="btnNaiveParity">Naive Risk Parity (no correlation)</button>
+        <button class="rp-btn" id="btnTrueParity">True Risk Parity (with correlation)</button>
+      </div>
+      <div class="rp-controls" style="margin-top:8px;">
+        <button class="rp-btn secondary" id="btnEqualWeight">Reset to Equal Weight</button>
+      </div>
+
+      <div class="rp-note">
+        Volatility and correlation for US Equities, International Equities, Nominal Bonds, Commodities, Gold, and Cash are computed directly from real historical annual total returns, 2001–2024 (S&P 500, MSCI EAFE, 10-yr Treasury, 3-month T-bill, gold — Damodaran/NYU Stern dataset; commodities — Bloomberg Commodity Index). International Equities uses MSCI EAFE (developed ex-US) as a proxy — a real VXUS allocation also includes emerging markets, which this slightly understates. TIPS lacks a clean long public return series here, so its figures remain an estimate, not computed from data. Both risk parity buttons exclude Cash from the optimization — its near-zero volatility would otherwise force almost all weight into cash, which is why real risk parity funds treat cash as the leverage funding leg rather than a risk-parity target. Adjust the Cash slider manually if you want a buffer.
+        <span class="vol-tags" id="volTags"></span>
+      </div>
+
+      <div class="result-block">
+        <h2 style="margin-top:20px;">Risk Contribution</h2>
+        <div class="rp-explain">Dollar weight ≠ risk weight. This shows each asset's actual marginal contribution to total portfolio variance at your current allocation — accounting for correlation, not just volatility — which is the thing risk parity is solving for.</div>
+        <div id="riskContrib"></div>
+      </div>
+
+      <div class="result-block">
+        <h2 style="margin-top:20px;">Leverage (Optional)</h2>
+        <div class="rp-explain">Risk-balancing shrinks expected return because it shifts dollars from high-return equities into low-volatility bonds/cash. Bridgewater's real All Weather approach restores return by leveraging the whole risk-balanced mix up to a target volatility. This is optional here — toggle off to see your allocation unlevered.</div>
+        <label style="display:flex;align-items:center;gap:8px;font-family:'Courier New',monospace;font-size:12px;color:var(--ink-dim);margin-bottom:10px;">
+          <input type="checkbox" id="leverageToggle"> Include leverage in calculations
+        </label>
+        <div class="asset-row" id="leverageSliderRow" style="opacity:0.4;">
+          <label>Target Vol</label>
+          <input type="range" id="targetVolSlider" min="4" max="20" value="10">
+          <span class="val" id="targetVolVal">10%</span>
+        </div>
+        <div id="leverageSummary" class="rp-note" style="margin-top:10px;"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: regime selection + results -->
+    <div class="panel">
+      <h2>Economic Regime</h2>
+      <div class="axes">
+        <span class="axis-label">← falling growth</span>
+        <span class="axis-label">rising growth →</span>
+      </div>
+      <div class="quad-grid" id="quadGrid"></div>
+      <div class="axes" style="margin-top:-4px;">
+        <span class="axis-label">↑ rising inflation (top row)</span>
+        <span class="axis-label">↓ falling inflation (bottom row)</span>
+      </div>
+      <div id="regimeWhy" class="note" style="margin-top:14px;margin-bottom:0;border-left-color:var(--teal);"></div>
+
+      <div class="result-block">
+        <h2 style="margin-top:24px;">Projected Behavior</h2>
+        <div id="results"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer-note">
+    HOW TO READ THIS — pick a quadrant, then adjust your sliders, or click "Naive Risk Parity" vs "True Risk Parity" to compare a 1/volatility-only allocation against one that also accounts for how assets move together. The Risk Contribution panel always reflects the correlation-adjusted math, regardless of which sliders you're using, so you can see the gap between dollar weight and actual risk weight. Try the same allocation across all four quadrants to find which regime it's most exposed to.
+  </div>
+
+</div>
+
+<script>
+const assets = [
+  { key:'us',  name:'US Equities',          color:'#4fb6a8', group:'Equities' },
+  { key:'intl',name:'Intl Equities',        color:'#5fa8d3', group:'Equities' },
+  { key:'nb',  name:'Nominal Bonds',   color:'#8b7fc7' },
+  { key:'tip', name:'TIPS',            color:'#d9a441' },
+  { key:'com', name:'Commodities',     color:'#c1685f' },
+  { key:'gld', name:'Gold',            color:'#cfae6a' },
+  { key:'cash',name:'Cash',            color:'#6b7686' },
+];
+
+// REAL historical annual total returns, 2001-2024 (%), for 6 of the 7 assets.
+// Sources: US Equities (S&P 500 w/ dividends), Nominal Bonds (10-yr US Treasury),
+// Cash (3-month T-bill), Gold — Aswath Damodaran / NYU Stern historical returns dataset.
+// International Equities — MSCI EAFE (developed ex-US/Canada) total return; used as a proxy
+// for VXUS-style international exposure — note EAFE excludes emerging markets, while a real
+// VXUS allocation would include some EM, so this slightly understates true intl volatility/EM tilt.
+// Commodities — Bloomberg Commodity Index (BCOM) total return, compiled from index provider data.
+// TIPS has no clean long-run public total-return series readily available, so it is
+// NOT computed from data below — its vol/correlation figures remain estimates (flagged in the UI).
+const historicalReturns = {
+  us:  [-11.85,-21.97,28.36,10.74,4.83,15.61,5.48,-36.55,25.94,14.82,2.10,15.89,32.15,13.52,1.38,11.77,21.61,-4.23,31.21,18.02,28.47,-18.04,26.06,24.88],
+  intl:[-22.87,-15.42,39.79,18.95,13.32,25.81,9.94,-41.04,26.95,8.15,-12.25,18.82,21.39,-6.20,-1.00,1.37,25.10,-13.81,22.03,7.59,11.46,-14.35,18.40,3.51],
+  nb:  [5.57,15.12,0.38,4.49,2.87,1.96,10.21,20.10,-11.12,8.46,16.04,2.97,-9.10,10.75,1.28,0.69,2.80,-0.02,9.64,11.33,-4.42,-17.83,3.88,-1.64],
+  cash:[3.48,1.64,1.03,1.40,3.22,4.85,4.48,1.40,0.15,0.14,0.05,0.09,0.06,0.03,0.05,0.32,0.95,1.97,2.11,0.36,0.04,2.09,5.28,5.18],
+  gld: [0.75,25.57,19.89,4.65,17.77,23.20,31.92,4.32,25.04,29.24,12.02,5.68,-27.61,0.12,-12.11,8.10,12.66,-0.93,19.08,24.17,-3.75,0.55,13.26,25.96],
+  com: [-19.5,25.9,23.9,9.1,21.4,2.1,16.2,-35.6,18.9,16.8,-13.3,-1.1,-9.5,-17.0,-24.7,11.8,1.7,-11.2,7.69,-3.12,27.11,16.09,-7.91,5.38],
+};
+
+function mean(arr){ return arr.reduce((a,b)=>a+b,0)/arr.length; }
+function stdev(arr){
+  const m = mean(arr);
+  const v = arr.reduce((s,x)=>s+(x-m)*(x-m),0)/(arr.length-1);
+  return Math.sqrt(v);
+}
+function pearson(x,y){
+  const mx = mean(x), my = mean(y);
+  let num=0, dx2=0, dy2=0;
+  for(let i=0;i<x.length;i++){
+    const dx = x[i]-mx, dy = y[i]-my;
+    num += dx*dy; dx2 += dx*dx; dy2 += dy*dy;
+  }
+  return num / Math.sqrt(dx2*dy2);
+}
+
+// Compute real volatility (annualized stdev) for the 6 data-backed assets.
+const computedVol = {};
+['us','intl','nb','cash','gld','com'].forEach(k=>{ computedVol[k] = stdev(historicalReturns[k]); });
+// TIPS: no data series — estimate, roughly between nominal bonds and short-duration credit.
+computedVol['tip'] = 5;
+
+assets.forEach(a=>{ a.vol = Math.round(computedVol[a.key]*10)/10; });
+
+// Compute real pairwise correlation for the 6 data-backed assets from the same 2001-2024 series.
+const dataKeys = ['us','intl','nb','cash','gld','com'];
+const corr = {};
+assets.forEach(a=>{ corr[a.key] = {}; });
+dataKeys.forEach(i=>{
+  dataKeys.forEach(j=>{
+    corr[i][j] = i===j ? 1 : Math.round(pearson(historicalReturns[i], historicalReturns[j])*100)/100;
+  });
+});
+// TIPS correlations remain estimates (no public long-run series used) — illustrative, consistent
+// with TIPS' known behavior: closely tracks nominal bonds, moderately tracks inflation-hedge assets.
+corr['tip'] = { us:-0.1, intl:-0.1, nb:0.6, tip:1, com:0.3, gld:0.3, cash:0.1 };
+dataKeys.forEach(k=>{ corr[k]['tip'] = corr['tip'][k]; });
+
+function volOf(key){ return assets.find(a=>a.key===key).vol; }
+
+// Covariance between two assets: corr_ij * vol_i * vol_j
+function cov(i, j){ return corr[i][j] * volOf(i) * volOf(j); }
+
+// Given a weights object (dollar weights summing to ~100), returns:
+// { portfolioVol, contributions: { key: % of total risk } }
+function computeRiskContributions(weightsObj){
+  const total = Object.values(weightsObj).reduce((a,b)=>a+b,0) || 1;
+  const w = {};
+  assets.forEach(a=>{ w[a.key] = weightsObj[a.key]/total; });
+
+  // marginal contribution to risk: (Cov * w)_i = sum_j cov(i,j) * w_j
+  const mctr = {};
+  assets.forEach(a=>{
+    let sum = 0;
+    assets.forEach(b=>{ sum += cov(a.key, b.key) * w[b.key]; });
+    mctr[a.key] = sum;
+  });
+
+  // portfolio variance = sum_i w_i * mctr_i
+  let portVar = 0;
+  assets.forEach(a=>{ portVar += w[a.key] * mctr[a.key]; });
+  const portVol = Math.sqrt(Math.max(portVar, 0));
+
+  // risk contribution_i = w_i * mctr_i (sums to portVar); normalize to % of total
+  const contributions = {};
+  assets.forEach(a=>{
+    const rc = w[a.key] * mctr[a.key];
+    contributions[a.key] = portVar > 0 ? (rc/portVar*100) : 0;
+  });
+
+  return { portfolioVol: portVol, contributions };
+}
+
+// Iteratively solve for weights where every asset's risk contribution is equal,
+// accounting for full correlation structure (true risk parity).
+function solveTrueRiskParity(){
+  // Cash is deliberately excluded from the risk-balancing set. Cash has near-zero
+  // volatility, so equalizing risk contribution across an asset set that includes it
+  // mathematically wants to push almost all weight into cash (since cash can never
+  // "catch up" to the others' risk contribution without enormous weight). Real-world
+  // risk parity implementations treat cash/T-bills as the funding leg for leverage,
+  // not as a risk-parity target — so it's excluded here and set to 0% by default.
+  // Adjust it manually with its slider afterward if you want a cash buffer.
+  const rpKeys = assets.filter(a=>a.key!=='cash').map(a=>a.key);
+  let w = {};
+  rpKeys.forEach(k=>{ w[k] = 1/rpKeys.length; });
+
+  for(let iter=0; iter<500; iter++){
+    const mctr = {};
+    rpKeys.forEach(a=>{
+      let sum = 0;
+      rpKeys.forEach(b=>{ sum += cov(a, b) * w[b]; });
+      mctr[a] = sum;
+    });
+
+    let portVar = 0;
+    rpKeys.forEach(a=>{ portVar += w[a]*mctr[a]; });
+    if(portVar <= 0) portVar = 1e-6;
+
+    const rc = {};
+    rpKeys.forEach(a=>{ rc[a] = w[a]*mctr[a]; });
+    const avgRC = portVar/rpKeys.length;
+
+    rpKeys.forEach(a=>{
+      let ratio = rc[a] > 0 ? (avgRC / rc[a]) : 1.6;
+      ratio = Math.max(0.5, Math.min(ratio, 2));
+      const step = Math.pow(ratio, 0.15);
+      w[a] = Math.max(w[a]*step, 0.001);
+    });
+
+    const sumW = Object.values(w).reduce((a,b)=>a+b,0);
+    rpKeys.forEach(a=>{ w[a] = w[a]/sumW; });
+  }
+
+  const rpWeights = { cash: 0 };
+  rpKeys.forEach(a=>{ rpWeights[a] = Math.round(w[a]*100); });
+  const drift = 100 - Object.values(rpWeights).reduce((a,b)=>a+b,0);
+  rpWeights['nb'] += drift;
+  return rpWeights;
+}
+
+// Illustrative annualized real return + vol assumptions by quadrant.
+// Synthesized from widely published macro-regime asset behavior research (not live data).
+const regimes = {
+  rg_ri: { // rising growth, rising inflation = reflation
+    label:'Reflation', desc:'Growth ↑ · Inflation ↑',
+    why:'Economy beating growth expectations while prices also run hotter than expected. Favors cyclicals, commodities, EM/intl — hurts nominal bonds as rates rise.',
+    returns:{ us: 9, intl: 11, nb: -3, tip: 4, com: 14, gld: 5, cash: 1 }
+  },
+  rg_fi: { // rising growth, falling inflation = disinflationary boom
+    label:'Disinflationary Boom', desc:'Growth ↑ · Inflation ↓',
+    why:'"Goldilocks" — growth beats expectations while inflation surprises to the downside. Equities and nominal bonds can both do well at once; US large-caps tend to lead in this regime.',
+    returns:{ us: 13, intl: 10, nb: 7, tip: 2, com: -2, gld: -3, cash: 1 }
+  },
+  fg_ri: { // falling growth, rising inflation = stagflation
+    label:'Stagflation', desc:'Growth ↓ · Inflation ↑',
+    why:'Growth disappoints while inflation surprises higher — the central bank can\'t fix both at once. Equities (US and intl) and nominal bonds both get squeezed; commodities, gold, TIPS hold up.',
+    returns:{ us: -8, intl: -7, nb: -6, tip: 3, com: 10, gld: 12, cash: 1 }
+  },
+  fg_fi: { // falling growth, falling inflation = deflationary bust
+    label:'Deflationary Bust', desc:'Growth ↓ · Inflation ↓',
+    why:'Demand collapses faster than expected and prices fall with it. Flight to safety — nominal bonds and cash hold up; international often falls further than US on weaker global demand and dollar-strength effects.',
+    returns:{ us: -18, intl: -20, nb: 11, tip: 5, com: -12, gld: 3, cash: 1 }
+  },
+};
+
+const defaultWeights = { us:24, intl:16, nb:30, tip:10, com:10, gld:5, cash:5 };
+let weights = {...defaultWeights};
+let activeRegime = 'rg_ri';
+let leverageEnabled = false;
+let targetVol = 10;
+const borrowRate = 4.5; // illustrative assumed annual cost of borrowing for the levered portion
+
+function getLeverageMultiplier(unleveredVol){
+  if(!leverageEnabled || unleveredVol <= 0) return 1;
+  const m = targetVol / unleveredVol;
+  return Math.max(0.1, Math.min(m, 4)); // cap at 4x for sanity
+}
+
+function renderSliders(){
+  const c = document.getElementById('sliders');
+  c.innerHTML = '';
+  const renderedGroups = new Set();
+
+  assets.forEach(a=>{
+    if(a.group && !renderedGroups.has(a.group)){
+      renderedGroups.add(a.group);
+      const header = document.createElement('div');
+      header.className = 'group-header';
+      header.dataset.group = a.group;
+      header.innerHTML = `<span>${a.group} (total)</span><span class="gh-total" id="grouptotal-${a.group}">0%</span>`;
+      c.appendChild(header);
+    }
+
+    const row = document.createElement('div');
+    row.className = 'asset-row' + (a.group ? ' sub-row' : '');
+    row.innerHTML = `
+      <label><span class="swatch" style="background:${a.color}"></span>${a.name}</label>
+      <input type="range" min="0" max="100" value="${weights[a.key]}" data-key="${a.key}">
+      <span class="val" id="val-${a.key}">${weights[a.key]}%</span>
+    `;
+    c.appendChild(row);
+  });
+
+  c.querySelectorAll('input[type=range]').forEach(inp=>{
+    inp.addEventListener('input', e=>{
+      weights[e.target.dataset.key] = parseInt(e.target.value);
+      document.getElementById('val-'+e.target.dataset.key).textContent = e.target.value+'%';
+      updateTotal();
+      updateGroupTotals();
+      updateResults();
+      updateRiskContrib();
+    });
+  });
+  updateTotal();
+  updateGroupTotals();
+
+  const volTags = document.getElementById('volTags');
+  volTags.innerHTML = assets.map(a=>`<span class="vol-tag">${a.name} ${a.vol}%</span>`).join('');
+}
+
+function updateGroupTotals(){
+  const groups = {};
+  assets.forEach(a=>{
+    if(a.group){
+      groups[a.group] = (groups[a.group] || 0) + (weights[a.key] || 0);
+    }
+  });
+  Object.keys(groups).forEach(g=>{
+    const el = document.getElementById('grouptotal-'+g);
+    if(el){ el.textContent = groups[g] + '%'; }
+  });
+}
+
+function setSliderValues(newWeights){
+  weights = {...newWeights};
+  assets.forEach(a=>{
+    const inp = document.querySelector(`input[data-key="${a.key}"]`);
+    if(inp){ inp.value = weights[a.key]; }
+    document.getElementById('val-'+a.key).textContent = weights[a.key]+'%';
+  });
+  updateTotal();
+  updateGroupTotals();
+  updateResults();
+  updateRiskContrib();
+}
+
+function applyNaiveRiskParity(){
+  // weight_i proportional to 1/vol_i, normalized to sum to 100. Ignores correlation.
+  // Cash excluded for the same reason as True Risk Parity — its near-zero volatility
+  // would otherwise dominate the 1/vol weighting and crowd out everything else.
+  const rpKeys = assets.filter(a=>a.key!=='cash').map(a=>a.key);
+  const invVols = {};
+  let sumInv = 0;
+  rpKeys.forEach(k=>{
+    const a = assets.find(x=>x.key===k);
+    invVols[k] = 1/a.vol; sumInv += invVols[k];
+  });
+  const rpWeights = { cash: 0 };
+  rpKeys.forEach(k=>{ rpWeights[k] = Math.round((invVols[k]/sumInv)*100); });
+  const drift = 100 - Object.values(rpWeights).reduce((a,b)=>a+b,0);
+  rpWeights['nb'] += drift;
+  setSliderValues(rpWeights);
+}
+
+function applyTrueRiskParity(){
+  const rpWeights = solveTrueRiskParity();
+  setSliderValues(rpWeights);
+}
+
+function applyEqualWeight(){
+  const n = assets.length;
+  const base = Math.floor(100/n);
+  const ewWeights = {};
+  assets.forEach((a,i)=>{ ewWeights[a.key] = base; });
+  const drift = 100 - base*n;
+  ewWeights[assets[0].key] += drift;
+  setSliderValues(ewWeights);
+}
+
+function updateRiskContrib(){
+  const { portfolioVol, contributions } = computeRiskContributions(weights);
+  const container = document.getElementById('riskContrib');
+  container.innerHTML = '';
+  assets.forEach(a=>{
+    const pct = Math.max(contributions[a.key], 0);
+    const row = document.createElement('div');
+    row.className = 'risk-row';
+    row.innerHTML = `
+      <div class="rr-top">
+        <span class="rr-name"><span class="swatch" style="background:${a.color}"></span>${a.name}</span>
+        <span class="rr-pct">${pct.toFixed(0)}% of total risk</span>
+      </div>
+      <div class="rr-track"><div class="rr-fill" style="width:${pct}%;background:${a.color}"></div></div>
+    `;
+    container.appendChild(row);
+  });
+  const mult = getLeverageMultiplier(portfolioVol);
+  const note = document.createElement('div');
+  note.style.marginTop = '10px';
+  note.style.fontFamily = "'Courier New', monospace";
+  note.style.fontSize = '11px';
+  note.style.color = 'var(--ink-dim)';
+  note.textContent = leverageEnabled
+    ? `Unlevered portfolio volatility: ${portfolioVol.toFixed(1)}%. Levered to ${(portfolioVol*mult).toFixed(1)}% (${mult.toFixed(2)}x gross exposure).`
+    : `Estimated portfolio volatility (correlation-adjusted): ${portfolioVol.toFixed(1)}%`;
+  container.appendChild(note);
+  updateLeverageSummary(portfolioVol, mult);
+}
+
+function updateLeverageSummary(unleveredVol, mult){
+  const el = document.getElementById('leverageSummary');
+  if(!leverageEnabled){
+    el.textContent = 'Leverage off — showing your allocation at face value (100% gross exposure).';
+    return;
+  }
+  const grossExposure = mult*100;
+  el.innerHTML = `Leverage multiplier: <strong style="color:var(--amber)">${mult.toFixed(2)}x</strong> · Gross exposure: <strong style="color:var(--amber)">${grossExposure.toFixed(0)}%</strong> · Borrowed portion: ${(grossExposure-100).toFixed(0)}% at an assumed ${borrowRate}%/yr cost. Capped at 4x for sanity — real risk-parity funds typically run far less aggressive leverage than this cap allows.`;
+}
+
+function updateTotal(){
+  const total = Object.values(weights).reduce((a,b)=>a+b,0);
+  const el = document.getElementById('totalLine');
+  const valEl = document.getElementById('totalVal');
+  valEl.textContent = total + '%';
+  el.className = 'total-line ' + (total===100 ? 'ok' : 'warn');
+}
+
+function renderQuadrants(){
+  const grid = document.getElementById('quadGrid');
+  grid.innerHTML = '';
+  const order = ['fg_ri','rg_ri','fg_fi','rg_fi']; // top-left, top-right, bottom-left, bottom-right
+  order.forEach(key=>{
+    const r = regimes[key];
+    const div = document.createElement('div');
+    div.className = 'quad' + (key===activeRegime ? ' active' : '');
+    div.dataset.key = key;
+    div.innerHTML = `<div class="qtitle">${r.label}</div><div class="qdesc">${r.desc}</div>`;
+    div.addEventListener('click', ()=>{ activeRegime = key; renderQuadrants(); updateResults(); });
+    grid.appendChild(div);
+  });
+}
+
+function updateResults(){
+  const r = regimes[activeRegime];
+  document.getElementById('regimeWhy').textContent = r.label + ' — ' + r.why;
+  const total = Object.values(weights).reduce((a,b)=>a+b,0) || 1;
+  let blended = 0;
+  assets.forEach(a=>{
+    blended += (weights[a.key]/total) * r.returns[a.key];
+  });
+
+  const { portfolioVol: unleveredVol } = computeRiskContributions(weights);
+  const mult = getLeverageMultiplier(unleveredVol);
+  const blendedLevered = leverageEnabled ? (blended*mult - (mult-1)*borrowRate) : blended;
+
+  const results = document.getElementById('results');
+  results.innerHTML = '';
+
+  const summary = document.createElement('div');
+  summary.className = 'result-row';
+  summary.innerHTML = `
+    <span class="lbl">Blended est. annual return, ${r.label}${leverageEnabled ? ' (levered)' : ''}</span>
+    <span class="num ${blendedLevered>=0?'pos':'neg'}">${blendedLevered>=0?'+':''}${blendedLevered.toFixed(1)}%</span>
+  `;
+  results.appendChild(summary);
+
+  if(leverageEnabled){
+    const unleveredRow = document.createElement('div');
+    unleveredRow.className = 'result-row';
+    unleveredRow.innerHTML = `
+      <span class="lbl" style="font-size:11px;">— unlevered would have been</span>
+      <span class="num" style="font-size:13px;color:var(--ink-dim)">${blended>=0?'+':''}${blended.toFixed(1)}%</span>
+    `;
+    results.appendChild(unleveredRow);
+  }
+
+  assets.forEach(a=>{
+    const ret = r.returns[a.key];
+    const contribution = (weights[a.key]/total) * ret;
+    const row = document.createElement('div');
+    row.className = 'result-row';
+    row.innerHTML = `
+      <span class="lbl"><span class="swatch" style="background:${a.color}"></span>${a.name} (${weights[a.key]}% @ ${ret>=0?'+':''}${ret}%)</span>
+      <span class="num" style="font-size:13px;color:${contribution>=0?'var(--teal)':'var(--rose)'}">${contribution>=0?'+':''}${contribution.toFixed(1)}pp</span>
+    `;
+    results.appendChild(row);
+  });
+}
+
+renderSliders();
+renderQuadrants();
+updateResults();
+updateRiskContrib();
+
+document.getElementById('btnNaiveParity').addEventListener('click', applyNaiveRiskParity);
+document.getElementById('btnTrueParity').addEventListener('click', applyTrueRiskParity);
+document.getElementById('btnEqualWeight').addEventListener('click', applyEqualWeight);
+
+document.getElementById('leverageToggle').addEventListener('change', e=>{
+  leverageEnabled = e.target.checked;
+  document.getElementById('leverageSliderRow').style.opacity = leverageEnabled ? '1' : '0.4';
+  updateResults();
+  updateRiskContrib();
+});
+document.getElementById('targetVolSlider').addEventListener('input', e=>{
+  targetVol = parseInt(e.target.value);
+  document.getElementById('targetVolVal').textContent = targetVol+'%';
+  updateResults();
+  updateRiskContrib();
+});
+</script>
+</body>
+</html>
