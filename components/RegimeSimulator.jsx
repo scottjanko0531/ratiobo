@@ -17,7 +17,7 @@ const REGIMES = {
     label: "Reflation",
     desc: "Growth ↑ · Inflation ↑",
     why: "Economy beating growth expectations while prices also run hotter than expected. Favors cyclicals, commodities, EM — hurts nominal bonds as rates rise.",
-    returns: { eq: 9, nb: -3, tip: 4, com: 14, gld: 5, cash: 1 },
+    returns: { eq: 9, intl: 7, em: 12, nb: -3, tip: 4, com: 14, gld: 5, cash: 1 },
     color: "text-brass-soft",
     activeBg: "bg-brass/10",
   },
@@ -25,7 +25,7 @@ const REGIMES = {
     label: "Disinflationary Boom",
     desc: "Growth ↑ · Inflation ↓",
     why: '"Goldilocks" — growth beats expectations while inflation surprises to the downside. Equities and nominal bonds can both do well at once.',
-    returns: { eq: 13, nb: 7, tip: 2, com: -2, gld: -3, cash: 1 },
+    returns: { eq: 13, intl: 11, em: 8, nb: 7, tip: 2, com: -2, gld: -3, cash: 1 },
     color: "text-gain",
     activeBg: "bg-gain/10",
   },
@@ -33,7 +33,7 @@ const REGIMES = {
     label: "Stagflation",
     desc: "Growth ↓ · Inflation ↑",
     why: "Growth disappoints while inflation surprises higher — the central bank can't fix both at once. Equities and nominal bonds both get squeezed; commodities, gold, and TIPS hold up.",
-    returns: { eq: -8, nb: -6, tip: 3, com: 10, gld: 12, cash: 1 },
+    returns: { eq: -8, intl: -6, em: -4, nb: -6, tip: 3, com: 10, gld: 12, cash: 1 },
     color: "text-loss",
     activeBg: "bg-loss/10",
   },
@@ -41,7 +41,7 @@ const REGIMES = {
     label: "Deflationary Bust",
     desc: "Growth ↓ · Inflation ↓",
     why: "Demand collapses faster than expected and prices fall with it. Flight to safety — nominal bonds and cash hold up, growth-sensitive assets fall sharply.",
-    returns: { eq: -18, nb: 11, tip: 5, com: -12, gld: 3, cash: 1 },
+    returns: { eq: -18, intl: -15, em: -22, nb: 11, tip: 5, com: -12, gld: 3, cash: 1 },
     color: "text-paper-dim",
     activeBg: "bg-ink-line",
   },
@@ -51,7 +51,9 @@ const REGIMES = {
 // Top row = rising inflation, left col = falling growth.
 const QUAD_ORDER = ["fg_ri", "rg_ri", "fg_fi", "rg_fi"];
 
-const DEFAULT_WEIGHTS = { eq: 40, nb: 30, tip: 10, com: 10, gld: 5, cash: 5 };
+const EQUITY_KEYS = new Set(["eq", "intl", "em"]);
+
+const DEFAULT_WEIGHTS = { eq: 30, intl: 15, em: 5, nb: 25, tip: 10, com: 10, gld: 3, cash: 2 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -249,6 +251,9 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
 
   const regime = REGIMES[activeRegime];
   const total = Object.values(weights).reduce((a, b) => a + b, 0);
+  const equityTotal = assets
+    .filter((a) => EQUITY_KEYS.has(a.key))
+    .reduce((s, a) => s + (weights[a.key] ?? 0), 0);
 
   const { portfolioVol, contributions } = useMemo(
     () => computeRiskContributions(weights, assets, corrMatrix),
@@ -367,7 +372,25 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
           <div className="card p-5">
             <p className="label mb-4">Your Allocation</p>
             <div className="space-y-4">
-              {assets.map((a) => (
+              {/* Equities group */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="label text-[10px]">Equities</span>
+                  <span className="num text-[10px] text-paper-dim">{equityTotal}% combined</span>
+                </div>
+                <div className="pl-3 border-l border-ink-line space-y-4">
+                  {assets.filter((a) => EQUITY_KEYS.has(a.key)).map((a) => (
+                    <AssetSlider
+                      key={a.key}
+                      asset={a}
+                      weight={weights[a.key] ?? 0}
+                      onChange={(v) => updateWeight(a.key, v)}
+                    />
+                  ))}
+                </div>
+              </div>
+              {/* Other asset classes */}
+              {assets.filter((a) => !EQUITY_KEYS.has(a.key)).map((a) => (
                 <AssetSlider
                   key={a.key}
                   asset={a}
