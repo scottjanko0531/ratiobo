@@ -1,11 +1,12 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyNaiveRiskParity,
   computeRiskContributions,
   getLeverageMultiplier,
   solveTrueRiskParity,
 } from "../lib/riskParity";
+import { supabase } from "../lib/supabase";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -139,10 +140,112 @@ function QuadrantTile({ regimeKey, isActive, onClick }) {
  * @param {{ assets: Array<{key,name,color,vol}>, corrMatrix: Record<string,Record<string,number>> }} props
  */
 export default function RegimeSimulator({ assets, corrMatrix }) {
+  // ── Simulator state ──────────────────────────────────────────────────────
   const [weights, setWeights] = useState({ ...DEFAULT_WEIGHTS });
   const [activeRegime, setActiveRegime] = useState("rg_ri");
   const [leverageEnabled, setLeverageEnabled] = useState(false);
   const [targetVol, setTargetVol] = useState(10);
+
+  // ── Persistence state ────────────────────────────────────────────────────
+  const [userId, setUserId] = useState(null);
+  const [savedAllocations, setSavedAllocations] = useState([]);
+  const [currentSavedId, setCurrentSavedId] = useState(null);
+  const [allocationName, setAllocationName] = useState("My Allocation");
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
+  const [showLoadMenu, setShowLoadMenu] = useState(false);
+  const loadMenuRef = useRef(null);
+
+  // On mount: resolve user and auto-load their most recent allocation.
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) return;
+      setUserId(user.id);
+      supabase
+        .from("user_portfolio_allocations")
+        .select("id, name, weights, leverage_enabled, target_vol, active_regime, updated_at")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false })
+        .then(({ data }) => {
+          if (!data?.length) return;
+          setSavedAllocations(data);
+          applyAllocation(data[0]); // auto-load most recent
+        });
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Close load menu on outside click.
+  useEffect(() => {
+    if (!showLoadMenu) return;
+    function handle(e) {
+      if (loadMenuRef.current && !loadMenuRef.current.contains(e.target)) {
+        setShowLoadMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [showLoadMenu]);
+
+  function applyAllocation(alloc) {
+    setWeights({ ...DEFAULT_WEIGHTS, ...alloc.weights });
+    setLeverageEnabled(Boolean(alloc.leverage_enabled));
+    setTargetVol(Number(alloc.target_vol));
+    setActiveRegime(alloc.active_regime ?? "rg_ri");
+    setCurrentSavedId(alloc.id);
+    setAllocationName(alloc.name ?? "My Allocation");
+  }
+
+  async function saveAllocation() {
+    setSaving(true);
+    setSaveMsg("");
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { setSaving(false); return; }
+
+    const payload = {
+      user_id: user.id,
+      name: allocationName.trim() || "My Allocation",
+      weights,
+      leverage_enabled: leverageEnabled,
+      target_vol: targetVol,
+      active_regime: activeRegime,
+      updated_at: new Date().toISOString(),
+    };
+
+    let id = currentSavedId;
+    let error;
+
+    if (id) {
+      ({ error } = await supabase
+        .from("user_portfolio_allocations")
+        .update(payload)
+        .eq("id", id)
+        .eq("user_id", user.id));
+    } else {
+      const { data, error: err } = await supabase
+        .from("user_portfolio_allocations")
+        .insert(payload)
+        .select("id")
+        .single();
+      error = err;
+      if (data) { id = data.id; setCurrentSavedId(data.id); }
+    }
+
+    setSaving(false);
+    if (error) {
+      setSaveMsg(error.message);
+    } else {
+      setSaveMsg("Saved!");
+      // Update local list so the dropdown stays current without a re-fetch.
+      setSavedAllocations((prev) => {
+        const updated = { ...payload, id };
+        const exists = prev.find((a) => a.id === id);
+        return exists
+          ? prev.map((a) => (a.id === id ? updated : a))
+          : [updated, ...prev];
+      });
+      setTimeout(() => setSaveMsg(""), 2500);
+    }
+  }
 
   const regime = REGIMES[activeRegime];
   const total = Object.values(weights).reduce((a, b) => a + b, 0);
@@ -192,6 +295,62 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
 
   return (
     <div className="space-y-6">
+      {/* Save / load bar */}
+      <div className="card p-4 flex items-center gap-3 flex-wrap">
+        <input
+          value={allocationName}
+          onChange={(e) => setAllocationName(e.target.value)}
+          className="field flex-1 min-w-36 py-1.5 text-sm"
+          placeholder="Allocation name…"
+          maxLength={80}
+        />
+        <button
+          onClick={saveAllocation}
+          disabled={saving || !userId}
+          className="btn py-1.5 text-sm shrink-0"
+        >
+          {saving ? "Saving…" : currentSavedId ? "Save" : "Save allocation"}
+        </button>
+        {savedAllocations.length > 1 && (
+          <div className="relative shrink-0" ref={loadMenuRef}>
+            <button
+              onClick={() => setShowLoadMenu((v) => !v)}
+              className="btn-ghost py-1.5 text-sm"
+            >
+              Load ▾
+            </button>
+            {showLoadMenu && (
+              <div className="absolute right-0 top-full mt-1 z-30 bg-ink-soft border border-ink-line rounded-xl shadow-xl min-w-52 py-1 overflow-hidden">
+                {savedAllocations.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={() => { applyAllocation(a); setShowLoadMenu(false); }}
+                    className={`w-full text-left px-4 py-2.5 text-sm hover:bg-ink transition-colors ${
+                      a.id === currentSavedId ? "text-brass-soft" : "text-paper"
+                    }`}
+                  >
+                    <span className="block truncate">{a.name}</span>
+                    <span className="label text-[10px] normal-case tracking-normal">
+                      {new Date(a.updated_at).toLocaleDateString("en-US", {
+                        month: "short", day: "numeric", year: "numeric",
+                      })}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {!userId && (
+          <span className="text-xs text-paper-dim">Sign in to save</span>
+        )}
+        {saveMsg && (
+          <span className={`text-xs shrink-0 ${saveMsg === "Saved!" ? "text-gain" : "text-loss"}`}>
+            {saveMsg}
+          </span>
+        )}
+      </div>
+
       {/* Disclaimer */}
       <div className="px-4 py-3 rounded-xl bg-ink-soft border border-ink-line text-xs text-paper-dim leading-relaxed">
         Returns are illustrative regime estimates synthesized from published macro/asset-class
