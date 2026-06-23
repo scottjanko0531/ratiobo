@@ -1,0 +1,430 @@
+"use client";
+import { useMemo, useState } from "react";
+import {
+  applyNaiveRiskParity,
+  computeRiskContributions,
+  getLeverageMultiplier,
+  solveTrueRiskParity,
+} from "../lib/riskParity";
+
+// ── Constants ───────────────────────────────────────────────────────────────
+
+const BORROW_RATE = 4.5; // assumed annual cost of the levered portion (%)
+
+const REGIMES = {
+  rg_ri: {
+    label: "Reflation",
+    desc: "Growth ↑ · Inflation ↑",
+    why: "Economy beating growth expectations while prices also run hotter than expected. Favors cyclicals, commodities, EM — hurts nominal bonds as rates rise.",
+    returns: { eq: 9, nb: -3, tip: 4, com: 14, gld: 5, cash: 1 },
+    color: "text-brass-soft",
+    activeBg: "bg-brass/10",
+  },
+  rg_fi: {
+    label: "Disinflationary Boom",
+    desc: "Growth ↑ · Inflation ↓",
+    why: '"Goldilocks" — growth beats expectations while inflation surprises to the downside. Equities and nominal bonds can both do well at once.',
+    returns: { eq: 13, nb: 7, tip: 2, com: -2, gld: -3, cash: 1 },
+    color: "text-gain",
+    activeBg: "bg-gain/10",
+  },
+  fg_ri: {
+    label: "Stagflation",
+    desc: "Growth ↓ · Inflation ↑",
+    why: "Growth disappoints while inflation surprises higher — the central bank can't fix both at once. Equities and nominal bonds both get squeezed; commodities, gold, and TIPS hold up.",
+    returns: { eq: -8, nb: -6, tip: 3, com: 10, gld: 12, cash: 1 },
+    color: "text-loss",
+    activeBg: "bg-loss/10",
+  },
+  fg_fi: {
+    label: "Deflationary Bust",
+    desc: "Growth ↓ · Inflation ↓",
+    why: "Demand collapses faster than expected and prices fall with it. Flight to safety — nominal bonds and cash hold up, growth-sensitive assets fall sharply.",
+    returns: { eq: -18, nb: 11, tip: 5, com: -12, gld: 3, cash: 1 },
+    color: "text-paper-dim",
+    activeBg: "bg-ink-line",
+  },
+};
+
+// Grid order: [top-left, top-right, bottom-left, bottom-right]
+// Top row = rising inflation, left col = falling growth.
+const QUAD_ORDER = ["fg_ri", "rg_ri", "fg_fi", "rg_fi"];
+
+const DEFAULT_WEIGHTS = { eq: 40, nb: 30, tip: 10, com: 10, gld: 5, cash: 5 };
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Convert fractional weights (0–1) from the solvers to integer slider values summing to 100. */
+function toSliderWeights(fractional) {
+  const pct = Object.fromEntries(
+    Object.entries(fractional).map(([k, v]) => [k, Math.round(v * 100)])
+  );
+  const drift = 100 - Object.values(pct).reduce((a, b) => a + b, 0);
+  if (drift !== 0) {
+    const top = Object.entries(pct).sort((a, b) => b[1] - a[1])[0][0];
+    pct[top] += drift;
+  }
+  return pct;
+}
+
+const sign = (v) => (v > 0 ? "+" : "");
+
+// ── Sub-components ───────────────────────────────────────────────────────────
+
+function AssetSlider({ asset, weight, onChange }) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: asset.color }} />
+          <span className="text-sm">{asset.name}</span>
+          <span className="label text-[10px] hidden sm:inline opacity-60">vol {asset.vol}%</span>
+        </div>
+        <span className="num text-sm w-10 text-right">{weight}%</span>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={weight}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full cursor-pointer accent-brass"
+        style={{ height: "3px" }}
+      />
+    </div>
+  );
+}
+
+function RiskBar({ asset, pct }) {
+  const p = Math.max(0, pct);
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <div className="flex items-center gap-1.5">
+          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: asset.color }} />
+          <span>{asset.name}</span>
+        </div>
+        <span className="num text-paper-dim">{p.toFixed(0)}%</span>
+      </div>
+      <div className="h-1 bg-ink-line rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all duration-200"
+          style={{ width: `${p}%`, background: asset.color }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function QuadrantTile({ regimeKey, isActive, onClick }) {
+  const r = REGIMES[regimeKey];
+  return (
+    <button
+      onClick={onClick}
+      className={`p-4 text-left transition-colors ${
+        isActive ? r.activeBg : "bg-ink-soft hover:bg-ink"
+      }`}
+    >
+      <p className={`label text-[10px] mb-1 ${isActive ? r.color : ""}`}>{r.label}</p>
+      <p className="text-xs text-paper-dim leading-snug">{r.desc}</p>
+    </button>
+  );
+}
+
+// ── Main component ───────────────────────────────────────────────────────────
+
+/**
+ * Presentational risk-parity regime simulator.
+ *
+ * @param {{ assets: Array<{key,name,color,vol}>, corrMatrix: Record<string,Record<string,number>> }} props
+ */
+export default function RegimeSimulator({ assets, corrMatrix }) {
+  const [weights, setWeights] = useState({ ...DEFAULT_WEIGHTS });
+  const [activeRegime, setActiveRegime] = useState("rg_ri");
+  const [leverageEnabled, setLeverageEnabled] = useState(false);
+  const [targetVol, setTargetVol] = useState(10);
+
+  const regime = REGIMES[activeRegime];
+  const total = Object.values(weights).reduce((a, b) => a + b, 0);
+
+  const { portfolioVol, contributions } = useMemo(
+    () => computeRiskContributions(weights, assets, corrMatrix),
+    [weights, assets, corrMatrix]
+  );
+
+  const leverageMult = useMemo(
+    () => (leverageEnabled ? getLeverageMultiplier(portfolioVol, targetVol) : 1),
+    [leverageEnabled, portfolioVol, targetVol]
+  );
+
+  const { blended, blendedLevered } = useMemo(() => {
+    const t = total || 1;
+    const b = assets.reduce(
+      (s, a) => s + (weights[a.key] / t) * (regime.returns[a.key] ?? 0),
+      0
+    );
+    return {
+      blended: b,
+      blendedLevered: leverageEnabled
+        ? b * leverageMult - (leverageMult - 1) * BORROW_RATE
+        : b,
+    };
+  }, [weights, total, assets, regime, leverageEnabled, leverageMult]);
+
+  function updateWeight(key, val) {
+    setWeights((prev) => ({ ...prev, [key]: val }));
+  }
+
+  function applyNaive() {
+    setWeights(toSliderWeights(applyNaiveRiskParity(assets)));
+  }
+
+  function applyTrue() {
+    setWeights(toSliderWeights(solveTrueRiskParity(assets, corrMatrix)));
+  }
+
+  function applyEqual() {
+    const base = Math.floor(100 / assets.length);
+    const eq = Object.fromEntries(assets.map((a) => [a.key, base]));
+    eq[assets[0].key] += 100 - base * assets.length;
+    setWeights(eq);
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Disclaimer */}
+      <div className="px-4 py-3 rounded-xl bg-ink-soft border border-ink-line text-xs text-paper-dim leading-relaxed">
+        Returns are illustrative regime estimates synthesized from published macro/asset-class
+        research — not live market data. Use this to stress-test allocation logic and intuition,
+        not as a forecasting tool.
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+
+        {/* ── Left: allocation ─────────────────────────────────────────────── */}
+        <div className="space-y-5">
+
+          {/* Sliders */}
+          <div className="card p-5">
+            <p className="label mb-4">Your Allocation</p>
+            <div className="space-y-4">
+              {assets.map((a) => (
+                <AssetSlider
+                  key={a.key}
+                  asset={a}
+                  weight={weights[a.key] ?? 0}
+                  onChange={(v) => updateWeight(a.key, v)}
+                />
+              ))}
+            </div>
+
+            {/* Total */}
+            <div
+              className={`mt-5 pt-4 border-t border-ink-line flex items-center justify-between num text-xs ${
+                total === 100 ? "text-gain" : "text-loss"
+              }`}
+            >
+              <span className="label text-[10px]">Total weight</span>
+              <span>{total}%{total !== 100 && " — weights must sum to 100"}</span>
+            </div>
+
+            {/* RP preset buttons */}
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button onClick={applyNaive} className="btn-ghost py-2 text-xs">
+                Naive risk parity
+              </button>
+              <button onClick={applyTrue} className="btn-ghost py-2 text-xs">
+                True risk parity
+              </button>
+              <button onClick={applyEqual} className="btn-ghost py-2 text-xs col-span-2">
+                Reset to equal weight
+              </button>
+            </div>
+            <p className="mt-3 text-[10px] text-paper-dim leading-relaxed">
+              <span className="text-paper-dim/80 font-medium">Naive</span> — weights ∝ 1/vol,
+              ignoring correlation.{" "}
+              <span className="text-paper-dim/80 font-medium">True</span> — iterative solver
+              equalising marginal risk contributions (correlation-aware).
+            </p>
+          </div>
+
+          {/* Risk contributions */}
+          <div className="card p-5">
+            <p className="label mb-1">Risk Contribution</p>
+            <p className="text-[11px] text-paper-dim mb-4 leading-relaxed">
+              Each asset's share of total portfolio variance — accounting for correlation, not
+              just volatility. Dollar weight ≠ risk weight.
+            </p>
+            <div className="space-y-3">
+              {assets.map((a) => (
+                <RiskBar key={a.key} asset={a} pct={contributions[a.key] ?? 0} />
+              ))}
+            </div>
+            <p className="mt-4 text-[10px] text-paper-dim num">
+              {leverageEnabled
+                ? `Unlevered vol ${portfolioVol.toFixed(1)}% → levered to ${(portfolioVol * leverageMult).toFixed(1)}% (${leverageMult.toFixed(2)}x gross exposure)`
+                : `Portfolio vol (correlation-adjusted): ${portfolioVol.toFixed(1)}%`}
+            </p>
+          </div>
+
+          {/* Leverage */}
+          <div className="card p-5">
+            <p className="label mb-3">Leverage (Optional)</p>
+            <p className="text-[11px] text-paper-dim mb-4 leading-relaxed">
+              Risk-balancing shifts dollars toward lower-return safe assets. Bridgewater's All
+              Weather restores return by leveraging the entire risk-balanced mix to a target
+              volatility — optionally modelled here.
+            </p>
+            <label className="flex items-center gap-2.5 cursor-pointer mb-4">
+              <input
+                type="checkbox"
+                checked={leverageEnabled}
+                onChange={(e) => setLeverageEnabled(e.target.checked)}
+                className="accent-brass w-4 h-4 cursor-pointer"
+              />
+              <span className="text-sm">Include leverage in calculations</span>
+            </label>
+
+            {leverageEnabled && (
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-paper-dim">Target volatility</span>
+                  <span className="num">{targetVol}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={4}
+                  max={20}
+                  value={targetVol}
+                  onChange={(e) => setTargetVol(Number(e.target.value))}
+                  className="w-full cursor-pointer accent-brass"
+                  style={{ height: "3px" }}
+                />
+                <p className="text-[10px] text-paper-dim pt-1 leading-relaxed">
+                  Multiplier:{" "}
+                  <span className="text-brass-soft num">{leverageMult.toFixed(2)}x</span>
+                  {" · "}Gross exposure:{" "}
+                  <span className="text-brass-soft num">{(leverageMult * 100).toFixed(0)}%</span>
+                  {" · "}Borrowed portion at an assumed {BORROW_RATE}%/yr cost. Capped at 4x.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Right: regime + results ───────────────────────────────────────── */}
+        <div className="space-y-5">
+
+          {/* Quadrant selector */}
+          <div className="card overflow-hidden">
+            <div className="p-5 pb-3">
+              <p className="label mb-3">Economic Regime</p>
+              <div className="flex justify-between text-[10px] text-paper-dim px-0.5 mb-1.5">
+                <span>← Falling growth</span>
+                <span>Rising growth →</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-px bg-ink-line mx-5 rounded-xl overflow-hidden">
+              {QUAD_ORDER.map((key) => (
+                <QuadrantTile
+                  key={key}
+                  regimeKey={key}
+                  isActive={activeRegime === key}
+                  onClick={() => setActiveRegime(key)}
+                />
+              ))}
+            </div>
+
+            <div className="flex justify-between text-[10px] text-paper-dim px-5 pt-1.5 pb-4">
+              <span>↑ Rising inflation (top row)</span>
+              <span>↓ Falling inflation (bottom row)</span>
+            </div>
+
+            {/* Regime explanation */}
+            <div className={`mx-5 mb-5 px-4 py-3 rounded-xl bg-ink-soft border border-ink-line text-xs leading-relaxed`}>
+              <span className={`font-medium ${regime.color}`}>{regime.label}</span>
+              {" — "}
+              <span className="text-paper-dim">{regime.why}</span>
+            </div>
+          </div>
+
+          {/* Projected behavior */}
+          <div className="card p-5">
+            <p className="label mb-4">Projected Behavior</p>
+
+            {/* Headline blended return */}
+            <div className="flex items-center justify-between pb-3 border-b border-ink-line">
+              <span className="text-sm text-paper-dim">
+                Est. blended return — {regime.label}
+                {leverageEnabled && " (levered)"}
+              </span>
+              <span
+                className={`num text-2xl font-semibold ${
+                  blendedLevered >= 0 ? "text-gain" : "text-loss"
+                }`}
+              >
+                {sign(blendedLevered)}{blendedLevered.toFixed(1)}%
+              </span>
+            </div>
+
+            {/* Unlevered comparison */}
+            {leverageEnabled && (
+              <div className="flex items-center justify-between py-2.5 border-b border-ink-line">
+                <span className="text-xs text-paper-dim">— unlevered would have been</span>
+                <span
+                  className={`num text-sm opacity-60 ${
+                    blended >= 0 ? "text-gain" : "text-loss"
+                  }`}
+                >
+                  {sign(blended)}{blended.toFixed(1)}%
+                </span>
+              </div>
+            )}
+
+            {/* Per-asset rows */}
+            <div className="mt-1">
+              {assets.map((a) => {
+                const w = weights[a.key] ?? 0;
+                const ret = regime.returns[a.key] ?? 0;
+                const contrib = (w / (total || 1)) * ret;
+                return (
+                  <div
+                    key={a.key}
+                    className="flex items-center justify-between py-2.5 border-b border-ink-line last:border-0"
+                  >
+                    <span className="flex items-center gap-2 text-xs text-paper-dim min-w-0">
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ background: a.color }}
+                      />
+                      <span className="truncate">{a.name}</span>
+                      <span className="num shrink-0 opacity-60">
+                        {w}% @ {sign(ret)}{ret}%
+                      </span>
+                    </span>
+                    <span
+                      className={`num text-xs shrink-0 ml-3 ${
+                        contrib >= 0 ? "text-gain" : "text-loss"
+                      }`}
+                    >
+                      {sign(contrib)}{contrib.toFixed(1)}pp
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Usage note */}
+          <p className="text-[11px] text-paper-dim leading-relaxed px-1">
+            Pick a regime, adjust the sliders, or click "Naive" vs "True" risk parity to compare
+            a 1/vol-only allocation against one that also accounts for how assets move together.
+            Try the same allocation across all four quadrants to find which regime it's most
+            exposed to.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
