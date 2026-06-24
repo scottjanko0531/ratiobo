@@ -45,6 +45,8 @@ export default function TransactionsPage() {
   const [filterTypes, setFilterTypes] = useState([]);
   const [filterAccounts, setFilterAccounts] = useState([]);
   const [filterHoldings, setFilterHoldings] = useState([]);
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
 
   // Kebab menu
   const [menuOpenId, setMenuOpenId] = useState(null);
@@ -117,11 +119,15 @@ export default function TransactionsPage() {
   const editIsUnit = editType?.affects_quantity !== 0 && editType != null && !editIsCash;
 
   // ── Filter derived values ───────────────────────────────────────────────
-  const filtersActive = filterTypes.length + filterAccounts.length + filterHoldings.length > 0;
+  const filtersActive =
+    filterTypes.length + filterAccounts.length + filterHoldings.length > 0 ||
+    filterDateFrom !== "" || filterDateTo !== "";
   const filtered = (txns ?? []).filter((t) => {
     if (filterTypes.length && !filterTypes.includes(t.txn_type)) return false;
     if (filterAccounts.length && !filterAccounts.includes(t.holding?.account_id ?? "none")) return false;
     if (filterHoldings.length && !filterHoldings.includes(t.holding_id)) return false;
+    if (filterDateFrom && t.txn_date < filterDateFrom) return false;
+    if (filterDateTo && t.txn_date > filterDateTo) return false;
     return true;
   });
 
@@ -299,6 +305,29 @@ export default function TransactionsPage() {
           {/* Filter sidebar */}
           {showFilter && (
             <div className="w-52 shrink-0 border-r border-ink-line p-4 space-y-5">
+              <div>
+                <p className="label mb-2">Date range</p>
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[10px] text-paper-dim block mb-1">From</label>
+                    <input
+                      type="date"
+                      className="field py-1 text-xs"
+                      value={filterDateFrom}
+                      onChange={(e) => setFilterDateFrom(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-paper-dim block mb-1">To</label>
+                    <input
+                      type="date"
+                      className="field py-1 text-xs"
+                      value={filterDateTo}
+                      onChange={(e) => setFilterDateTo(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
               {uniqueTypes.length > 0 && (
                 <div>
                   <p className="label mb-2">Type</p>
@@ -377,7 +406,7 @@ export default function TransactionsPage() {
               {filtersActive && (
                 <button
                   className="text-xs text-paper-dim hover:text-paper transition-colors"
-                  onClick={() => { setFilterTypes([]); setFilterAccounts([]); setFilterHoldings([]); }}
+                  onClick={() => { setFilterTypes([]); setFilterAccounts([]); setFilterHoldings([]); setFilterDateFrom(""); setFilterDateTo(""); }}
                 >
                   Clear all
                 </button>
