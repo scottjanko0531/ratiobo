@@ -15,17 +15,36 @@ const RANGES = [
 
 const BASE_YEAR = 1952;
 
-const DEBT_COLOR  = "#C9A227"; // brass
-const PROD_COLOR  = "#3FB984"; // gain
-const CYCLE_COLOR = "#E0635C"; // loss
+const DEBT_COLOR  = "#C9A227";
+const PROD_COLOR  = "#3FB984";
+const CYCLE_COLOR = "#E0635C";
 
-// Four long-cycle debt phases — vertical background zones
-const CYCLE_ZONES = [
-  { x1: 1952, x2: 1969, label: "Post-War Boom",   fill: "#3FB984", opacity: 0.06 },
-  { x1: 1970, x2: 1982, label: "Stagflation",      fill: "#C9A227", opacity: 0.07 },
-  { x1: 1983, x2: 2007, label: "Great Moderation", fill: "#3FB984", opacity: 0.05 },
-  { x1: 2008, x2: 2026, label: "Post-GFC Cycle",   fill: "#E0635C", opacity: 0.07 },
-];
+const QUADRANT_FILL = {
+  goldilocks:  { fill: "#3FB984", opacity: 0.08, label: "Goldilocks (Growth↑/Inflation↓)" },
+  reflation:   { fill: "#C9A227", opacity: 0.09, label: "Reflation (Growth↑/Inflation↑)" },
+  stagflation: { fill: "#E0635C", opacity: 0.08, label: "Stagflation (Growth↓/Inflation↑)" },
+  bust:        { fill: "#A8ADB8", opacity: 0.09, label: "Deflationary Bust (Growth↓/Inflation↓)" },
+};
+
+function computeZoneBands(debtRows, fromYear) {
+  const rows = debtRows
+    .filter((r) => r.quadrant && r.year >= fromYear)
+    .sort((a, b) => a.year - b.year);
+
+  const bands = [];
+  let current = null;
+
+  for (const row of rows) {
+    if (!current || current.quadrant !== row.quadrant) {
+      if (current) bands.push(current);
+      current = { quadrant: row.quadrant, x1: row.year, x2: row.year + 1 };
+    } else {
+      current.x2 = row.year + 1;
+    }
+  }
+  if (current) bands.push(current);
+  return bands;
+}
 
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
@@ -56,7 +75,7 @@ export default function ThreeForcesChart() {
   useEffect(() => {
     async function load() {
       const [debt, credit, prod] = await Promise.all([
-        supabase.from("macro_debt_cycle").select("year,debt_to_gdp_pct").order("year"),
+        supabase.from("macro_debt_cycle_computed").select("year,debt_to_gdp_pct,quadrant").order("year"),
         supabase.from("macro_credit_cycle").select("year,total_debt_growth_yoy").order("year"),
         supabase.from("macro_productivity").select("year,labor_productivity_idx").order("year"),
       ]);
@@ -69,9 +88,9 @@ export default function ThreeForcesChart() {
   const chartData = useMemo(() => {
     if (!raw) return [];
 
-    const debtMap  = Object.fromEntries(raw.debt.map((r) => [r.year, r.debt_to_gdp_pct]));
+    const debtMap   = Object.fromEntries(raw.debt.map((r) => [r.year, r.debt_to_gdp_pct]));
     const creditMap = Object.fromEntries(raw.credit.map((r) => [r.year, r.total_debt_growth_yoy]));
-    const prodMap  = Object.fromEntries(raw.prod.map((r) => [r.year, r.labor_productivity_idx]));
+    const prodMap   = Object.fromEntries(raw.prod.map((r) => [r.year, r.labor_productivity_idx]));
 
     const baseDebt = debtMap[BASE_YEAR];
     const baseProd = prodMap[BASE_YEAR];
@@ -84,10 +103,15 @@ export default function ThreeForcesChart() {
 
     return years.map((year) => ({
       year,
-      debtIdx: debtMap[year] != null && baseDebt ? Math.round((debtMap[year] / baseDebt) * 1000) / 10 : null,
-      prodIdx: prodMap[year] != null && baseProd ? Math.round((prodMap[year] / baseProd) * 1000) / 10 : null,
+      debtIdx:      debtMap[year]  != null && baseDebt ? Math.round((debtMap[year]  / baseDebt) * 1000) / 10 : null,
+      prodIdx:      prodMap[year]  != null && baseProd ? Math.round((prodMap[year]  / baseProd) * 1000) / 10 : null,
       debtGrowthYoy: creditMap[year] ?? null,
     }));
+  }, [raw, range]);
+
+  const zoneBands = useMemo(() => {
+    if (!raw) return [];
+    return computeZoneBands(raw.debt, range);
   }, [raw, range]);
 
   if (loading) {
@@ -100,8 +124,7 @@ export default function ThreeForcesChart() {
 
   return (
     <div>
-      {/* Range selector */}
-      <div className="flex items-center gap-2 mb-4">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
         {RANGES.map((r) => (
           <button
             key={r.from}
@@ -115,6 +138,17 @@ export default function ThreeForcesChart() {
             {r.label}
           </button>
         ))}
+        <div className="ml-auto flex flex-wrap items-center gap-3">
+          {Object.entries(QUADRANT_FILL).map(([key, { fill, label }]) => (
+            <span key={key} className="flex items-center gap-1 text-[10px] text-paper-dim">
+              <span
+                className="inline-block w-2.5 h-2.5 rounded-sm flex-shrink-0"
+                style={{ backgroundColor: fill, opacity: 0.7 }}
+              />
+              {label}
+            </span>
+          ))}
+        </div>
       </div>
 
       <ResponsiveContainer width="100%" height={380}>
@@ -127,7 +161,6 @@ export default function ThreeForcesChart() {
             axisLine={false}
             interval="preserveStartEnd"
           />
-          {/* Left axis: index (1952=100) */}
           <YAxis
             yAxisId="idx"
             tick={{ fill: "#A8ADB8", fontSize: 11 }}
@@ -136,7 +169,6 @@ export default function ThreeForcesChart() {
             tickFormatter={(v) => v.toFixed(0)}
             label={{ value: "Index (base yr = 100)", angle: -90, position: "insideLeft", offset: 12, fill: "#A8ADB8", fontSize: 10 }}
           />
-          {/* Right axis: YoY % */}
           <YAxis
             yAxisId="pct"
             orientation="right"
@@ -146,27 +178,24 @@ export default function ThreeForcesChart() {
             tickFormatter={(v) => `${v}%`}
             label={{ value: "Debt growth YoY %", angle: 90, position: "insideRight", offset: 12, fill: "#A8ADB8", fontSize: 10 }}
           />
-          {/* Vertical phase zones — rendered first so they sit behind everything */}
-          {CYCLE_ZONES.map((z) => {
-            const x1 = Math.max(z.x1, range);
-            if (x1 >= z.x2) return null;
+
+          {/* Dalio quadrant zones — per-year, grouped into consecutive same-quadrant bands */}
+          {zoneBands.map((z) => {
+            const cfg = QUADRANT_FILL[z.quadrant];
+            if (!cfg) return null;
             return (
               <ReferenceArea
-                key={z.label}
+                key={`${z.quadrant}-${z.x1}`}
                 yAxisId="idx"
-                x1={x1}
+                x1={z.x1}
                 x2={z.x2}
-                fill={z.fill}
-                fillOpacity={z.opacity}
+                fill={cfg.fill}
+                fillOpacity={cfg.opacity}
                 stroke="none"
-                label={
-                  x1 === z.x1
-                    ? { value: z.label, position: "insideTopLeft", fontSize: 9, fill: "#A8ADB8", dy: 6, dx: 4 }
-                    : { value: z.label, position: "insideTopLeft", fontSize: 9, fill: "#A8ADB8", dy: 6, dx: 4 }
-                }
               />
             );
           })}
+
           <Tooltip content={<CustomTooltip />} />
           <Legend
             wrapperStyle={{ fontSize: 12, paddingTop: 12 }}
@@ -208,10 +237,10 @@ export default function ThreeForcesChart() {
       </ResponsiveContainer>
 
       <p className="text-[10px] text-paper-dim mt-3 leading-relaxed">
-        Both index lines are rebased to the start year = 100, so their divergence shows relative growth regardless of unit.
-        The gap between the debt line and productivity line is the core of Dalio's thesis: debt has grown faster than real productive capacity.
-        The red line shows annual short-term credit cycle oscillations (YoY total nonfinancial debt growth).
-        Sources: Federal Reserve Z.1, BLS via FRED.
+        Index lines rebased to start year = 100; divergence shows relative growth regardless of unit.
+        Background zones show the active Dalio quadrant per year, derived from 3-year trailing averages of real GDP growth vs. CPI.
+        Red line: annual short-term credit cycle oscillations (YoY total nonfinancial debt growth).
+        Sources: Federal Reserve Z.1, BLS, BEA via FRED.
       </p>
     </div>
   );
