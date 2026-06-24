@@ -14,6 +14,7 @@ const usd = (n) =>
     : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" });
 
 const MARKET_TYPES = new Set(["equity", "etf", "closed_end_fund", "mutual_fund", "money_market", "bond", "crypto", "metal"]);
+const TV_CHART_TYPES = new Set(["equity", "etf", "closed_end_fund", "crypto", "metal"]);
 const MANUAL_PRICE_TYPES = new Set(["real_estate", "loan", "other"]);
 
 const METAL_TV_SYMBOLS = { XAU: "TVC:GOLD", XAG: "TVC:SILVER", XPT: "TVC:PLATINUM", XPD: "TVC:PALLADIUM" };
@@ -994,8 +995,8 @@ export default function HoldingsPage() {
 
               {/* Charts */}
               <div className="border-b border-ink-line">
-                {/* TradingView price chart */}
-                {MARKET_TYPES.has(viewingHolding.asset_type) && (
+                {/* TradingView price chart — only for exchange-traded asset types */}
+                {TV_CHART_TYPES.has(viewingHolding.asset_type) ? (
                   <div className="border-b border-ink-line">
                     <div className="flex items-center justify-between px-5 py-2.5">
                       <p className="label text-xs">Price chart</p>
@@ -1018,6 +1019,15 @@ export default function HoldingsPage() {
                         scrolling="no"
                       />
                     )}
+                  </div>
+                ) : MARKET_TYPES.has(viewingHolding.asset_type) && (
+                  <div className="border-b border-ink-line px-5 py-3">
+                    <p className="label text-xs mb-0.5">Price chart</p>
+                    <p className="text-xs text-paper-dim">
+                      {viewingHolding.asset_type === "mutual_fund" || viewingHolding.asset_type === "money_market"
+                        ? "Chart unavailable — NAV-priced funds are not listed on exchanges."
+                        : "Chart unavailable for this asset type."}
+                    </p>
                   </div>
                 )}
 
