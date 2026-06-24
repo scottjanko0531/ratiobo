@@ -434,7 +434,7 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
         >
           {saving ? "Saving…" : currentSavedId ? "Save" : "Save allocation"}
         </button>
-        {savedAllocations.length > 1 && (
+        {savedAllocations.length > 0 && (
           <div className="relative shrink-0" ref={loadMenuRef}>
             <button
               onClick={() => setShowLoadMenu((v) => !v)}
