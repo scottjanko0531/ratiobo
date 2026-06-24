@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
+import ThreeForcesChart from "../../components/ThreeForcesChart";
 
 const LAYER_NAMES = {
   1: "Long-term Debt Cycle",
@@ -404,6 +405,24 @@ export default function MacroDashboard() {
               )}
             </div>
           ))}
+
+          {/* Three Forces — long-cycle historical chart */}
+          <div className="mb-10">
+            <div className="flex items-center gap-3 mb-4">
+              <span className="w-6 h-6 rounded-full bg-ink-soft flex items-center justify-center text-xs font-bold text-paper-dim">
+                ∞
+              </span>
+              <div>
+                <h2 className="text-sm font-semibold text-paper-dim uppercase tracking-wider">
+                  Three Forces — Long Cycle
+                </h2>
+                <p className="label text-[10px] mt-0.5">Debt · Productivity · Short-term Credit Cycle · 1952–2026</p>
+              </div>
+            </div>
+            <div className="card p-5">
+              <ThreeForcesChart />
+            </div>
+          </div>
         </>
       )}
     </Shell>
