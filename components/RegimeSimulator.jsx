@@ -7,6 +7,15 @@ import {
   solveTrueRiskParity,
 } from "../lib/riskParity";
 import { supabase } from "../lib/supabase";
+import {
+  ALT_KEYS,
+  ALT_META,
+  buildAltAssets,
+  extendCorrMatrix,
+  loadAltAssumptions,
+  saveAltAssumption,
+} from "../lib/altAssets";
+import AltConfigPanel from "./AltConfigPanel";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -53,11 +62,15 @@ const QUAD_ORDER = ["fg_ri", "rg_ri", "fg_fi", "rg_fi"];
 
 const EQUITY_KEYS = new Set(["eq", "intl", "em"]);
 
-const DEFAULT_WEIGHTS = { eq: 30, intl: 15, em: 5, nb: 25, tip: 10, com: 10, gld: 3, cash: 2 };
+const DEFAULT_WEIGHTS = {
+  eq: 30, intl: 15, em: 5, nb: 25, tip: 10, com: 10, gld: 3, cash: 2,
+  // Alt assets start at 0 so they don't affect existing allocations.
+  alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0,
+};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Convert fractional weights (0–1) from the solvers to integer slider values summing to 100. */
+/** Convert fractional weights (0–1) from the solvers to integer slider values summing to budget. */
 function toSliderWeights(fractional, budget = 100) {
   const pct = Object.fromEntries(
     Object.entries(fractional).map(([k, v]) => [k, Math.round(v * budget)])
@@ -74,16 +87,28 @@ const sign = (v) => (v > 0 ? "+" : "");
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
-function AssetSlider({ asset, weight, onChange }) {
+function AssetSlider({ asset, weight, onChange, onConfigure }) {
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: asset.color }} />
-          <span className="text-sm">{asset.name}</span>
-          <span className="label text-[10px] hidden sm:inline opacity-60">vol {asset.vol}%</span>
+          <span className="text-sm truncate">{asset.name}</span>
+          <span className="label text-[10px] hidden sm:inline opacity-60 shrink-0">vol {asset.vol}%</span>
         </div>
-        <span className="num text-sm w-10 text-right">{weight}%</span>
+        <div className="flex items-center gap-2 shrink-0">
+          {onConfigure && (
+            <button
+              onClick={onConfigure}
+              className="text-paper-dim hover:text-brass transition-colors text-sm leading-none"
+              title="Configure assumptions"
+              aria-label={`Configure ${asset.name} assumptions`}
+            >
+              ⚙
+            </button>
+          )}
+          <span className="num text-sm w-10 text-right">{weight}%</span>
+        </div>
       </div>
       <input
         type="range"
@@ -140,6 +165,8 @@ function QuadrantTile({ regimeKey, isActive, onClick }) {
  * Presentational risk-parity regime simulator.
  *
  * @param {{ assets: Array<{key,name,color,vol}>, corrMatrix: Record<string,Record<string,number>> }} props
+ *   assets     — the 8 market assets from the DB (eq, intl, em, nb, tip, com, gld, cash)
+ *   corrMatrix — 8×8 correlation matrix built from historical data
  */
 export default function RegimeSimulator({ assets, corrMatrix }) {
   // ── Simulator state ──────────────────────────────────────────────────────
@@ -158,11 +185,18 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
   const [showLoadMenu, setShowLoadMenu] = useState(false);
   const loadMenuRef = useRef(null);
 
-  // On mount: resolve user and auto-load their most recent allocation.
+  // ── Alternative asset state ──────────────────────────────────────────────
+  // Raw DB rows keyed by asset_key; empty = use per-category defaults.
+  const [altAssumptions, setAltAssumptions] = useState({});
+  // Key of the alt currently being configured; null = no panel open.
+  const [editingAltKey, setEditingAltKey] = useState(null);
+
+  // On mount: resolve user, auto-load most recent allocation, and load alt assumptions.
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return;
       setUserId(user.id);
+
       supabase
         .from("user_portfolio_allocations")
         .select("id, name, weights, leverage_enabled, target_vol, active_regime, updated_at")
@@ -171,8 +205,10 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
         .then(({ data }) => {
           if (!data?.length) return;
           setSavedAllocations(data);
-          applyAllocation(data[0]); // auto-load most recent
+          applyAllocation(data[0]);
         });
+
+      loadAltAssumptions(user.id).then(setAltAssumptions);
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -237,7 +273,6 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
       setSaveMsg(error.message);
     } else {
       setSaveMsg("Saved!");
-      // Update local list so the dropdown stays current without a re-fetch.
       setSavedAllocations((prev) => {
         const updated = { ...payload, id };
         const exists = prev.find((a) => a.id === id);
@@ -249,15 +284,52 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
     }
   }
 
+  // ── Alt asset integration ────────────────────────────────────────────────
+
+  // Build resolved alt asset objects (vol, profile, regimeReturns) from saved assumptions + defaults.
+  const altAssets = useMemo(() => buildAltAssets(altAssumptions), [altAssumptions]);
+
+  // Combined 13-asset array: 8 market + 5 alt.
+  const mergedAssets = useMemo(() => [...assets, ...altAssets], [assets, altAssets]);
+
+  // Extend the 8×8 corrMatrix with profile-based correlations for the 5 alt assets.
+  const mergedCorrMatrix = useMemo(
+    () => extendCorrMatrix(corrMatrix, assets, altAssets),
+    [corrMatrix, assets, altAssets]
+  );
+
+  /** Save an alt's assumptions to state and immediately persist to DB. */
+  async function handleAltSave(assetKey, newAssumptions) {
+    setAltAssumptions((prev) => ({
+      ...prev,
+      [assetKey]: {
+        vol: newAssumptions.vol,
+        correlation_profile: newAssumptions.correlationProfile,
+        regime_returns: newAssumptions.regimeReturns,
+      },
+    }));
+    setEditingAltKey(null);
+    if (userId) {
+      await saveAltAssumption(userId, assetKey, newAssumptions);
+    }
+  }
+
+  // ── Derived values ───────────────────────────────────────────────────────
+
   const regime = REGIMES[activeRegime];
   const total = Object.values(weights).reduce((a, b) => a + b, 0);
+
   const equityTotal = assets
     .filter((a) => EQUITY_KEYS.has(a.key))
     .reduce((s, a) => s + (weights[a.key] ?? 0), 0);
 
+  const altTotal = ALT_META.reduce((s, m) => s + (weights[m.key] ?? 0), 0);
+
+  // Risk contributions use the full merged asset set so that alt allocations
+  // are included in portfolio vol even when they are at a small weight.
   const { portfolioVol, contributions } = useMemo(
-    () => computeRiskContributions(weights, assets, corrMatrix),
-    [weights, assets, corrMatrix]
+    () => computeRiskContributions(weights, mergedAssets, mergedCorrMatrix),
+    [weights, mergedAssets, mergedCorrMatrix]
   );
 
   const leverageMult = useMemo(
@@ -267,43 +339,82 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
 
   const { blended, blendedLevered } = useMemo(() => {
     const t = total || 1;
-    const b = assets.reduce(
-      (s, a) => s + (weights[a.key] / t) * (regime.returns[a.key] ?? 0),
-      0
-    );
+    const b = mergedAssets.reduce((s, a) => {
+      // Alt assets carry their own user-supplied regime return estimates.
+      // Market assets use the research-synthesised REGIMES constant.
+      const ret = ALT_KEYS.has(a.key)
+        ? (a.regimeReturns?.[activeRegime] ?? 0)
+        : (regime.returns[a.key] ?? 0);
+      return s + (weights[a.key] / t) * ret;
+    }, 0);
     return {
       blended: b,
       blendedLevered: leverageEnabled
         ? b * leverageMult - (leverageMult - 1) * BORROW_RATE
         : b,
     };
-  }, [weights, total, assets, regime, leverageEnabled, leverageMult]);
+  }, [weights, total, mergedAssets, regime, activeRegime, leverageEnabled, leverageMult]);
 
   function updateWeight(key, val) {
     setWeights((prev) => ({ ...prev, [key]: val }));
   }
 
-  function applyNaive() {
-    const riskAssets = assets.filter((a) => a.key !== "cash");
+  // ── RP preset helpers ────────────────────────────────────────────────────
+  // Cash and all alt assets are excluded from RP optimisation:
+  //   • Cash has near-zero vol — including it would push almost all weight to cash.
+  //   • Alts are illiquid or have user-estimated inputs; the user controls them manually.
+  // The budget for RP is 100 minus the combined cash + alt weights.
+
+  function rpBudget() {
     const cashPct = weights.cash ?? 0;
-    setWeights({ ...toSliderWeights(applyNaiveRiskParity(riskAssets), 100 - cashPct), cash: cashPct });
+    const altsPct = ALT_META.reduce((s, m) => s + (weights[m.key] ?? 0), 0);
+    return { cashPct, altsPct, budget: Math.max(100 - cashPct - altsPct, 0) };
+  }
+
+  function preservedOverrides(cashPct) {
+    return {
+      cash: cashPct,
+      ...Object.fromEntries(ALT_META.map((m) => [m.key, weights[m.key] ?? 0])),
+    };
+  }
+
+  function applyNaive() {
+    const riskAssets = mergedAssets.filter((a) => a.key !== "cash" && !ALT_KEYS.has(a.key));
+    const { cashPct, budget } = rpBudget();
+    setWeights((prev) => ({
+      ...prev,
+      ...toSliderWeights(applyNaiveRiskParity(riskAssets), budget),
+      ...preservedOverrides(cashPct),
+    }));
   }
 
   function applyTrue() {
-    const riskAssets = assets.filter((a) => a.key !== "cash");
-    const cashPct = weights.cash ?? 0;
-    setWeights({ ...toSliderWeights(solveTrueRiskParity(riskAssets, corrMatrix), 100 - cashPct), cash: cashPct });
+    const riskAssets = mergedAssets.filter((a) => a.key !== "cash" && !ALT_KEYS.has(a.key));
+    const { cashPct, budget } = rpBudget();
+    setWeights((prev) => ({
+      ...prev,
+      ...toSliderWeights(solveTrueRiskParity(riskAssets, mergedCorrMatrix), budget),
+      ...preservedOverrides(cashPct),
+    }));
   }
 
   function applyEqual() {
-    const riskAssets = assets.filter((a) => a.key !== "cash");
-    const cashPct = weights.cash ?? 0;
-    const budget = 100 - cashPct;
+    const riskAssets = mergedAssets.filter((a) => a.key !== "cash" && !ALT_KEYS.has(a.key));
+    const { cashPct, budget } = rpBudget();
     const base = Math.floor(budget / riskAssets.length);
-    const eq = Object.fromEntries(riskAssets.map((a) => [a.key, base]));
-    eq[riskAssets[0].key] += budget - base * riskAssets.length;
-    setWeights({ ...eq, cash: cashPct });
+    const eqW = Object.fromEntries(riskAssets.map((a) => [a.key, base]));
+    eqW[riskAssets[0].key] += budget - base * riskAssets.length;
+    setWeights((prev) => ({
+      ...prev,
+      ...eqW,
+      ...preservedOverrides(cashPct),
+    }));
   }
+
+  // ── The alt being edited (null-safe) ─────────────────────────────────────
+  const editingAlt = editingAltKey
+    ? altAssets.find((a) => a.key === editingAltKey) ?? null
+    : null;
 
   return (
     <div className="space-y-6">
@@ -379,6 +490,7 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
           <div className="card p-5">
             <p className="label mb-4">Your Allocation</p>
             <div className="space-y-4">
+
               {/* Equities group */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
@@ -396,7 +508,8 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
                   ))}
                 </div>
               </div>
-              {/* Other asset classes */}
+
+              {/* Other market assets */}
               {assets.filter((a) => !EQUITY_KEYS.has(a.key)).map((a) => (
                 <AssetSlider
                   key={a.key}
@@ -405,6 +518,31 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
                   onChange={(v) => updateWeight(a.key, v)}
                 />
               ))}
+
+              {/* Alternative Assets group */}
+              <div className="space-y-4 pt-2">
+                <div className="flex items-center justify-between">
+                  <span className="label text-[10px]">Alternative Assets</span>
+                  <span className="num text-[10px] text-paper-dim">
+                    {altTotal > 0 ? `${altTotal}% combined` : "not allocated"}
+                  </span>
+                </div>
+                <div className="pl-3 border-l border-ink-line space-y-4">
+                  {altAssets.map((a) => (
+                    <AssetSlider
+                      key={a.key}
+                      asset={a}
+                      weight={weights[a.key] ?? 0}
+                      onChange={(v) => updateWeight(a.key, v)}
+                      onConfigure={() => setEditingAltKey(a.key)}
+                    />
+                  ))}
+                </div>
+                <p className="text-[10px] text-paper-dim leading-relaxed pl-3">
+                  Click ⚙ to configure each alt's volatility, correlation profile, and regime
+                  return estimates. Assumptions are saved to your account.
+                </p>
+              </div>
             </div>
 
             {/* Total */}
@@ -433,8 +571,8 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
               <span className="text-paper-dim/80 font-medium">Naive</span> — weights ∝ 1/vol,
               ignoring correlation.{" "}
               <span className="text-paper-dim/80 font-medium">True</span> — iterative solver
-              equalising marginal risk contributions (correlation-aware). Cash is excluded from
-              all three presets — its slider stays where you set it.
+              equalising marginal risk contributions (correlation-aware). Cash and alternative
+              assets are excluded from all three presets — their sliders stay where you set them.
             </p>
           </div>
 
@@ -446,9 +584,14 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
               just volatility. Dollar weight ≠ risk weight.
             </p>
             <div className="space-y-3">
-              {assets.map((a) => (
-                <RiskBar key={a.key} asset={a} pct={contributions[a.key] ?? 0} />
-              ))}
+              {mergedAssets
+                .filter((a) => (weights[a.key] ?? 0) > 0)
+                .map((a) => (
+                  <RiskBar key={a.key} asset={a} pct={contributions[a.key] ?? 0} />
+                ))}
+              {mergedAssets.every((a) => (weights[a.key] ?? 0) === 0) && (
+                <p className="text-xs text-paper-dim">No assets allocated.</p>
+              )}
             </div>
             <p className="mt-4 text-[10px] text-paper-dim num">
               {leverageEnabled
@@ -532,7 +675,7 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
             </div>
 
             {/* Regime explanation */}
-            <div className={`mx-5 mb-5 px-4 py-3 rounded-xl bg-ink-soft border border-ink-line text-xs leading-relaxed`}>
+            <div className="mx-5 mb-5 px-4 py-3 rounded-xl bg-ink-soft border border-ink-line text-xs leading-relaxed">
               <span className={`font-medium ${regime.color}`}>{regime.label}</span>
               {" — "}
               <span className="text-paper-dim">{regime.why}</span>
@@ -572,37 +715,41 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
               </div>
             )}
 
-            {/* Per-asset rows */}
+            {/* Per-asset rows — show all allocated assets (market + alt) */}
             <div className="mt-1">
-              {assets.map((a) => {
-                const w = weights[a.key] ?? 0;
-                const ret = regime.returns[a.key] ?? 0;
-                const contrib = (w / (total || 1)) * ret;
-                return (
-                  <div
-                    key={a.key}
-                    className="flex items-center justify-between py-2.5 border-b border-ink-line last:border-0"
-                  >
-                    <span className="flex items-center gap-2 text-xs text-paper-dim min-w-0">
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ background: a.color }}
-                      />
-                      <span className="truncate">{a.name}</span>
-                      <span className="num shrink-0 opacity-60">
-                        {w}% @ {sign(ret)}{ret}%
-                      </span>
-                    </span>
-                    <span
-                      className={`num text-xs shrink-0 ml-3 ${
-                        contrib >= 0 ? "text-gain" : "text-loss"
-                      }`}
+              {mergedAssets
+                .filter((a) => (weights[a.key] ?? 0) > 0)
+                .map((a) => {
+                  const w = weights[a.key] ?? 0;
+                  const ret = ALT_KEYS.has(a.key)
+                    ? (a.regimeReturns?.[activeRegime] ?? 0)
+                    : (regime.returns[a.key] ?? 0);
+                  const contrib = (w / (total || 1)) * ret;
+                  return (
+                    <div
+                      key={a.key}
+                      className="flex items-center justify-between py-2.5 border-b border-ink-line last:border-0"
                     >
-                      {sign(contrib)}{contrib.toFixed(1)}pp
-                    </span>
-                  </div>
-                );
-              })}
+                      <span className="flex items-center gap-2 text-xs text-paper-dim min-w-0">
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ background: a.color }}
+                        />
+                        <span className="truncate">{a.name}</span>
+                        <span className="num shrink-0 opacity-60">
+                          {w}% @ {sign(ret)}{ret}%
+                        </span>
+                      </span>
+                      <span
+                        className={`num text-xs shrink-0 ml-3 ${
+                          contrib >= 0 ? "text-gain" : "text-loss"
+                        }`}
+                      >
+                        {sign(contrib)}{contrib.toFixed(1)}pp
+                      </span>
+                    </div>
+                  );
+                })}
             </div>
           </div>
 
@@ -611,10 +758,19 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
             Pick a regime, adjust the sliders, or click "Naive" vs "True" risk parity to compare
             a 1/vol-only allocation against one that also accounts for how assets move together.
             Try the same allocation across all four quadrants to find which regime it's most
-            exposed to.
+            exposed to. Alternative assets use your configured assumptions — click ⚙ to set them.
           </p>
         </div>
       </div>
+
+      {/* Alt configuration panel — renders as a modal overlay */}
+      {editingAlt && (
+        <AltConfigPanel
+          asset={editingAlt}
+          onSave={(assumptions) => handleAltSave(editingAlt.key, assumptions)}
+          onClose={() => setEditingAltKey(null)}
+        />
+      )}
     </div>
   );
 }
