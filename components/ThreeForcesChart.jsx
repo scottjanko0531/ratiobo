@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useMemo } from "react";
 import {
-  ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid,
+  ComposedChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import { supabase } from "../lib/supabase";
@@ -165,13 +165,15 @@ export default function ThreeForcesChart() {
             dot={false}
             connectNulls
           />
-          <Bar
+          <Line
             yAxisId="pct"
+            type="monotone"
             dataKey="debtGrowthYoy"
-            name="Total Debt Growth YoY %"
-            fill={CYCLE_COLOR}
-            fillOpacity={0.45}
-            radius={[2, 2, 0, 0]}
+            name="Short-Term Debt Growth YoY %"
+            stroke={CYCLE_COLOR}
+            strokeWidth={1.5}
+            dot={false}
+            connectNulls
           />
         </ComposedChart>
       </ResponsiveContainer>
