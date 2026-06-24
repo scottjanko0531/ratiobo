@@ -71,7 +71,7 @@ export default function TransactionsPage() {
     ] = await Promise.all([
       supabase
         .from("transactions")
-        .select("*, holdings(id, symbol, name, asset_type, account_id, accounts(id, name))")
+        .select("*, holding:holdings!holding_id(id, symbol, name, asset_type, account_id, accounts(id, name))")
         .order("txn_date", { ascending: false })
         .order("created_at", { ascending: false }),
       supabase.from("holdings").select("id, symbol, name, asset_type, account_id, accounts(name)").order("symbol"),
@@ -112,7 +112,7 @@ export default function TransactionsPage() {
       : "";
 
   // ── Edit form derived values ────────────────────────────────────────────
-  const editIsCash = editingTxn?.holdings?.asset_type === "cash";
+  const editIsCash = editingTxn?.holding?.asset_type === "cash";
   const editType = txnTypes.find((t) => t.code === editForm.txn_type);
   const editIsUnit = editType?.affects_quantity !== 0 && editType != null && !editIsCash;
 
@@ -120,13 +120,13 @@ export default function TransactionsPage() {
   const filtersActive = filterTypes.length + filterAccounts.length + filterHoldings.length > 0;
   const filtered = (txns ?? []).filter((t) => {
     if (filterTypes.length && !filterTypes.includes(t.txn_type)) return false;
-    if (filterAccounts.length && !filterAccounts.includes(t.holdings?.account_id ?? "none")) return false;
+    if (filterAccounts.length && !filterAccounts.includes(t.holding?.account_id ?? "none")) return false;
     if (filterHoldings.length && !filterHoldings.includes(t.holding_id)) return false;
     return true;
   });
 
   const uniqueTypes = [...new Set((txns ?? []).map((t) => t.txn_type))].sort();
-  const uniqueAccountIds = [...new Set((txns ?? []).map((t) => t.holdings?.account_id).filter(Boolean))];
+  const uniqueAccountIds = [...new Set((txns ?? []).map((t) => t.holding?.account_id).filter(Boolean))];
   const uniqueHoldingIds = [...new Set((txns ?? []).map((t) => t.holding_id))];
 
   // ── Save add ───────────────────────────────────────────────────────────
@@ -196,7 +196,7 @@ export default function TransactionsPage() {
     setEditBusy(true);
     setEditError("");
     const txn = editingTxn;
-    const isCash = txn.holdings?.asset_type === "cash";
+    const isCash = txn.holding?.asset_type === "cash";
     const newAmount = editForm.amount !== "" ? Number(editForm.amount) : null;
     const newFees = editForm.fees === "" ? 0 : Number(editForm.fees);
     const newQty = isCash ? newAmount : editForm.quantity === "" ? null : Number(editForm.quantity);
@@ -239,7 +239,7 @@ export default function TransactionsPage() {
   async function deleteTxn(txn) {
     setMenuOpenId(null);
     if (!confirm(`Delete this ${txn.txn_type} transaction from ${txn.txn_date}?`)) return;
-    const isCash = txn.holdings?.asset_type === "cash";
+    const isCash = txn.holding?.asset_type === "cash";
     const affects = txnTypes.find((t) => t.code === txn.txn_type)?.affects_quantity ?? 0;
     const delta = isCash ? cashAmount(txn.txn_type, txn.amount, txn.fees) : affects * (Number(txn.quantity) || 0);
     if (delta !== 0) {
@@ -421,7 +421,7 @@ export default function TransactionsPage() {
                   </tr>
                 )}
                 {filtered.map((t) => {
-                  const h = t.holdings;
+                  const h = t.holding;
                   return (
                     <tr
                       key={t.id}
@@ -691,11 +691,11 @@ export default function TransactionsPage() {
                 <div>
                   <p className="font-medium">Edit transaction</p>
                   <p className="text-xs text-paper-dim mt-0.5">
-                    {editingTxn.holdings?.asset_type === "cash"
-                      ? `Cash — ${editingTxn.holdings?.accounts?.name ?? "—"}`
-                      : `${editingTxn.holdings?.symbol ?? "—"}`}
-                    {editingTxn.holdings?.accounts?.name && editingTxn.holdings?.asset_type !== "cash"
-                      ? ` · ${editingTxn.holdings.accounts.name}`
+                    {editingTxn.holding?.asset_type === "cash"
+                      ? `Cash — ${editingTxn.holding?.accounts?.name ?? "—"}`
+                      : `${editingTxn.holding?.symbol ?? "—"}`}
+                    {editingTxn.holding?.accounts?.name && editingTxn.holding?.asset_type !== "cash"
+                      ? ` · ${editingTxn.holding.accounts.name}`
                       : ""}
                   </p>
                 </div>
