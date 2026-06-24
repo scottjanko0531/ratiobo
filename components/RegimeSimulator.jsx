@@ -432,8 +432,17 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
           disabled={saving || !userId}
           className="btn py-1.5 text-sm shrink-0"
         >
-          {saving ? "Saving…" : currentSavedId ? "Save" : "Save allocation"}
+          {saving ? "Saving…" : currentSavedId ? "Save" : "Save as new"}
         </button>
+        {currentSavedId && userId && (
+          <button
+            onClick={() => { setCurrentSavedId(null); setAllocationName("New Scenario"); }}
+            className="btn-ghost py-1.5 text-sm shrink-0"
+            title="Start a new scenario from the current allocation"
+          >
+            + New
+          </button>
+        )}
         {savedAllocations.length > 0 && (
           <div className="relative shrink-0" ref={loadMenuRef}>
             <button
