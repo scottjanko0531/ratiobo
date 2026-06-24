@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from "react";
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, ReferenceLine,
+  Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea,
 } from "recharts";
 import { supabase } from "../lib/supabase";
 
@@ -15,9 +15,17 @@ const RANGES = [
 
 const BASE_YEAR = 1952;
 
-const DEBT_COLOR   = "#C9A227"; // brass
-const PROD_COLOR   = "#3FB984"; // gain
-const CYCLE_COLOR  = "#E0635C"; // loss
+const DEBT_COLOR  = "#C9A227"; // brass
+const PROD_COLOR  = "#3FB984"; // gain
+const CYCLE_COLOR = "#E0635C"; // loss
+
+// Four long-cycle debt phases — vertical background zones
+const CYCLE_ZONES = [
+  { x1: 1952, x2: 1969, label: "Post-War Boom",   fill: "#3FB984", opacity: 0.06 },
+  { x1: 1970, x2: 1982, label: "Stagflation",      fill: "#C9A227", opacity: 0.07 },
+  { x1: 1983, x2: 2007, label: "Great Moderation", fill: "#3FB984", opacity: 0.05 },
+  { x1: 2008, x2: 2026, label: "Post-GFC Cycle",   fill: "#E0635C", opacity: 0.07 },
+];
 
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
@@ -138,6 +146,27 @@ export default function ThreeForcesChart() {
             tickFormatter={(v) => `${v}%`}
             label={{ value: "Debt growth YoY %", angle: 90, position: "insideRight", offset: 12, fill: "#A8ADB8", fontSize: 10 }}
           />
+          {/* Vertical phase zones — rendered first so they sit behind everything */}
+          {CYCLE_ZONES.map((z) => {
+            const x1 = Math.max(z.x1, range);
+            if (x1 >= z.x2) return null;
+            return (
+              <ReferenceArea
+                key={z.label}
+                yAxisId="idx"
+                x1={x1}
+                x2={z.x2}
+                fill={z.fill}
+                fillOpacity={z.opacity}
+                stroke="none"
+                label={
+                  x1 === z.x1
+                    ? { value: z.label, position: "insideTopLeft", fontSize: 9, fill: "#A8ADB8", dy: 6, dx: 4 }
+                    : { value: z.label, position: "insideTopLeft", fontSize: 9, fill: "#A8ADB8", dy: 6, dx: 4 }
+                }
+              />
+            );
+          })}
           <Tooltip content={<CustomTooltip />} />
           <Legend
             wrapperStyle={{ fontSize: 12, paddingTop: 12 }}
@@ -181,7 +210,7 @@ export default function ThreeForcesChart() {
       <p className="text-[10px] text-paper-dim mt-3 leading-relaxed">
         Both index lines are rebased to the start year = 100, so their divergence shows relative growth regardless of unit.
         The gap between the debt line and productivity line is the core of Dalio's thesis: debt has grown faster than real productive capacity.
-        Bars show annual short-term credit cycle oscillations (YoY total nonfinancial debt growth).
+        The red line shows annual short-term credit cycle oscillations (YoY total nonfinancial debt growth).
         Sources: Federal Reserve Z.1, BLS via FRED.
       </p>
     </div>
