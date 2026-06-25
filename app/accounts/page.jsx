@@ -310,7 +310,7 @@ export default function AccountsPage() {
     setViewingAccount(account);
     setDetailBusy(true);
     const today = new Date().toISOString().slice(0, 10);
-    const [{ data }, { data: snaps }, { data: incomeTxns }] = await Promise.all([
+    const [{ data }, { data: snaps }] = await Promise.all([
       supabase
         .from("holdings_valued")
         .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain")
@@ -322,24 +322,27 @@ export default function AccountsPage() {
         .select("holding_id, market_value")
         .eq("account_id", account.id)
         .eq("snapshot_date", today),
-      supabase
-        .from("transactions")
-        .select("holding_id, txn_type, amount, is_reinvested")
-        .eq("account_id", account.id)
-        .in("txn_type", ["dividend", "interest"])
     ]);
     setAccountHoldings(data ?? []);
     const snapMap = {};
     for (const s of snaps ?? []) snapMap[s.holding_id] = Number(s.market_value ?? 0);
     setHoldingSnapshots(snapMap);
+    const holdingIds = (data ?? []).map((h) => h.id);
     const incomeMap = {};
     const reinvestedMap = {};
-    for (const t of incomeTxns ?? []) {
-      const amt = Number(t.amount ?? 0);
-      if (t.is_reinvested) {
-        reinvestedMap[t.holding_id] = (reinvestedMap[t.holding_id] ?? 0) + amt;
-      } else {
-        incomeMap[t.holding_id] = (incomeMap[t.holding_id] ?? 0) + amt;
+    if (holdingIds.length > 0) {
+      const { data: incomeTxns } = await supabase
+        .from("transactions")
+        .select("holding_id, txn_type, amount, is_reinvested")
+        .in("holding_id", holdingIds)
+        .in("txn_type", ["dividend", "interest"]);
+      for (const t of incomeTxns ?? []) {
+        const amt = Number(t.amount ?? 0);
+        if (t.is_reinvested) {
+          reinvestedMap[t.holding_id] = (reinvestedMap[t.holding_id] ?? 0) + amt;
+        } else {
+          incomeMap[t.holding_id] = (incomeMap[t.holding_id] ?? 0) + amt;
+        }
       }
     }
     setHoldingIncomeMap(incomeMap);
@@ -1249,38 +1252,59 @@ export default function AccountsPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-px border-b border-ink-line">
-                {[
-                  { label: "Cash", value: totalsByAccount[viewingAccount.id]?.cash ?? 0 },
-                  { label: "Holdings", value: totalsByAccount[viewingAccount.id]?.holdings ?? 0 },
-                  { label: "Total", value: (totalsByAccount[viewingAccount.id]?.cash ?? 0) + (totalsByAccount[viewingAccount.id]?.holdings ?? 0) },
-                ].map(({ label, value }) => (
-                  <div key={label} className="px-5 py-4">
-                    <p className="label mb-1">{label}</p>
-                    <p className="num text-base font-medium">{usd(value)}</p>
-                  </div>
-                ))}
-                <div className="px-5 py-4">
-                  <p className="label mb-1">Income</p>
-                  <p className="num text-base font-medium">
-                    {usd(Object.values(holdingIncomeMap).reduce((s, v) => s + v, 0))}
-                  </p>
-                </div>
-                <div className="px-5 py-4">
-                  <p className="label mb-1">Day Chg</p>
-                  {(() => {
-                    const snap = accountSnapshotTotals[viewingAccount.id];
-                    if (snap == null) return <p className="num text-base font-medium text-paper-dim">—</p>;
-                    const cur = (totalsByAccount[viewingAccount.id]?.cash ?? 0) + (totalsByAccount[viewingAccount.id]?.holdings ?? 0);
-                    const dc = cur - snap;
-                    return (
-                      <p className={`num text-base font-medium ${dc > 0 ? "text-gain" : dc < 0 ? "text-loss" : ""}`}>
-                        {dc > 0 ? "+" : ""}{usd(dc)}
+              {(() => {
+                const acctIncome = Object.values(holdingIncomeMap).reduce((s, v) => s + v, 0);
+                const acctReinvested = Object.values(holdingReinvestedMap).reduce((s, v) => s + v, 0);
+                const acctNetGain = accountHoldings.reduce((s, h) => s + Number(h.net_gain ?? 0), 0);
+                const acctTotalGain = acctNetGain + acctReinvested + acctIncome;
+                const acctCostBasis = accountHoldings.reduce((s, h) => s + Number(h.cost_basis ?? 0), 0);
+                const acctOCB = acctCostBasis - acctReinvested;
+                const acctTotalReturnPct = acctOCB > 0 ? acctTotalGain / acctOCB * 100 : null;
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-7 gap-px border-b border-ink-line">
+                    {[
+                      { label: "Cash", value: totalsByAccount[viewingAccount.id]?.cash ?? 0 },
+                      { label: "Holdings", value: totalsByAccount[viewingAccount.id]?.holdings ?? 0 },
+                      { label: "Total", value: (totalsByAccount[viewingAccount.id]?.cash ?? 0) + (totalsByAccount[viewingAccount.id]?.holdings ?? 0) },
+                    ].map(({ label, value }) => (
+                      <div key={label} className="px-3 py-3">
+                        <p className="text-[10px] uppercase tracking-wide text-paper-dim mb-0.5">{label}</p>
+                        <p className="num text-sm font-medium">{usd(value)}</p>
+                      </div>
+                    ))}
+                    <div className="px-3 py-3">
+                      <p className="text-[10px] uppercase tracking-wide text-paper-dim mb-0.5">Income</p>
+                      <p className="num text-sm font-medium">{usd(acctIncome)}</p>
+                    </div>
+                    <div className="px-3 py-3">
+                      <p className="text-[10px] uppercase tracking-wide text-paper-dim mb-0.5">Total Gain</p>
+                      <p className={`num text-sm font-medium ${acctTotalGain > 0 ? "text-gain" : acctTotalGain < 0 ? "text-loss" : ""}`}>
+                        {acctTotalGain > 0 ? "+" : ""}{usd(acctTotalGain)}
                       </p>
-                    );
-                  })()}
-                </div>
-              </div>
+                    </div>
+                    <div className="px-3 py-3">
+                      <p className="text-[10px] uppercase tracking-wide text-paper-dim mb-0.5">Total Return</p>
+                      <p className={`num text-sm font-medium ${acctTotalReturnPct != null && acctTotalReturnPct > 0 ? "text-gain" : acctTotalReturnPct != null && acctTotalReturnPct < 0 ? "text-loss" : ""}`}>
+                        {acctTotalReturnPct != null ? `${acctTotalReturnPct > 0 ? "+" : ""}${acctTotalReturnPct.toFixed(2)}%` : "—"}
+                      </p>
+                    </div>
+                    <div className="px-3 py-3">
+                      <p className="text-[10px] uppercase tracking-wide text-paper-dim mb-0.5">Day Chg</p>
+                      {(() => {
+                        const snap = accountSnapshotTotals[viewingAccount.id];
+                        if (snap == null) return <p className="num text-sm font-medium text-paper-dim">—</p>;
+                        const cur = (totalsByAccount[viewingAccount.id]?.cash ?? 0) + (totalsByAccount[viewingAccount.id]?.holdings ?? 0);
+                        const dc = cur - snap;
+                        return (
+                          <p className={`num text-sm font-medium ${dc > 0 ? "text-gain" : dc < 0 ? "text-loss" : ""}`}>
+                            {dc > 0 ? "+" : ""}{usd(dc)}
+                          </p>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="px-5 py-4">
                 <div className="flex gap-5">
