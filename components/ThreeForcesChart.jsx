@@ -20,10 +20,10 @@ const PROD_COLOR  = "#3FB984";
 const CYCLE_COLOR = "#E0635C";
 
 const QUADRANT_FILL = {
-  goldilocks:  { fill: "#3FB984", opacity: 0.18, label: "Goldilocks (Growth↑/Inflation↓)", short: "Goldilocks" },
-  reflation:   { fill: "#C9A227", opacity: 0.20, label: "Reflation (Growth↑/Inflation↑)",  short: "Reflation" },
-  stagflation: { fill: "#E0635C", opacity: 0.18, label: "Stagflation (Growth↓/Inflation↑)", short: "Stagflation" },
-  bust:        { fill: "#A8ADB8", opacity: 0.20, label: "Deflationary Bust (Growth↓/Inflation↓)", short: "Bust" },
+  goldilocks:  { fill: "#3FB984", opacity: 0.18, label: "Q4: Disinflationary Boom (Growth↑/Inflation↓)", short: "Disinfl. Boom" },
+  reflation:   { fill: "#C9A227", opacity: 0.20, label: "Q2: Reflation (Growth↑/Inflation↑)",            short: "Reflation" },
+  stagflation: { fill: "#E0635C", opacity: 0.18, label: "Q1: Stagflation (Growth↓/Inflation↑)",          short: "Stagflation" },
+  bust:        { fill: "#A8ADB8", opacity: 0.20, label: "Q3: Deflationary Bust (Growth↓/Inflation↓)",    short: "Defl. Bust" },
 };
 
 function ZoneLabel({ viewBox, text, fill }) {
