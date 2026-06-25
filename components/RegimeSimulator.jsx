@@ -63,11 +63,18 @@ const QUAD_ORDER = ["fg_ri", "rg_ri", "fg_fi", "rg_fi"];
 
 const EQUITY_KEYS = new Set(["eq", "intl", "em"]);
 
-const DEFAULT_WEIGHTS = {
-  eq: 30, intl: 15, em: 5, nb: 25, tip: 10, com: 10, gld: 3, cash: 2,
-  // Alt assets start at 0 so they don't affect existing allocations.
-  alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0,
+// Recommended market-asset allocations per regime, derived from the return
+// estimates above — overweight assets with regime return ≥ 5%, underweight
+// or zero assets with negative regime returns. Alts always start at 0.
+const REGIME_DEFAULT_WEIGHTS = {
+  rg_fi: { eq: 35, intl: 15, em: 10, nb: 20, tip:  5, com:  5, gld:  5, cash:  5, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
+  rg_ri: { eq: 20, intl: 10, em: 20, nb:  0, tip: 15, com: 20, gld: 10, cash:  5, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
+  fg_ri: { eq:  5, intl:  5, em:  0, nb:  0, tip: 20, com: 30, gld: 30, cash: 10, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
+  fg_fi: { eq:  5, intl:  5, em:  0, nb: 50, tip: 15, com:  0, gld: 15, cash: 10, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
 };
+
+// Balanced default used only before a regime is chosen (fresh page load with no saved allocation)
+const DEFAULT_WEIGHTS = REGIME_DEFAULT_WEIGHTS.rg_fi;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -226,12 +233,22 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
   }, [showLoadMenu]);
 
   function applyAllocation(alloc) {
-    setWeights({ ...DEFAULT_WEIGHTS, ...alloc.weights });
+    const regime = alloc.active_regime ?? "rg_ri";
+    setWeights({ ...REGIME_DEFAULT_WEIGHTS[regime], ...alloc.weights });
     setLeverageEnabled(Boolean(alloc.leverage_enabled));
     setTargetVol(Number(alloc.target_vol));
-    setActiveRegime(alloc.active_regime ?? "rg_ri");
+    setActiveRegime(regime);
     setCurrentSavedId(alloc.id);
     setAllocationName(alloc.name ?? "My Allocation");
+  }
+
+  function selectRegime(key) {
+    setActiveRegime(key);
+    setWeights({ ...REGIME_DEFAULT_WEIGHTS[key] });
+  }
+
+  function resetToDefaults() {
+    setWeights({ ...REGIME_DEFAULT_WEIGHTS[activeRegime] });
   }
 
   async function saveAllocation() {
@@ -462,13 +479,20 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
         </button>
         {currentSavedId && userId && (
           <button
-            onClick={() => { setCurrentSavedId(null); setAllocationName("New Scenario"); }}
+            onClick={() => { setCurrentSavedId(null); setAllocationName("New Scenario"); resetToDefaults(); }}
             className="btn-ghost py-1.5 text-sm shrink-0"
-            title="Start a new scenario from the current allocation"
+            title="Start a new scenario with regime defaults"
           >
             + New
           </button>
         )}
+        <button
+          onClick={resetToDefaults}
+          className="btn-ghost py-1.5 text-sm shrink-0"
+          title="Reset sliders to current regime's recommended defaults"
+        >
+          Reset
+        </button>
         {savedAllocations.length > 0 && (
           <div className="relative shrink-0" ref={loadMenuRef}>
             <button
@@ -709,7 +733,7 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
                   key={key}
                   regimeKey={key}
                   isActive={activeRegime === key}
-                  onClick={() => setActiveRegime(key)}
+                  onClick={() => selectRegime(key)}
                 />
               ))}
             </div>
