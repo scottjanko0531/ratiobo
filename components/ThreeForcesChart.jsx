@@ -136,6 +136,11 @@ export default function ThreeForcesChart() {
     return computeZoneBands(raw.debt, range);
   }, [raw, range]);
 
+  const maxDataYear = useMemo(
+    () => (chartData.length ? chartData[chartData.length - 1].year : range),
+    [chartData, range]
+  );
+
   if (loading) {
     return (
       <div className="h-64 flex items-center justify-center text-paper-dim text-sm">
@@ -179,12 +184,12 @@ export default function ThreeForcesChart() {
           <XAxis
             dataKey="year"
             type="number"
-            domain={[range, (dataMax) => dataMax + 1]}
+            domain={[range, maxDataYear + 1]}
             allowDecimals={false}
             tick={{ fill: "#A8ADB8", fontSize: 11 }}
             tickLine={false}
             axisLine={false}
-            tickFormatter={(v) => String(v)}
+            tickFormatter={(v) => v <= maxDataYear ? String(v) : ""}
             interval="preserveStartEnd"
           />
           <YAxis
