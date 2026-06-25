@@ -3,7 +3,13 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
-import { LABEL_TO_KEYS, SIMULATOR_KEYS, holdingsToWeights } from "../../lib/simulatorKeys";
+import {
+  SIMULATOR_KEYS,
+  QUADRANT_SIGNAL_KEYS,
+  REGIME_META,
+  detectRegimeKey,
+  resolveSimulatorKey,
+} from "../../lib/simulatorKeys";
 
 const LAYER_NAMES = {
   1: "Long-term Debt Cycle",
@@ -12,32 +18,7 @@ const LAYER_NAMES = {
   4: "Tail Risk",
 };
 
-const QUADRANTS = {
-  "growing-falling": {
-    label: "Q1 — Goldilocks",
-    description: "Accelerating growth + Falling inflation",
-    color: "text-gain",
-    assets: ["Equities", "Corporate Bonds", "Real Estate"],
-  },
-  "growing-rising": {
-    label: "Q2 — Reflation",
-    description: "Accelerating growth + Rising inflation",
-    color: "text-brass",
-    assets: ["Commodities", "TIPS", "EM Equities", "Energy"],
-  },
-  "contracting-falling": {
-    label: "Q3 — Deflation",
-    description: "Decelerating growth + Falling inflation",
-    color: "text-paper-dim",
-    assets: ["Nominal Bonds", "USD", "Cash", "Gold"],
-  },
-  "contracting-rising": {
-    label: "Q4 — Stagflation",
-    description: "Decelerating growth + Rising inflation",
-    color: "text-loss",
-    assets: ["Gold", "Hard Assets", "TIPS", "Short Duration"],
-  },
-};
+const KEY_LABEL = Object.fromEntries(SIMULATOR_KEYS.map((s) => [s.key, s.label]));
 
 const STATUS_STYLE = {
   healthy: { text: "text-gain", bg: "bg-gain/10", border: "border-gain/20" },
@@ -214,49 +195,72 @@ function IndicatorCard({ ind, onSave }) {
   );
 }
 
-const KEY_LABEL = Object.fromEntries(SIMULATOR_KEYS.map((s) => [s.key, s.label]));
-
-function QuadrantCard({ indicators, portfolioWeights }) {
+function QuadrantCard({ indicators, holdings }) {
   const gdp = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi = indicators.find((i) => i.name === "CPI (YoY)");
   const ism = indicators.find((i) => i.name === "ISM Manufacturing PMI");
 
-  const growing = gdp?.current_value != null ? Number(gdp.current_value) > 0 : null;
-  const risingInflation = cpi?.current_value != null ? Number(cpi.current_value) > 2.5 : null;
+  // Detect regime from live indicator values
+  const regimeKey =
+    gdp?.current_value != null && cpi?.current_value != null
+      ? detectRegimeKey(Number(gdp.current_value), Number(cpi.current_value))
+      : null;
 
-  let quadrantKey = null;
-  if (growing != null && risingInflation != null) {
-    quadrantKey = `${growing ? "growing" : "contracting"}-${risingInflation ? "rising" : "falling"}`;
+  const regime = regimeKey ? REGIME_META[regimeKey] : null;
+  const signalKeys = regimeKey ? QUADRANT_SIGNAL_KEYS[regimeKey] : [];
+  const favoredSet = new Set(signalKeys);
+
+  // Group holdings by resolved simulator key
+  const byKey = {};
+  let grandTotal = 0;
+  for (const h of holdings ?? []) {
+    const val = Number(h.current_value ?? 0);
+    if (val <= 0) continue;
+    const key = resolveSimulatorKey(h);
+    if (!key) continue;
+    if (!byKey[key]) byKey[key] = { holdings: [], total: 0 };
+    byKey[key].holdings.push(h);
+    byKey[key].total += val;
+    grandTotal += val;
   }
 
-  const q = quadrantKey ? QUADRANTS[quadrantKey] : null;
+  const pct = (val) => (grandTotal > 0 ? Math.round((val / grandTotal) * 100) : 0);
 
-  // Derive favored keys, aligned %, and outlier buckets from portfolio
-  let favoredKeys = new Set();
-  let alignedPct = 0;
-  let outliers = [];
+  // Favored buckets: all signal keys, whether or not portfolio has them
+  const favoredBuckets = signalKeys.map((k) => ({
+    key: k,
+    label: KEY_LABEL[k] ?? k,
+    total: byKey[k]?.total ?? 0,
+    pct: pct(byKey[k]?.total ?? 0),
+    holdings: byKey[k]?.holdings ?? [],
+  }));
 
-  if (q && portfolioWeights) {
-    q.assets.forEach((a) => (LABEL_TO_KEYS[a] ?? []).forEach((k) => favoredKeys.add(k)));
-    alignedPct = [...favoredKeys].reduce((s, k) => s + (portfolioWeights[k] ?? 0), 0);
-    outliers = Object.entries(portfolioWeights)
-      .filter(([k, w]) => w > 0 && !favoredKeys.has(k))
-      .sort((a, b) => b[1] - a[1])
-      .map(([k, w]) => ({ key: k, label: KEY_LABEL[k] ?? k, weight: w }));
-  }
+  // Outside-signal buckets: portfolio weight in non-favored keys, sorted by weight desc
+  const outsideBuckets = Object.entries(byKey)
+    .filter(([k]) => !favoredSet.has(k))
+    .map(([k, data]) => ({
+      key: k,
+      label: KEY_LABEL[k] ?? k,
+      pct: pct(data.total),
+      holdings: data.holdings,
+    }))
+    .sort((a, b) => b.pct - a.pct);
 
-  const outsidePct = outliers.reduce((s, o) => s + o.weight, 0);
+  const alignedPct = favoredBuckets.reduce((s, b) => s + b.pct, 0);
+  const outsidePct = outsideBuckets.reduce((s, b) => s + b.pct, 0);
+  const hasPortfolio = holdings && holdings.length > 0;
 
   return (
     <div className="card p-5 mb-6">
-      <p className="label mb-3">Current Macro Quadrant</p>
-      {q ? (
+      <p className="label mb-3">Current Macro Regime</p>
+      {regime ? (
         <div className="space-y-5">
-          {/* Quadrant label + key indicators */}
+
+          {/* Regime label + key indicators */}
           <div className="flex items-start justify-between flex-wrap gap-4">
             <div>
-              <p className={`text-2xl font-bold ${q.color}`}>{q.label}</p>
-              <p className="text-paper-dim text-sm mt-1">{q.description}</p>
+              <p className={`text-2xl font-bold ${regime.color}`}>{regime.label}</p>
+              <p className="text-paper-dim text-sm mt-1">{regime.desc}</p>
             </div>
             <div className="flex flex-wrap gap-2">
               {[
@@ -272,53 +276,61 @@ function QuadrantCard({ indicators, portfolioWeights }) {
             </div>
           </div>
 
-          {/* Positioning signal + portfolio exposure */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-            {/* Favored categories */}
-            <div>
-              <p className="label mb-2">Positioning Signal — Favored</p>
-              <div className="flex flex-wrap gap-2">
-                {q.assets.map((a) => {
-                  const keys = LABEL_TO_KEYS[a] ?? [];
-                  const exposure = portfolioWeights
-                    ? keys.reduce((s, k) => s + (portfolioWeights[k] ?? 0), 0)
-                    : null;
-                  return (
-                    <div key={a} className="flex flex-col items-center px-2.5 py-1.5 rounded-lg bg-brass/10 border border-brass/20 min-w-[80px]">
-                      <span className="text-brass-soft text-xs font-medium text-center">{a}</span>
-                      {exposure != null && (
-                        <span className={`text-[10px] num mt-0.5 ${exposure > 0 ? "text-gain" : "text-paper-dim"}`}>
-                          {exposure > 0 ? `${exposure}%` : "—"}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Outlier / outside-signal holdings */}
-            <div>
-              <p className="label mb-2">Outside Signal{outliers.length > 0 ? ` — ${outsidePct}% of portfolio` : ""}</p>
-              {outliers.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {outliers.map(({ key, label, weight }) => (
-                    <div key={key} className="flex flex-col items-center px-2.5 py-1.5 rounded-lg bg-loss/10 border border-loss/20 min-w-[80px]">
-                      <span className="text-loss/80 text-xs font-medium text-center">{label}</span>
-                      <span className="text-[10px] num mt-0.5 text-loss">{weight}%</span>
-                    </div>
-                  ))}
+          {/* Signal categories */}
+          <div>
+            <p className="label mb-2">Positioning Signal — Favored Categories</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+              {favoredBuckets.map((b) => (
+                <div
+                  key={b.key}
+                  className={`rounded-lg border p-2.5 ${b.pct > 0 ? "bg-brass/10 border-brass/20" : "bg-ink-soft border-ink-line opacity-60"}`}
+                >
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <span className={`text-xs font-medium truncate ${b.pct > 0 ? "text-brass-soft" : "text-paper-dim"}`}>{b.label}</span>
+                    <span className={`num text-xs shrink-0 ${b.pct > 0 ? "text-gain" : "text-paper-dim"}`}>
+                      {b.pct > 0 ? `${b.pct}%` : "—"}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-paper-dim truncate">
+                    {b.holdings.length > 0
+                      ? [b.holdings.slice(0, 3).map((h) => h.symbol).join(", "), b.holdings.length > 3 ? `+${b.holdings.length - 3}` : ""].filter(Boolean).join(" ")
+                      : "no holdings"}
+                  </p>
                 </div>
-              ) : portfolioWeights ? (
-                <p className="text-paper-dim text-xs">All holdings aligned with signal.</p>
-              ) : (
-                <p className="text-paper-dim text-xs">Tag holdings with a simulator bucket to see exposure.</p>
-              )}
+              ))}
             </div>
           </div>
 
-          {/* Alignment summary bar */}
-          {portfolioWeights && (
+          {/* Outside-signal holdings */}
+          <div>
+            <p className="label mb-2">
+              Outside Signal{outsideBuckets.length > 0 ? ` · ${outsidePct}% of portfolio` : ""}
+            </p>
+            {outsideBuckets.length > 0 ? (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                {outsideBuckets.map((b) => (
+                  <div key={b.key} className="rounded-lg border bg-loss/10 border-loss/20 p-2.5">
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className="text-xs font-medium text-loss/80 truncate">{b.label}</span>
+                      <span className="num text-xs text-loss shrink-0">{b.pct}%</span>
+                    </div>
+                    <p className="text-[10px] text-paper-dim truncate">
+                      {[b.holdings.slice(0, 3).map((h) => h.symbol).join(", "), b.holdings.length > 3 ? `+${b.holdings.length - 3}` : ""].filter(Boolean).join(" ")}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : hasPortfolio ? (
+              <p className="text-xs text-paper-dim">All classified holdings align with the current signal.</p>
+            ) : (
+              <p className="text-xs text-paper-dim">
+                Set a simulator bucket on your holdings to see portfolio exposure here.
+              </p>
+            )}
+          </div>
+
+          {/* Alignment bar */}
+          {hasPortfolio && (grandTotal > 0) && (
             <div>
               <div className="flex justify-between text-[10px] text-paper-dim mb-1">
                 <span>Signal aligned <span className="num text-gain">{alignedPct}%</span></span>
@@ -330,12 +342,13 @@ function QuadrantCard({ indicators, portfolioWeights }) {
               </div>
             </div>
           )}
+
         </div>
       ) : (
         <p className="text-paper-dim text-sm">
           {indicators.length === 0
             ? "No data yet — run the first data refresh."
-            : "Quadrant signals unclear — run Refresh Data to populate GDP and CPI."}
+            : "Regime unclear — run Refresh Data to populate GDP and CPI."}
         </p>
       )}
     </div>
@@ -348,7 +361,7 @@ export default function MacroDashboard() {
   const [indicators, setIndicators] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [portfolioWeights, setPortfolioWeights] = useState(null);
+  const [portfolioHoldings, setPortfolioHoldings] = useState([]);
 
   const fetchIndicators = useCallback(async () => {
     const { data, error: err } = await supabase
@@ -366,10 +379,9 @@ export default function MacroDashboard() {
       if (!user) return;
       const { data } = await supabase
         .from("holdings_valued")
-        .select("simulator_key, asset_type, current_value")
+        .select("id, symbol, name, simulator_key, asset_type, current_value")
         .eq("user_id", user.id);
-      const weights = holdingsToWeights(data ?? []);
-      if (weights) setPortfolioWeights(weights);
+      setPortfolioHoldings(data ?? []);
     });
   }, []);
 
@@ -453,7 +465,7 @@ export default function MacroDashboard() {
         <p className="text-paper-dim text-sm py-12 text-center">Loading…</p>
       ) : (
         <>
-          <QuadrantCard indicators={indicators} portfolioWeights={portfolioWeights} />
+          <QuadrantCard indicators={indicators} holdings={portfolioHoldings} />
 
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[
