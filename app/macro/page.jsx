@@ -5,10 +5,11 @@ import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
 import {
   SIMULATOR_KEYS,
-  QUADRANT_SIGNAL_KEYS,
+  REGIME_DEFAULT_WEIGHTS,
   REGIME_META,
   detectRegimeKey,
   resolveSimulatorKey,
+  getSignalKeys,
 } from "../../lib/simulatorKeys";
 
 const LAYER_NAMES = {
@@ -207,8 +208,9 @@ function QuadrantCard({ indicators, holdings }) {
       : null;
 
   const regime = regimeKey ? REGIME_META[regimeKey] : null;
-  const signalKeys = regimeKey ? QUADRANT_SIGNAL_KEYS[regimeKey] : [];
+  const signalKeys = regimeKey ? getSignalKeys(regimeKey) : [];
   const favoredSet = new Set(signalKeys);
+  const regimeWeights = regimeKey ? REGIME_DEFAULT_WEIGHTS[regimeKey] : {};
 
   // Group holdings by resolved simulator key
   const byKey = {};
@@ -285,9 +287,16 @@ function QuadrantCard({ indicators, holdings }) {
                   key={b.key}
                   className={`rounded-lg border p-2.5 ${b.pct > 0 ? "bg-brass/10 border-brass/20" : "bg-ink-soft border-ink-line opacity-60"}`}
                 >
-                  <div className="flex items-center justify-between gap-1 mb-1">
+                  <div className="flex items-center justify-between gap-1 mb-1.5">
                     <span className={`text-xs font-medium truncate ${b.pct > 0 ? "text-brass-soft" : "text-paper-dim"}`}>{b.label}</span>
-                    <span className={`num text-xs shrink-0 ${b.pct > 0 ? "text-gain" : "text-paper-dim"}`}>
+                  </div>
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <span className="text-[10px] text-paper-dim">Suggested</span>
+                    <span className="num text-[10px] text-brass-soft">{regimeWeights[b.key] ?? 0}%</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <span className="text-[10px] text-paper-dim">Portfolio</span>
+                    <span className={`num text-[10px] ${b.pct > 0 ? "text-gain" : "text-paper-dim"}`}>
                       {b.pct > 0 ? `${b.pct}%` : "—"}
                     </span>
                   </div>

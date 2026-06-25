@@ -16,7 +16,7 @@ import {
   saveAltAssumption,
 } from "../lib/altAssets";
 import AltConfigPanel from "./AltConfigPanel";
-import { holdingsToWeights } from "../lib/simulatorKeys";
+import { REGIME_DEFAULT_WEIGHTS, holdingsToWeights } from "../lib/simulatorKeys";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -63,17 +63,7 @@ const QUAD_ORDER = ["fg_ri", "rg_ri", "fg_fi", "rg_fi"];
 
 const EQUITY_KEYS = new Set(["eq", "intl", "em"]);
 
-// Recommended market-asset allocations per regime, derived from the return
-// estimates above — overweight assets with regime return ≥ 5%, underweight
-// or zero assets with negative regime returns. Alts always start at 0.
-const REGIME_DEFAULT_WEIGHTS = {
-  rg_fi: { eq: 35, intl: 15, em: 10, nb: 20, tip:  5, com:  5, gld:  5, cash:  5, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
-  rg_ri: { eq: 20, intl: 10, em: 20, nb:  0, tip: 15, com: 20, gld: 10, cash:  5, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
-  fg_ri: { eq:  5, intl:  5, em:  0, nb:  0, tip: 20, com: 30, gld: 30, cash: 10, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
-  fg_fi: { eq:  5, intl:  5, em:  0, nb: 50, tip: 15, com:  0, gld: 15, cash: 10, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
-};
-
-// Balanced default used only before a regime is chosen (fresh page load with no saved allocation)
+// Fresh-page default before a saved allocation is loaded (Disinflationary Boom as neutral baseline)
 const DEFAULT_WEIGHTS = REGIME_DEFAULT_WEIGHTS.rg_fi;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
