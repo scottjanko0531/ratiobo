@@ -88,6 +88,8 @@ export default function AccountsPage() {
 
   const [viewingAccount, setViewingAccount] = useState(null);
   const [accountHoldings, setAccountHoldings] = useState([]);
+  const [holdingIncomeMap, setHoldingIncomeMap] = useState({});
+  const [holdingReinvestedMap, setHoldingReinvestedMap] = useState({});
   const [detailBusy, setDetailBusy] = useState(false);
 
   const [viewingHolding, setViewingHolding] = useState(null);
@@ -308,7 +310,7 @@ export default function AccountsPage() {
     setViewingAccount(account);
     setDetailBusy(true);
     const today = new Date().toISOString().slice(0, 10);
-    const [{ data }, { data: snaps }] = await Promise.all([
+    const [{ data }, { data: snaps }, { data: incomeTxns }] = await Promise.all([
       supabase
         .from("holdings_valued")
         .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain")
@@ -319,12 +321,29 @@ export default function AccountsPage() {
         .from("portfolio_snapshots")
         .select("holding_id, market_value")
         .eq("account_id", account.id)
-        .eq("snapshot_date", today)
+        .eq("snapshot_date", today),
+      supabase
+        .from("transactions")
+        .select("holding_id, txn_type, amount, is_reinvested")
+        .eq("account_id", account.id)
+        .in("txn_type", ["dividend", "interest"])
     ]);
     setAccountHoldings(data ?? []);
     const snapMap = {};
     for (const s of snaps ?? []) snapMap[s.holding_id] = Number(s.market_value ?? 0);
     setHoldingSnapshots(snapMap);
+    const incomeMap = {};
+    const reinvestedMap = {};
+    for (const t of incomeTxns ?? []) {
+      const amt = Number(t.amount ?? 0);
+      if (t.is_reinvested) {
+        reinvestedMap[t.holding_id] = (reinvestedMap[t.holding_id] ?? 0) + amt;
+      } else {
+        incomeMap[t.holding_id] = (incomeMap[t.holding_id] ?? 0) + amt;
+      }
+    }
+    setHoldingIncomeMap(incomeMap);
+    setHoldingReinvestedMap(reinvestedMap);
     setDetailBusy(false);
   }
 
@@ -340,6 +359,8 @@ export default function AccountsPage() {
     setAddHoldingForm({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "" });
     setAddHoldingError("");
     setHoldingSnapshots({});
+    setHoldingIncomeMap({});
+    setHoldingReinvestedMap({});
   }
 
   async function openHoldingDetail(holding) {
@@ -1228,17 +1249,23 @@ export default function AccountsPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-px border-b border-ink-line">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-px border-b border-ink-line">
                 {[
-                  { label: "Cash", value: totalsByAccount[viewingAccount.id]?.cash ?? 0, colored: false },
-                  { label: "Holdings", value: totalsByAccount[viewingAccount.id]?.holdings ?? 0, colored: false },
-                  { label: "Total", value: (totalsByAccount[viewingAccount.id]?.cash ?? 0) + (totalsByAccount[viewingAccount.id]?.holdings ?? 0), colored: false },
+                  { label: "Cash", value: totalsByAccount[viewingAccount.id]?.cash ?? 0 },
+                  { label: "Holdings", value: totalsByAccount[viewingAccount.id]?.holdings ?? 0 },
+                  { label: "Total", value: (totalsByAccount[viewingAccount.id]?.cash ?? 0) + (totalsByAccount[viewingAccount.id]?.holdings ?? 0) },
                 ].map(({ label, value }) => (
                   <div key={label} className="px-5 py-4">
                     <p className="label mb-1">{label}</p>
                     <p className="num text-base font-medium">{usd(value)}</p>
                   </div>
                 ))}
+                <div className="px-5 py-4">
+                  <p className="label mb-1">Income</p>
+                  <p className="num text-base font-medium">
+                    {usd(Object.values(holdingIncomeMap).reduce((s, v) => s + v, 0))}
+                  </p>
+                </div>
                 <div className="px-5 py-4">
                   <p className="label mb-1">Day Chg</p>
                   {(() => {
@@ -1326,17 +1353,19 @@ export default function AccountsPage() {
                         <tr className="border-b border-ink-line">
                           <th className="w-8 py-2"></th>
                           <th className="label text-left font-medium py-2 pr-4">Symbol</th>
-                          <th className="label text-left font-medium py-2 pr-4">Name</th>
                           <th className="label text-left font-medium py-2 pr-4">Type</th>
                           <th className="label text-right font-medium py-2 pr-2">Qty</th>
                           <th className="label text-right font-medium py-2 pr-2">Value</th>
-                          <th className="label text-right font-medium py-2 pr-2">Gain</th>
+                          <th className="label text-right font-medium py-2 pr-2">Income</th>
+                          <th className="label text-right font-medium py-2 pr-2">Total Gain</th>
                           <th className="label text-right font-medium py-2">Day Chg</th>
                         </tr>
                       </thead>
                       <tbody>
                         {filteredHoldings.map((h) => {
-                          const gain = Number(h.net_gain ?? 0);
+                          const income = holdingIncomeMap[h.id] ?? 0;
+                          const reinvested = holdingReinvestedMap[h.id] ?? 0;
+                          const totalGain = Number(h.net_gain ?? 0) + reinvested + income;
                           const snapVal = holdingSnapshots[h.id];
                           const dayChg = snapVal != null ? Number(h.current_value ?? 0) - snapVal : null;
                           return (
@@ -1380,13 +1409,18 @@ export default function AccountsPage() {
                                   document.body
                                 )}
                               </td>
-                              <td className="py-2.5 pr-4 font-medium">{h.symbol}</td>
-                              <td className="py-2.5 pr-4 text-paper-dim">{h.name ?? "—"}</td>
+                              <td className="py-2.5 pr-4">
+                                <span className="font-medium">{h.symbol}</span>
+                                {h.name && <span className="block text-xs text-paper-dim leading-tight">{h.name}</span>}
+                              </td>
                               <td className="py-2.5 pr-4 label">{h.asset_type}</td>
                               <td className="num text-right py-2.5 pr-2">{Number(h.quantity ?? 0).toLocaleString("en-US", { maximumFractionDigits: 8 })}</td>
                               <td className="num text-right py-2.5 pr-2">{usd(h.current_value)}</td>
-                              <td className={`num text-right py-2.5 pr-2 ${gain > 0 ? "text-gain" : gain < 0 ? "text-loss" : "text-paper-dim"}`}>
-                                {gain > 0 ? "+" : ""}{usd(gain)}
+                              <td className="num text-right py-2.5 pr-2 text-paper-dim">
+                                {income > 0 ? usd(income) : "—"}
+                              </td>
+                              <td className={`num text-right py-2.5 pr-2 ${totalGain > 0 ? "text-gain" : totalGain < 0 ? "text-loss" : "text-paper-dim"}`}>
+                                {totalGain > 0 ? "+" : ""}{usd(totalGain)}
                               </td>
                               <td className={`num text-right py-2.5 ${dayChg == null ? "text-paper-dim" : dayChg > 0 ? "text-gain" : dayChg < 0 ? "text-loss" : "text-paper-dim"}`}>
                                 {dayChg == null ? "—" : `${dayChg > 0 ? "+" : ""}${usd(dayChg)}`}
