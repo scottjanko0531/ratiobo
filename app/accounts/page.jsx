@@ -115,7 +115,7 @@ export default function AccountsPage() {
   const [filterTxnTypes, setFilterTxnTypes] = useState([]);
 
   const [addingTransaction, setAddingTransaction] = useState(false);
-  const [addTxnForm, setAddTxnForm] = useState({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "" });
+  const [addTxnForm, setAddTxnForm] = useState({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "", reinvest: false, reinvest_quantity: "", reinvest_price: "" });
   const [addTxnError, setAddTxnError] = useState("");
   const [addTxnBusy, setAddTxnBusy] = useState(false);
 
@@ -379,7 +379,7 @@ export default function AccountsPage() {
     setShowTxnFilter(false);
     setFilterTxnTypes([]);
     setAddingTransaction(false);
-    setAddTxnForm({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "" });
+    setAddTxnForm({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "", reinvest: false, reinvest_quantity: "", reinvest_price: "" });
     setAddTxnError("");
     setHoldingHistory([]);
     setShowTVChart(true);
@@ -401,37 +401,74 @@ export default function AccountsPage() {
         ? accountHoldings.find((h) => h.asset_type === "cash" && h.account_id === viewingHolding.account_id)
         : null;
 
-    const { error: txnErr } = await supabase.from("transactions").insert({
-      user_id: user.id,
-      holding_id: viewingHolding.id,
-      cash_holding_id: cashLeg?.id ?? null,
-      txn_type: addTxnForm.txn_type,
-      txn_date: addTxnForm.txn_date,
-      quantity,
-      price_per_unit: addTxnForm.price_per_unit === "" ? null : Number(addTxnForm.price_per_unit),
-      amount,
-      fees
-    });
-    if (txnErr) { setAddTxnBusy(false); setAddTxnError(txnErr.message); return; }
+    // Dividend reinvestment: two paired transactions — dividend in, then buy back
+    if (addTxnForm.txn_type === "dividend" && addTxnForm.reinvest && !isCashHolding) {
+      const reinvestQty   = Number(addTxnForm.reinvest_quantity);
+      const reinvestPrice = addTxnForm.reinvest_price !== "" ? Number(addTxnForm.reinvest_price) : null;
 
-    const delta = isCashHolding
-      ? cashAmount(addTxnForm.txn_type, amount, fees)
-      : (selectedType?.affects_quantity ?? 0) * (quantity ?? 0);
-    if (delta !== 0) {
+      const { error: divErr } = await supabase.from("transactions").insert({
+        user_id: user.id,
+        holding_id: viewingHolding.id,
+        cash_holding_id: cashLeg?.id ?? null,
+        txn_type: "dividend",
+        txn_date: addTxnForm.txn_date,
+        quantity: null,
+        price_per_unit: null,
+        amount,
+        fees: 0,
+      });
+      if (divErr) { setAddTxnBusy(false); setAddTxnError(divErr.message); return; }
+
+      const { error: buyErr } = await supabase.from("transactions").insert({
+        user_id: user.id,
+        holding_id: viewingHolding.id,
+        cash_holding_id: cashLeg?.id ?? null,
+        txn_type: "buy",
+        txn_date: addTxnForm.txn_date,
+        quantity: reinvestQty,
+        price_per_unit: reinvestPrice,
+        amount,
+        fees: 0,
+      });
+      if (buyErr) { setAddTxnBusy(false); setAddTxnError(buyErr.message); return; }
+
       const { data: h } = await supabase.from("holdings").select("quantity").eq("id", viewingHolding.id).single();
-      if (h) await supabase.from("holdings").update({ quantity: Number(h.quantity) + delta }).eq("id", viewingHolding.id);
-    }
-    if (cashLeg) {
-      const cashDelta = cashAmount(addTxnForm.txn_type, amount, fees);
-      if (cashDelta !== 0) {
-        const { data: ch } = await supabase.from("holdings").select("quantity").eq("id", cashLeg.id).single();
-        if (ch) await supabase.from("holdings").update({ quantity: Number(ch.quantity) + cashDelta }).eq("id", cashLeg.id);
+      if (h) await supabase.from("holdings").update({ quantity: Number(h.quantity) + reinvestQty }).eq("id", viewingHolding.id);
+      // Cash net = 0 (dividend +amount, buy -amount), no cash holding update needed
+
+    } else {
+      const { error: txnErr } = await supabase.from("transactions").insert({
+        user_id: user.id,
+        holding_id: viewingHolding.id,
+        cash_holding_id: cashLeg?.id ?? null,
+        txn_type: addTxnForm.txn_type,
+        txn_date: addTxnForm.txn_date,
+        quantity,
+        price_per_unit: addTxnForm.price_per_unit === "" ? null : Number(addTxnForm.price_per_unit),
+        amount,
+        fees
+      });
+      if (txnErr) { setAddTxnBusy(false); setAddTxnError(txnErr.message); return; }
+
+      const delta = isCashHolding
+        ? cashAmount(addTxnForm.txn_type, amount, fees)
+        : (selectedType?.affects_quantity ?? 0) * (quantity ?? 0);
+      if (delta !== 0) {
+        const { data: h } = await supabase.from("holdings").select("quantity").eq("id", viewingHolding.id).single();
+        if (h) await supabase.from("holdings").update({ quantity: Number(h.quantity) + delta }).eq("id", viewingHolding.id);
+      }
+      if (cashLeg) {
+        const cashDelta = cashAmount(addTxnForm.txn_type, amount, fees);
+        if (cashDelta !== 0) {
+          const { data: ch } = await supabase.from("holdings").select("quantity").eq("id", cashLeg.id).single();
+          if (ch) await supabase.from("holdings").update({ quantity: Number(ch.quantity) + cashDelta }).eq("id", cashLeg.id);
+        }
       }
     }
 
     setAddTxnBusy(false);
     setAddingTransaction(false);
-    setAddTxnForm({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "" });
+    setAddTxnForm({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "", reinvest: false, reinvest_quantity: "", reinvest_price: "" });
     load();
     await openHoldingDetail(viewingHolding);
   }
@@ -755,6 +792,7 @@ export default function AccountsPage() {
   const selectedAddTxnType = txnTypes.find((t) => t.code === addTxnForm.txn_type);
   const isCashHoldingAdd = viewingHolding?.asset_type === "cash";
   const isUnitAddTxn = selectedAddTxnType?.affects_quantity !== 0 && selectedAddTxnType != null && !isCashHoldingAdd;
+  const isReinvestDividend = addTxnForm.txn_type === "dividend" && !isCashHoldingAdd;
   const addTxnCashLeg =
     viewingHolding && !isCashHoldingAdd && viewingHolding.account_id && CASH_LEG_TYPES.has(addTxnForm.txn_type)
       ? accountHoldings.find((h) => h.asset_type === "cash" && h.account_id === viewingHolding.account_id)
@@ -1778,6 +1816,45 @@ export default function AccountsPage() {
               />
             </div>
           </div>
+          {isReinvestDividend && (
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="accent-brass w-4 h-4"
+                  checked={addTxnForm.reinvest}
+                  onChange={(e) => setAddTxnForm({ ...addTxnForm, reinvest: e.target.checked })}
+                />
+                <span className="text-sm text-paper">Re-Invest dividend</span>
+              </label>
+              {addTxnForm.reinvest && (
+                <div className="grid grid-cols-2 gap-3 mt-3">
+                  <div>
+                    <label className="label block mb-1.5">Shares purchased</label>
+                    <input
+                      className="field num"
+                      type="number"
+                      step="any"
+                      placeholder="0.000"
+                      value={addTxnForm.reinvest_quantity}
+                      onChange={(e) => setAddTxnForm({ ...addTxnForm, reinvest_quantity: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="label block mb-1.5">Price / share</label>
+                    <input
+                      className="field num"
+                      type="number"
+                      step="any"
+                      placeholder="optional"
+                      value={addTxnForm.reinvest_price}
+                      onChange={(e) => setAddTxnForm({ ...addTxnForm, reinvest_price: e.target.value })}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {(() => {
             const amt = parseFloat(addTxnForm.amount);
             const fee = parseFloat(addTxnForm.fees) || 0;
@@ -1796,7 +1873,12 @@ export default function AccountsPage() {
             <button
               className="btn flex-1"
               onClick={saveAddTransaction}
-              disabled={addTxnBusy || !addTxnForm.txn_type || !addTxnForm.txn_date}
+              disabled={
+                addTxnBusy ||
+                !addTxnForm.txn_type ||
+                !addTxnForm.txn_date ||
+                (addTxnForm.reinvest && !addTxnForm.reinvest_quantity)
+              }
             >
               {addTxnBusy ? "Saving…" : "Record transaction"}
             </button>
