@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
+import { LABEL_TO_KEYS, holdingsToWeights } from "../../lib/simulatorKeys";
 
 const LAYER_NAMES = {
   1: "Long-term Debt Cycle",
@@ -213,7 +214,7 @@ function IndicatorCard({ ind, onSave }) {
   );
 }
 
-function QuadrantCard({ indicators }) {
+function QuadrantCard({ indicators, portfolioWeights }) {
   const gdp = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi = indicators.find((i) => i.name === "CPI (YoY)");
   const ism = indicators.find((i) => i.name === "ISM Manufacturing PMI");
@@ -249,15 +250,31 @@ function QuadrantCard({ indicators }) {
               ))}
             </div>
           </div>
-          <div>
-            <p className="label mb-2">Positioning Signal</p>
-            <div className="flex flex-wrap gap-2">
-              {q.assets.map((a) => (
-                <span key={a} className="px-2.5 py-1 rounded-lg bg-brass/10 border border-brass/20 text-brass-soft text-xs font-medium">
-                  {a}
-                </span>
-              ))}
+          <div className="space-y-3">
+            <div>
+              <p className="label mb-2">Positioning Signal</p>
+              <div className="flex flex-wrap gap-2">
+                {q.assets.map((a) => {
+                  const keys = LABEL_TO_KEYS[a] ?? [];
+                  const exposure = portfolioWeights
+                    ? keys.reduce((s, k) => s + (portfolioWeights[k] ?? 0), 0)
+                    : null;
+                  return (
+                    <div key={a} className="flex flex-col items-center px-2.5 py-1.5 rounded-lg bg-brass/10 border border-brass/20 min-w-[72px]">
+                      <span className="text-brass-soft text-xs font-medium">{a}</span>
+                      {exposure != null && (
+                        <span className={`text-[10px] num mt-0.5 ${exposure > 0 ? "text-gain" : "text-paper-dim"}`}>
+                          {exposure > 0 ? `${exposure}%` : "—"}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
+            {portfolioWeights && (
+              <p className="text-[10px] text-paper-dim">% = your portfolio weight in that category</p>
+            )}
           </div>
         </div>
       ) : (
@@ -277,6 +294,7 @@ export default function MacroDashboard() {
   const [indicators, setIndicators] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [portfolioWeights, setPortfolioWeights] = useState(null);
 
   const fetchIndicators = useCallback(async () => {
     const { data, error: err } = await supabase
@@ -288,6 +306,18 @@ export default function MacroDashboard() {
   }, []);
 
   useEffect(() => { fetchIndicators(); }, [fetchIndicators]);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) return;
+      const { data } = await supabase
+        .from("holdings_valued")
+        .select("simulator_key, asset_type, current_value")
+        .eq("user_id", user.id);
+      const weights = holdingsToWeights(data ?? []);
+      if (weights) setPortfolioWeights(weights);
+    });
+  }, []);
 
   async function refreshData() {
     setRefreshing(true);
@@ -369,7 +399,7 @@ export default function MacroDashboard() {
         <p className="text-paper-dim text-sm py-12 text-center">Loading…</p>
       ) : (
         <>
-          <QuadrantCard indicators={indicators} />
+          <QuadrantCard indicators={indicators} portfolioWeights={portfolioWeights} />
 
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[

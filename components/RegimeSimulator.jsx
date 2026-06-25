@@ -16,6 +16,7 @@ import {
   saveAltAssumption,
 } from "../lib/altAssets";
 import AltConfigPanel from "./AltConfigPanel";
+import { holdingsToWeights } from "../lib/simulatorKeys";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -284,6 +285,31 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
     }
   }
 
+  // ── Load from portfolio ──────────────────────────────────────────────────
+
+  const [portfolioLoading, setPortfolioLoading] = useState(false);
+  const [portfolioMsg, setPortfolioMsg] = useState("");
+
+  async function loadFromPortfolio() {
+    if (!userId) return;
+    setPortfolioLoading(true);
+    setPortfolioMsg("");
+    const { data } = await supabase
+      .from("holdings_valued")
+      .select("simulator_key, asset_type, current_value")
+      .eq("user_id", userId);
+    setPortfolioLoading(false);
+    const computed = holdingsToWeights(data ?? []);
+    if (!computed) {
+      setPortfolioMsg("No classifiable holdings found.");
+      setTimeout(() => setPortfolioMsg(""), 3000);
+      return;
+    }
+    setWeights((prev) => ({ ...prev, ...computed }));
+    setPortfolioMsg("Loaded!");
+    setTimeout(() => setPortfolioMsg(""), 2500);
+  }
+
   // ── Alt asset integration ────────────────────────────────────────────────
 
   // Build resolved alt asset objects (vol, profile, regimeReturns) from saved assumptions + defaults.
@@ -473,12 +499,22 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
             )}
           </div>
         )}
+        {userId && (
+          <button
+            onClick={loadFromPortfolio}
+            disabled={portfolioLoading}
+            className="btn-ghost py-1.5 text-sm shrink-0"
+            title="Set sliders from your actual holdings"
+          >
+            {portfolioLoading ? "Loading…" : "From Portfolio"}
+          </button>
+        )}
         {!userId && (
           <span className="text-xs text-paper-dim">Sign in to save</span>
         )}
-        {saveMsg && (
-          <span className={`text-xs shrink-0 ${saveMsg === "Saved!" ? "text-gain" : "text-loss"}`}>
-            {saveMsg}
+        {(saveMsg || portfolioMsg) && (
+          <span className={`text-xs shrink-0 ${saveMsg === "Saved!" || portfolioMsg === "Loaded!" ? "text-gain" : "text-loss"}`}>
+            {saveMsg || portfolioMsg}
           </span>
         )}
       </div>

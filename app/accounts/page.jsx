@@ -6,6 +6,7 @@ import {
 } from "recharts";
 import { supabase } from "../../lib/supabase";
 import { cashAmount, CASH_LEG_TYPES } from "../../lib/cash";
+import { SIMULATOR_KEYS, defaultSimulatorKey } from "../../lib/simulatorKeys";
 import Shell from "../../components/Shell";
 
 const usd = (n) =>
@@ -99,7 +100,7 @@ export default function AccountsPage() {
   const [holdingMenuOpenId, setHoldingMenuOpenId] = useState(null);
   const [holdingMenuPos, setHoldingMenuPos] = useState({ top: 0, left: 0 });
   const [editingHolding, setEditingHolding] = useState(null);
-  const [editHoldingForm, setEditHoldingForm] = useState({ symbol: "", name: "", asset_type: "", quantity: "", price_override: "" });
+  const [editHoldingForm, setEditHoldingForm] = useState({ symbol: "", name: "", asset_type: "", quantity: "", price_override: "", simulator_key: "" });
   const [editHoldingError, setEditHoldingError] = useState("");
   const [editHoldingBusy, setEditHoldingBusy] = useState(false);
 
@@ -313,7 +314,7 @@ export default function AccountsPage() {
     const [{ data }, { data: snaps }] = await Promise.all([
       supabase
         .from("holdings_valued")
-        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain")
+        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain, simulator_key")
         .eq("account_id", account.id)
         .order("asset_type")
         .order("symbol"),
@@ -506,7 +507,8 @@ export default function AccountsPage() {
       name: holding.name ?? "",
       asset_type: holding.asset_type ?? "",
       quantity: holding.quantity != null ? String(holding.quantity) : "",
-      price_override: holding.price_override != null ? String(holding.price_override) : ""
+      price_override: holding.price_override != null ? String(holding.price_override) : "",
+      simulator_key: holding.simulator_key ?? "",
     });
     setEditHoldingError("");
     setHoldingMenuOpenId(null);
@@ -527,7 +529,8 @@ export default function AccountsPage() {
       asset_type: editHoldingForm.asset_type,
       price_override: isManual && editHoldingForm.price_override !== ""
         ? Number(editHoldingForm.price_override)
-        : null
+        : null,
+      simulator_key: editHoldingForm.simulator_key || null,
     };
     if (!isMarket) {
       updates.quantity = editHoldingForm.quantity === "" ? 0 : Number(editHoldingForm.quantity);
@@ -2100,6 +2103,20 @@ export default function AccountsPage() {
             >
               {assetTypes.map((t) => (
                 <option key={t.code} value={t.code}>{t.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label block mb-1.5" htmlFor="eh-simkey">Simulator bucket</label>
+            <select
+              id="eh-simkey"
+              className="field"
+              value={editHoldingForm.simulator_key}
+              onChange={(e) => setEditHoldingForm({ ...editHoldingForm, simulator_key: e.target.value })}
+            >
+              <option value="">Auto ({defaultSimulatorKey(editHoldingForm.asset_type) ?? "unclassified"})</option>
+              {SIMULATOR_KEYS.map((s) => (
+                <option key={s.key} value={s.key}>{s.label}</option>
               ))}
             </select>
           </div>

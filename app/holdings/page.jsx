@@ -6,6 +6,7 @@ import {
 } from "recharts";
 import { supabase } from "../../lib/supabase";
 import { cashAmount, CASH_LEG_TYPES } from "../../lib/cash";
+import { SIMULATOR_KEYS, defaultSimulatorKey } from "../../lib/simulatorKeys";
 import Shell from "../../components/Shell";
 
 const usd = (n) =>
@@ -90,7 +91,7 @@ export default function HoldingsPage() {
 
   // Edit holding drawer
   const [editingHolding, setEditingHolding] = useState(null);
-  const [editForm, setEditForm] = useState({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", price_override: "" });
+  const [editForm, setEditForm] = useState({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", price_override: "", simulator_key: "" });
   const [editError, setEditError] = useState("");
   const [editBusy, setEditBusy] = useState(false);
 
@@ -248,7 +249,8 @@ export default function HoldingsPage() {
       asset_type: holding.asset_type ?? "",
       account_id: holding.account_id ?? "",
       quantity: holding.quantity != null ? String(holding.quantity) : "",
-      price_override: holding.price_override != null ? String(holding.price_override) : ""
+      price_override: holding.price_override != null ? String(holding.price_override) : "",
+      simulator_key: holding.simulator_key ?? "",
     });
     setEditError("");
     setMenuOpenId(null);
@@ -268,7 +270,8 @@ export default function HoldingsPage() {
       name: editForm.name || null,
       asset_type: editForm.asset_type,
       account_id: editForm.account_id || null,
-      price_override: isManual && editForm.price_override !== "" ? Number(editForm.price_override) : null
+      price_override: isManual && editForm.price_override !== "" ? Number(editForm.price_override) : null,
+      simulator_key: editForm.simulator_key || null,
     };
     if (!isMarket) updates.quantity = editForm.quantity === "" ? 0 : Number(editForm.quantity);
     const { error } = await supabase
@@ -901,6 +904,19 @@ export default function HoldingsPage() {
                   <option value="">Select…</option>
                   {assetTypes.map((t) => (
                     <option key={t.code} value={t.code}>{t.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label block mb-1.5">Simulator bucket</label>
+                <select
+                  className="field"
+                  value={editForm.simulator_key}
+                  onChange={(e) => { const v = e.target.value; setEditForm((prev) => ({ ...prev, simulator_key: v })); }}
+                >
+                  <option value="">Auto ({defaultSimulatorKey(editForm.asset_type) ?? "unclassified"})</option>
+                  {SIMULATOR_KEYS.map((s) => (
+                    <option key={s.key} value={s.key}>{s.label}</option>
                   ))}
                 </select>
               </div>
