@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
-import { LABEL_TO_KEYS, holdingsToWeights } from "../../lib/simulatorKeys";
+import { LABEL_TO_KEYS, SIMULATOR_KEYS, holdingsToWeights } from "../../lib/simulatorKeys";
 
 const LAYER_NAMES = {
   1: "Long-term Debt Cycle",
@@ -214,6 +214,8 @@ function IndicatorCard({ ind, onSave }) {
   );
 }
 
+const KEY_LABEL = Object.fromEntries(SIMULATOR_KEYS.map((s) => [s.key, s.label]));
+
 function QuadrantCard({ indicators, portfolioWeights }) {
   const gdp = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi = indicators.find((i) => i.name === "CPI (YoY)");
@@ -229,15 +231,34 @@ function QuadrantCard({ indicators, portfolioWeights }) {
 
   const q = quadrantKey ? QUADRANTS[quadrantKey] : null;
 
+  // Derive favored keys, aligned %, and outlier buckets from portfolio
+  let favoredKeys = new Set();
+  let alignedPct = 0;
+  let outliers = [];
+
+  if (q && portfolioWeights) {
+    q.assets.forEach((a) => (LABEL_TO_KEYS[a] ?? []).forEach((k) => favoredKeys.add(k)));
+    alignedPct = [...favoredKeys].reduce((s, k) => s + (portfolioWeights[k] ?? 0), 0);
+    outliers = Object.entries(portfolioWeights)
+      .filter(([k, w]) => w > 0 && !favoredKeys.has(k))
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, w]) => ({ key: k, label: KEY_LABEL[k] ?? k, weight: w }));
+  }
+
+  const outsidePct = outliers.reduce((s, o) => s + o.weight, 0);
+
   return (
     <div className="card p-5 mb-6">
       <p className="label mb-3">Current Macro Quadrant</p>
       {q ? (
-        <div className="flex items-start justify-between flex-wrap gap-6">
-          <div>
-            <p className={`text-2xl font-bold ${q.color}`}>{q.label}</p>
-            <p className="text-paper-dim text-sm mt-1">{q.description}</p>
-            <div className="mt-3 flex flex-wrap gap-2">
+        <div className="space-y-5">
+          {/* Quadrant label + key indicators */}
+          <div className="flex items-start justify-between flex-wrap gap-4">
+            <div>
+              <p className={`text-2xl font-bold ${q.color}`}>{q.label}</p>
+              <p className="text-paper-dim text-sm mt-1">{q.description}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
               {[
                 { name: "GDP Growth", value: gdp?.current_value, unit: "%" },
                 { name: "CPI YoY",    value: cpi?.current_value, unit: "%" },
@@ -250,9 +271,12 @@ function QuadrantCard({ indicators, portfolioWeights }) {
               ))}
             </div>
           </div>
-          <div className="space-y-3">
+
+          {/* Positioning signal + portfolio exposure */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            {/* Favored categories */}
             <div>
-              <p className="label mb-2">Positioning Signal</p>
+              <p className="label mb-2">Positioning Signal — Favored</p>
               <div className="flex flex-wrap gap-2">
                 {q.assets.map((a) => {
                   const keys = LABEL_TO_KEYS[a] ?? [];
@@ -260,8 +284,8 @@ function QuadrantCard({ indicators, portfolioWeights }) {
                     ? keys.reduce((s, k) => s + (portfolioWeights[k] ?? 0), 0)
                     : null;
                   return (
-                    <div key={a} className="flex flex-col items-center px-2.5 py-1.5 rounded-lg bg-brass/10 border border-brass/20 min-w-[72px]">
-                      <span className="text-brass-soft text-xs font-medium">{a}</span>
+                    <div key={a} className="flex flex-col items-center px-2.5 py-1.5 rounded-lg bg-brass/10 border border-brass/20 min-w-[80px]">
+                      <span className="text-brass-soft text-xs font-medium text-center">{a}</span>
                       {exposure != null && (
                         <span className={`text-[10px] num mt-0.5 ${exposure > 0 ? "text-gain" : "text-paper-dim"}`}>
                           {exposure > 0 ? `${exposure}%` : "—"}
@@ -272,10 +296,40 @@ function QuadrantCard({ indicators, portfolioWeights }) {
                 })}
               </div>
             </div>
-            {portfolioWeights && (
-              <p className="text-[10px] text-paper-dim">% = your portfolio weight in that category</p>
-            )}
+
+            {/* Outlier / outside-signal holdings */}
+            <div>
+              <p className="label mb-2">Outside Signal{outliers.length > 0 ? ` — ${outsidePct}% of portfolio` : ""}</p>
+              {outliers.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {outliers.map(({ key, label, weight }) => (
+                    <div key={key} className="flex flex-col items-center px-2.5 py-1.5 rounded-lg bg-loss/10 border border-loss/20 min-w-[80px]">
+                      <span className="text-loss/80 text-xs font-medium text-center">{label}</span>
+                      <span className="text-[10px] num mt-0.5 text-loss">{weight}%</span>
+                    </div>
+                  ))}
+                </div>
+              ) : portfolioWeights ? (
+                <p className="text-paper-dim text-xs">All holdings aligned with signal.</p>
+              ) : (
+                <p className="text-paper-dim text-xs">Tag holdings with a simulator bucket to see exposure.</p>
+              )}
+            </div>
           </div>
+
+          {/* Alignment summary bar */}
+          {portfolioWeights && (
+            <div>
+              <div className="flex justify-between text-[10px] text-paper-dim mb-1">
+                <span>Signal aligned <span className="num text-gain">{alignedPct}%</span></span>
+                <span>Outside signal <span className="num text-loss">{outsidePct}%</span></span>
+              </div>
+              <div className="h-1.5 rounded-full bg-ink-line overflow-hidden flex">
+                <div className="h-full bg-gain/60 transition-all" style={{ width: `${alignedPct}%` }} />
+                <div className="h-full bg-loss/50 transition-all" style={{ width: `${outsidePct}%` }} />
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <p className="text-paper-dim text-sm">
