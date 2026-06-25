@@ -10,7 +10,10 @@ import {
   detectRegimeKey,
   resolveSimulatorKey,
   getSignalKeys,
+  toIntWeights,
 } from "../../lib/simulatorKeys";
+import { getAssetData } from "../../lib/data/assetReturns";
+import { applyNaiveRiskParity, solveTrueRiskParity } from "../../lib/riskParity";
 
 const LAYER_NAMES = {
   1: "Long-term Debt Cycle",
@@ -196,7 +199,51 @@ function IndicatorCard({ ind, onSave }) {
   );
 }
 
-function QuadrantCard({ indicators, holdings }) {
+// Pure: compute suggested % per signal key using the chosen allocation method.
+// Cash is always kept at the regime-default weight and excluded from RP solving.
+function computeSuggestedPcts(regimeKey, method, assetData) {
+  const sk = getSignalKeys(regimeKey);
+  const dw = REGIME_DEFAULT_WEIGHTS[regimeKey] ?? {};
+
+  if (method === "default" || !assetData) {
+    return Object.fromEntries(sk.map((k) => [k, dw[k] ?? 0]));
+  }
+
+  const cashInSignal = sk.includes("cash");
+  const cashPct = cashInSignal ? (dw.cash ?? 0) : 0;
+  const riskKeys = sk.filter((k) => k !== "cash");
+  const budget = 100 - cashPct;
+  const signalAssets = assetData.assets.filter((a) => riskKeys.includes(a.key));
+
+  if (!signalAssets.length) return Object.fromEntries(sk.map((k) => [k, dw[k] ?? 0]));
+
+  let fractional;
+  if (method === "equal") {
+    fractional = Object.fromEntries(signalAssets.map((a) => [a.key, 1 / signalAssets.length]));
+  } else if (method === "naive") {
+    fractional = applyNaiveRiskParity(signalAssets);
+  } else {
+    const subCorr = Object.fromEntries(
+      signalAssets.map((a) => [
+        a.key,
+        Object.fromEntries(
+          signalAssets.map((b) => [
+            b.key,
+            assetData.corrMatrix[a.key]?.[b.key] ?? (a.key === b.key ? 1 : 0),
+          ])
+        ),
+      ])
+    );
+    fractional = solveTrueRiskParity(signalAssets, subCorr);
+  }
+
+  const intW = toIntWeights(fractional, budget);
+  const result = Object.fromEntries(riskKeys.map((k) => [k, intW[k] ?? 0]));
+  if (cashInSignal) result.cash = cashPct;
+  return result;
+}
+
+function QuadrantCard({ indicators, holdings, assetData }) {
   const gdp = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi = indicators.find((i) => i.name === "CPI (YoY)");
   const ism = indicators.find((i) => i.name === "ISM Manufacturing PMI");
@@ -208,9 +255,13 @@ function QuadrantCard({ indicators, holdings }) {
       : null;
 
   const regime = regimeKey ? REGIME_META[regimeKey] : null;
+  const [allocMethod, setAllocMethod] = useState("default");
+
   const signalKeys = regimeKey ? getSignalKeys(regimeKey) : [];
   const favoredSet = new Set(signalKeys);
-  const regimeWeights = regimeKey ? REGIME_DEFAULT_WEIGHTS[regimeKey] : {};
+  const suggestedPcts = regimeKey
+    ? computeSuggestedPcts(regimeKey, allocMethod, assetData)
+    : {};
 
   // Group holdings by resolved simulator key
   const byKey = {};
@@ -280,7 +331,30 @@ function QuadrantCard({ indicators, holdings }) {
 
           {/* Signal categories */}
           <div>
-            <p className="label mb-2">Positioning Signal — Favored Categories</p>
+            <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+              <p className="label">Positioning Signal — Favored Categories</p>
+              <div className="flex items-center gap-0.5">
+                {[
+                  { k: "default", l: "Default" },
+                  { k: "equal",   l: "Equal Wt" },
+                  { k: "naive",   l: "Naive RP" },
+                  { k: "true",    l: "True RP" },
+                ].map((m) => (
+                  <button
+                    key={m.k}
+                    onClick={() => setAllocMethod(m.k)}
+                    disabled={m.k !== "default" && !assetData}
+                    className={`px-2 py-0.5 text-[10px] rounded transition-colors disabled:opacity-30 ${
+                      allocMethod === m.k
+                        ? "bg-brass/20 text-brass-soft border border-brass/40"
+                        : "text-paper-dim hover:text-paper"
+                    }`}
+                  >
+                    {m.l}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
               {favoredBuckets.map((b) => (
                 <div
@@ -292,7 +366,7 @@ function QuadrantCard({ indicators, holdings }) {
                   </div>
                   <div className="flex items-center justify-between gap-1 mb-1">
                     <span className="text-[10px] text-paper-dim">Suggested</span>
-                    <span className="num text-[10px] text-brass-soft">{regimeWeights[b.key] ?? 0}%</span>
+                    <span className="num text-[10px] text-brass-soft">{suggestedPcts[b.key] ?? 0}%</span>
                   </div>
                   <div className="flex items-center justify-between gap-1 mb-1">
                     <span className="text-[10px] text-paper-dim">Portfolio</span>
@@ -371,6 +445,7 @@ export default function MacroDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [portfolioHoldings, setPortfolioHoldings] = useState([]);
+  const [assetData, setAssetData] = useState(null);
 
   const fetchIndicators = useCallback(async () => {
     const { data, error: err } = await supabase
@@ -382,6 +457,8 @@ export default function MacroDashboard() {
   }, []);
 
   useEffect(() => { fetchIndicators(); }, [fetchIndicators]);
+
+  useEffect(() => { getAssetData().then(setAssetData).catch(() => {}); }, []);
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
@@ -474,7 +551,7 @@ export default function MacroDashboard() {
         <p className="text-paper-dim text-sm py-12 text-center">Loading…</p>
       ) : (
         <>
-          <QuadrantCard indicators={indicators} holdings={portfolioHoldings} />
+          <QuadrantCard indicators={indicators} holdings={portfolioHoldings} assetData={assetData} />
 
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[
