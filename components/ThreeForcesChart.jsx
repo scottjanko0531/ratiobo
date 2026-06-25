@@ -178,9 +178,13 @@ export default function ThreeForcesChart() {
           <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
           <XAxis
             dataKey="year"
+            type="number"
+            domain={[range, (dataMax) => dataMax + 1]}
+            allowDecimals={false}
             tick={{ fill: "#A8ADB8", fontSize: 11 }}
             tickLine={false}
             axisLine={false}
+            tickFormatter={(v) => String(v)}
             interval="preserveStartEnd"
           />
           <YAxis
