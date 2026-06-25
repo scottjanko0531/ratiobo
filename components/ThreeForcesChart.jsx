@@ -20,11 +20,33 @@ const PROD_COLOR  = "#3FB984";
 const CYCLE_COLOR = "#E0635C";
 
 const QUADRANT_FILL = {
-  goldilocks:  { fill: "#3FB984", opacity: 0.08, label: "Goldilocks (Growth↑/Inflation↓)" },
-  reflation:   { fill: "#C9A227", opacity: 0.09, label: "Reflation (Growth↑/Inflation↑)" },
-  stagflation: { fill: "#E0635C", opacity: 0.08, label: "Stagflation (Growth↓/Inflation↑)" },
-  bust:        { fill: "#A8ADB8", opacity: 0.09, label: "Deflationary Bust (Growth↓/Inflation↓)" },
+  goldilocks:  { fill: "#3FB984", opacity: 0.18, label: "Goldilocks (Growth↑/Inflation↓)", short: "Goldilocks" },
+  reflation:   { fill: "#C9A227", opacity: 0.20, label: "Reflation (Growth↑/Inflation↑)",  short: "Reflation" },
+  stagflation: { fill: "#E0635C", opacity: 0.18, label: "Stagflation (Growth↓/Inflation↑)", short: "Stagflation" },
+  bust:        { fill: "#A8ADB8", opacity: 0.20, label: "Deflationary Bust (Growth↓/Inflation↓)", short: "Bust" },
 };
+
+function ZoneLabel({ viewBox, text, fill }) {
+  const { x, y, width, height } = viewBox;
+  if (width < 16) return null;
+  const cx = x + width / 2;
+  const cy = y + height * 0.18;
+  return (
+    <text
+      x={cx}
+      y={cy}
+      textAnchor="middle"
+      dominantBaseline="middle"
+      transform={`rotate(-90, ${cx}, ${cy})`}
+      fontSize={9}
+      fill={fill}
+      fillOpacity={0.75}
+      style={{ pointerEvents: "none", userSelect: "none" }}
+    >
+      {text}
+    </text>
+  );
+}
 
 function computeZoneBands(debtRows, fromYear) {
   const rows = debtRows
@@ -192,6 +214,9 @@ export default function ThreeForcesChart() {
                 fill={cfg.fill}
                 fillOpacity={cfg.opacity}
                 stroke="none"
+                label={(props) => (
+                  <ZoneLabel {...props} text={cfg.short} fill={cfg.fill} />
+                )}
               />
             );
           })}
