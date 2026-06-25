@@ -962,7 +962,7 @@ export default function HoldingsPage() {
           onClick={closeDetail}
         />
         <div
-          className={`absolute right-0 top-0 h-full w-full max-w-[864px] bg-ink-soft border-l border-ink-line overflow-y-auto transition-transform duration-300 ${
+          className={`absolute right-0 top-0 h-full w-full max-w-[1120px] bg-ink-soft border-l border-ink-line overflow-y-auto transition-transform duration-300 ${
             viewingHolding ? "translate-x-0" : "translate-x-full"
           }`}
         >
@@ -1009,23 +1009,23 @@ export default function HoldingsPage() {
               </div>
 
               {/* Summary bar */}
-              <div className="grid grid-cols-2 sm:grid-cols-7 gap-px border-b border-ink-line">
-                <div className="px-5 py-3">
-                  <p className="label mb-0.5">Qty</p>
+              <div className="grid grid-cols-2 sm:grid-cols-8 gap-px border-b border-ink-line">
+                <div className="px-3 py-3">
+                  <p className="label text-[10px] mb-0.5 uppercase tracking-wide">Qty</p>
                   <p className="num text-sm font-medium">
                     {Number(viewingHolding.quantity ?? 0).toLocaleString("en-US", { maximumFractionDigits: 8 })}
                   </p>
                 </div>
-                <div className="px-5 py-3">
-                  <p className="label mb-0.5">Cost basis</p>
+                <div className="px-3 py-3">
+                  <p className="label text-[10px] mb-0.5 uppercase tracking-wide">Cost Basis</p>
                   <p className="num text-sm font-medium">{usd(viewingHolding.cost_basis)}</p>
                 </div>
-                <div className="px-5 py-3">
-                  <p className="label mb-0.5">Value</p>
+                <div className="px-3 py-3">
+                  <p className="label text-[10px] mb-0.5 uppercase tracking-wide">Value</p>
                   <p className="num text-sm font-medium">{usd(viewingHolding.current_value)}</p>
                 </div>
-                <div className="px-5 py-3">
-                  <p className="label mb-0.5">Price Gain</p>
+                <div className="px-3 py-3">
+                  <p className="label text-[10px] mb-0.5 uppercase tracking-wide">Price Gain</p>
                   <p className={`num text-sm font-medium ${Number(viewingHolding.net_gain ?? 0) > 0 ? "text-gain" : Number(viewingHolding.net_gain ?? 0) < 0 ? "text-loss" : ""}`}>
                     {Number(viewingHolding.net_gain ?? 0) > 0 ? "+" : ""}{usd(viewingHolding.net_gain)}
                     {viewingHolding.net_gain_pct != null && (
@@ -1035,26 +1035,26 @@ export default function HoldingsPage() {
                     )}
                   </p>
                 </div>
-                <div className="px-5 py-3">
-                  <p className="label mb-0.5">Div Income</p>
+                <div className="px-3 py-3">
+                  <p className="label text-[10px] mb-0.5 uppercase tracking-wide">Div Income</p>
                   <p className={`num text-sm font-medium ${dividendIncome > 0 ? "text-gain" : "text-paper-dim"}`}>
                     {dividendIncome > 0 ? "+" : ""}{usd(dividendIncome)}
                   </p>
                 </div>
-                <div className="px-5 py-3">
-                  <p className="label mb-0.5">Total Gain</p>
+                <div className="px-3 py-3">
+                  <p className="label text-[10px] mb-0.5 uppercase tracking-wide">Total Gain</p>
                   <p className={`num text-sm font-medium ${totalGain > 0 ? "text-gain" : totalGain < 0 ? "text-loss" : ""}`}>
                     {totalGain > 0 ? "+" : ""}{usd(totalGain)}
                   </p>
                 </div>
-                <div className="px-5 py-3">
-                  <p className="label mb-0.5">Total Return</p>
+                <div className="px-3 py-3">
+                  <p className="label text-[10px] mb-0.5 uppercase tracking-wide">Total Return</p>
                   <p className={`num text-sm font-medium ${totalReturnPct == null ? "text-paper-dim" : totalReturnPct > 0 ? "text-gain" : totalReturnPct < 0 ? "text-loss" : ""}`}>
                     {totalReturnPct == null ? "—" : `${totalReturnPct > 0 ? "+" : ""}${totalReturnPct.toFixed(2)}%`}
                   </p>
                 </div>
-                <div className="px-5 py-3">
-                  <p className="label mb-0.5">Day Chg</p>
+                <div className="px-3 py-3">
+                  <p className="label text-[10px] mb-0.5 uppercase tracking-wide">Day Chg</p>
                   {(() => {
                     const snap = snapMap[viewingHolding.id];
                     if (snap == null) return <p className="num text-sm font-medium text-paper-dim">—</p>;
