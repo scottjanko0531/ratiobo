@@ -799,9 +799,15 @@ export default function AccountsPage() {
     ? holdingTransactions.filter(t => t.txn_type === "dividend" && !t.is_reinvested && t.holding_id === viewingHolding.id)
         .reduce((s, t) => s + Number(t.amount ?? 0), 0)
     : 0;
-  const totalGain = Number(viewingHolding?.net_gain ?? 0) + dividendIncome;
+  const reinvestedDividends = (!isCashHoldingAdd && viewingHolding)
+    ? holdingTransactions.filter(t => t.txn_type === "dividend" && t.is_reinvested && t.holding_id === viewingHolding.id)
+        .reduce((s, t) => s + Number(t.amount ?? 0), 0)
+    : 0;
   const costBasisNum = Number(viewingHolding?.cost_basis ?? 0);
-  const totalReturnPct = costBasisNum !== 0 ? totalGain / costBasisNum * 100 : null;
+  const originalCostBasis = costBasisNum - reinvestedDividends;
+  // Total Gain = (MV − OCB) + non-reinvested dividends = net_gain + RD + NRD
+  const totalGain = Number(viewingHolding?.net_gain ?? 0) + reinvestedDividends + dividendIncome;
+  const totalReturnPct = originalCostBasis > 0 ? totalGain / originalCostBasis * 100 : null;
   const addTxnCashLeg =
     viewingHolding && !isCashHoldingAdd && viewingHolding.account_id && CASH_LEG_TYPES.has(addTxnForm.txn_type)
       ? accountHoldings.find((h) => h.asset_type === "cash" && h.account_id === viewingHolding.account_id)

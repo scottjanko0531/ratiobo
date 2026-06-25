@@ -531,9 +531,15 @@ export default function HoldingsPage() {
     ? transactions.filter(t => t.txn_type === "dividend" && !t.is_reinvested && t.holding_id === viewingHolding.id)
         .reduce((s, t) => s + Number(t.amount ?? 0), 0)
     : 0;
-  const totalGain = Number(viewingHolding?.net_gain ?? 0) + dividendIncome;
+  const reinvestedDividends = (!isCashHoldingView && viewingHolding)
+    ? transactions.filter(t => t.txn_type === "dividend" && t.is_reinvested && t.holding_id === viewingHolding.id)
+        .reduce((s, t) => s + Number(t.amount ?? 0), 0)
+    : 0;
   const costBasisNum = Number(viewingHolding?.cost_basis ?? 0);
-  const totalReturnPct = costBasisNum !== 0 ? totalGain / costBasisNum * 100 : null;
+  const originalCostBasis = costBasisNum - reinvestedDividends;
+  // Total Gain = (MV − OCB) + non-reinvested dividends = net_gain + RD + NRD
+  const totalGain = Number(viewingHolding?.net_gain ?? 0) + reinvestedDividends + dividendIncome;
+  const totalReturnPct = originalCostBasis > 0 ? totalGain / originalCostBasis * 100 : null;
   const isAddManual = MANUAL_PRICE_TYPES.has(addForm.asset_type);
   const isAddMarket = MARKET_TYPES.has(addForm.asset_type);
   const isEditManual = MANUAL_PRICE_TYPES.has(editForm.asset_type);
