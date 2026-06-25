@@ -200,7 +200,8 @@ function IndicatorCard({ ind, onSave }) {
 }
 
 // Pure: compute suggested % per signal key using the chosen allocation method.
-// Cash is always kept at the regime-default weight and excluded from RP solving.
+// Mirrors the simulator exactly: RP runs on ALL non-cash market assets (not just
+// signal-favored ones), and cash is held at the regime default weight.
 function computeSuggestedPcts(regimeKey, method, assetData) {
   const sk = getSignalKeys(regimeKey);
   const dw = REGIME_DEFAULT_WEIGHTS[regimeKey] ?? {};
@@ -209,38 +210,38 @@ function computeSuggestedPcts(regimeKey, method, assetData) {
     return Object.fromEntries(sk.map((k) => [k, dw[k] ?? 0]));
   }
 
-  const cashInSignal = sk.includes("cash");
-  const cashPct = cashInSignal ? (dw.cash ?? 0) : 0;
-  const riskKeys = sk.filter((k) => k !== "cash");
+  const cashPct = dw.cash ?? 0;
   const budget = 100 - cashPct;
-  const signalAssets = assetData.assets.filter((a) => riskKeys.includes(a.key));
+  // Run on all 7 non-cash market assets — same pool as the simulator
+  const riskAssets = assetData.assets.filter((a) => a.key !== "cash");
 
-  if (!signalAssets.length) return Object.fromEntries(sk.map((k) => [k, dw[k] ?? 0]));
+  if (!riskAssets.length) return Object.fromEntries(sk.map((k) => [k, dw[k] ?? 0]));
 
   let fractional;
   if (method === "equal") {
-    fractional = Object.fromEntries(signalAssets.map((a) => [a.key, 1 / signalAssets.length]));
+    fractional = Object.fromEntries(riskAssets.map((a) => [a.key, 1 / riskAssets.length]));
   } else if (method === "naive") {
-    fractional = applyNaiveRiskParity(signalAssets);
+    fractional = applyNaiveRiskParity(riskAssets);
   } else {
     const subCorr = Object.fromEntries(
-      signalAssets.map((a) => [
+      riskAssets.map((a) => [
         a.key,
         Object.fromEntries(
-          signalAssets.map((b) => [
+          riskAssets.map((b) => [
             b.key,
             assetData.corrMatrix[a.key]?.[b.key] ?? (a.key === b.key ? 1 : 0),
           ])
         ),
       ])
     );
-    fractional = solveTrueRiskParity(signalAssets, subCorr);
+    fractional = solveTrueRiskParity(riskAssets, subCorr);
   }
 
   const intW = toIntWeights(fractional, budget);
-  const result = Object.fromEntries(riskKeys.map((k) => [k, intW[k] ?? 0]));
-  if (cashInSignal) result.cash = cashPct;
-  return result;
+  // Extract weights for signal-favored keys; cash stays at regime default
+  return Object.fromEntries(
+    sk.map((k) => [k, k === "cash" ? cashPct : (intW[k] ?? 0)])
+  );
 }
 
 function QuadrantCard({ indicators, holdings, assetData }) {
