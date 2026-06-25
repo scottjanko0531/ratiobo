@@ -141,6 +141,14 @@ export default function ThreeForcesChart() {
     [chartData, range]
   );
 
+  const xTicks = useMemo(() => {
+    const step = range <= 1980 ? 10 : 5;
+    const ticks = new Set();
+    for (let y = range; y <= maxDataYear; y += step) ticks.add(y);
+    ticks.add(maxDataYear);
+    return [...ticks].sort((a, b) => a - b);
+  }, [range, maxDataYear]);
+
   if (loading) {
     return (
       <div className="h-64 flex items-center justify-center text-paper-dim text-sm">
@@ -186,11 +194,12 @@ export default function ThreeForcesChart() {
             type="number"
             domain={[range, maxDataYear + 1]}
             allowDecimals={false}
+            ticks={xTicks}
             tick={{ fill: "#A8ADB8", fontSize: 11 }}
             tickLine={false}
             axisLine={false}
-            tickFormatter={(v) => v <= maxDataYear ? String(v) : ""}
-            interval="preserveStartEnd"
+            tickFormatter={(v) => String(v)}
+            interval={0}
           />
           <YAxis
             yAxisId="idx"
