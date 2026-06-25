@@ -298,8 +298,8 @@ export default function HoldingsPage() {
     setTxnBusy(true);
     const [{ data: txns }, { data: fresh }, { data: hist }] = await Promise.all([
       supabase.from("transactions")
-        .select("id, txn_type, txn_date, quantity, price_per_unit, amount, fees, cash_holding_id")
-        .eq("holding_id", holding.id)
+        .select("id, txn_type, txn_date, quantity, price_per_unit, amount, fees, cash_holding_id, holding_id")
+        .or(`holding_id.eq.${holding.id},cash_holding_id.eq.${holding.id}`)
         .order("txn_date", { ascending: false }),
       supabase.from("holdings_valued")
         .select("id, symbol, name, asset_type, account_id, quantity, price_override, cost_basis, current_value, net_gain, net_gain_pct, market_price")
@@ -1218,9 +1218,12 @@ export default function HoldingsPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {filteredTxns.map((t) => (
+                            {filteredTxns.map((t) => {
+                              const isLinked = t.holding_id !== viewingHolding?.id;
+                              return (
                               <tr key={t.id} className="border-b border-ink-line/60 last:border-0">
                                 <td className="py-2.5">
+                                  {!isLinked && (
                                   <button
                                     onClick={() => {
                                       if (txnMenuOpenId === t.id) {
@@ -1236,7 +1239,8 @@ export default function HoldingsPage() {
                                   >
                                     <KebabIcon />
                                   </button>
-                                  {txnMenuOpenId === t.id && typeof document !== "undefined" && createPortal(
+                                  )}
+                                  {!isLinked && txnMenuOpenId === t.id && typeof document !== "undefined" && createPortal(
                                     <>
                                       <div className="fixed inset-0 z-[60]" onClick={() => setTxnMenuOpenId(null)} />
                                       <div
@@ -1271,7 +1275,8 @@ export default function HoldingsPage() {
                                 <td className="num text-right py-2.5 pr-2">{usd(t.amount)}</td>
                                 <td className="num text-right py-2.5">{usd(t.fees)}</td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>

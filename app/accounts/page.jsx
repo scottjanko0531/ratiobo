@@ -347,8 +347,8 @@ export default function AccountsPage() {
     const [{ data: txns }, { data: fresh }, { data: hist }] = await Promise.all([
       supabase
         .from("transactions")
-        .select("id, txn_type, txn_date, quantity, price_per_unit, amount, fees, cash_holding_id")
-        .eq("holding_id", holding.id)
+        .select("id, txn_type, txn_date, quantity, price_per_unit, amount, fees, cash_holding_id, holding_id")
+        .or(`holding_id.eq.${holding.id},cash_holding_id.eq.${holding.id}`)
         .order("txn_date", { ascending: false }),
       supabase
         .from("holdings_valued")
@@ -1632,9 +1632,12 @@ export default function AccountsPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {filteredTransactions.map((t) => (
+                            {filteredTransactions.map((t) => {
+                              const isLinked = t.holding_id !== viewingHolding?.id;
+                              return (
                               <tr key={t.id} className="border-b border-ink-line/60 last:border-0">
                                 <td className="py-2.5">
+                                  {!isLinked && (
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -1650,7 +1653,8 @@ export default function AccountsPage() {
                                   >
                                     <KebabIcon />
                                   </button>
-                                  {txnMenuOpenId === t.id && typeof document !== "undefined" && createPortal(
+                                  )}
+                                  {!isLinked && txnMenuOpenId === t.id && typeof document !== "undefined" && createPortal(
                                     <>
                                       <div className="fixed inset-0 z-[90]" onClick={() => setTxnMenuOpenId(null)} />
                                       <div className="fixed z-[100] w-32 card p-1 shadow-lg" style={{ top: txnMenuPos.top, left: txnMenuPos.left }}>
@@ -1684,7 +1688,8 @@ export default function AccountsPage() {
                                 <td className="num text-right py-2.5 pr-3">{usd(t.amount)}</td>
                                 <td className="num text-right py-2.5">{usd(t.fees)}</td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
