@@ -348,7 +348,7 @@ export default function AccountsPage() {
     const [{ data: txns }, { data: fresh }, { data: hist }] = await Promise.all([
       supabase
         .from("transactions")
-        .select("id, txn_type, txn_date, quantity, price_per_unit, amount, fees, cash_holding_id, holding_id")
+        .select("id, txn_type, txn_date, quantity, price_per_unit, amount, fees, cash_holding_id, holding_id, is_reinvested")
         .or(`holding_id.eq.${holding.id},cash_holding_id.eq.${holding.id}`)
         .order("txn_date", { ascending: false }),
       supabase
@@ -417,6 +417,7 @@ export default function AccountsPage() {
         price_per_unit: null,
         amount,
         fees: 0,
+        is_reinvested: true,
       });
       if (divErr) { setAddTxnBusy(false); setAddTxnError(divErr.message); return; }
 
@@ -794,6 +795,13 @@ export default function AccountsPage() {
   const isCashHoldingAdd = viewingHolding?.asset_type === "cash";
   const isUnitAddTxn = selectedAddTxnType?.affects_quantity !== 0 && selectedAddTxnType != null && !isCashHoldingAdd;
   const isReinvestDividend = addTxnForm.txn_type === "dividend" && !isCashHoldingAdd;
+  const dividendIncome = (!isCashHoldingAdd && viewingHolding)
+    ? holdingTransactions.filter(t => t.txn_type === "dividend" && !t.is_reinvested && t.holding_id === viewingHolding.id)
+        .reduce((s, t) => s + Number(t.amount ?? 0), 0)
+    : 0;
+  const totalGain = Number(viewingHolding?.net_gain ?? 0) + dividendIncome;
+  const costBasisNum = Number(viewingHolding?.cost_basis ?? 0);
+  const totalReturnPct = costBasisNum !== 0 ? totalGain / costBasisNum * 100 : null;
   const addTxnCashLeg =
     viewingHolding && !isCashHoldingAdd && viewingHolding.account_id && CASH_LEG_TYPES.has(addTxnForm.txn_type)
       ? accountHoldings.find((h) => h.asset_type === "cash" && h.account_id === viewingHolding.account_id)
@@ -1442,17 +1450,20 @@ export default function AccountsPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-4 gap-px border-b border-ink-line">
+              <div className="grid grid-cols-2 sm:grid-cols-7 gap-px border-b border-ink-line">
                 {[
                   { label: "Quantity", value: Number(viewingHolding.quantity ?? 0).toLocaleString("en-US", { maximumFractionDigits: 8 }) },
                   { label: "Cost basis", value: usd(viewingHolding.cost_basis) },
                   { label: "Value", value: usd(viewingHolding.current_value) },
-                  { label: "Gain", value: usd(viewingHolding.net_gain), gain: Number(viewingHolding.net_gain ?? 0) }
+                  { label: "Price Gain", value: usd(viewingHolding.net_gain), gain: Number(viewingHolding.net_gain ?? 0) },
+                  { label: "Div Income", value: dividendIncome > 0 ? `+${usd(dividendIncome)}` : usd(dividendIncome), gain: dividendIncome },
+                  { label: "Total Gain", value: totalGain > 0 ? `+${usd(totalGain)}` : usd(totalGain), gain: totalGain },
+                  { label: "Total Return", value: totalReturnPct == null ? "—" : `${totalReturnPct > 0 ? "+" : ""}${totalReturnPct.toFixed(2)}%`, gain: totalReturnPct },
                 ].map(({ label, value, gain }) => (
                   <div key={label} className="px-5 py-4">
                     <p className="label mb-1">{label}</p>
                     <p className={`num text-base font-medium ${gain != null ? gain > 0 ? "text-gain" : gain < 0 ? "text-loss" : "" : ""}`}>
-                      {gain != null && gain > 0 ? "+" : ""}{value}
+                      {value}
                     </p>
                   </div>
                 ))}

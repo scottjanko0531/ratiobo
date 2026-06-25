@@ -298,7 +298,7 @@ export default function HoldingsPage() {
     setTxnBusy(true);
     const [{ data: txns }, { data: fresh }, { data: hist }] = await Promise.all([
       supabase.from("transactions")
-        .select("id, txn_type, txn_date, quantity, price_per_unit, amount, fees, cash_holding_id, holding_id")
+        .select("id, txn_type, txn_date, quantity, price_per_unit, amount, fees, cash_holding_id, holding_id, is_reinvested")
         .or(`holding_id.eq.${holding.id},cash_holding_id.eq.${holding.id}`)
         .order("txn_date", { ascending: false }),
       supabase.from("holdings_valued")
@@ -368,6 +368,7 @@ export default function HoldingsPage() {
         price_per_unit: null,
         amount,
         fees: 0,
+        is_reinvested: true,
       });
       if (divErr) { setAddTxnBusy(false); setAddTxnError(divErr.message); return; }
 
@@ -526,6 +527,13 @@ export default function HoldingsPage() {
   const isCashHoldingView = viewingHolding?.asset_type === "cash";
   const isUnitAddTxn = selectedAddTxnType?.affects_quantity !== 0 && selectedAddTxnType != null && !isCashHoldingView;
   const isReinvestDividend = addTxnForm.txn_type === "dividend" && !isCashHoldingView;
+  const dividendIncome = (!isCashHoldingView && viewingHolding)
+    ? transactions.filter(t => t.txn_type === "dividend" && !t.is_reinvested && t.holding_id === viewingHolding.id)
+        .reduce((s, t) => s + Number(t.amount ?? 0), 0)
+    : 0;
+  const totalGain = Number(viewingHolding?.net_gain ?? 0) + dividendIncome;
+  const costBasisNum = Number(viewingHolding?.cost_basis ?? 0);
+  const totalReturnPct = costBasisNum !== 0 ? totalGain / costBasisNum * 100 : null;
   const isAddManual = MANUAL_PRICE_TYPES.has(addForm.asset_type);
   const isAddMarket = MARKET_TYPES.has(addForm.asset_type);
   const isEditManual = MANUAL_PRICE_TYPES.has(editForm.asset_type);
@@ -995,7 +1003,7 @@ export default function HoldingsPage() {
               </div>
 
               {/* Summary bar */}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-px border-b border-ink-line">
+              <div className="grid grid-cols-2 sm:grid-cols-7 gap-px border-b border-ink-line">
                 <div className="px-5 py-3">
                   <p className="label mb-0.5">Qty</p>
                   <p className="num text-sm font-medium">
@@ -1011,7 +1019,7 @@ export default function HoldingsPage() {
                   <p className="num text-sm font-medium">{usd(viewingHolding.current_value)}</p>
                 </div>
                 <div className="px-5 py-3">
-                  <p className="label mb-0.5">Gain</p>
+                  <p className="label mb-0.5">Price Gain</p>
                   <p className={`num text-sm font-medium ${Number(viewingHolding.net_gain ?? 0) > 0 ? "text-gain" : Number(viewingHolding.net_gain ?? 0) < 0 ? "text-loss" : ""}`}>
                     {Number(viewingHolding.net_gain ?? 0) > 0 ? "+" : ""}{usd(viewingHolding.net_gain)}
                     {viewingHolding.net_gain_pct != null && (
@@ -1019,6 +1027,24 @@ export default function HoldingsPage() {
                         {Number(viewingHolding.net_gain ?? 0) > 0 ? "+" : ""}{Number(viewingHolding.net_gain_pct).toFixed(1)}%
                       </span>
                     )}
+                  </p>
+                </div>
+                <div className="px-5 py-3">
+                  <p className="label mb-0.5">Div Income</p>
+                  <p className={`num text-sm font-medium ${dividendIncome > 0 ? "text-gain" : "text-paper-dim"}`}>
+                    {dividendIncome > 0 ? "+" : ""}{usd(dividendIncome)}
+                  </p>
+                </div>
+                <div className="px-5 py-3">
+                  <p className="label mb-0.5">Total Gain</p>
+                  <p className={`num text-sm font-medium ${totalGain > 0 ? "text-gain" : totalGain < 0 ? "text-loss" : ""}`}>
+                    {totalGain > 0 ? "+" : ""}{usd(totalGain)}
+                  </p>
+                </div>
+                <div className="px-5 py-3">
+                  <p className="label mb-0.5">Total Return</p>
+                  <p className={`num text-sm font-medium ${totalReturnPct == null ? "text-paper-dim" : totalReturnPct > 0 ? "text-gain" : totalReturnPct < 0 ? "text-loss" : ""}`}>
+                    {totalReturnPct == null ? "—" : `${totalReturnPct > 0 ? "+" : ""}${totalReturnPct.toFixed(2)}%`}
                   </p>
                 </div>
                 <div className="px-5 py-3">
