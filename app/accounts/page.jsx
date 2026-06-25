@@ -795,8 +795,8 @@ export default function AccountsPage() {
   const isCashHoldingAdd = viewingHolding?.asset_type === "cash";
   const isUnitAddTxn = selectedAddTxnType?.affects_quantity !== 0 && selectedAddTxnType != null && !isCashHoldingAdd;
   const isReinvestDividend = addTxnForm.txn_type === "dividend" && !isCashHoldingAdd;
-  const dividendIncome = (!isCashHoldingAdd && viewingHolding)
-    ? holdingTransactions.filter(t => t.txn_type === "dividend" && !t.is_reinvested && t.holding_id === viewingHolding.id)
+  const incomeTotal = (!isCashHoldingAdd && viewingHolding)
+    ? holdingTransactions.filter(t => (t.txn_type === "dividend" || t.txn_type === "interest") && !t.is_reinvested && t.holding_id === viewingHolding.id)
         .reduce((s, t) => s + Number(t.amount ?? 0), 0)
     : 0;
   const reinvestedDividends = (!isCashHoldingAdd && viewingHolding)
@@ -805,8 +805,8 @@ export default function AccountsPage() {
     : 0;
   const costBasisNum = Number(viewingHolding?.cost_basis ?? 0);
   const originalCostBasis = costBasisNum - reinvestedDividends;
-  // Total Gain = (MV − OCB) + non-reinvested dividends = net_gain + RD + NRD
-  const totalGain = Number(viewingHolding?.net_gain ?? 0) + reinvestedDividends + dividendIncome;
+  // Total Gain = (MV − OCB) + non-reinvested income = net_gain + RD + income
+  const totalGain = Number(viewingHolding?.net_gain ?? 0) + reinvestedDividends + incomeTotal;
   const totalReturnPct = originalCostBasis > 0 ? totalGain / originalCostBasis * 100 : null;
   const addTxnCashLeg =
     viewingHolding && !isCashHoldingAdd && viewingHolding.account_id && CASH_LEG_TYPES.has(addTxnForm.txn_type)
@@ -1462,7 +1462,7 @@ export default function AccountsPage() {
                   { label: "Cost Basis", value: usd(viewingHolding.cost_basis) },
                   { label: "Value", value: usd(viewingHolding.current_value) },
                   { label: "Price Gain", value: usd(viewingHolding.net_gain), gain: Number(viewingHolding.net_gain ?? 0) },
-                  { label: "Div Income", value: dividendIncome > 0 ? `+${usd(dividendIncome)}` : usd(dividendIncome), gain: dividendIncome },
+                  { label: "Income", value: incomeTotal > 0 ? `+${usd(incomeTotal)}` : usd(incomeTotal), gain: incomeTotal },
                   { label: "Total Gain", value: totalGain > 0 ? `+${usd(totalGain)}` : usd(totalGain), gain: totalGain },
                   { label: "Total Return", value: totalReturnPct == null ? "—" : `${totalReturnPct > 0 ? "+" : ""}${totalReturnPct.toFixed(2)}%`, gain: totalReturnPct },
                 ].map(({ label, value, gain }) => (

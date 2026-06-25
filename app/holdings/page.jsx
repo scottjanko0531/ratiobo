@@ -527,8 +527,8 @@ export default function HoldingsPage() {
   const isCashHoldingView = viewingHolding?.asset_type === "cash";
   const isUnitAddTxn = selectedAddTxnType?.affects_quantity !== 0 && selectedAddTxnType != null && !isCashHoldingView;
   const isReinvestDividend = addTxnForm.txn_type === "dividend" && !isCashHoldingView;
-  const dividendIncome = (!isCashHoldingView && viewingHolding)
-    ? transactions.filter(t => t.txn_type === "dividend" && !t.is_reinvested && t.holding_id === viewingHolding.id)
+  const incomeTotal = (!isCashHoldingView && viewingHolding)
+    ? transactions.filter(t => (t.txn_type === "dividend" || t.txn_type === "interest") && !t.is_reinvested && t.holding_id === viewingHolding.id)
         .reduce((s, t) => s + Number(t.amount ?? 0), 0)
     : 0;
   const reinvestedDividends = (!isCashHoldingView && viewingHolding)
@@ -537,8 +537,8 @@ export default function HoldingsPage() {
     : 0;
   const costBasisNum = Number(viewingHolding?.cost_basis ?? 0);
   const originalCostBasis = costBasisNum - reinvestedDividends;
-  // Total Gain = (MV − OCB) + non-reinvested dividends = net_gain + RD + NRD
-  const totalGain = Number(viewingHolding?.net_gain ?? 0) + reinvestedDividends + dividendIncome;
+  // Total Gain = (MV − OCB) + non-reinvested income = net_gain + RD + income
+  const totalGain = Number(viewingHolding?.net_gain ?? 0) + reinvestedDividends + incomeTotal;
   const totalReturnPct = originalCostBasis > 0 ? totalGain / originalCostBasis * 100 : null;
   const isAddManual = MANUAL_PRICE_TYPES.has(addForm.asset_type);
   const isAddMarket = MARKET_TYPES.has(addForm.asset_type);
@@ -1036,9 +1036,9 @@ export default function HoldingsPage() {
                   </p>
                 </div>
                 <div className="px-3 py-3">
-                  <p className="label text-[10px] mb-0.5 uppercase tracking-wide">Div Income</p>
-                  <p className={`num text-sm font-medium ${dividendIncome > 0 ? "text-gain" : "text-paper-dim"}`}>
-                    {dividendIncome > 0 ? "+" : ""}{usd(dividendIncome)}
+                  <p className="label text-[10px] mb-0.5 uppercase tracking-wide">Income</p>
+                  <p className={`num text-sm font-medium ${incomeTotal > 0 ? "text-gain" : "text-paper-dim"}`}>
+                    {incomeTotal > 0 ? "+" : ""}{usd(incomeTotal)}
                   </p>
                 </div>
                 <div className="px-3 py-3">
