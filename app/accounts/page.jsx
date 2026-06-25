@@ -15,6 +15,7 @@ const usd = (n) =>
 
 // Types priced by the market data feed — quantity is transaction-driven, no manual price.
 const MARKET_TYPES = new Set(["equity", "etf", "closed_end_fund", "mutual_fund", "money_market", "bond", "crypto", "metal"]);
+const TV_CHART_TYPES = new Set(["equity", "etf", "closed_end_fund", "crypto", "metal"]);
 // Types with no live feed — user sets current price per unit manually.
 const MANUAL_PRICE_TYPES = new Set(["real_estate", "loan", "other"]);
 
@@ -1460,7 +1461,7 @@ export default function AccountsPage() {
               {/* Charts */}
               <div className="border-b border-ink-line">
                 {/* TradingView price chart */}
-                {MARKET_TYPES.has(viewingHolding.asset_type) && (
+                {TV_CHART_TYPES.has(viewingHolding.asset_type) && (
                   <div className="border-b border-ink-line">
                     <div className="flex items-center justify-between px-5 py-2.5">
                       <p className="label text-xs">Price chart</p>
