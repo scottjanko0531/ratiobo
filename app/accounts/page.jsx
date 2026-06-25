@@ -1413,7 +1413,7 @@ export default function AccountsPage() {
           onClick={closeHoldingDetail}
         />
         <div
-          className={`absolute right-0 top-0 h-full w-full max-w-[864px] bg-ink-soft border-l border-ink-line overflow-y-auto transition-transform duration-300 ${
+          className={`absolute right-0 top-0 h-full w-full max-w-[1120px] bg-ink-soft border-l border-ink-line overflow-y-auto transition-transform duration-300 ${
             viewingHolding ? "translate-x-0" : "translate-x-full"
           }`}
         >
@@ -1459,16 +1459,16 @@ export default function AccountsPage() {
               <div className="grid grid-cols-2 sm:grid-cols-7 gap-px border-b border-ink-line">
                 {[
                   { label: "Quantity", value: Number(viewingHolding.quantity ?? 0).toLocaleString("en-US", { maximumFractionDigits: 8 }) },
-                  { label: "Cost basis", value: usd(viewingHolding.cost_basis) },
+                  { label: "Cost Basis", value: usd(viewingHolding.cost_basis) },
                   { label: "Value", value: usd(viewingHolding.current_value) },
                   { label: "Price Gain", value: usd(viewingHolding.net_gain), gain: Number(viewingHolding.net_gain ?? 0) },
                   { label: "Div Income", value: dividendIncome > 0 ? `+${usd(dividendIncome)}` : usd(dividendIncome), gain: dividendIncome },
                   { label: "Total Gain", value: totalGain > 0 ? `+${usd(totalGain)}` : usd(totalGain), gain: totalGain },
                   { label: "Total Return", value: totalReturnPct == null ? "—" : `${totalReturnPct > 0 ? "+" : ""}${totalReturnPct.toFixed(2)}%`, gain: totalReturnPct },
                 ].map(({ label, value, gain }) => (
-                  <div key={label} className="px-5 py-4">
-                    <p className="label mb-1">{label}</p>
-                    <p className={`num text-base font-medium ${gain != null ? gain > 0 ? "text-gain" : gain < 0 ? "text-loss" : "" : ""}`}>
+                  <div key={label} className="px-3 py-3">
+                    <p className="label text-[10px] mb-0.5 uppercase tracking-wide">{label}</p>
+                    <p className={`num text-sm font-medium ${gain != null ? gain > 0 ? "text-gain" : gain < 0 ? "text-loss" : "" : ""}`}>
                       {value}
                     </p>
                   </div>
