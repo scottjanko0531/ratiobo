@@ -199,23 +199,25 @@ function IndicatorCard({ ind, onSave }) {
   );
 }
 
-// Pure: compute suggested % per signal key using the chosen allocation method.
-// Mirrors the simulator exactly: RP runs on ALL non-cash market assets (not just
-// signal-favored ones), and cash is held at the regime default weight.
+// Pure: compute suggested % per market asset using the chosen allocation method.
+// Default: returns weights only for signal-favored keys (regime threshold ≥10%).
+// RP modes: returns weights for ALL 8 market assets — same universe as the simulator.
 function computeSuggestedPcts(regimeKey, method, assetData) {
-  const sk = getSignalKeys(regimeKey);
   const dw = REGIME_DEFAULT_WEIGHTS[regimeKey] ?? {};
 
   if (method === "default" || !assetData) {
+    const sk = getSignalKeys(regimeKey);
     return Object.fromEntries(sk.map((k) => [k, dw[k] ?? 0]));
   }
 
+  // RP modes: run on all 7 non-cash market assets, return weights for all 8
   const cashPct = dw.cash ?? 0;
   const budget = 100 - cashPct;
-  // Run on all 7 non-cash market assets — same pool as the simulator
   const riskAssets = assetData.assets.filter((a) => a.key !== "cash");
 
-  if (!riskAssets.length) return Object.fromEntries(sk.map((k) => [k, dw[k] ?? 0]));
+  if (!riskAssets.length) {
+    return Object.fromEntries(assetData.assets.map((a) => [a.key, dw[a.key] ?? 0]));
+  }
 
   let fractional;
   if (method === "equal") {
@@ -238,10 +240,9 @@ function computeSuggestedPcts(regimeKey, method, assetData) {
   }
 
   const intW = toIntWeights(fractional, budget);
-  // Extract weights for signal-favored keys; cash stays at regime default
-  return Object.fromEntries(
-    sk.map((k) => [k, k === "cash" ? cashPct : (intW[k] ?? 0)])
-  );
+  const result = Object.fromEntries(riskAssets.map((a) => [a.key, intW[a.key] ?? 0]));
+  result.cash = cashPct;
+  return result;
 }
 
 function QuadrantCard({ indicators, holdings, assetData }) {
@@ -259,7 +260,14 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   const [allocMethod, setAllocMethod] = useState("default");
 
   const signalKeys = regimeKey ? getSignalKeys(regimeKey) : [];
-  const favoredSet = new Set(signalKeys);
+  // RP methods show all 8 market assets (same universe as simulator);
+  // Default shows only regime signal-favored keys (threshold ≥10%)
+  const displayKeys = regimeKey
+    ? (allocMethod === "default" || !assetData
+      ? signalKeys
+      : assetData.assets.map((a) => a.key))
+    : [];
+  const favoredSet = new Set(displayKeys);
   const suggestedPcts = regimeKey
     ? computeSuggestedPcts(regimeKey, allocMethod, assetData)
     : {};
@@ -280,8 +288,8 @@ function QuadrantCard({ indicators, holdings, assetData }) {
 
   const pct = (val) => (grandTotal > 0 ? Math.round((val / grandTotal) * 100) : 0);
 
-  // Favored buckets: all signal keys, whether or not portfolio has them
-  const favoredBuckets = signalKeys.map((k) => ({
+  // Favored buckets: displayKeys (all 8 market assets for RP, signal keys for Default)
+  const favoredBuckets = displayKeys.map((k) => ({
     key: k,
     label: KEY_LABEL[k] ?? k,
     total: byKey[k]?.total ?? 0,
