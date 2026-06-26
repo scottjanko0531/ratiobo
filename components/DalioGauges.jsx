@@ -35,8 +35,9 @@ const GAUGE_META = [
 // Scale: z-score from -3 (low risk, green/left) to +3 (elevated risk, red/right).
 // Zones: green ≤ -1, brass -1..+1, red ≥ +1.
 function SpeedometerGauge({ value, label, desc, year }) {
-  const cx = 100, cy = 88, r = 68;
-  const nl = 58;
+  // cy=82 keeps the arc bottom within viewBox "20 10 160 80" (visible y: 10–90)
+  const cx = 100, cy = 82, r = 68;
+  const nl = 56;
 
   const clamped = value != null ? Math.max(-3, Math.min(3, value)) : 0;
   // Map value to angle: -3 → π (left), 0 → π/2 (top), +3 → 0 (right)
@@ -89,7 +90,9 @@ function SpeedometerGauge({ value, label, desc, year }) {
       <p className="text-xs font-medium text-paper text-center leading-snug mb-2 min-h-[2rem]">
         {label}
       </p>
-      <svg viewBox="20 10 160 92" className="w-full max-w-[190px]">
+
+      {/* Gauge arc + needle only — no text inside SVG to avoid clipping */}
+      <svg viewBox="20 10 160 80" className="w-full max-w-[190px]">
         {/* Track background */}
         <path
           d={`M ${f(lx)},${f(ly)} A ${r},${r} 0 0,1 ${f(rx)},${f(ry)}`}
@@ -115,26 +118,18 @@ function SpeedometerGauge({ value, label, desc, year }) {
         />
         {/* Pivot */}
         <circle cx={cx} cy={cy} r="4.5" fill={needleColor} />
-
-        {/* Z-score value */}
-        <text
-          x={cx} y={cy + 16}
-          textAnchor="middle"
-          fill="rgba(232,228,220,0.9)"
-          fontSize="13"
-          fontWeight="bold"
-          fontFamily="ui-monospace,monospace"
-        >
-          {value != null ? (value >= 0 ? "+" : "") + value.toFixed(2) : "—"}
-        </text>
       </svg>
 
-      <p className={`text-xs font-semibold mt-0 ${statusClass}`}>{statusLabel}</p>
+      {/* Value, status, and metadata rendered as HTML below the gauge */}
+      <p className={`num text-xl font-bold leading-none mt-1 ${statusClass}`}>
+        {value != null ? (value >= 0 ? "+" : "") + value.toFixed(2) : "—"}
+      </p>
+      <p className={`text-xs font-semibold mt-1 ${statusClass}`}>{statusLabel}</p>
       {year && (
         <p className="text-[9px] text-paper-dim/60 mt-0.5">As of {year}</p>
       )}
       {desc && (
-        <p className="text-[10px] text-paper-dim text-center mt-1 leading-snug">{desc}</p>
+        <p className="text-[10px] text-paper-dim text-center mt-1.5 leading-snug">{desc}</p>
       )}
     </div>
   );
