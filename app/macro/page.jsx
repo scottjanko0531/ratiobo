@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
+import DalioGauges from "../../components/DalioGauges";
 import {
   SIMULATOR_KEYS,
   REGIME_DEFAULT_WEIGHTS,
@@ -585,6 +586,10 @@ export default function MacroDashboard() {
                   {LAYER_NAMES[layer]}
                 </h2>
               </div>
+
+              {/* Dalio risk gauges sit above Layer 1 indicator cards */}
+              {layer === 1 && <DalioGauges />}
+
               {byLayer[layer].length === 0 ? (
                 <p className="text-paper-dim text-sm ml-9">No data yet.</p>
               ) : (
