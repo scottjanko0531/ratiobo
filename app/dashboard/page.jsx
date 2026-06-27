@@ -126,7 +126,11 @@ export default function Dashboard() {
       supabase.from("portfolio_snapshots").select("snapshot_date, market_value").order("snapshot_date", { ascending: true }),
     ]).then(([{ data, error: err }, { data: snaps }, { data: at }, { data: hist }]) => {
       if (err) setError(err.message);
-      else setRows(data ?? []);
+      else {
+        setRows(data ?? []);
+        // Collapse all groups by default on load
+        setCollapsedGroups(new Set((data ?? []).map((r) => r.asset_type).filter(Boolean)));
+      }
 
       const map = {};
       for (const s of snaps ?? []) map[s.holding_id] = Number(s.market_value ?? 0);
