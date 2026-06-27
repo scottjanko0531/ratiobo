@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -25,6 +25,18 @@ function getTVSymbol(symbol, assetType) {
   if (assetType === "crypto") return `COINBASE:${s}USD`;
   if (assetType === "metal") return METAL_TV_SYMBOLS[s] ?? `TVC:${s}`;
   return s; // equity, etf, mutual_fund, bond — TradingView resolves by ticker
+}
+
+function ChevronIcon({ collapsed }) {
+  return (
+    <svg
+      className={`w-3.5 h-3.5 transition-transform duration-150 ${collapsed ? "-rotate-90" : ""}`}
+      viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round"
+    >
+      <path d="M4 6l4 4 4-4" />
+    </svg>
+  );
 }
 
 function KebabIcon() {
@@ -77,6 +89,17 @@ export default function HoldingsPage() {
   const [showFilter, setShowFilter] = useState(false);
   const [filterAssetTypes, setFilterAssetTypes] = useState([]);
   const [filterAccounts, setFilterAccounts] = useState([]);
+
+  // Collapsible asset-type groups
+  const [collapsedGroups, setCollapsedGroups] = useState(new Set());
+  function toggleGroup(code) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  }
 
   // Holding kebab (main list)
   const [menuOpenId, setMenuOpenId] = useState(null);
@@ -522,6 +545,24 @@ export default function HoldingsPage() {
     return typeOk && acctOk;
   });
   const uniqueAssetTypeCodes = [...new Set((holdings ?? []).map((h) => h.asset_type))].sort();
+
+  // Group filteredHoldings by asset_type (DB already orders by asset_type then symbol)
+  const holdingGroups = (() => {
+    const groups = [];
+    const seen = {};
+    for (const h of filteredHoldings) {
+      if (!seen[h.asset_type]) {
+        seen[h.asset_type] = [];
+        groups.push({
+          code: h.asset_type,
+          label: assetTypes.find((a) => a.code === h.asset_type)?.label ?? h.asset_type,
+          items: seen[h.asset_type],
+        });
+      }
+      seen[h.asset_type].push(h);
+    }
+    return groups;
+  })();
   const filteredTxns = filterTxnTypes.length === 0
     ? transactions
     : transactions.filter((t) => filterTxnTypes.includes(t.txn_type));
@@ -646,7 +687,6 @@ export default function HoldingsPage() {
                       : "Symbol"}
                   </th>
                   <th className="label text-left font-medium px-4 py-3">Account</th>
-                  <th className="label text-left font-medium px-4 py-3">Type</th>
                   <th className="label text-right font-medium px-4 py-3">Qty</th>
                   <th className="label text-right font-medium px-4 py-3">Value</th>
                   <th className="label text-right font-medium px-4 py-3">Gain</th>
@@ -655,83 +695,121 @@ export default function HoldingsPage() {
               </thead>
               <tbody>
                 {holdings === null && (
-                  <tr><td colSpan={8} className="px-4 py-8 text-center text-paper-dim">Loading…</td></tr>
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-paper-dim">Loading…</td></tr>
                 )}
                 {holdings !== null && filteredHoldings.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-10 text-center text-paper-dim">
+                    <td colSpan={7} className="px-4 py-10 text-center text-paper-dim">
                       {filtersActive ? "No holdings match the current filters." : "No holdings yet. Use + Add to create one."}
                     </td>
                   </tr>
                 )}
-                {filteredHoldings.map((h) => {
-                  const gain = Number(h.net_gain ?? 0);
-                  const snap = snapMap[h.id];
-                  const dayChg = snap != null ? Number(h.current_value ?? 0) - snap : null;
+                {holdingGroups.map(({ code, label, items }) => {
+                  const isCollapsed = collapsedGroups.has(code);
+                  const groupValue = items.reduce((s, h) => s + Number(h.current_value ?? 0), 0);
+                  const groupGain  = items.reduce((s, h) => s + Number(h.net_gain ?? 0), 0);
+                  const hasDayData = items.some((h) => snapMap[h.id] != null);
+                  const groupDayChg = hasDayData
+                    ? items.reduce((s, h) => {
+                        const snap = snapMap[h.id];
+                        return snap != null ? s + (Number(h.current_value ?? 0) - snap) : s;
+                      }, 0)
+                    : null;
                   return (
-                    <tr
-                      key={h.id}
-                      className="border-b border-ink-line/60 last:border-0 cursor-pointer hover:bg-ink-soft/40 transition-colors"
-                      onClick={() => openDetail(h)}
-                    >
-                      <td className="px-2 py-3">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (menuOpenId === h.id) {
-                              setMenuOpenId(null);
-                            } else {
-                              const rect = e.currentTarget.getBoundingClientRect();
-                              setMenuPos({ top: rect.bottom + 4, left: rect.left });
-                              setMenuOpenId(h.id);
-                            }
-                          }}
-                          className="p-1.5 rounded-lg text-paper-dim hover:text-paper hover:bg-ink-soft transition-colors"
-                          aria-label={`Actions for ${h.symbol}`}
-                        >
-                          <KebabIcon />
-                        </button>
-                        {menuOpenId === h.id && typeof document !== "undefined" && createPortal(
-                          <>
-                            <div className="fixed inset-0 z-40" onClick={() => setMenuOpenId(null)} />
-                            <div
-                              className="fixed z-50 w-32 card p-1 shadow-lg"
-                              style={{ top: menuPos.top, left: menuPos.left }}
-                            >
+                    <Fragment key={code}>
+                      {/* Group header — click to toggle */}
+                      <tr
+                        className="border-b border-ink-line bg-ink-soft/50 cursor-pointer hover:bg-ink-soft transition-colors select-none"
+                        onClick={() => toggleGroup(code)}
+                      >
+                        <td className="px-2 py-2.5 text-paper-dim">
+                          <ChevronIcon collapsed={isCollapsed} />
+                        </td>
+                        <td className="px-4 py-2.5 font-semibold text-sm" colSpan={2}>
+                          {label}
+                          <span className="text-paper-dim ml-2 text-xs font-normal">{items.length}</span>
+                        </td>
+                        <td className="num text-right px-4 py-2.5 text-paper-dim text-xs">—</td>
+                        <td className="num text-right px-4 py-2.5 text-sm font-medium">{usd(groupValue)}</td>
+                        <td className={`num text-right px-4 py-2.5 text-sm font-medium ${groupGain > 0 ? "text-gain" : groupGain < 0 ? "text-loss" : "text-paper-dim"}`}>
+                          {groupGain > 0 ? "+" : ""}{usd(groupGain)}
+                        </td>
+                        <td className={`num text-right px-4 py-2.5 text-sm ${groupDayChg == null ? "text-paper-dim" : groupDayChg > 0 ? "text-gain" : groupDayChg < 0 ? "text-loss" : "text-paper-dim"}`}>
+                          {groupDayChg == null ? "—" : `${groupDayChg > 0 ? "+" : ""}${usd(groupDayChg)}`}
+                        </td>
+                      </tr>
+
+                      {/* Individual holding rows */}
+                      {!isCollapsed && items.map((h) => {
+                        const gain = Number(h.net_gain ?? 0);
+                        const snap = snapMap[h.id];
+                        const dayChg = snap != null ? Number(h.current_value ?? 0) - snap : null;
+                        return (
+                          <tr
+                            key={h.id}
+                            className="border-b border-ink-line/60 last:border-0 cursor-pointer hover:bg-ink-soft/40 transition-colors"
+                            onClick={() => openDetail(h)}
+                          >
+                            <td className="px-2 py-3">
                               <button
-                                onClick={(e) => { e.stopPropagation(); openEdit(h); }}
-                                className="w-full text-left px-3 py-1.5 rounded-md text-sm hover:bg-ink-soft transition-colors"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (menuOpenId === h.id) {
+                                    setMenuOpenId(null);
+                                  } else {
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    setMenuPos({ top: rect.bottom + 4, left: rect.left });
+                                    setMenuOpenId(h.id);
+                                  }
+                                }}
+                                className="p-1.5 rounded-lg text-paper-dim hover:text-paper hover:bg-ink-soft transition-colors"
+                                aria-label={`Actions for ${h.symbol}`}
                               >
-                                Edit
+                                <KebabIcon />
                               </button>
-                              <button
-                                onClick={(e) => { e.stopPropagation(); deleteHolding(h); }}
-                                className="w-full text-left px-3 py-1.5 rounded-md text-sm text-loss hover:bg-ink-soft transition-colors"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </>,
-                          document.body
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="font-medium">{h.symbol}</span>
-                        {h.name && <span className="text-paper-dim ml-2 text-xs">{h.name}</span>}
-                      </td>
-                      <td className="px-4 py-3 text-paper-dim">{accountMap[h.account_id] ?? "—"}</td>
-                      <td className="px-4 py-3 label">{assetTypes.find((a) => a.code === h.asset_type)?.label ?? h.asset_type}</td>
-                      <td className="num text-right px-4 py-3">
-                        {Number(h.quantity ?? 0).toLocaleString("en-US", { maximumFractionDigits: 8 })}
-                      </td>
-                      <td className="num text-right px-4 py-3">{usd(h.current_value)}</td>
-                      <td className={`num text-right px-4 py-3 ${gain > 0 ? "text-gain" : gain < 0 ? "text-loss" : "text-paper-dim"}`}>
-                        {gain > 0 ? "+" : ""}{usd(gain)}
-                      </td>
-                      <td className={`num text-right px-4 py-3 ${dayChg == null ? "text-paper-dim" : dayChg > 0 ? "text-gain" : dayChg < 0 ? "text-loss" : "text-paper-dim"}`}>
-                        {dayChg == null ? "—" : `${dayChg > 0 ? "+" : ""}${usd(dayChg)}`}
-                      </td>
-                    </tr>
+                              {menuOpenId === h.id && typeof document !== "undefined" && createPortal(
+                                <>
+                                  <div className="fixed inset-0 z-40" onClick={() => setMenuOpenId(null)} />
+                                  <div
+                                    className="fixed z-50 w-32 card p-1 shadow-lg"
+                                    style={{ top: menuPos.top, left: menuPos.left }}
+                                  >
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); openEdit(h); }}
+                                      className="w-full text-left px-3 py-1.5 rounded-md text-sm hover:bg-ink-soft transition-colors"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); deleteHolding(h); }}
+                                      className="w-full text-left px-3 py-1.5 rounded-md text-sm text-loss hover:bg-ink-soft transition-colors"
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                </>,
+                                document.body
+                              )}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="font-medium">{h.symbol}</span>
+                              {h.name && <span className="text-paper-dim ml-2 text-xs">{h.name}</span>}
+                            </td>
+                            <td className="px-4 py-3 text-paper-dim text-sm">{accountMap[h.account_id] ?? "—"}</td>
+                            <td className="num text-right px-4 py-3">
+                              {Number(h.quantity ?? 0).toLocaleString("en-US", { maximumFractionDigits: 8 })}
+                            </td>
+                            <td className="num text-right px-4 py-3">{usd(h.current_value)}</td>
+                            <td className={`num text-right px-4 py-3 ${gain > 0 ? "text-gain" : gain < 0 ? "text-loss" : "text-paper-dim"}`}>
+                              {gain > 0 ? "+" : ""}{usd(gain)}
+                            </td>
+                            <td className={`num text-right px-4 py-3 ${dayChg == null ? "text-paper-dim" : dayChg > 0 ? "text-gain" : dayChg < 0 ? "text-loss" : "text-paper-dim"}`}>
+                              {dayChg == null ? "—" : `${dayChg > 0 ? "+" : ""}${usd(dayChg)}`}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
                   );
                 })}
               </tbody>
