@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -17,6 +17,18 @@ const qty = (n) => {
   const x = Number(n);
   return x % 1 === 0 ? x.toLocaleString() : x.toLocaleString("en-US", { maximumFractionDigits: 8 });
 };
+
+function ChevronIcon({ collapsed }) {
+  return (
+    <svg
+      className={`w-3.5 h-3.5 transition-transform duration-150 ${collapsed ? "-rotate-90" : ""}`}
+      viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round"
+    >
+      <path d="M4 6l4 4 4-4" />
+    </svg>
+  );
+}
 
 function GainText({ value, pct }) {
   if (value == null) return <span className="text-paper-dim">—</span>;
@@ -81,6 +93,16 @@ export default function Dashboard() {
   const [portfolioHistory, setPortfolioHistory] = useState([]);
   const [chartPeriod, setChartPeriod] = useState("All");
   const [error, setError] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = useState(new Set());
+
+  function toggleGroup(code) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  }
 
   const chartData = useMemo(() => {
     let filtered = portfolioHistory;
@@ -98,7 +120,7 @@ export default function Dashboard() {
   useEffect(() => {
     const today = new Date().toISOString().slice(0, 10);
     Promise.all([
-      supabase.from("holdings_valued").select("*").order("current_value", { ascending: false }),
+      supabase.from("holdings_valued").select("*").order("asset_type").order("current_value", { ascending: false }),
       supabase.from("portfolio_snapshots").select("holding_id, market_value").eq("snapshot_date", today),
       supabase.from("asset_types").select("code, label").eq("is_active", true),
       supabase.from("portfolio_snapshots").select("snapshot_date, market_value").order("snapshot_date", { ascending: true }),
@@ -370,29 +392,77 @@ export default function Dashboard() {
             {error && (
               <tr><td colSpan={7} className="px-4 py-8 text-center text-loss">{error}</td></tr>
             )}
-            {rows?.map((r) => {
-              const snap = snapMap[r.id];
-              const dayChg = snap != null ? Number(r.current_value ?? 0) - snap : null;
-              return (
-                <tr key={r.id} className="border-b border-ink-line/60 last:border-0">
-                  <td className="px-4 py-3">
-                    <span className="font-medium">{r.symbol}</span>
-                    <span className="text-paper-dim ml-2">{r.name}</span>
-                    <span className="label ml-2">{r.asset_type}</span>
-                  </td>
-                  <td className="num text-right px-4 py-3">{qty(r.quantity)}</td>
-                  <td className="num text-right px-4 py-3">{usd(r.market_price)}</td>
-                  <td className="num text-right px-4 py-3">{usd(r.cost_basis)}</td>
-                  <td className="num text-right px-4 py-3">{usd(r.current_value)}</td>
-                  <td className="num text-right px-4 py-3">
-                    <GainText value={r.net_gain} pct={r.net_gain_pct} />
-                  </td>
-                  <td className="num text-right px-4 py-3">
-                    <GainText value={dayChg} />
-                  </td>
-                </tr>
-              );
-            })}
+            {(() => {
+              if (!rows?.length) return null;
+              // Build groups in asset_type order (rows already sorted by asset_type then value desc)
+              const groups = [];
+              const seen = {};
+              for (const r of rows) {
+                if (!seen[r.asset_type]) {
+                  seen[r.asset_type] = [];
+                  groups.push({ code: r.asset_type, label: assetTypeLabels[r.asset_type] ?? r.asset_type, items: seen[r.asset_type] });
+                }
+                seen[r.asset_type].push(r);
+              }
+              return groups.map(({ code, label, items }) => {
+                const isCollapsed = collapsedGroups.has(code);
+                const gValue   = items.reduce((s, r) => s + Number(r.current_value ?? 0), 0);
+                const gBasis   = items.reduce((s, r) => s + Number(r.cost_basis ?? 0), 0);
+                const gGain    = items.reduce((s, r) => s + Number(r.net_gain ?? 0), 0);
+                const hasDayData = items.some((r) => snapMap[r.id] != null);
+                const gDayChg  = hasDayData
+                  ? items.reduce((s, r) => { const sn = snapMap[r.id]; return sn != null ? s + (Number(r.current_value ?? 0) - sn) : s; }, 0)
+                  : null;
+                const gainPct  = gBasis > 0 ? (gGain / gBasis) * 100 : null;
+                return (
+                  <Fragment key={code}>
+                    {/* Group header */}
+                    <tr
+                      className="border-b border-ink-line bg-ink-soft/50 cursor-pointer hover:bg-ink-soft transition-colors select-none"
+                      onClick={() => toggleGroup(code)}
+                    >
+                      <td className="px-4 py-2.5" colSpan={4}>
+                        <div className="flex items-center gap-2 text-paper-dim">
+                          <ChevronIcon collapsed={isCollapsed} />
+                          <span className="font-semibold text-paper text-sm">{label}</span>
+                          <span className="text-xs">{items.length}</span>
+                        </div>
+                      </td>
+                      <td className="num text-right px-4 py-2.5 text-sm font-medium">{usd(gValue)}</td>
+                      <td className="num text-right px-4 py-2.5 text-sm font-medium">
+                        <GainText value={gGain} pct={gainPct} />
+                      </td>
+                      <td className="num text-right px-4 py-2.5 text-sm">
+                        <GainText value={gDayChg} />
+                      </td>
+                    </tr>
+                    {/* Individual rows */}
+                    {!isCollapsed && items.map((r) => {
+                      const snap = snapMap[r.id];
+                      const dayChg = snap != null ? Number(r.current_value ?? 0) - snap : null;
+                      return (
+                        <tr key={r.id} className="border-b border-ink-line/60 last:border-0 hover:bg-ink-soft/30 transition-colors">
+                          <td className="px-4 py-3">
+                            <span className="font-medium">{r.symbol}</span>
+                            {r.name && <span className="text-paper-dim ml-2 text-xs">{r.name}</span>}
+                          </td>
+                          <td className="num text-right px-4 py-3">{qty(r.quantity)}</td>
+                          <td className="num text-right px-4 py-3">{usd(r.market_price)}</td>
+                          <td className="num text-right px-4 py-3">{usd(r.cost_basis)}</td>
+                          <td className="num text-right px-4 py-3">{usd(r.current_value)}</td>
+                          <td className="num text-right px-4 py-3">
+                            <GainText value={r.net_gain} pct={r.net_gain_pct} />
+                          </td>
+                          <td className="num text-right px-4 py-3">
+                            <GainText value={dayChg} />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </Fragment>
+                );
+              });
+            })()}
           </tbody>
         </table>
       </div>
