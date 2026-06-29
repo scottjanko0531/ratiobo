@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, Fragment } from "react";
 import { createPortal } from "react-dom";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -76,14 +76,15 @@ export default function AccountsPage() {
   const [types, setTypes] = useState([]);
   const [assetTypes, setAssetTypes] = useState([]);
   const [txnTypes, setTxnTypes] = useState([]);
-  const [form, setForm] = useState({ name: "", institution: "", account_type: "", initial_cash: "" });
+  const [form, setForm] = useState({ name: "", institution: "", account_type: "", initial_cash: "", parent_account_id: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const [menuOpenId, setMenuOpenId] = useState(null);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
   const [editing, setEditing] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", institution: "", account_type: "" });
+  const [editForm, setEditForm] = useState({ name: "", institution: "", account_type: "", parent_account_id: "" });
+  const [expandedSubaccounts, setExpandedSubaccounts] = useState(new Set());
   const [editError, setEditError] = useState("");
   const [editBusy, setEditBusy] = useState(false);
 
@@ -193,12 +194,30 @@ export default function AccountsPage() {
       bucket.net_gain += Number(h.net_gain ?? 0);
       totals[h.account_id] = bucket;
     }
+    // Roll sub-account totals into parent's holdings bucket (one level only)
+    for (const acct of accts ?? []) {
+      if (!acct.parent_account_id) continue;
+      const child = totals[acct.id] ?? {};
+      const childTotal = (child.cash ?? 0) + (child.holdings ?? 0);
+      const parent = totals[acct.parent_account_id] ?? { cash: 0, holdings: 0, net_gain: 0 };
+      parent.holdings += childTotal;
+      parent.net_gain += (child.net_gain ?? 0);
+      totals[acct.parent_account_id] = parent;
+    }
     setTotalsByAccount(totals);
 
     const snapTotals = {};
     for (const s of snaps ?? []) {
       if (!s.account_id) continue;
       snapTotals[s.account_id] = (snapTotals[s.account_id] ?? 0) + Number(s.market_value ?? 0);
+    }
+    // Roll sub-account snapshots into parent
+    for (const acct of accts ?? []) {
+      if (!acct.parent_account_id) continue;
+      const childSnap = snapTotals[acct.id];
+      if (childSnap != null) {
+        snapTotals[acct.parent_account_id] = (snapTotals[acct.parent_account_id] ?? 0) + childSnap;
+      }
     }
     setAccountSnapshotTotals(snapTotals);
   }
@@ -251,7 +270,8 @@ export default function AccountsPage() {
         user_id: user.id,
         name: form.name,
         institution: form.institution || null,
-        account_type: form.account_type
+        account_type: form.account_type,
+        parent_account_id: form.parent_account_id || null
       })
       .select()
       .single();
@@ -302,7 +322,7 @@ export default function AccountsPage() {
     }
 
     setBusy(false);
-    setForm({ name: "", institution: "", account_type: "", initial_cash: "" });
+    setForm({ name: "", institution: "", account_type: "", initial_cash: "", parent_account_id: "" });
     setShowAddAccount(false);
     load();
   }
@@ -554,7 +574,8 @@ export default function AccountsPage() {
     setEditForm({
       name: account.name,
       institution: account.institution ?? "",
-      account_type: account.account_type
+      account_type: account.account_type,
+      parent_account_id: account.parent_account_id ?? ""
     });
     setEditAccountTags(accountTagMap[account.id] ?? []);
     setEditError("");
@@ -573,7 +594,8 @@ export default function AccountsPage() {
       .update({
         name: editForm.name,
         institution: editForm.institution || null,
-        account_type: editForm.account_type
+        account_type: editForm.account_type,
+        parent_account_id: editForm.parent_account_id || null
       })
       .eq("id", editing.id);
     if (error) { setEditBusy(false); setEditError(error.message); return; }
@@ -795,11 +817,19 @@ export default function AccountsPage() {
   const accountFiltersActive =
     filterAccountTypes.length > 0 || filterAccountTags.length > 0 || filterAccountInstitution !== "";
   const filteredAccounts = (accounts ?? []).filter((a) => {
+    if (a.parent_account_id) return false;
     const typeOk = filterAccountTypes.length === 0 || filterAccountTypes.includes(a.account_type);
     const tagOk  = filterAccountTags.length === 0  || filterAccountTags.some((tid) => accountTagMap[a.id]?.includes(tid));
     const instOk = filterAccountInstitution === ""  || (a.institution ?? "").toLowerCase().includes(filterAccountInstitution.toLowerCase());
     return typeOk && tagOk && instOk;
   });
+
+  const subAccountsByParent = {};
+  for (const a of accounts ?? []) {
+    if (!a.parent_account_id) continue;
+    if (!subAccountsByParent[a.parent_account_id]) subAccountsByParent[a.parent_account_id] = [];
+    subAccountsByParent[a.parent_account_id].push(a);
+  }
 
   const grandTotalCash     = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.cash     ?? 0), 0);
   const grandTotalHoldings = filteredAccounts.reduce((s, a) => s + (totalsByAccount[a.id]?.holdings ?? 0), 0);
@@ -1044,30 +1074,33 @@ export default function AccountsPage() {
                     </td>
                   </tr>
                 )}
-                {filteredAccounts.map((a) => (
-                  <tr
-                    key={a.id}
-                    className="border-b border-ink-line/60 last:border-0 cursor-pointer hover:bg-ink-soft/40 transition-colors"
-                    onClick={() => openDetail(a)}
-                  >
-                    <td className="px-2 py-3">
+                {filteredAccounts.map((a) => {
+                  const subs = subAccountsByParent[a.id] ?? [];
+                  const hasSubs = subs.length > 0;
+                  const isExpanded = expandedSubaccounts.has(a.id);
+                  const ownCash = totalsByAccount[a.id]?.cash ?? 0;
+                  const ownHoldings = totalsByAccount[a.id]?.holdings ?? 0;
+                  const totalVal = ownCash + ownHoldings;
+
+                  const renderKebab = (acct) => (
+                    <>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (menuOpenId === a.id) {
+                          if (menuOpenId === acct.id) {
                             setMenuOpenId(null);
                           } else {
                             const rect = e.currentTarget.getBoundingClientRect();
                             setMenuPos({ top: rect.bottom + 4, left: rect.left });
-                            setMenuOpenId(a.id);
+                            setMenuOpenId(acct.id);
                           }
                         }}
                         className="p-1.5 rounded-lg text-paper-dim hover:text-paper hover:bg-ink-soft transition-colors"
-                        aria-label={`Actions for ${a.name}`}
+                        aria-label={`Actions for ${acct.name}`}
                       >
                         <KebabIcon />
                       </button>
-                      {menuOpenId === a.id && typeof document !== "undefined" && createPortal(
+                      {menuOpenId === acct.id && typeof document !== "undefined" && createPortal(
                         <>
                           <div className="fixed inset-0 z-40" onClick={() => setMenuOpenId(null)} />
                           <div
@@ -1075,13 +1108,13 @@ export default function AccountsPage() {
                             style={{ top: menuPos.top, left: menuPos.left }}
                           >
                             <button
-                              onClick={() => openEdit(a)}
+                              onClick={() => openEdit(acct)}
                               className="w-full text-left px-3 py-1.5 rounded-md text-sm hover:bg-ink-soft transition-colors"
                             >
                               Edit
                             </button>
                             <button
-                              onClick={() => deleteAccount(a)}
+                              onClick={() => deleteAccount(acct)}
                               className="w-full text-left px-3 py-1.5 rounded-md text-sm text-loss hover:bg-ink-soft transition-colors"
                             >
                               Delete
@@ -1090,49 +1123,122 @@ export default function AccountsPage() {
                         </>,
                         document.body
                       )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{a.name}</div>
-                      {(accountTagMap[a.id]?.length > 0) && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {accountTagMap[a.id].map((tid) => {
-                            const tag = tags.find((t) => t.id === tid);
-                            if (!tag) return null;
-                            return (
-                              <span
-                                key={tid}
-                                className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium leading-none"
-                                style={{ backgroundColor: tag.color + "33", color: tag.color }}
+                    </>
+                  );
+
+                  return (
+                    <Fragment key={a.id}>
+                      {/* Parent account row */}
+                      <tr
+                        className="border-b border-ink-line/60 last:border-0 cursor-pointer hover:bg-ink-soft/40 transition-colors"
+                        onClick={() => openDetail(a)}
+                      >
+                        <td className="px-2 py-3">{renderKebab(a)}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            {hasSubs && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedSubaccounts((prev) => {
+                                    const next = new Set(prev);
+                                    next.has(a.id) ? next.delete(a.id) : next.add(a.id);
+                                    return next;
+                                  });
+                                }}
+                                className="shrink-0 text-paper-dim hover:text-paper transition-colors"
+                                aria-label={isExpanded ? "Collapse sub-accounts" : "Expand sub-accounts"}
                               >
-                                {tag.name}
-                              </span>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-paper-dim">{a.institution ?? "—"}</td>
-                    <td className="px-4 py-3">{typeLabel(a.account_type)}</td>
-                    <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.cash ?? 0)}</td>
-                    <td className="num text-right px-4 py-3">{usd(totalsByAccount[a.id]?.holdings ?? 0)}</td>
-                    <td className="num text-right px-4 py-3 font-medium">
-                      {usd((totalsByAccount[a.id]?.cash ?? 0) + (totalsByAccount[a.id]?.holdings ?? 0))}
-                    </td>
-                    <td className="num text-right px-4 py-3">
-                      {(() => {
-                        const snap = accountSnapshotTotals[a.id];
-                        if (snap == null) return <span className="text-paper-dim">—</span>;
-                        const cur = (totalsByAccount[a.id]?.cash ?? 0) + (totalsByAccount[a.id]?.holdings ?? 0);
-                        const dc = cur - snap;
+                                <svg className={`w-3 h-3 transition-transform ${isExpanded ? "" : "-rotate-90"}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="2,4 6,8 10,4" />
+                                </svg>
+                              </button>
+                            )}
+                            <div>
+                              <div className="font-medium">{a.name}</div>
+                              {(accountTagMap[a.id]?.length > 0) && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {accountTagMap[a.id].map((tid) => {
+                                    const tag = tags.find((t) => t.id === tid);
+                                    if (!tag) return null;
+                                    return (
+                                      <span key={tid} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium leading-none" style={{ backgroundColor: tag.color + "33", color: tag.color }}>
+                                        {tag.name}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-paper-dim">{a.institution ?? "—"}</td>
+                        <td className="px-4 py-3">{typeLabel(a.account_type)}</td>
+                        <td className="num text-right px-4 py-3">{usd(ownCash)}</td>
+                        <td className="num text-right px-4 py-3">{usd(ownHoldings)}</td>
+                        <td className="num text-right px-4 py-3 font-medium">{usd(totalVal)}</td>
+                        <td className="num text-right px-4 py-3">
+                          {(() => {
+                            const snap = accountSnapshotTotals[a.id];
+                            if (snap == null) return <span className="text-paper-dim">—</span>;
+                            const dc = totalVal - snap;
+                            return <span className={dc > 0 ? "text-gain" : dc < 0 ? "text-loss" : "text-paper-dim"}>{dc > 0 ? "+" : ""}{usd(dc)}</span>;
+                          })()}
+                        </td>
+                      </tr>
+
+                      {/* Sub-account rows (shown when parent is expanded) */}
+                      {hasSubs && isExpanded && subs.map((sub) => {
+                        const subCash = totalsByAccount[sub.id]?.cash ?? 0;
+                        const subHoldings = totalsByAccount[sub.id]?.holdings ?? 0;
+                        const subTotal = subCash + subHoldings;
                         return (
-                          <span className={dc > 0 ? "text-gain" : dc < 0 ? "text-loss" : "text-paper-dim"}>
-                            {dc > 0 ? "+" : ""}{usd(dc)}
-                          </span>
+                          <tr
+                            key={sub.id}
+                            className="border-b border-ink-line/40 last:border-0 cursor-pointer hover:bg-ink-soft/30 transition-colors"
+                            onClick={() => openDetail(sub)}
+                          >
+                            <td className="px-2 py-2.5">{renderKebab(sub)}</td>
+                            <td className="py-2.5 pr-4">
+                              <div className="flex items-center gap-1.5 pl-8">
+                                <span className="text-paper-dim/60 text-xs select-none">↳</span>
+                                <div>
+                                  <div className="font-medium text-sm">{sub.name}</div>
+                                  {(accountTagMap[sub.id]?.length > 0) && (
+                                    <div className="flex flex-wrap gap-1 mt-0.5">
+                                      {accountTagMap[sub.id].map((tid) => {
+                                        const tag = tags.find((t) => t.id === tid);
+                                        if (!tag) return null;
+                                        return (
+                                          <span key={tid} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium leading-none" style={{ backgroundColor: tag.color + "33", color: tag.color }}>
+                                            {tag.name}
+                                          </span>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-2.5 text-paper-dim text-sm">{sub.institution ?? "—"}</td>
+                            <td className="px-4 py-2.5 text-sm">{typeLabel(sub.account_type)}</td>
+                            <td className="num text-right px-4 py-2.5 text-sm">{usd(subCash)}</td>
+                            <td className="num text-right px-4 py-2.5 text-sm">{usd(subHoldings)}</td>
+                            <td className="num text-right px-4 py-2.5 font-medium text-sm">{usd(subTotal)}</td>
+                            <td className="num text-right px-4 py-2.5 text-sm">
+                              {(() => {
+                                const snap = accountSnapshotTotals[sub.id];
+                                if (snap == null) return <span className="text-paper-dim">—</span>;
+                                const dc = subTotal - snap;
+                                return <span className={dc > 0 ? "text-gain" : dc < 0 ? "text-loss" : "text-paper-dim"}>{dc > 0 ? "+" : ""}{usd(dc)}</span>;
+                              })()}
+                            </td>
+                          </tr>
                         );
-                      })()}
-                    </td>
-                  </tr>
-                ))}
+                      })}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1185,6 +1291,20 @@ export default function AccountsPage() {
               <option value="">Select a type…</option>
               {types.map((t) => (
                 <option key={t.code} value={t.code}>{t.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label block mb-1.5" htmlFor="acct-parent">Sub-account of (optional)</label>
+            <select
+              id="acct-parent"
+              className="field"
+              value={form.parent_account_id}
+              onChange={(e) => setForm({ ...form, parent_account_id: e.target.value })}
+            >
+              <option value="">None (top-level account)</option>
+              {(accounts ?? []).filter((a) => !a.parent_account_id).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
               ))}
             </select>
           </div>
@@ -2312,6 +2432,20 @@ export default function AccountsPage() {
             >
               {types.map((t) => (
                 <option key={t.code} value={t.code}>{t.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label block mb-1.5" htmlFor="edit-parent">Sub-account of (optional)</label>
+            <select
+              id="edit-parent"
+              className="field"
+              value={editForm.parent_account_id}
+              onChange={(e) => setEditForm({ ...editForm, parent_account_id: e.target.value })}
+            >
+              <option value="">None (top-level account)</option>
+              {(accounts ?? []).filter((a) => !a.parent_account_id && a.id !== editing?.id).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
               ))}
             </select>
           </div>
