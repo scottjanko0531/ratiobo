@@ -165,7 +165,7 @@ export default function Dashboard() {
         value: t.value + Number(r.current_value ?? 0),
         basis: t.basis + Number(r.cost_basis ?? 0),
         gain: t.gain + Number(r.net_gain ?? 0),
-        income: t.income + Number(r.total_dividends ?? 0) + Number(r.total_interest ?? 0),
+        income: t.income + Number(r.total_dividends ?? 0) + Number(r.total_interest ?? 0) - Number(r.total_fees ?? 0),
         dayChange: dc != null ? (t.dayChange ?? 0) + dc : t.dayChange
       };
     },

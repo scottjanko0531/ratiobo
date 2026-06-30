@@ -574,6 +574,8 @@ export default function HoldingsPage() {
   const incomeTotal = (!isCashHoldingView && viewingHolding)
     ? transactions.filter(t => (t.txn_type === "dividend" || t.txn_type === "interest") && !t.is_reinvested && t.holding_id === viewingHolding.id)
         .reduce((s, t) => s + Number(t.amount ?? 0), 0)
+      - transactions.filter(t => t.txn_type === "fee" && t.holding_id === viewingHolding.id)
+        .reduce((s, t) => s + Number(t.amount ?? 0), 0)
     : 0;
   const reinvestedDividends = (!isCashHoldingView && viewingHolding)
     ? transactions.filter(t => t.txn_type === "dividend" && t.is_reinvested && t.holding_id === viewingHolding.id)
@@ -581,9 +583,19 @@ export default function HoldingsPage() {
     : 0;
   const costBasisNum = Number(viewingHolding?.cost_basis ?? 0);
   const originalCostBasis = costBasisNum - reinvestedDividends;
-  // Total Gain = (MV − OCB) + non-reinvested income = net_gain + RD + income
-  const totalGain = Number(viewingHolding?.net_gain ?? 0) + reinvestedDividends + incomeTotal;
-  const totalReturnPct = originalCostBasis > 0 ? totalGain / originalCostBasis * 100 : null;
+  const isLoan = viewingHolding?.asset_type === "loan";
+  const totalBuy = isLoan
+    ? transactions.filter(t => t.txn_type === "buy" && t.holding_id === viewingHolding?.id)
+        .reduce((s, t) => s + Number(t.amount ?? 0), 0)
+    : 0;
+  // Loans: gain = interest − fees; return = gain / total invested
+  // Others: gain = price appreciation + reinvested divs + income
+  const totalGain = isLoan
+    ? incomeTotal
+    : Number(viewingHolding?.net_gain ?? 0) + reinvestedDividends + incomeTotal;
+  const totalReturnPct = isLoan
+    ? (totalBuy > 0 ? totalGain / totalBuy * 100 : null)
+    : (originalCostBasis > 0 ? totalGain / originalCostBasis * 100 : null);
   const isAddManual = MANUAL_PRICE_TYPES.has(addForm.asset_type);
   const isAddMarket = MARKET_TYPES.has(addForm.asset_type);
   const isEditManual = MANUAL_PRICE_TYPES.has(editForm.asset_type);
