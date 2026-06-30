@@ -172,6 +172,28 @@ export default function Dashboard() {
     { value: 0, basis: 0, gain: 0, income: 0, dayChange: null }
   );
 
+  const totalGain = totals.gain + totals.income;
+  const totalGainPct = totals.basis > 0 ? (totalGain / totals.basis) * 100 : null;
+
+  const periodChanges = useMemo(() => {
+    if (!portfolioHistory.length) return { week: null, mtd: null, ytd: null };
+    const now = new Date();
+    const weekAgo = new Date(now); weekAgo.setDate(now.getDate() - 7);
+    const mtdStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const ytdStart = new Date(now.getFullYear(), 0, 1);
+    const findValue = (target) => {
+      const targetStr = target.toISOString().slice(0, 10);
+      return [...portfolioHistory].reverse().find(e => e.date <= targetStr)?.value ?? null;
+    };
+    const current = totals.value;
+    const wv = findValue(weekAgo), mv = findValue(mtdStart), yv = findValue(ytdStart);
+    return {
+      week: wv != null ? current - wv : null,
+      mtd:  mv != null ? current - mv : null,
+      ytd:  yv != null ? current - yv : null,
+    };
+  }, [portfolioHistory, totals.value]);
+
   const lastSync = (rows ?? [])
     .map((r) => r.last_price_sync)
     .filter(Boolean)
@@ -200,7 +222,8 @@ export default function Dashboard() {
         )}
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-8">
+      {/* Row 1 — return summary */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-3">
         <div className="card p-4">
           <p className="label mb-1">Total value</p>
           <p className="num text-xl">{usd(totals.value)}</p>
@@ -216,14 +239,34 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="card p-4">
-          <p className="label mb-1">Income received</p>
-          <p className="num text-xl">{usd(totals.income)}</p>
+          <p className="label mb-1">Income (net)</p>
+          <p className="num text-xl"><GainText value={totals.income} /></p>
         </div>
         <div className="card p-4">
-          <p className="label mb-1">Day change</p>
+          <p className="label mb-1">Total gain</p>
           <p className="num text-xl">
-            <GainText value={totals.dayChange} />
+            <GainText value={totalGain} pct={totalGainPct} />
           </p>
+        </div>
+      </div>
+
+      {/* Row 2 — period changes */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
+        <div className="card p-4">
+          <p className="label mb-1">Day change</p>
+          <p className="num text-xl"><GainText value={totals.dayChange} /></p>
+        </div>
+        <div className="card p-4">
+          <p className="label mb-1">Week change</p>
+          <p className="num text-xl"><GainText value={periodChanges.week} /></p>
+        </div>
+        <div className="card p-4">
+          <p className="label mb-1">Month to date</p>
+          <p className="num text-xl"><GainText value={periodChanges.mtd} /></p>
+        </div>
+        <div className="card p-4">
+          <p className="label mb-1">Year to date</p>
+          <p className="num text-xl"><GainText value={periodChanges.ytd} /></p>
         </div>
       </div>
 
