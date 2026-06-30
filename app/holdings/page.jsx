@@ -133,7 +133,7 @@ export default function HoldingsPage() {
 
   // Add transaction drawer
   const [addingTxn, setAddingTxn] = useState(false);
-  const [addTxnForm, setAddTxnForm] = useState({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "", reinvest: false, reinvest_quantity: "", reinvest_price: "" });
+  const [addTxnForm, setAddTxnForm] = useState({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "", reinvest: false, reinvest_quantity: "", reinvest_price: "", linked_holding_id: "" });
   const [addTxnError, setAddTxnError] = useState("");
   const [addTxnBusy, setAddTxnBusy] = useState(false);
 
@@ -355,7 +355,7 @@ export default function HoldingsPage() {
     setShowTxnFilter(false);
     setFilterTxnTypes([]);
     setAddingTxn(false);
-    setAddTxnForm({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "", reinvest: false, reinvest_quantity: "", reinvest_price: "" });
+    setAddTxnForm({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "", reinvest: false, reinvest_quantity: "", reinvest_price: "", linked_holding_id: "" });
     setAddTxnError("");
     setEditingTxn(null);
     setHoldingHistory([]);
@@ -448,11 +448,34 @@ export default function HoldingsPage() {
           if (ch) await supabase.from("holdings").update({ quantity: Number(ch.quantity) + cashDelta }).eq("id", cashLeg.id);
         }
       }
+
+      // Paired transfer: auto-create the offsetting leg on the linked holding
+      if (addTxnForm.linked_holding_id && (addTxnForm.txn_type === "transfer_out" || addTxnForm.txn_type === "transfer_in")) {
+        const pairedType = addTxnForm.txn_type === "transfer_out" ? "transfer_in" : "transfer_out";
+        const { error: pairErr } = await supabase.from("transactions").insert({
+          user_id: user.id,
+          holding_id: addTxnForm.linked_holding_id,
+          cash_holding_id: null,
+          txn_type: pairedType,
+          txn_date: addTxnForm.txn_date,
+          quantity: amount,
+          price_per_unit: null,
+          amount,
+          fees: 0,
+        });
+        if (pairErr) { setAddTxnBusy(false); setAddTxnError(pairErr.message); return; }
+
+        const pairedDelta = cashAmount(pairedType, amount, 0);
+        if (pairedDelta !== 0) {
+          const { data: lh } = await supabase.from("holdings").select("quantity").eq("id", addTxnForm.linked_holding_id).single();
+          if (lh) await supabase.from("holdings").update({ quantity: Number(lh.quantity) + pairedDelta }).eq("id", addTxnForm.linked_holding_id);
+        }
+      }
     }
 
     setAddTxnBusy(false);
     setAddingTxn(false);
-    setAddTxnForm({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "", reinvest: false, reinvest_quantity: "", reinvest_price: "" });
+    setAddTxnForm({ txn_type: "", txn_date: new Date().toISOString().slice(0, 10), quantity: "", price_per_unit: "", amount: "", fees: "", reinvest: false, reinvest_quantity: "", reinvest_price: "", linked_holding_id: "" });
     load();
     await openDetail(viewingHolding);
   }
@@ -1473,7 +1496,7 @@ export default function HoldingsPage() {
             <select
               className="field"
               value={addTxnForm.txn_type}
-              onChange={(e) => setAddTxnForm({ ...addTxnForm, txn_type: e.target.value })}
+              onChange={(e) => setAddTxnForm({ ...addTxnForm, txn_type: e.target.value, linked_holding_id: "" })}
             >
               <option value="">Select…</option>
               {txnTypes.map((t) => (
@@ -1481,6 +1504,30 @@ export default function HoldingsPage() {
               ))}
             </select>
           </div>
+          {(addTxnForm.txn_type === "transfer_out" || addTxnForm.txn_type === "transfer_in") && (
+            <div>
+              <label className="label block mb-1.5">
+                {addTxnForm.txn_type === "transfer_out" ? "Transfer to" : "Transfer from"}
+              </label>
+              <select
+                className="field"
+                value={addTxnForm.linked_holding_id}
+                onChange={(e) => setAddTxnForm({ ...addTxnForm, linked_holding_id: e.target.value })}
+              >
+                <option value="">None (manual entry only)</option>
+                {(holdings ?? [])
+                  .filter((h) => h.asset_type === "cash" && h.id !== viewingHolding?.id)
+                  .map((h) => (
+                    <option key={h.id} value={h.id}>{h.name || h.symbol}</option>
+                  ))}
+              </select>
+              {addTxnForm.linked_holding_id && (
+                <p className="text-xs text-paper-dim mt-1">
+                  The offsetting {addTxnForm.txn_type === "transfer_out" ? "Transfer In" : "Transfer Out"} will be recorded automatically.
+                </p>
+              )}
+            </div>
+          )}
           <div>
             <label className="label block mb-1.5">Date</label>
             <input
