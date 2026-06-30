@@ -162,6 +162,7 @@ export default function HoldingsPage() {
     ]);
     if (hvErr) setError(hvErr.message);
     setHoldings(hv ?? []);
+    setCollapsedGroups(new Set((hv ?? []).map((h) => h.asset_type).filter(Boolean)));
     setAccounts(ac ?? []);
     const aMap = {};
     for (const a of ac ?? []) aMap[a.id] = a.name;
@@ -607,6 +608,27 @@ export default function HoldingsPage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold tracking-tight">Holdings</h1>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              const allCodes = holdingGroups.map((g) => g.code);
+              const allCollapsed = allCodes.every((c) => collapsedGroups.has(c));
+              setCollapsedGroups(allCollapsed ? new Set() : new Set(allCodes));
+            }}
+            title={holdingGroups.every((g) => collapsedGroups.has(g.code)) ? "Expand all" : "Collapse all"}
+            className="p-1.5 rounded-lg border border-ink-line text-paper-dim hover:text-paper transition-colors"
+          >
+            {holdingGroups.every((g) => collapsedGroups.has(g.code)) ? (
+              <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 5h12M2 8h8M2 11h5" />
+                <path d="M12 9l2 2-2 2" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 5h12M2 8h8M2 11h5" />
+                <path d="M14 9l-2 2 2 2" />
+              </svg>
+            )}
+          </button>
           <button
             onClick={() => setShowFilter((v) => !v)}
             className={`px-3 py-1.5 rounded-lg text-sm transition-colors border ${
