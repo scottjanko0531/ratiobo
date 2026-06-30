@@ -183,7 +183,8 @@ export default function Dashboard() {
     const ytdStart = new Date(now.getFullYear(), 0, 1);
     const findValue = (target) => {
       const targetStr = target.toISOString().slice(0, 10);
-      return [...portfolioHistory].reverse().find(e => e.date <= targetStr)?.value ?? null;
+      // Use closest snapshot at or before target; fall back to earliest available
+      return ([...portfolioHistory].reverse().find(e => e.date <= targetStr) ?? portfolioHistory[0])?.value ?? null;
     };
     const current = totals.value;
     const wv = findValue(weekAgo), mv = findValue(mtdStart), yv = findValue(ytdStart);
