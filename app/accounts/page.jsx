@@ -92,6 +92,7 @@ export default function AccountsPage() {
   const [accountHoldings, setAccountHoldings] = useState([]);
   const [holdingIncomeMap, setHoldingIncomeMap] = useState({});
   const [holdingReinvestedMap, setHoldingReinvestedMap] = useState({});
+  const [holdingFeeMap, setHoldingFeeMap] = useState({});
   const [detailBusy, setDetailBusy] = useState(false);
 
   const [viewingHolding, setViewingHolding] = useState(null);
@@ -351,12 +352,14 @@ export default function AccountsPage() {
     const holdingIds = (data ?? []).map((h) => h.id);
     const incomeMap = {};
     const reinvestedMap = {};
+    const feeMap = {};
     if (holdingIds.length > 0) {
-      const { data: incomeTxns } = await supabase
-        .from("transactions")
-        .select("holding_id, txn_type, amount, is_reinvested")
-        .in("holding_id", holdingIds)
-        .in("txn_type", ["dividend", "interest"]);
+      const [{ data: incomeTxns }, { data: feeTxns }] = await Promise.all([
+        supabase.from("transactions").select("holding_id, txn_type, amount, is_reinvested")
+          .in("holding_id", holdingIds).in("txn_type", ["dividend", "interest"]),
+        supabase.from("transactions").select("holding_id, amount")
+          .in("holding_id", holdingIds).eq("txn_type", "fee"),
+      ]);
       for (const t of incomeTxns ?? []) {
         const amt = Number(t.amount ?? 0);
         if (t.is_reinvested) {
@@ -365,9 +368,13 @@ export default function AccountsPage() {
           incomeMap[t.holding_id] = (incomeMap[t.holding_id] ?? 0) + amt;
         }
       }
+      for (const t of feeTxns ?? []) {
+        feeMap[t.holding_id] = (feeMap[t.holding_id] ?? 0) + Number(t.amount ?? 0);
+      }
     }
     setHoldingIncomeMap(incomeMap);
     setHoldingReinvestedMap(reinvestedMap);
+    setHoldingFeeMap(feeMap);
     setDetailBusy(false);
   }
 
@@ -385,6 +392,7 @@ export default function AccountsPage() {
     setHoldingSnapshots({});
     setHoldingIncomeMap({});
     setHoldingReinvestedMap({});
+    setHoldingFeeMap({});
   }
 
   async function openHoldingDetail(holding) {
@@ -855,6 +863,8 @@ export default function AccountsPage() {
   const incomeTotal = (!isCashHoldingAdd && viewingHolding)
     ? holdingTransactions.filter(t => (t.txn_type === "dividend" || t.txn_type === "interest") && !t.is_reinvested && t.holding_id === viewingHolding.id)
         .reduce((s, t) => s + Number(t.amount ?? 0), 0)
+      - holdingTransactions.filter(t => t.txn_type === "fee" && t.holding_id === viewingHolding.id)
+        .reduce((s, t) => s + Number(t.amount ?? 0), 0)
     : 0;
   const reinvestedDividends = (!isCashHoldingAdd && viewingHolding)
     ? holdingTransactions.filter(t => t.txn_type === "dividend" && t.is_reinvested && t.holding_id === viewingHolding.id)
@@ -862,9 +872,17 @@ export default function AccountsPage() {
     : 0;
   const costBasisNum = Number(viewingHolding?.cost_basis ?? 0);
   const originalCostBasis = costBasisNum - reinvestedDividends;
-  // Total Gain = (MV − OCB) + non-reinvested income = net_gain + RD + income
-  const totalGain = Number(viewingHolding?.net_gain ?? 0) + reinvestedDividends + incomeTotal;
-  const totalReturnPct = originalCostBasis > 0 ? totalGain / originalCostBasis * 100 : null;
+  const isLoan = viewingHolding?.asset_type === "loan";
+  const totalBuy = isLoan
+    ? holdingTransactions.filter(t => t.txn_type === "buy" && t.holding_id === viewingHolding?.id)
+        .reduce((s, t) => s + Number(t.amount ?? 0), 0)
+    : 0;
+  const totalGain = isLoan
+    ? incomeTotal
+    : Number(viewingHolding?.net_gain ?? 0) + reinvestedDividends + incomeTotal;
+  const totalReturnPct = isLoan
+    ? (totalBuy > 0 ? totalGain / totalBuy * 100 : null)
+    : (originalCostBasis > 0 ? totalGain / originalCostBasis * 100 : null);
   const addTxnCashLeg =
     viewingHolding && !isCashHoldingAdd && viewingHolding.account_id && CASH_LEG_TYPES.has(addTxnForm.txn_type)
       ? accountHoldings.find((h) => h.asset_type === "cash" && h.account_id === viewingHolding.account_id)
@@ -1510,9 +1528,11 @@ export default function AccountsPage() {
                       </thead>
                       <tbody>
                         {filteredHoldings.map((h) => {
-                          const income = holdingIncomeMap[h.id] ?? 0;
+                          const income = (holdingIncomeMap[h.id] ?? 0) - (holdingFeeMap[h.id] ?? 0);
                           const reinvested = holdingReinvestedMap[h.id] ?? 0;
-                          const totalGain = Number(h.net_gain ?? 0) + reinvested + income;
+                          const totalGain = h.asset_type === "loan"
+                            ? income
+                            : Number(h.net_gain ?? 0) + reinvested + income;
                           const snapVal = holdingSnapshots[h.id];
                           const dayChg = snapVal != null ? Number(h.current_value ?? 0) - snapVal : null;
                           return (
