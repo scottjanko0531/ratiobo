@@ -741,7 +741,10 @@ export default function HoldingsPage() {
                 {holdingGroups.map(({ code, label, items }) => {
                   const isCollapsed = collapsedGroups.has(code);
                   const groupValue = items.reduce((s, h) => s + Number(h.current_value ?? 0), 0);
-                  const groupGain  = items.reduce((s, h) => s + Number(h.net_gain ?? 0), 0);
+                  const groupGain  = items.reduce((s, h) => {
+                    const netIncome = Number(h.total_interest ?? 0) + Number(h.total_dividends ?? 0) - Number(h.total_fees ?? 0);
+                    return s + (h.asset_type === "loan" ? netIncome : Number(h.net_gain ?? 0) + netIncome);
+                  }, 0);
                   const hasDayData = items.some((h) => snapMap[h.id] != null);
                   const groupDayChg = hasDayData
                     ? items.reduce((s, h) => {
@@ -775,7 +778,8 @@ export default function HoldingsPage() {
 
                       {/* Individual holding rows */}
                       {!isCollapsed && items.map((h) => {
-                        const gain = Number(h.net_gain ?? 0);
+                        const netIncome = Number(h.total_interest ?? 0) + Number(h.total_dividends ?? 0) - Number(h.total_fees ?? 0);
+                        const gain = h.asset_type === "loan" ? netIncome : Number(h.net_gain ?? 0) + netIncome;
                         const snap = snapMap[h.id];
                         const dayChg = snap != null ? Number(h.current_value ?? 0) - snap : null;
                         return (
