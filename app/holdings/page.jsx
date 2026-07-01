@@ -87,6 +87,8 @@ export default function HoldingsPage() {
 
   // Filter
   const [showFilter, setShowFilter] = useState(false);
+  const [filterSearch, setFilterSearch] = useState("");
+  const [filterSymbols, setFilterSymbols] = useState([]);
   const [filterAssetTypes, setFilterAssetTypes] = useState([]);
   const [filterAccounts, setFilterAccounts] = useState([]);
 
@@ -562,13 +564,18 @@ export default function HoldingsPage() {
   }
 
   // ── Derived ───────────────────────────────────────────────────────────────
-  const filtersActive = filterAssetTypes.length > 0 || filterAccounts.length > 0;
+  const filtersActive = filterSearch.trim() !== "" || filterSymbols.length > 0 || filterAssetTypes.length > 0 || filterAccounts.length > 0;
+  const filterCount = (filterSearch.trim() ? 1 : 0) + filterSymbols.length + filterAssetTypes.length + filterAccounts.length;
   const filteredHoldings = (holdings ?? []).filter((h) => {
+    const q = filterSearch.trim().toLowerCase();
+    const searchOk = q === "" || (h.symbol ?? "").toLowerCase().includes(q) || (h.name ?? "").toLowerCase().includes(q);
+    const symbolOk = filterSymbols.length === 0 || filterSymbols.includes(h.symbol);
     const typeOk = filterAssetTypes.length === 0 || filterAssetTypes.includes(h.asset_type);
     const acctOk = filterAccounts.length === 0 || filterAccounts.includes(h.account_id);
-    return typeOk && acctOk;
+    return searchOk && symbolOk && typeOk && acctOk;
   });
   const uniqueAssetTypeCodes = [...new Set((holdings ?? []).map((h) => h.asset_type))].sort();
+  const uniqueSymbols = [...new Set((holdings ?? []).map((h) => h.symbol).filter(Boolean))].sort();
 
   // Group filteredHoldings by asset_type (DB already orders by asset_type then symbol)
   const holdingGroups = (() => {
@@ -660,7 +667,7 @@ export default function HoldingsPage() {
                 : "border-ink-line text-paper-dim hover:text-paper"
             }`}
           >
-            {filtersActive ? `Filter (${filterAssetTypes.length + filterAccounts.length})` : "Filter"}
+            {filtersActive ? `Filter (${filterCount})` : "Filter"}
           </button>
           <button
             onClick={() => setShowAdd((v) => !v)}
@@ -679,7 +686,39 @@ export default function HoldingsPage() {
       <div className="card">
         <div className="flex">
           {showFilter && (
-            <div className="w-48 shrink-0 border-r border-ink-line p-4 space-y-5">
+            <div className="w-56 shrink-0 border-r border-ink-line p-4 space-y-5 overflow-y-auto max-h-[70vh]">
+              <div>
+                <p className="label mb-2">Search</p>
+                <input
+                  type="text"
+                  className="field text-sm w-full"
+                  placeholder="Symbol or name…"
+                  value={filterSearch}
+                  onChange={(e) => setFilterSearch(e.target.value)}
+                />
+              </div>
+              {uniqueSymbols.length > 0 && (
+                <div>
+                  <p className="label mb-2">Symbol</p>
+                  <div className="space-y-1.5">
+                    {uniqueSymbols.map((sym) => (
+                      <label key={sym} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="accent-brass"
+                          checked={filterSymbols.includes(sym)}
+                          onChange={() =>
+                            setFilterSymbols((prev) =>
+                              prev.includes(sym) ? prev.filter((x) => x !== sym) : [...prev, sym]
+                            )
+                          }
+                        />
+                        {sym}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div>
                 <p className="label mb-2">Asset type</p>
                 <div className="space-y-1.5">
@@ -725,7 +764,7 @@ export default function HoldingsPage() {
               {filtersActive && (
                 <button
                   className="text-xs text-paper-dim hover:text-paper transition-colors"
-                  onClick={() => { setFilterAssetTypes([]); setFilterAccounts([]); }}
+                  onClick={() => { setFilterSearch(""); setFilterSymbols([]); setFilterAssetTypes([]); setFilterAccounts([]); }}
                 >
                   Clear all
                 </button>
