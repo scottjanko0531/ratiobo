@@ -5,7 +5,7 @@ import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
 import DalioGauges from "../../components/DalioGauges";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid,
+  ComposedChart, Line, Bar, Cell, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import {
@@ -478,16 +478,21 @@ function CloseIcon() {
 function DebtTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="card px-3 py-2 text-xs space-y-1 min-w-[160px]">
+    <div className="card px-3 py-2 text-xs space-y-1 min-w-[180px]">
       <p className="font-semibold text-paper mb-1">{label}</p>
-      {payload.map((p) => (
-        <div key={p.dataKey} className="flex justify-between gap-4">
-          <span style={{ color: p.color }}>{p.name}</span>
-          <span className="num text-paper">
-            {p.value != null ? `${Number(p.value).toFixed(1)}%` : "—"}
-          </span>
-        </div>
-      ))}
+      {payload.map((p) => {
+        if (p.value == null) return null;
+        const isChange = p.dataKey === "change";
+        const formatted = isChange
+          ? `${p.value >= 0 ? "+" : ""}${Number(p.value).toFixed(1)} pp`
+          : `${Number(p.value).toFixed(1)}%`;
+        return (
+          <div key={p.dataKey} className="flex justify-between gap-4">
+            <span style={{ color: p.fill ?? p.color }}>{p.name}</span>
+            <span className="num text-paper">{formatted}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -507,9 +512,17 @@ function DebtGdpDrawer({ open, onClose, currentValue }) {
 
   const chartData = useMemo(() => {
     if (!rows) return [];
+    const byYear = Object.fromEntries(rows.map((r) => [r.year, Number(r.debt_to_gdp_pct)]));
     return rows
       .filter((r) => r.year >= range && r.debt_to_gdp_pct != null)
-      .map((r) => ({ year: r.year, value: Number(r.debt_to_gdp_pct) }));
+      .map((r) => {
+        const prev = byYear[r.year - 1];
+        return {
+          year: r.year,
+          value: Number(r.debt_to_gdp_pct),
+          change: prev != null ? Number(r.debt_to_gdp_pct) - prev : null,
+        };
+      });
   }, [rows, range]);
 
   const minVal = useMemo(() => chartData.length ? Math.floor(Math.min(...chartData.map((r) => r.value)) / 10) * 10 : 0, [chartData]);
@@ -569,7 +582,7 @@ function DebtGdpDrawer({ open, onClose, currentValue }) {
             <div className="card p-4">
               <p className="label text-[10px] mb-3">Debt / GDP % · {range}–present</p>
               <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={chartData} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 44, bottom: 0, left: 0 }}>
                   <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
                   <XAxis
                     dataKey="year"
@@ -583,6 +596,7 @@ function DebtGdpDrawer({ open, onClose, currentValue }) {
                     interval="preserveStartEnd"
                   />
                   <YAxis
+                    yAxisId="left"
                     domain={[minVal, maxVal]}
                     tick={{ fill: "#A8ADB8", fontSize: 10 }}
                     tickLine={false}
@@ -590,9 +604,29 @@ function DebtGdpDrawer({ open, onClose, currentValue }) {
                     tickFormatter={(v) => `${v}%`}
                     width={44}
                   />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(0)}pp`}
+                    width={44}
+                  />
                   <Tooltip content={<DebtTooltip />} />
-                  <ReferenceLine y={300} stroke="#2A3240" strokeDasharray="4 2" strokeWidth={1} />
+                  <ReferenceLine yAxisId="left" y={300} stroke="#2A3240" strokeDasharray="4 2" strokeWidth={1} />
+                  <ReferenceLine yAxisId="right" y={0} stroke="#2A3240" strokeWidth={1} />
+                  <Bar yAxisId="right" dataKey="change" name="YoY Change" maxBarSize={12}>
+                    {chartData.map((entry, i) => (
+                      <Cell
+                        key={i}
+                        fill={entry.change == null ? "transparent" : entry.change >= 0 ? "#E0635C" : "#3FB984"}
+                        fillOpacity={0.65}
+                      />
+                    ))}
+                  </Bar>
                   <Line
+                    yAxisId="left"
                     type="monotone"
                     dataKey="value"
                     name="Debt/GDP"
@@ -601,7 +635,7 @@ function DebtGdpDrawer({ open, onClose, currentValue }) {
                     dot={false}
                     connectNulls
                   />
-                </LineChart>
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
           )}
