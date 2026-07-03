@@ -268,6 +268,295 @@ function DebtSustainabilityDrawer({ open, onClose, latestGauge }) {
   );
 }
 
+// ─── Shared utilities ─────────────────────────────────────────────────────────
+
+function buildZScoreData(rows, valueKey, range, invert = false) {
+  if (!rows?.length) return [];
+  const vals = rows.filter((r) => r[valueKey] != null).map((r) => Number(r[valueKey]));
+  if (!vals.length) return [];
+  const m = vals.reduce((s, v) => s + v, 0) / vals.length;
+  const sd = Math.sqrt(vals.reduce((s, v) => s + (v - m) ** 2, 0) / vals.length) || 1;
+  const byYear = Object.fromEntries(
+    rows.filter((r) => r[valueKey] != null).map((r) => [r.year, Number(r[valueKey])])
+  );
+  const z = (v) => (invert ? -1 : 1) * (v - m) / sd;
+  return rows
+    .filter((r) => r.year >= range && r[valueKey] != null)
+    .map((r) => {
+      const zs = z(Number(r[valueKey]));
+      const prev = byYear[r.year - 1];
+      return {
+        year: r.year,
+        zScore: Math.round(zs * 1000) / 1000,
+        change: prev != null ? Math.round((zs - z(prev)) * 1000) / 1000 : null,
+      };
+    });
+}
+
+function StandardZScoreChart({ chartData, lineName = "Risk z-score" }) {
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      <ComposedChart data={chartData} margin={{ top: 4, right: 44, bottom: 0, left: 0 }}>
+        <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+        <XAxis
+          dataKey="year"
+          type="number"
+          domain={["dataMin", "dataMax"]}
+          allowDecimals={false}
+          tick={{ fill: "#A8ADB8", fontSize: 10 }}
+          tickLine={false}
+          axisLine={false}
+          tickFormatter={(v) => String(v)}
+          interval="preserveStartEnd"
+        />
+        <YAxis yAxisId="left" tick={{ fill: "#A8ADB8", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(v) => v.toFixed(1)} width={36} />
+        <YAxis yAxisId="right" orientation="right" tick={{ fill: "#A8ADB8", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(2)}`} width={44} />
+        <Tooltip content={<RiskTooltip />} />
+        <ReferenceLine yAxisId="left" y={1}  stroke="#ef4444" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.5} />
+        <ReferenceLine yAxisId="left" y={0}  stroke="#2A3240" strokeWidth={1} />
+        <ReferenceLine yAxisId="left" y={-1} stroke="#22c55e" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.5} />
+        <ReferenceLine yAxisId="right" y={0} stroke="#2A3240" strokeWidth={1} />
+        <Bar yAxisId="right" dataKey="change" name="YoY Δ" maxBarSize={12}>
+          {chartData.map((entry, i) => (
+            <Cell key={i} fill={entry.change == null ? "transparent" : entry.change >= 0 ? "#E0635C" : "#3FB984"} fillOpacity={0.6} />
+          ))}
+        </Bar>
+        <Line yAxisId="left" type="monotone" dataKey="zScore" name={lineName} stroke="#C9A227" strokeWidth={2} dot={false} connectNulls />
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
+}
+
+function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, range, setRange, loading, renderChart, gaugeHistory, gaugeKey, subComponents = [] }) {
+  const gaugeRows = (gaugeHistory ?? []).filter((r) => r[gaugeKey] != null);
+  const gaugeColor = latestGauge == null ? "text-paper-dim" : latestGauge > 1 ? "text-loss" : latestGauge < -1 ? "text-gain" : "text-brass-soft";
+
+  return (
+    <>
+      <div className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`} onClick={onClose} />
+      <div className={`fixed right-0 top-0 h-full w-[520px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}>
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">{title}</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">{desc}</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {latestGauge != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${gaugeColor}`}>{latestGauge >= 0 ? "+" : ""}{Number(latestGauge).toFixed(2)}</p>
+                <p className="text-[10px] text-paper-dim mt-0.5">Current z</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5"><CloseIcon /></button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          <div className="flex items-center gap-1">
+            {RISK_RANGES.map((r) => (
+              <button key={r.from} onClick={() => setRange(r.from)} className={`px-3 py-1 rounded-lg text-xs transition-colors ${range === r.from ? "bg-ink text-brass-soft border border-brass/30" : "text-paper-dim hover:text-paper"}`}>
+                {r.label}
+              </button>
+            ))}
+          </div>
+
+          {loading ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              {renderChart()}
+              <div className="flex items-center gap-4 mt-3 text-[10px] text-paper-dim/70">
+                <span className="flex items-center gap-1"><span className="inline-block w-6 h-px bg-[#ef4444] opacity-50" /> Elevated (&gt; +1)</span>
+                <span className="flex items-center gap-1"><span className="inline-block w-6 h-px bg-[#22c55e] opacity-50" /> Low (&lt; −1)</span>
+              </div>
+            </div>
+          )}
+
+          {gaugeRows.length > 0 && (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
+              <div className="space-y-1.5">
+                {gaugeRows.slice().reverse().map((r) => (
+                  <div key={r.year} className="flex items-center justify-between text-xs">
+                    <span className="text-paper-dim">{r.year}</span>
+                    <div className="flex items-center gap-3">
+                      {subComponents.map(({ key, label }) => r[key] != null && (
+                        <span key={key} className="text-paper-dim text-[10px]">{label}: <span className="num text-paper">{Number(r[key]) >= 0 ? "+" : ""}{Number(r[key]).toFixed(2)}</span></span>
+                      ))}
+                      <span className={`num font-semibold ${Number(r[gaugeKey]) > 1 ? "text-loss" : Number(r[gaugeKey]) < -1 ? "text-gain" : "text-brass-soft"}`}>
+                        {Number(r[gaugeKey]) >= 0 ? "+" : ""}{Number(r[gaugeKey]).toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60">Source: <span className="font-mono">{source}</span></p>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─── Gauge 2: Policy Room Risk ────────────────────────────────────────────────
+
+function PolicyRoomDrawer({ open, onClose, latestGauge }) {
+  const [rows, setRows] = useState(null);
+  const [gaugeHistory, setGaugeHistory] = useState(null);
+  const [range, setRange] = useState(1954);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    Promise.all([
+      supabase.from("macro_credit_cycle").select("year,fed_funds_rate").order("year"),
+      supabase.from("dalio_gauge_readings").select("year,gauge2,z_fed_funds").order("year"),
+    ]).then(([credit, gauge]) => { setRows(credit.data ?? []); setGaugeHistory(gauge.data ?? []); });
+  }, [open, rows]);
+
+  const chartData = useMemo(() => buildZScoreData(rows, "fed_funds_rate", range, true), [rows, range]);
+
+  return (
+    <BaseGaugeDrawer
+      open={open} onClose={onClose}
+      title="Policy Room Risk"
+      desc="Fed Funds rate z-score · inverted — low rates = less room to cut = higher risk"
+      source="macro_credit_cycle · fed_funds_rate"
+      latestGauge={latestGauge}
+      range={range} setRange={setRange}
+      loading={rows === null}
+      renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Policy Room Risk z" />}
+      gaugeHistory={gaugeHistory}
+      gaugeKey="gauge2"
+      subComponents={[{ key: "z_fed_funds", label: "Fed Funds z" }]}
+    />
+  );
+}
+
+// ─── Gauge 3: Growth-Inflation Risk ──────────────────────────────────────────
+
+function GrowthInflationDrawer({ open, onClose, latestGauge }) {
+  const [rows, setRows] = useState(null);
+  const [gaugeHistory, setGaugeHistory] = useState(null);
+  const [range, setRange] = useState(1953);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    Promise.all([
+      supabase.from("macro_debt_cycle_computed").select("year,avg3_real,avg3_cpi").order("year"),
+      supabase.from("dalio_gauge_readings").select("year,gauge3,z_real_growth_3yr,z_cpi_3yr").order("year"),
+    ]).then(([dc, gauge]) => { setRows(dc.data ?? []); setGaugeHistory(gauge.data ?? []); });
+  }, [open, rows]);
+
+  // gauge3 = (z_cpi - z_real) / 2 — high CPI + low real growth = stagflation risk
+  const chartData = useMemo(() => {
+    if (!rows?.length) return [];
+    const reals = rows.filter((r) => r.avg3_real != null).map((r) => Number(r.avg3_real));
+    const cpis  = rows.filter((r) => r.avg3_cpi  != null).map((r) => Number(r.avg3_cpi));
+    if (!reals.length || !cpis.length) return [];
+    const mR = reals.reduce((s, v) => s + v, 0) / reals.length;
+    const sdR = Math.sqrt(reals.reduce((s, v) => s + (v - mR) ** 2, 0) / reals.length) || 1;
+    const mC = cpis.reduce((s, v) => s + v, 0) / cpis.length;
+    const sdC = Math.sqrt(cpis.reduce((s, v) => s + (v - mC) ** 2, 0) / cpis.length) || 1;
+    const byYear = Object.fromEntries(
+      rows.filter((r) => r.avg3_real != null && r.avg3_cpi != null)
+          .map((r) => [r.year, (((Number(r.avg3_cpi) - mC) / sdC) - ((Number(r.avg3_real) - mR) / sdR)) / 2])
+    );
+    return rows
+      .filter((r) => r.year >= range && r.avg3_real != null && r.avg3_cpi != null)
+      .map((r) => {
+        const zs = byYear[r.year];
+        const prev = byYear[r.year - 1];
+        return { year: r.year, zScore: Math.round(zs * 1000) / 1000, change: prev != null ? Math.round((zs - prev) * 1000) / 1000 : null };
+      });
+  }, [rows, range]);
+
+  return (
+    <BaseGaugeDrawer
+      open={open} onClose={onClose}
+      title="Growth-Inflation Risk"
+      desc="Stagflation z-score · (z_CPI − z_RealGrowth) / 2 · 3yr trailing averages"
+      source="macro_debt_cycle_computed · avg3_real, avg3_cpi"
+      latestGauge={latestGauge}
+      range={range} setRange={setRange}
+      loading={rows === null}
+      renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Stagflation z" />}
+      gaugeHistory={gaugeHistory}
+      gaugeKey="gauge3"
+      subComponents={[{ key: "z_real_growth_3yr", label: "Real Growth z" }, { key: "z_cpi_3yr", label: "CPI z" }]}
+    />
+  );
+}
+
+// ─── Gauge 4: Income Affordability Risk ──────────────────────────────────────
+
+function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
+  const [rows, setRows] = useState(null);
+  const [gaugeHistory, setGaugeHistory] = useState(null);
+  const [range, setRange] = useState(1952);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    Promise.all([
+      supabase.from("macro_credit_cycle").select("year,total_debt_growth_yoy").order("year"),
+      supabase.from("dalio_gauge_readings").select("year,gauge4,z_debt_growth_income").order("year"),
+    ]).then(([credit, gauge]) => { setRows(credit.data ?? []); setGaugeHistory(gauge.data ?? []); });
+  }, [open, rows]);
+
+  const chartData = useMemo(() => buildZScoreData(rows, "total_debt_growth_yoy", range), [rows, range]);
+
+  return (
+    <BaseGaugeDrawer
+      open={open} onClose={onClose}
+      title="Income Affordability Risk"
+      desc="Total debt growth YoY z-score · high debt growth relative to history = elevated risk"
+      source="macro_credit_cycle · total_debt_growth_yoy"
+      latestGauge={latestGauge}
+      range={range} setRange={setRange}
+      loading={rows === null}
+      renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Debt Growth z" />}
+      gaugeHistory={gaugeHistory}
+      gaugeKey="gauge4"
+      subComponents={[{ key: "z_debt_growth_income", label: "Debt/Inc z" }]}
+    />
+  );
+}
+
+// ─── Gauge 5: Reserve Confidence Risk ────────────────────────────────────────
+
+function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
+  const [rows, setRows] = useState(null);
+  const [gaugeHistory, setGaugeHistory] = useState(null);
+  const [range, setRange] = useState(1952);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    Promise.all([
+      supabase.from("wgc_gold_purchases").select("year,tonnes").order("year"),
+      supabase.from("dalio_gauge_readings").select("year,gauge5,z_cb_gold,z_bid_to_cover").order("year"),
+    ]).then(([wgc, gauge]) => { setRows(wgc.data ?? []); setGaugeHistory(gauge.data ?? []); });
+  }, [open, rows]);
+
+  const chartData = useMemo(() => buildZScoreData(rows, "tonnes", range), [rows, range]);
+
+  return (
+    <BaseGaugeDrawer
+      open={open} onClose={onClose}
+      title="Reserve Confidence Risk"
+      desc="CB gold purchases z-score · heavy buying signals declining reserve confidence"
+      source="wgc_gold_purchases · tonnes"
+      latestGauge={latestGauge}
+      range={range} setRange={setRange}
+      loading={rows === null}
+      renderChart={() => <StandardZScoreChart chartData={chartData} lineName="CB Gold z" />}
+      gaugeHistory={gaugeHistory}
+      gaugeKey="gauge5"
+      subComponents={[{ key: "z_cb_gold", label: "CB Gold z" }, { key: "z_bid_to_cover", label: "Bid/Cover z" }]}
+    />
+  );
+}
+
 // SVG speedometer gauge.
 // Scale: z-score from -3 (low risk, green/left) to +3 (elevated risk, red/right).
 // Zones: green ≤ -1, brass -1..+1, red ≥ +1.
@@ -389,6 +678,10 @@ export default function DalioGauges() {
   const [wgcData, setWgcData] = useState([]);
   const [showWgc, setShowWgc] = useState(false);
   const [debtSustOpen, setDebtSustOpen] = useState(false);
+  const [policyRoomOpen, setPolicyRoomOpen] = useState(false);
+  const [growthInflOpen, setGrowthInflOpen] = useState(false);
+  const [incomeAffordOpen, setIncomeAffordOpen] = useState(false);
+  const [reserveConfOpen, setReserveConfOpen] = useState(false);
   const [newYear, setNewYear] = useState("");
   const [newTonnes, setNewTonnes] = useState("");
   const [saving, setSaving] = useState(false);
@@ -463,7 +756,14 @@ export default function DalioGauges() {
             year={latest[key]?.year}
             label={label}
             desc={desc}
-            onClick={key === "gauge1" ? () => setDebtSustOpen(true) : undefined}
+            onClick={
+              key === "gauge1" ? () => setDebtSustOpen(true)
+            : key === "gauge2" ? () => setPolicyRoomOpen(true)
+            : key === "gauge3" ? () => setGrowthInflOpen(true)
+            : key === "gauge4" ? () => setIncomeAffordOpen(true)
+            : key === "gauge5" ? () => setReserveConfOpen(true)
+            : undefined
+            }
           />
         ))}
       </div>
@@ -471,6 +771,26 @@ export default function DalioGauges() {
         open={debtSustOpen}
         onClose={() => setDebtSustOpen(false)}
         latestGauge={latest?.gauge1?.value ?? null}
+      />
+      <PolicyRoomDrawer
+        open={policyRoomOpen}
+        onClose={() => setPolicyRoomOpen(false)}
+        latestGauge={latest?.gauge2?.value ?? null}
+      />
+      <GrowthInflationDrawer
+        open={growthInflOpen}
+        onClose={() => setGrowthInflOpen(false)}
+        latestGauge={latest?.gauge3?.value ?? null}
+      />
+      <IncomeAffordabilityDrawer
+        open={incomeAffordOpen}
+        onClose={() => setIncomeAffordOpen(false)}
+        latestGauge={latest?.gauge4?.value ?? null}
+      />
+      <ReserveConfidenceDrawer
+        open={reserveConfOpen}
+        onClose={() => setReserveConfOpen(false)}
+        latestGauge={latest?.gauge5?.value ?? null}
       />
 
       <p className="text-[10px] text-paper-dim/60 mb-4">
