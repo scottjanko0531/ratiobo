@@ -1,9 +1,13 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
 import DalioGauges from "../../components/DalioGauges";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, ReferenceLine,
+} from "recharts";
 import {
   SIMULATOR_KEYS,
   REGIME_DEFAULT_WEIGHTS,
@@ -78,7 +82,7 @@ function PencilIcon() {
   );
 }
 
-function IndicatorCard({ ind, onSave }) {
+function IndicatorCard({ ind, onSave, onClick }) {
   const [editing, setEditing] = useState(false);
   const [editVal, setEditVal] = useState("");
   const [editStatus, setEditStatus] = useState("unknown");
@@ -167,19 +171,27 @@ function IndicatorCard({ ind, onSave }) {
   }
 
   return (
-    <div className="card p-4 flex flex-col gap-1.5">
+    <div
+      className={`card p-4 flex flex-col gap-1.5 ${onClick ? "cursor-pointer hover:border-brass/40 transition-colors" : ""}`}
+      onClick={onClick}
+    >
       <div className="flex items-start justify-between gap-2">
         <p className="text-sm font-medium leading-snug">{ind.name}</p>
         <div className="flex items-center gap-1.5 shrink-0">
           <StatusBadge status={ind.status} />
           {ind.is_manual && (
             <button
-              onClick={startEdit}
+              onClick={(e) => { e.stopPropagation(); startEdit(); }}
               className="text-paper-dim hover:text-brass transition-colors"
               title="Update value"
             >
               <PencilIcon />
             </button>
+          )}
+          {onClick && (
+            <svg className="w-3 h-3 text-paper-dim/50" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6,3 11,8 6,13" />
+            </svg>
           )}
         </div>
       </div>
@@ -448,6 +460,176 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   );
 }
 
+const DEBT_RANGES = [
+  { label: "All", from: 1952 },
+  { label: "2000–", from: 2000 },
+  { label: "2010–", from: 2010 },
+];
+
+function CloseIcon() {
+  return (
+    <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round">
+      <line x1="3" y1="3" x2="13" y2="13" />
+      <line x1="13" y1="3" x2="3" y2="13" />
+    </svg>
+  );
+}
+
+function DebtTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="card px-3 py-2 text-xs space-y-1 min-w-[160px]">
+      <p className="font-semibold text-paper mb-1">{label}</p>
+      {payload.map((p) => (
+        <div key={p.dataKey} className="flex justify-between gap-4">
+          <span style={{ color: p.color }}>{p.name}</span>
+          <span className="num text-paper">
+            {p.value != null ? `${Number(p.value).toFixed(1)}%` : "—"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DebtGdpDrawer({ open, onClose, currentValue }) {
+  const [rows, setRows] = useState(null);
+  const [range, setRange] = useState(1952);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    supabase
+      .from("macro_debt_cycle_computed")
+      .select("year,debt_to_gdp_pct")
+      .order("year")
+      .then(({ data }) => setRows(data ?? []));
+  }, [open, rows]);
+
+  const chartData = useMemo(() => {
+    if (!rows) return [];
+    return rows
+      .filter((r) => r.year >= range && r.debt_to_gdp_pct != null)
+      .map((r) => ({ year: r.year, value: Number(r.debt_to_gdp_pct) }));
+  }, [rows, range]);
+
+  const minVal = useMemo(() => chartData.length ? Math.floor(Math.min(...chartData.map((r) => r.value)) / 10) * 10 : 0, [chartData]);
+  const maxVal = useMemo(() => chartData.length ? Math.ceil(Math.max(...chartData.map((r) => r.value)) / 10) * 10 : 400, [chartData]);
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed right-0 top-0 h-full w-[520px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">Total Debt / GDP</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">Total nonfinancial debt as % of nominal GDP · Annual (FRED Z.1)</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {currentValue != null && (
+              <div className="text-right">
+                <p className="num text-xl font-bold text-brass-soft leading-none">{formatValue(currentValue, "%")}</p>
+                <p className="text-[10px] text-paper-dim mt-0.5">Current</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          {/* Range selector */}
+          <div className="flex items-center gap-1">
+            {DEBT_RANGES.map((r) => (
+              <button
+                key={r.from}
+                onClick={() => setRange(r.from)}
+                className={`px-3 py-1 rounded-lg text-xs transition-colors ${
+                  range === r.from
+                    ? "bg-ink text-brass-soft border border-brass/30"
+                    : "text-paper-dim hover:text-paper"
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Chart */}
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Debt / GDP % · {range}–present</p>
+              <ResponsiveContainer width="100%" height={260}>
+                <LineChart data={chartData} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="year"
+                    type="number"
+                    domain={[range, "dataMax"]}
+                    allowDecimals={false}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => String(v)}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    domain={[minVal, maxVal]}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => `${v}%`}
+                    width={44}
+                  />
+                  <Tooltip content={<DebtTooltip />} />
+                  <ReferenceLine y={300} stroke="#2A3240" strokeDasharray="4 2" strokeWidth={1} />
+                  <Line
+                    type="monotone"
+                    dataKey="value"
+                    name="Debt/GDP"
+                    stroke="#C9A227"
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Key levels legend */}
+          <div className="card p-4 space-y-2">
+            <p className="label text-[10px] mb-2">Context</p>
+            {[
+              { pct: "~160%", label: "Pre-GFC peak (2008)" },
+              { pct: "~250%", label: "Post-COVID range (2020–)" },
+              { pct: "300%", label: "Reference threshold" },
+            ].map(({ pct, label }) => (
+              <div key={label} className="flex items-center justify-between text-xs">
+                <span className="text-paper-dim">{label}</span>
+                <span className="num text-paper">{pct}</span>
+              </div>
+            ))}
+          </div>
+
+          <p className="text-[10px] text-paper-dim/60 leading-relaxed">
+            Source: Federal Reserve Z.1 Financial Accounts · <span className="font-mono">macro_debt_cycle_computed</span>
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 export default function MacroDashboard() {
@@ -456,6 +638,7 @@ export default function MacroDashboard() {
   const [error, setError] = useState("");
   const [portfolioHoldings, setPortfolioHoldings] = useState([]);
   const [assetData, setAssetData] = useState(null);
+  const [debtDrawerOpen, setDebtDrawerOpen] = useState(false);
 
   const fetchIndicators = useCallback(async () => {
     const { data, error: err } = await supabase
@@ -595,7 +778,12 @@ export default function MacroDashboard() {
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                   {byLayer[layer].map((ind) => (
-                    <IndicatorCard key={ind.id} ind={ind} onSave={fetchIndicators} />
+                    <IndicatorCard
+                      key={ind.id}
+                      ind={ind}
+                      onSave={fetchIndicators}
+                      onClick={ind.name === "Total Debt / GDP" ? () => setDebtDrawerOpen(true) : undefined}
+                    />
                   ))}
                 </div>
               )}
@@ -621,6 +809,11 @@ export default function MacroDashboard() {
           </div>
         </>
       )}
+      <DebtGdpDrawer
+        open={debtDrawerOpen}
+        onClose={() => setDebtDrawerOpen(false)}
+        currentValue={indicators?.find((i) => i.name === "Total Debt / GDP")?.current_value}
+      />
     </Shell>
   );
 }
