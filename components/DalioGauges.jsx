@@ -69,7 +69,7 @@ function RiskTooltip({ active, payload, label }) {
   );
 }
 
-function DebtSustainabilityDrawer({ open, onClose, latestGauge }) {
+function DebtSustainabilityDrawer({ open, onClose, latestGauge, latestGaugeYear }) {
   const [rows, setRows] = useState(null);
   const [gaugeHistory, setGaugeHistory] = useState(null);
   const [range, setRange] = useState(1952);
@@ -109,7 +109,8 @@ function DebtSustainabilityDrawer({ open, onClose, latestGauge }) {
     return { chartData: data, mean: m, stddev: sd };
   }, [rows, range]);
 
-  const gaugeRows = gaugeHistory?.filter((r) => r.gauge1 != null) ?? [];
+  // Include all rows that have any data — show partial rows with "—" for missing composite
+  const gaugeRows = (gaugeHistory ?? []).filter((r) => r.z_debt_gdp != null || r.gauge1 != null);
 
   return (
     <>
@@ -132,7 +133,9 @@ function DebtSustainabilityDrawer({ open, onClose, latestGauge }) {
                 <p className={`num text-xl font-bold leading-none ${latestGauge > 1 ? "text-loss" : latestGauge < -1 ? "text-gain" : "text-brass-soft"}`}>
                   {latestGauge >= 0 ? "+" : ""}{Number(latestGauge).toFixed(2)}
                 </p>
-                <p className="text-[10px] text-paper-dim mt-0.5">Current z</p>
+                <p className="text-[10px] text-paper-dim mt-0.5">
+                  {latestGaugeYear ? `Composite · ${latestGaugeYear}` : "Current z"}
+                </p>
               </div>
             )}
             <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
@@ -239,22 +242,32 @@ function DebtSustainabilityDrawer({ open, onClose, latestGauge }) {
                 Composite of Debt/GDP z-score + Debt/Income z-score. Available annually.
               </p>
               <div className="space-y-1.5">
-                {gaugeRows.slice().reverse().map((r) => (
-                  <div key={r.year} className="flex items-center justify-between text-xs">
-                    <span className="text-paper-dim">{r.year}</span>
-                    <div className="flex items-center gap-3">
-                      {r.z_debt_gdp != null && (
-                        <span className="text-paper-dim text-[10px]">Debt/GDP: <span className="num text-paper">{Number(r.z_debt_gdp) >= 0 ? "+" : ""}{Number(r.z_debt_gdp).toFixed(2)}</span></span>
-                      )}
-                      {r.z_debt_income != null && (
-                        <span className="text-paper-dim text-[10px]">Debt/Inc: <span className="num text-paper">{Number(r.z_debt_income) >= 0 ? "+" : ""}{Number(r.z_debt_income).toFixed(2)}</span></span>
-                      )}
-                      <span className={`num font-semibold ${Number(r.gauge1) > 1 ? "text-loss" : Number(r.gauge1) < -1 ? "text-gain" : "text-brass-soft"}`}>
-                        {Number(r.gauge1) >= 0 ? "+" : ""}{Number(r.gauge1).toFixed(2)}
-                      </span>
+                {gaugeRows.slice().reverse().map((r) => {
+                  const isPartial = r.gauge1 == null;
+                  return (
+                    <div key={r.year} className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-paper-dim">{r.year}</span>
+                        {isPartial && <span className="text-[9px] text-brass/60 border border-brass/20 rounded px-1">partial</span>}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {r.z_debt_gdp != null && (
+                          <span className="text-paper-dim text-[10px]">Debt/GDP: <span className="num text-paper">{Number(r.z_debt_gdp) >= 0 ? "+" : ""}{Number(r.z_debt_gdp).toFixed(2)}</span></span>
+                        )}
+                        {r.z_debt_income != null && (
+                          <span className="text-paper-dim text-[10px]">Debt/Inc: <span className="num text-paper">{Number(r.z_debt_income) >= 0 ? "+" : ""}{Number(r.z_debt_income).toFixed(2)}</span></span>
+                        )}
+                        {isPartial ? (
+                          <span className="num font-semibold text-paper-dim">—</span>
+                        ) : (
+                          <span className={`num font-semibold ${Number(r.gauge1) > 1 ? "text-loss" : Number(r.gauge1) < -1 ? "text-gain" : "text-brass-soft"}`}>
+                            {Number(r.gauge1) >= 0 ? "+" : ""}{Number(r.gauge1).toFixed(2)}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -771,6 +784,7 @@ export default function DalioGauges() {
         open={debtSustOpen}
         onClose={() => setDebtSustOpen(false)}
         latestGauge={latest?.gauge1?.value ?? null}
+        latestGaugeYear={latest?.gauge1?.year ?? null}
       />
       <PolicyRoomDrawer
         open={policyRoomOpen}
