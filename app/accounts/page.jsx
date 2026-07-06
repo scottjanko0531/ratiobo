@@ -490,6 +490,7 @@ export default function AccountsPage() {
       const { data: h } = await supabase.from("holdings").select("quantity").eq("id", viewingHolding.id).single();
       if (h) await supabase.from("holdings").update({ quantity: Number(h.quantity) + reinvestQty }).eq("id", viewingHolding.id);
       // Cash net = 0 (dividend +amount, buy -amount), no cash holding update needed
+      await supabase.rpc("seed_holding_snapshot", { p_holding_id: viewingHolding.id });
 
     } else {
       const { error: txnErr } = await supabase.from("transactions").insert({
@@ -511,6 +512,9 @@ export default function AccountsPage() {
       if (delta !== 0) {
         const { data: h } = await supabase.from("holdings").select("quantity").eq("id", viewingHolding.id).single();
         if (h) await supabase.from("holdings").update({ quantity: Number(h.quantity) + delta }).eq("id", viewingHolding.id);
+      }
+      if ((selectedType?.affects_quantity ?? 0) > 0) {
+        await supabase.rpc("seed_holding_snapshot", { p_holding_id: viewingHolding.id });
       }
       if (cashLeg) {
         const cashDelta = cashAmount(addTxnForm.txn_type, amount, fees);
