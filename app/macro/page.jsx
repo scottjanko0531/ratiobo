@@ -511,8 +511,8 @@ function CpiTooltip({ active, payload, label }) {
       <p className="font-semibold text-paper mb-1">{label?.slice(0, 7)}</p>
       {payload.map((p) => {
         if (p.value == null) return null;
-        const isChange = p.dataKey === "yoyChange";
-        const formatted = isChange
+        const isAccel = p.dataKey === "coreAccel";
+        const formatted = isAccel
           ? `${p.value >= 0 ? "+" : ""}${Number(p.value).toFixed(2)} pp`
           : `${Number(p.value).toFixed(2)}%`;
         return (
@@ -707,7 +707,7 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
 
   const chartData = useMemo(() => {
     if (!rows) return [];
-    return rows.filter((r) => r.date >= range && r.yoy != null);
+    return rows.filter((r) => r.date >= range && r.coreYoy != null);
   }, [rows, range]);
 
   const xTicks = useMemo(() => {
@@ -721,14 +721,41 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
       .map((r) => r.date);
   }, [chartData]);
 
-  const minVal = useMemo(
-    () => (chartData.length ? Math.min(0, Math.floor(Math.min(...chartData.map((r) => r.yoy)))) : 0),
-    [chartData]
-  );
-  const maxVal = useMemo(
-    () => (chartData.length ? Math.ceil(Math.max(...chartData.map((r) => r.yoy))) + 1 : 10),
-    [chartData]
-  );
+  const [minVal, maxVal] = useMemo(() => {
+    if (!chartData.length) return [0, 10];
+    const allYoy = chartData.flatMap((r) => [r.coreYoy, r.headlineYoy ?? r.coreYoy]);
+    return [
+      Math.min(0, Math.floor(Math.min(...allYoy))),
+      Math.ceil(Math.max(...allYoy)) + 1,
+    ];
+  }, [chartData]);
+
+  const summaryRows = useMemo(() => {
+    if (!rows?.length) return [];
+    const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const latest = rows[rows.length - 1];
+    const result = [];
+
+    if (latest.date.slice(5, 7) !== "12") {
+      const mo = parseInt(latest.date.slice(5, 7)) - 1;
+      const yr = latest.date.slice(0, 4);
+      result.push({ label: `${MONTHS[mo]} ${yr}`, ...latest, isLatest: true });
+    }
+
+    const seen = new Set();
+    for (let i = rows.length - 1; i >= 0 && seen.size < 5; i--) {
+      const r = rows[i];
+      if (r.date.slice(5, 7) === "12") {
+        const yr = r.date.slice(0, 4);
+        if (!seen.has(yr)) {
+          seen.add(yr);
+          result.push({ label: `Dec ${yr}`, ...r });
+        }
+      }
+    }
+
+    return result;
+  }, [rows]);
 
   return (
     <>
@@ -741,8 +768,8 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
       >
         <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
           <div>
-            <h2 className="text-sm font-semibold text-paper">Core CPI (YoY)</h2>
-            <p className="text-[10px] text-paper-dim mt-0.5">CPI ex-food and energy · Monthly (FRED CPILFESL)</p>
+            <h2 className="text-sm font-semibold text-paper">CPI History</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">Core &amp; Headline · Monthly (FRED CPILFESL / CPIAUCSL)</p>
           </div>
           <div className="flex items-start gap-4 shrink-0">
             {currentValue != null && (
@@ -750,7 +777,7 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
                 <p className={`num text-xl font-bold leading-none ${Number(currentValue) > 3 ? "text-loss" : Number(currentValue) < 2 ? "text-gain" : "text-brass-soft"}`}>
                   {formatValue(currentValue, "%")}
                 </p>
-                <p className="text-[10px] text-paper-dim mt-0.5">Current</p>
+                <p className="text-[10px] text-paper-dim mt-0.5">Core · Current</p>
               </div>
             )}
             <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
@@ -780,7 +807,7 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
             <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
           ) : (
             <div className="card p-4">
-              <p className="label text-[10px] mb-3">Core CPI YoY % · monthly</p>
+              <p className="label text-[10px] mb-3">YoY % · monthly</p>
               <ResponsiveContainer width="100%" height={260}>
                 <ComposedChart data={chartData} margin={{ top: 4, right: 44, bottom: 0, left: 0 }}>
                   <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
@@ -815,11 +842,11 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
                   <Tooltip content={<CpiTooltip />} />
                   <ReferenceLine yAxisId="left" y={2} stroke="#C9A227" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.5} />
                   <ReferenceLine yAxisId="right" y={0} stroke="#2A3240" strokeWidth={1} />
-                  <Bar yAxisId="right" dataKey="yoyChange" name="MoM Accel." maxBarSize={6}>
+                  <Bar yAxisId="right" dataKey="coreAccel" name="Core Accel." maxBarSize={6}>
                     {chartData.map((entry, i) => (
                       <Cell
                         key={i}
-                        fill={(entry.yoyChange ?? 0) >= 0 ? "#E0635C" : "#3FB984"}
+                        fill={(entry.coreAccel ?? 0) >= 0 ? "#E0635C" : "#3FB984"}
                         fillOpacity={0.55}
                       />
                     ))}
@@ -827,8 +854,19 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
                   <Line
                     yAxisId="left"
                     type="monotone"
-                    dataKey="yoy"
-                    name="Core CPI YoY"
+                    dataKey="headlineYoy"
+                    name="Headline CPI"
+                    stroke="#A8ADB8"
+                    strokeWidth={1.5}
+                    strokeDasharray="5 3"
+                    dot={false}
+                    connectNulls
+                  />
+                  <Line
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="coreYoy"
+                    name="Core CPI"
                     stroke="#C9A227"
                     strokeWidth={2}
                     dot={false}
@@ -836,25 +874,66 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
                   />
                 </ComposedChart>
               </ResponsiveContainer>
+
+              {/* Legend */}
+              <div className="flex items-center justify-center gap-5 mt-3 text-[10px] text-paper-dim">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-5 h-[2px] bg-[#C9A227] rounded" />
+                  Core CPI
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <svg width="20" height="4" className="overflow-visible">
+                    <line x1="0" y1="2" x2="20" y2="2" stroke="#A8ADB8" strokeWidth="1.5" strokeDasharray="5 3" />
+                  </svg>
+                  Headline CPI
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-flex gap-0.5">
+                    <span className="inline-block w-2 h-3 rounded-sm" style={{ backgroundColor: "#E0635C", opacity: 0.55 }} />
+                    <span className="inline-block w-2 h-3 rounded-sm" style={{ backgroundColor: "#3FB984", opacity: 0.55 }} />
+                  </span>
+                  Core Accel.
+                </span>
+              </div>
             </div>
           )}
 
-          <div className="card p-4 space-y-2">
-            <p className="label text-[10px] mb-2">Fed Context</p>
-            {[
-              { level: "2.0%", label: "Fed long-run target" },
-              { level: "≤3.0%", label: "Watch zone" },
-              { level: ">4.0%", label: "Danger zone" },
-            ].map(({ level, label }) => (
-              <div key={label} className="flex items-center justify-between text-xs">
-                <span className="text-paper-dim">{label}</span>
-                <span className="num text-paper">{level}</span>
-              </div>
-            ))}
-          </div>
+          {/* 5-year summary table */}
+          {summaryRows.length > 0 && (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Year-End Summary · last 5 years</p>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-paper-dim text-[10px]">
+                    <th className="text-left pb-2 font-medium">Period</th>
+                    <th className="text-right pb-2 font-medium">Core CPI</th>
+                    <th className="text-right pb-2 font-medium">Headline CPI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summaryRows.map((r) => (
+                    <tr key={r.label} className={`border-t border-ink-line/50 ${r.isLatest ? "text-paper" : "text-paper-dim"}`}>
+                      <td className="py-1.5">
+                        {r.label}
+                        {r.isLatest && (
+                          <span className="ml-1.5 text-[9px] text-brass-soft border border-brass/30 rounded px-1 py-0.5">Latest</span>
+                        )}
+                      </td>
+                      <td className={`py-1.5 text-right num ${Number(r.coreYoy) > 3 ? "text-loss" : Number(r.coreYoy) < 2 ? "text-gain" : "text-brass-soft"}`}>
+                        {r.coreYoy != null ? `${Number(r.coreYoy).toFixed(2)}%` : "—"}
+                      </td>
+                      <td className={`py-1.5 text-right num ${r.headlineYoy != null ? (Number(r.headlineYoy) > 3 ? "text-loss" : Number(r.headlineYoy) < 2 ? "text-gain" : "text-brass-soft") : "text-paper-dim"}`}>
+                        {r.headlineYoy != null ? `${Number(r.headlineYoy).toFixed(2)}%` : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           <p className="text-[10px] text-paper-dim/60 leading-relaxed">
-            Source: BLS · FRED series <span className="font-mono">CPILFESL</span> · CPI for All Urban Consumers ex-Food and Energy
+            Source: BLS · FRED <span className="font-mono">CPILFESL</span> / <span className="font-mono">CPIAUCSL</span>
           </p>
         </div>
       </div>
