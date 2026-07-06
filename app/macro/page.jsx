@@ -466,11 +466,11 @@ const DEBT_RANGES = [
   { label: "2010–", from: 2010 },
 ];
 
-const CPI_RANGES = [
-  { label: "All",   from: "1958-01-01" },
-  { label: "1990–", from: "1990-01-01" },
-  { label: "2000–", from: "2000-01-01" },
-  { label: "2010–", from: "2010-01-01" },
+const CPI_PRESETS = [
+  { label: "All",   from: "1958-01", to: "" },
+  { label: "1990–", from: "1990-01", to: "" },
+  { label: "2000–", from: "2000-01", to: "" },
+  { label: "2010–", from: "2010-01", to: "" },
 ];
 
 function CloseIcon() {
@@ -695,7 +695,8 @@ function DebtGdpDrawer({ open, onClose, currentValue }) {
 
 function CoreCpiDrawer({ open, onClose, currentValue }) {
   const [rows, setRows] = useState(null);
-  const [range, setRange] = useState("2000-01-01");
+  const [fromDate, setFromDate] = useState("2000-01");
+  const [toDate, setToDate] = useState("");
 
   useEffect(() => {
     if (!open || rows !== null) return;
@@ -707,8 +708,10 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
 
   const chartData = useMemo(() => {
     if (!rows) return [];
-    return rows.filter((r) => r.date >= range && r.coreYoy != null);
-  }, [rows, range]);
+    const from = fromDate ? `${fromDate}-01` : "1958-01-01";
+    const to   = toDate   ? `${toDate}-01`   : "9999-12-01";
+    return rows.filter((r) => r.date >= from && r.date <= to && r.coreYoy != null);
+  }, [rows, fromDate, toDate]);
 
   const xTicks = useMemo(() => {
     const total = chartData.length;
@@ -787,20 +790,60 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
-          <div className="flex items-center gap-1">
-            {CPI_RANGES.map((r) => (
-              <button
-                key={r.from}
-                onClick={() => setRange(r.from)}
-                className={`px-3 py-1 rounded-lg text-xs transition-colors ${
-                  range === r.from
-                    ? "bg-ink text-brass-soft border border-brass/30"
-                    : "text-paper-dim hover:text-paper"
-                }`}
-              >
-                {r.label}
-              </button>
-            ))}
+          <div className="space-y-2">
+            {/* Date range inputs */}
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 flex-1">
+                <label className="text-[10px] text-paper-dim shrink-0 w-6">From</label>
+                <input
+                  type="month"
+                  value={fromDate}
+                  min="1958-01"
+                  max={toDate || undefined}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  className="flex-1 bg-ink border border-ink-line rounded px-2 py-1 text-xs text-paper focus:outline-none focus:border-brass/60 [color-scheme:dark]"
+                />
+              </div>
+              <span className="text-paper-dim text-xs shrink-0">→</span>
+              <div className="flex items-center gap-1.5 flex-1">
+                <label className="text-[10px] text-paper-dim shrink-0 w-4">To</label>
+                <input
+                  type="month"
+                  value={toDate}
+                  min={fromDate || undefined}
+                  onChange={(e) => setToDate(e.target.value)}
+                  className="flex-1 bg-ink border border-ink-line rounded px-2 py-1 text-xs text-paper focus:outline-none focus:border-brass/60 [color-scheme:dark] placeholder:text-paper-dim/50"
+                />
+              </div>
+              {toDate && (
+                <button
+                  onClick={() => setToDate("")}
+                  className="text-paper-dim hover:text-paper text-[10px] shrink-0"
+                  title="Clear end date"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+            {/* Quick presets */}
+            <div className="flex items-center gap-1">
+              {CPI_PRESETS.map((p) => {
+                const isActive = fromDate === p.from && toDate === p.to;
+                return (
+                  <button
+                    key={p.label}
+                    onClick={() => { setFromDate(p.from); setToDate(p.to); }}
+                    className={`px-3 py-1 rounded-lg text-xs transition-colors ${
+                      isActive
+                        ? "bg-ink text-brass-soft border border-brass/30"
+                        : "text-paper-dim hover:text-paper"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {rows === null ? (
