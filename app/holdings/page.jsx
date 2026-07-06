@@ -331,7 +331,7 @@ export default function HoldingsPage() {
         .or(`holding_id.eq.${holding.id},cash_holding_id.eq.${holding.id}`)
         .order("txn_date", { ascending: false }),
       supabase.from("holdings_valued")
-        .select("id, symbol, name, asset_type, account_id, quantity, price_override, cost_basis, current_value, net_gain, net_gain_pct, market_price")
+        .select("id, symbol, name, asset_type, account_id, quantity, price_override, cost_basis, current_value, net_gain, net_gain_pct, market_price, simulator_key")
         .eq("id", holding.id)
         .single(),
       supabase.from("portfolio_snapshots")

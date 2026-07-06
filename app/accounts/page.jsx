@@ -406,7 +406,7 @@ export default function AccountsPage() {
         .order("txn_date", { ascending: false }),
       supabase
         .from("holdings_valued")
-        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain")
+        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain, simulator_key")
         .eq("id", holding.id)
         .single(),
       supabase
