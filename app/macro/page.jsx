@@ -466,6 +466,13 @@ const DEBT_RANGES = [
   { label: "2010–", from: 2010 },
 ];
 
+const CPI_RANGES = [
+  { label: "All",   from: "1958-01-01" },
+  { label: "1990–", from: "1990-01-01" },
+  { label: "2000–", from: "2000-01-01" },
+  { label: "2010–", from: "2010-01-01" },
+];
+
 function CloseIcon() {
   return (
     <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round">
@@ -486,6 +493,28 @@ function DebtTooltip({ active, payload, label }) {
         const formatted = isChange
           ? `${p.value >= 0 ? "+" : ""}${Number(p.value).toFixed(1)} pp`
           : `${Number(p.value).toFixed(1)}%`;
+        return (
+          <div key={p.dataKey} className="flex justify-between gap-4">
+            <span style={{ color: p.fill ?? p.color }}>{p.name}</span>
+            <span className="num text-paper">{formatted}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CpiTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="card px-3 py-2 text-xs space-y-1 min-w-[180px]">
+      <p className="font-semibold text-paper mb-1">{label?.slice(0, 7)}</p>
+      {payload.map((p) => {
+        if (p.value == null) return null;
+        const isChange = p.dataKey === "yoyChange";
+        const formatted = isChange
+          ? `${p.value >= 0 ? "+" : ""}${Number(p.value).toFixed(2)} pp`
+          : `${Number(p.value).toFixed(2)}%`;
         return (
           <div key={p.dataKey} className="flex justify-between gap-4">
             <span style={{ color: p.fill ?? p.color }}>{p.name}</span>
@@ -664,6 +693,175 @@ function DebtGdpDrawer({ open, onClose, currentValue }) {
   );
 }
 
+function CoreCpiDrawer({ open, onClose, currentValue }) {
+  const [rows, setRows] = useState(null);
+  const [range, setRange] = useState("2000-01-01");
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-cpi-history`)
+      .then((r) => r.json())
+      .then((data) => setRows(Array.isArray(data) ? data : []))
+      .catch(() => setRows([]));
+  }, [open, rows]);
+
+  const chartData = useMemo(() => {
+    if (!rows) return [];
+    return rows.filter((r) => r.date >= range && r.yoy != null);
+  }, [rows, range]);
+
+  const xTicks = useMemo(() => {
+    const total = chartData.length;
+    const stepYears = total > 300 ? 10 : total > 150 ? 5 : total > 60 ? 2 : 1;
+    return chartData
+      .filter((r) => {
+        const yr = parseInt(r.date.slice(0, 4));
+        return r.date.slice(5, 7) === "01" && yr % stepYears === 0;
+      })
+      .map((r) => r.date);
+  }, [chartData]);
+
+  const minVal = useMemo(
+    () => (chartData.length ? Math.min(0, Math.floor(Math.min(...chartData.map((r) => r.yoy)))) : 0),
+    [chartData]
+  );
+  const maxVal = useMemo(
+    () => (chartData.length ? Math.ceil(Math.max(...chartData.map((r) => r.yoy))) + 1 : 10),
+    [chartData]
+  );
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed right-0 top-0 h-full w-[520px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">Core CPI (YoY)</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">CPI ex-food and energy · Monthly (FRED CPILFESL)</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {currentValue != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${Number(currentValue) > 3 ? "text-loss" : Number(currentValue) < 2 ? "text-gain" : "text-brass-soft"}`}>
+                  {formatValue(currentValue, "%")}
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">Current</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          <div className="flex items-center gap-1">
+            {CPI_RANGES.map((r) => (
+              <button
+                key={r.from}
+                onClick={() => setRange(r.from)}
+                className={`px-3 py-1 rounded-lg text-xs transition-colors ${
+                  range === r.from
+                    ? "bg-ink text-brass-soft border border-brass/30"
+                    : "text-paper-dim hover:text-paper"
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Core CPI YoY % · monthly</p>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 44, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    type="category"
+                    ticks={xTicks}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => v.slice(0, 4)}
+                    interval={0}
+                  />
+                  <YAxis
+                    yAxisId="left"
+                    domain={[minVal, maxVal]}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => `${v}%`}
+                    width={36}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => `${v > 0 ? "+" : ""}${Number(v).toFixed(1)}`}
+                    width={40}
+                  />
+                  <Tooltip content={<CpiTooltip />} />
+                  <ReferenceLine yAxisId="left" y={2} stroke="#C9A227" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.5} />
+                  <ReferenceLine yAxisId="right" y={0} stroke="#2A3240" strokeWidth={1} />
+                  <Bar yAxisId="right" dataKey="yoyChange" name="MoM Accel." maxBarSize={6}>
+                    {chartData.map((entry, i) => (
+                      <Cell
+                        key={i}
+                        fill={(entry.yoyChange ?? 0) >= 0 ? "#E0635C" : "#3FB984"}
+                        fillOpacity={0.55}
+                      />
+                    ))}
+                  </Bar>
+                  <Line
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="yoy"
+                    name="Core CPI YoY"
+                    stroke="#C9A227"
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          <div className="card p-4 space-y-2">
+            <p className="label text-[10px] mb-2">Fed Context</p>
+            {[
+              { level: "2.0%", label: "Fed long-run target" },
+              { level: "≤3.0%", label: "Watch zone" },
+              { level: ">4.0%", label: "Danger zone" },
+            ].map(({ level, label }) => (
+              <div key={label} className="flex items-center justify-between text-xs">
+                <span className="text-paper-dim">{label}</span>
+                <span className="num text-paper">{level}</span>
+              </div>
+            ))}
+          </div>
+
+          <p className="text-[10px] text-paper-dim/60 leading-relaxed">
+            Source: BLS · FRED series <span className="font-mono">CPILFESL</span> · CPI for All Urban Consumers ex-Food and Energy
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 export default function MacroDashboard() {
@@ -673,6 +871,7 @@ export default function MacroDashboard() {
   const [portfolioHoldings, setPortfolioHoldings] = useState([]);
   const [assetData, setAssetData] = useState(null);
   const [debtDrawerOpen, setDebtDrawerOpen] = useState(false);
+  const [cpiDrawerOpen, setCpiDrawerOpen] = useState(false);
 
   const fetchIndicators = useCallback(async () => {
     const { data, error: err } = await supabase
@@ -816,7 +1015,11 @@ export default function MacroDashboard() {
                       key={ind.id}
                       ind={ind}
                       onSave={fetchIndicators}
-                      onClick={ind.name === "Total Debt / GDP" ? () => setDebtDrawerOpen(true) : undefined}
+                      onClick={
+                          ind.name === "Total Debt / GDP" ? () => setDebtDrawerOpen(true)
+                          : ind.name === "Core CPI (YoY)" ? () => setCpiDrawerOpen(true)
+                          : undefined
+                        }
                     />
                   ))}
                 </div>
@@ -847,6 +1050,11 @@ export default function MacroDashboard() {
         open={debtDrawerOpen}
         onClose={() => setDebtDrawerOpen(false)}
         currentValue={indicators?.find((i) => i.name === "Total Debt / GDP")?.current_value}
+      />
+      <CoreCpiDrawer
+        open={cpiDrawerOpen}
+        onClose={() => setCpiDrawerOpen(false)}
+        currentValue={indicators?.find((i) => i.name === "Core CPI (YoY)")?.current_value}
       />
     </Shell>
   );
