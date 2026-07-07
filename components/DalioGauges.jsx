@@ -340,7 +340,8 @@ function StandardZScoreChart({ chartData, lineName = "Risk z-score" }) {
   );
 }
 
-function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, range, setRange, loading, renderChart, gaugeHistory, gaugeKey, subComponents = [], renderTable }) {
+function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, range, setRange, loading, renderChart, gaugeHistory, gaugeKey, subComponents = [], renderTable, infoContent, assessment }) {
+  const [infoOpen, setInfoOpen] = useState(false);
   const gaugeRows = (gaugeHistory ?? []).filter((r) => r[gaugeKey] != null);
   const gaugeColor = latestGauge == null ? "text-paper-dim" : latestGauge > 1 ? "text-loss" : latestGauge < -1 ? "text-gain" : "text-brass-soft";
 
@@ -350,7 +351,18 @@ function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, rang
       <div className={`fixed right-0 top-0 h-full w-[650px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}>
         <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
           <div>
-            <h2 className="text-sm font-semibold text-paper">{title}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-paper">{title}</h2>
+              {infoContent && (
+                <button
+                  onClick={() => setInfoOpen((v) => !v)}
+                  className={`w-[18px] h-[18px] rounded-full border text-[10px] font-bold flex items-center justify-center flex-shrink-0 transition-colors ${infoOpen ? "border-brass text-brass bg-brass/10" : "border-paper-dim/40 text-paper-dim hover:border-paper hover:text-paper"}`}
+                  title="About this metric"
+                >
+                  i
+                </button>
+              )}
+            </div>
             <p className="text-[10px] text-paper-dim mt-0.5">{desc}</p>
           </div>
           <div className="flex items-start gap-4 shrink-0">
@@ -363,6 +375,12 @@ function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, rang
             <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5"><CloseIcon /></button>
           </div>
         </div>
+
+        {infoContent && infoOpen && (
+          <div className="px-5 py-4 border-b border-ink-line bg-ink shrink-0 overflow-y-auto max-h-[45vh]">
+            {infoContent}
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
           <div className="flex items-center gap-1">
@@ -396,6 +414,8 @@ function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, rang
             </div>
           )}
 
+          {assessment && assessment}
+
           {renderTable ? renderTable() : gaugeRows.length > 0 && (
             <div className="card p-4">
               <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
@@ -425,6 +445,83 @@ function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, rang
 }
 
 // ─── Gauge 2: Policy Room Risk ────────────────────────────────────────────────
+
+const POLICY_ROOM_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">What this measures</p>
+      <p className="text-paper-dim">Policy Room Risk quantifies how much capacity the Federal Reserve has to cut interest rates in response to an economic slowdown. When rates are near zero, the Fed's primary monetary tool is largely exhausted — it cannot provide its usual stimulus by cutting further. This structural constraint amplifies downturns because debt becomes harder to service in real terms and there is no rate relief available.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">How it's calculated</p>
+      <p className="text-paper-dim">The metric is an <span className="text-paper">inverted z-score</span> of the annual average Fed Funds rate measured against its full history (1954–present). A z-score shows how many standard deviations a reading sits above or below the long-run mean. Inverting the sign means a low rate (less room to cut) produces a high risk score, and a high rate (more room to cut) produces a low risk score.</p>
+    </div>
+    <div className="grid grid-cols-2 gap-2 text-[10px]">
+      <div className="bg-ink-soft rounded-lg p-2.5 border border-ink-line">
+        <p className="text-loss font-semibold mb-1">High z-score → Elevated Risk</p>
+        <p className="text-paper-dim">Rate is below historical average. Fed has limited room to cut. Easing capacity is constrained.</p>
+      </div>
+      <div className="bg-ink-soft rounded-lg p-2.5 border border-ink-line">
+        <p className="text-gain font-semibold mb-1">Low z-score → Low Risk</p>
+        <p className="text-paper-dim">Rate is above historical average. Fed has ample room to cut. Strong easing capacity available.</p>
+      </div>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Why it matters</p>
+      <p className="text-paper-dim">In Dalio's framework, a central bank without room to ease cannot break a debt deflation spiral. When households and businesses simultaneously deleverage, economic activity contracts sharply. If the Fed cannot cut rates — or if cuts lose effectiveness near zero — the downturn deepens and debt burdens become more severe. High policy room risk means the Fed is a weaker safety net against economic stress.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Thresholds</p>
+      <div className="space-y-1 text-[10px]">
+        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.0</span><span className="text-paper-dim">Elevated — historically constrained, limited easing capacity</span></div>
+        <div className="flex gap-2"><span className="text-brass-soft font-mono w-16">0 to +1.0</span><span className="text-paper-dim">Neutral to mild — some constraint, monitor direction of travel</span></div>
+        <div className="flex gap-2"><span className="text-gain font-mono w-16">&lt; 0</span><span className="text-paper-dim">Low risk — rates above average, meaningful room to cut</span></div>
+      </div>
+    </div>
+  </div>
+);
+
+function policyRoomAssessment(gauge2, latestRate) {
+  if (gauge2 == null) return null;
+  const rateStr = latestRate != null ? `${Number(latestRate).toFixed(2)}%` : "the current rate";
+  const bps = latestRate != null ? Math.round(Number(latestRate) * 100) : null;
+  const bpsStr = bps != null ? `${bps} basis points` : "meaningful room";
+
+  if (gauge2 > 1.5) {
+    return {
+      label: "Severely Constrained", color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+      text: `At ${rateStr}, the Fed Funds rate is far below its long-run historical average — conditions similar to 2009–2015 and 2020–2021. The Fed has almost no conventional room to cut further. Any economic shock from here would require reliance on unconventional tools such as quantitative easing and forward guidance, which are slower and less certain in their effect. This is the highest-risk configuration for policy room.`,
+    };
+  }
+  if (gauge2 > 1.0) {
+    return {
+      label: "Elevated Risk", color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+      text: `At ${rateStr}, the Fed Funds rate is below its historical average, leaving less-than-normal easing capacity. While not at the zero bound, a sustained economic downturn could exhaust this buffer quickly. The Fed retains some conventional tools but would need to move aggressively and early to preserve them. Watch for further rate cuts that would push this score higher.`,
+    };
+  }
+  if (gauge2 > 0.25) {
+    return {
+      label: "Mild Risk — Watch", color: "text-brass-soft", border: "border-brass/20", bg: "bg-brass/5",
+      text: `At ${rateStr} the Fed Funds rate sits modestly below its long-run historical average. The Fed retains ${bpsStr} of conventional cutting room above zero — meaningful capacity, but not a position of exceptional strength. Recent rate cuts from the 2023 peak of 5.33% have consumed roughly 170 basis points of headroom. The reading is not alarming, but the direction matters: continued cuts without an offsetting improvement in growth would push this score toward elevated territory.`,
+    };
+  }
+  if (gauge2 > -0.25) {
+    return {
+      label: "Neutral", color: "text-paper", border: "border-ink-line", bg: "bg-ink/40",
+      text: `At ${rateStr}, the Fed Funds rate is near its long-run historical average, placing policy room in a balanced position. The Fed has a reasonable buffer to respond to economic weakness without approaching the zero lower bound. This reading does not flag policy space as a primary risk driver — the Fed retains conventional tools in sufficient quantity to respond to a moderate slowdown.`,
+    };
+  }
+  if (gauge2 > -1.0) {
+    return {
+      label: "Ample Room", color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
+      text: `At ${rateStr}, the Fed Funds rate is above its long-run historical average, indicating the Fed has significant room to cut if needed. A meaningful economic slowdown could be met with aggressive conventional easing before the zero bound becomes a constraint. Policy room risk is not a binding concern at this level.`,
+    };
+  }
+  return {
+    label: "Maximum Policy Room", color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
+    text: `At ${rateStr}, the Fed Funds rate is well above its long-run historical average — historically a high-rate environment. The Fed has exceptional capacity to cut rates aggressively in response to economic stress. This is the most favorable configuration for policy room: monetary easing is a powerful and available tool, and the zero lower bound presents no near-term constraint.`,
+  };
+}
 
 function PolicyRoomDrawer({ open, onClose, latestGauge }) {
   const [rows, setRows] = useState(null);
@@ -462,6 +559,17 @@ function PolicyRoomDrawer({ open, onClose, latestGauge }) {
     });
   }, [rows, gaugeHistory]);
 
+  const latestRate = rows?.length ? rows[rows.length - 1]?.fed_funds_rate : null;
+  const assessed = latestGauge != null ? policyRoomAssessment(latestGauge, latestRate) : null;
+
+  const assessment = assessed ? (
+    <div className={`card p-4 border ${assessed.border} ${assessed.bg}`}>
+      <p className="label text-[10px] mb-2">Current Assessment</p>
+      <p className={`text-xs font-semibold mb-2 ${assessed.color}`}>{assessed.label}</p>
+      <p className="text-[11px] text-paper-dim leading-relaxed">{assessed.text}</p>
+    </div>
+  ) : null;
+
   return (
     <BaseGaugeDrawer
       open={open} onClose={onClose}
@@ -474,6 +582,8 @@ function PolicyRoomDrawer({ open, onClose, latestGauge }) {
       renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Policy Room Risk z" />}
       gaugeHistory={gaugeHistory}
       gaugeKey="gauge2"
+      infoContent={POLICY_ROOM_INFO}
+      assessment={assessment}
       renderTable={() => (
         <div className="card p-4">
           <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
