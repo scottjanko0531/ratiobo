@@ -340,7 +340,7 @@ function StandardZScoreChart({ chartData, lineName = "Risk z-score" }) {
   );
 }
 
-function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, range, setRange, loading, renderChart, gaugeHistory, gaugeKey, subComponents = [] }) {
+function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, range, setRange, loading, renderChart, gaugeHistory, gaugeKey, subComponents = [], renderTable }) {
   const gaugeRows = (gaugeHistory ?? []).filter((r) => r[gaugeKey] != null);
   const gaugeColor = latestGauge == null ? "text-paper-dim" : latestGauge > 1 ? "text-loss" : latestGauge < -1 ? "text-gain" : "text-brass-soft";
 
@@ -396,7 +396,7 @@ function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, rang
             </div>
           )}
 
-          {gaugeRows.length > 0 && (
+          {renderTable ? renderTable() : gaugeRows.length > 0 && (
             <div className="card p-4">
               <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
               <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
@@ -434,12 +434,33 @@ function PolicyRoomDrawer({ open, onClose, latestGauge }) {
   useEffect(() => {
     if (!open || rows !== null) return;
     Promise.all([
-      supabase.from("macro_credit_cycle").select("year,fed_funds_rate").order("year"),
+      supabase.from("macro_credit_cycle").select("year,fed_funds_rate,updated_at").order("year"),
       supabase.from("dalio_gauge_readings").select("year,gauge2,z_fed_funds").order("year"),
     ]).then(([credit, gauge]) => { setRows(credit.data ?? []); setGaugeHistory(gauge.data ?? []); });
   }, [open, rows]);
 
   const chartData = useMemo(() => buildZScoreData(rows, "fed_funds_rate", range, true), [rows, range]);
+
+  const tableRows = useMemo(() => {
+    if (!rows?.length) return [];
+    const gaugeMap = Object.fromEntries((gaugeHistory ?? []).map((r) => [r.year, r]));
+    const maxYear = Math.max(...rows.map((r) => r.year));
+    const desc = rows.slice().reverse();
+    return desc.map((r, i) => {
+      const prev = desc[i + 1];
+      const rate = r.fed_funds_rate != null ? Number(r.fed_funds_rate) : null;
+      const prevRate = prev?.fed_funds_rate != null ? Number(prev.fed_funds_rate) : null;
+      const netChange = rate != null && prevRate != null ? rate - prevRate : null;
+      const g = gaugeMap[r.year];
+      let yearLabel = String(r.year);
+      if (r.year === maxYear && r.updated_at) {
+        const d = new Date(r.updated_at);
+        d.setUTCMonth(d.getUTCMonth() - 1);
+        yearLabel = `${r.year} · ${d.toLocaleString("default", { month: "short" })}`;
+      }
+      return { year: r.year, yearLabel, rate, netChange, gauge2: g?.gauge2 != null ? Number(g.gauge2) : null };
+    });
+  }, [rows, gaugeHistory]);
 
   return (
     <BaseGaugeDrawer
@@ -453,7 +474,33 @@ function PolicyRoomDrawer({ open, onClose, latestGauge }) {
       renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Policy Room Risk z" />}
       gaugeHistory={gaugeHistory}
       gaugeKey="gauge2"
-      subComponents={[{ key: "z_fed_funds", label: "Fed Funds z" }]}
+      renderTable={() => (
+        <div className="card p-4">
+          <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
+          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line" style={{ gridTemplateColumns: "1fr repeat(3, 72px)" }}>
+            <span>Period</span>
+            <span className="text-right">Rate</span>
+            <span className="text-right">Net Δ</span>
+            <span className="text-right">Z-score</span>
+          </div>
+          <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+            {tableRows.map((r) => (
+              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(3, 72px)" }}>
+                <span className="text-paper-dim">{r.yearLabel}</span>
+                <span className="num text-right text-paper">
+                  {r.rate != null ? `${r.rate.toFixed(2)}%` : "—"}
+                </span>
+                <span className={`num text-right ${r.netChange == null ? "text-paper-dim" : r.netChange > 0 ? "text-loss" : r.netChange < 0 ? "text-gain" : "text-paper-dim"}`}>
+                  {r.netChange != null ? `${r.netChange >= 0 ? "+" : ""}${r.netChange.toFixed(2)}%` : "—"}
+                </span>
+                <span className={`num text-right font-semibold ${r.gauge2 == null ? "text-paper-dim" : r.gauge2 > 1 ? "text-loss" : r.gauge2 < -1 ? "text-gain" : "text-brass-soft"}`}>
+                  {r.gauge2 != null ? `${r.gauge2 >= 0 ? "+" : ""}${r.gauge2.toFixed(2)}` : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     />
   );
 }
