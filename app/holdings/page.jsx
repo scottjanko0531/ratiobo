@@ -260,6 +260,9 @@ export default function HoldingsPage() {
       await supabase.from("holdings").update({ quantity: qty }).eq("id", holding.id);
     }
 
+    // Establish a zero-value baseline snapshot so daily-change offsets the cash decrease correctly.
+    await supabase.rpc("seed_holding_snapshot", { p_holding_id: holding.id });
+
     setAddBusy(false);
     setShowAdd(false);
     setAddForm({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", cost_basis: "", price_override: "" });
@@ -420,6 +423,7 @@ export default function HoldingsPage() {
       if (h) await supabase.from("holdings").update({ quantity: Number(h.quantity) + reinvestQty }).eq("id", viewingHolding.id);
 
       // Cash leg: +amount (dividend) then -amount (buy) → net 0, no cash update needed
+      await supabase.rpc("seed_holding_snapshot", { p_holding_id: viewingHolding.id });
 
     } else {
       // Normal single-transaction path
@@ -449,6 +453,11 @@ export default function HoldingsPage() {
           const { data: ch } = await supabase.from("holdings").select("quantity").eq("id", cashLeg.id).single();
           if (ch) await supabase.from("holdings").update({ quantity: Number(ch.quantity) + cashDelta }).eq("id", cashLeg.id);
         }
+      }
+
+      // Seed snapshot for this holding if it's brand new (no prior snapshot history)
+      if ((selectedType?.affects_quantity ?? 0) > 0) {
+        await supabase.rpc("seed_holding_snapshot", { p_holding_id: viewingHolding.id });
       }
 
       // Paired transfer: auto-create the offsetting leg on the linked holding

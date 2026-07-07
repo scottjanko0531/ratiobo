@@ -793,6 +793,7 @@ function incomeAffordAssessment(gauge4) {
 function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
   const [rows, setRows] = useState(null);
   const [gaugeHistory, setGaugeHistory] = useState(null);
+  const [incomeData, setIncomeData] = useState(null);
   const [range, setRange] = useState(1952);
 
   useEffect(() => {
@@ -800,7 +801,12 @@ function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
     Promise.all([
       supabase.from("macro_credit_cycle").select("year,total_debt_growth_yoy").order("year"),
       supabase.from("dalio_gauge_readings").select("year,gauge4,z_debt_growth_income").order("year"),
-    ]).then(([credit, gauge]) => { setRows(credit.data ?? []); setGaugeHistory(gauge.data ?? []); });
+      supabase.from("macro_income").select("year,debt_service_pct").not("debt_service_pct", "is", null).order("year"),
+    ]).then(([credit, gauge, income]) => {
+      setRows(credit.data ?? []);
+      setGaugeHistory(gauge.data ?? []);
+      setIncomeData(income.data ?? []);
+    });
   }, [open, rows]);
 
   const chartData = useMemo(() => buildZScoreData(rows, "total_debt_growth_yoy", range), [rows, range]);
@@ -810,6 +816,7 @@ function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
       (rows ?? []).filter((r) => r.total_debt_growth_yoy != null).map((r) => [r.year, Number(r.total_debt_growth_yoy)])
     );
     const gaugeMap = Object.fromEntries((gaugeHistory ?? []).map((r) => [r.year, r]));
+    const debtSvcMap = Object.fromEntries((incomeData ?? []).map((r) => [r.year, Number(r.debt_service_pct)]));
     const allYears = [...new Set([
       ...(rows ?? []).map((r) => r.year),
       ...(gaugeHistory ?? []).map((r) => r.year),
@@ -822,12 +829,13 @@ function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
           year,
           debtGrowth,
           netDelta: debtGrowth != null && prevDebtGrowth != null ? debtGrowth - prevDebtGrowth : null,
+          debtSvc: debtSvcMap[year] ?? null,
           zDebtInc: gaugeMap[year]?.z_debt_growth_income != null ? Number(gaugeMap[year].z_debt_growth_income) : null,
           composite: gaugeMap[year]?.gauge4 != null ? Number(gaugeMap[year].gauge4) : null,
         };
       })
       .filter((r) => r.debtGrowth != null || r.zDebtInc != null || r.composite != null);
-  }, [rows, gaugeHistory]);
+  }, [rows, gaugeHistory, incomeData]);
 
   const assessed = incomeAffordAssessment(latestGauge);
   const assessment = assessed ? (
@@ -855,22 +863,26 @@ function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
       renderTable={() => (
         <div className="card p-4">
           <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
-          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(4, 72px)" }}>
+          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(5, 62px)" }}>
             <span>Year</span>
             <span className="text-right">Debt Gth%</span>
             <span className="text-right">Net Δ</span>
+            <span className="text-right">Debt Svc%</span>
             <span className="text-right">D/Inc z</span>
             <span className="text-right">Composite</span>
           </div>
           <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
             {tableRows.map((r) => (
-              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(4, 72px)" }}>
+              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(5, 62px)" }}>
                 <span className="text-paper-dim">{r.year}</span>
                 <span className="num text-right text-paper">
                   {r.debtGrowth != null ? `${r.debtGrowth >= 0 ? "+" : ""}${r.debtGrowth.toFixed(2)}%` : "—"}
                 </span>
                 <span className={`num text-right ${r.netDelta == null ? "text-paper-dim" : r.netDelta > 0 ? "text-loss" : r.netDelta < 0 ? "text-gain" : "text-paper-dim"}`}>
                   {r.netDelta != null ? `${r.netDelta >= 0 ? "+" : ""}${r.netDelta.toFixed(2)}%` : "—"}
+                </span>
+                <span className={`num text-right ${r.debtSvc == null ? "text-paper-dim" : r.debtSvc >= 12 ? "text-loss" : r.debtSvc >= 10.5 ? "text-brass-soft" : "text-gain"}`}>
+                  {r.debtSvc != null ? `${r.debtSvc.toFixed(1)}%` : "—"}
                 </span>
                 <span className="num text-right text-paper-dim">
                   {r.zDebtInc != null ? `${r.zDebtInc >= 0 ? "+" : ""}${r.zDebtInc.toFixed(2)}` : "—"}
