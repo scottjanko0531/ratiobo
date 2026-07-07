@@ -741,7 +741,7 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
 // SVG speedometer gauge.
 // Scale: z-score from -3 (low risk, green/left) to +3 (elevated risk, red/right).
 // Zones: green ≤ -1, brass -1..+1, red ≥ +1.
-function SpeedometerGauge({ value, label, desc, year, onClick }) {
+function SpeedometerGauge({ value, label, desc, year, onClick, statusLabelOverride }) {
   // cy=82 keeps the arc bottom within viewBox "20 10 160 80" (visible y: 10–90)
   const cx = 100, cy = 82, r = 68;
   const nl = 56;
@@ -765,14 +765,15 @@ function SpeedometerGauge({ value, label, desc, year, onClick }) {
     value == null ? "unknown" : value > 1 ? "elevated" : value < -1 ? "low" : "neutral";
   const needleColor =
     status === "elevated" ? "#ef4444" : status === "low" ? "#22c55e" : "#c9982c";
-  const statusLabel =
+  const statusLabel = statusLabelOverride ?? (
     status === "elevated"
       ? "Elevated Risk"
       : status === "low"
       ? "Low Risk"
       : status === "neutral"
       ? "Neutral"
-      : "—";
+      : "—"
+  );
   const statusClass =
     status === "elevated"
       ? "text-loss"
@@ -930,23 +931,30 @@ export default function DalioGauges() {
     <div className="mb-2">
       {/* Gauge grid */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-3">
-        {GAUGE_META.map(({ key, label, desc }) => (
-          <SpeedometerGauge
-            key={key}
-            value={latest[key]?.value ?? null}
-            year={latest[key]?.year}
-            label={label}
-            desc={desc}
-            onClick={
-              key === "gauge1" ? () => setDebtSustOpen(true)
-            : key === "gauge2" ? () => setPolicyRoomOpen(true)
-            : key === "gauge3" ? () => setGrowthInflOpen(true)
-            : key === "gauge4" ? () => setIncomeAffordOpen(true)
-            : key === "gauge5" ? () => setReserveConfOpen(true)
-            : undefined
-            }
-          />
-        ))}
+        {GAUGE_META.map(({ key, label, desc }) => {
+          const val = latest[key]?.value ?? null;
+          const statusLabelOverride = key === "gauge2" && val != null
+            ? policyRoomAssessment(val, null)?.label ?? null
+            : null;
+          return (
+            <SpeedometerGauge
+              key={key}
+              value={val}
+              year={latest[key]?.year}
+              label={label}
+              desc={desc}
+              statusLabelOverride={statusLabelOverride}
+              onClick={
+                key === "gauge1" ? () => setDebtSustOpen(true)
+              : key === "gauge2" ? () => setPolicyRoomOpen(true)
+              : key === "gauge3" ? () => setGrowthInflOpen(true)
+              : key === "gauge4" ? () => setIncomeAffordOpen(true)
+              : key === "gauge5" ? () => setReserveConfOpen(true)
+              : undefined
+              }
+            />
+          );
+        })}
       </div>
       <DebtSustainabilityDrawer
         open={debtSustOpen}
