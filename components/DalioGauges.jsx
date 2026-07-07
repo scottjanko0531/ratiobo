@@ -347,7 +347,7 @@ function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, rang
   return (
     <>
       <div className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`} onClick={onClose} />
-      <div className={`fixed right-0 top-0 h-full w-[520px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}>
+      <div className={`fixed right-0 top-0 h-full w-[650px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}>
         <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
           <div>
             <h2 className="text-sm font-semibold text-paper">{title}</h2>
@@ -477,7 +477,7 @@ function PolicyRoomDrawer({ open, onClose, latestGauge }) {
       renderTable={() => (
         <div className="card p-4">
           <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
-          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line" style={{ gridTemplateColumns: "1fr repeat(3, 72px)" }}>
+          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(3, 72px)" }}>
             <span>Period</span>
             <span className="text-right">Rate</span>
             <span className="text-right">Net Δ</span>
