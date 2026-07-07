@@ -69,218 +69,6 @@ function RiskTooltip({ active, payload, label }) {
   );
 }
 
-function DebtSustainabilityDrawer({ open, onClose, latestGauge, latestGaugeYear }) {
-  const [rows, setRows] = useState(null);
-  const [gaugeHistory, setGaugeHistory] = useState(null);
-  const [range, setRange] = useState(1952);
-
-  useEffect(() => {
-    if (!open || rows !== null) return;
-    Promise.all([
-      supabase.from("macro_debt_cycle").select("year,debt_to_gdp_pct").order("year"),
-      supabase.from("dalio_gauge_readings").select("year,gauge1,z_debt_gdp,z_debt_income").order("year"),
-    ]).then(([debt, gauge]) => {
-      setRows(debt.data ?? []);
-      setGaugeHistory(gauge.data ?? []);
-    });
-  }, [open, rows]);
-
-  const { chartData, mean, stddev } = useMemo(() => {
-    if (!rows || rows.length === 0) return { chartData: [], mean: 0, stddev: 1 };
-
-    const allVals = rows.filter((r) => r.debt_to_gdp_pct != null).map((r) => Number(r.debt_to_gdp_pct));
-    const m = allVals.reduce((s, v) => s + v, 0) / allVals.length;
-    const sd = Math.sqrt(allVals.reduce((s, v) => s + (v - m) ** 2, 0) / allVals.length);
-
-    const byYear = Object.fromEntries(rows.filter((r) => r.debt_to_gdp_pct != null).map((r) => [r.year, Number(r.debt_to_gdp_pct)]));
-    const z = (v) => (v - m) / sd;
-
-    const filtered = rows.filter((r) => r.year >= range && r.debt_to_gdp_pct != null);
-    const data = filtered.map((r) => {
-      const zScore = z(Number(r.debt_to_gdp_pct));
-      const prev = byYear[r.year - 1];
-      return {
-        year: r.year,
-        zScore: Math.round(zScore * 1000) / 1000,
-        change: prev != null ? Math.round((zScore - z(prev)) * 1000) / 1000 : null,
-      };
-    });
-
-    return { chartData: data, mean: m, stddev: sd };
-  }, [rows, range]);
-
-  // Include all rows that have any data — show partial rows with "—" for missing composite
-  const gaugeRows = (gaugeHistory ?? []).filter((r) => r.z_debt_gdp != null || r.gauge1 != null);
-
-  return (
-    <>
-      <div
-        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
-        onClick={onClose}
-      />
-      <div
-        className={`fixed right-0 top-0 h-full w-[520px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
-      >
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
-          <div>
-            <h2 className="text-sm font-semibold text-paper">Debt Sustainability Risk</h2>
-            <p className="text-[10px] text-paper-dim mt-0.5">Debt/GDP z-score · computed from full history 1952–present</p>
-          </div>
-          <div className="flex items-start gap-4 shrink-0">
-            {latestGauge != null && (
-              <div className="text-right">
-                <p className={`num text-xl font-bold leading-none ${latestGauge > 1 ? "text-loss" : latestGauge < -1 ? "text-gain" : "text-brass-soft"}`}>
-                  {latestGauge >= 0 ? "+" : ""}{Number(latestGauge).toFixed(2)}
-                </p>
-                <p className="text-[10px] text-paper-dim mt-0.5">
-                  {latestGaugeYear ? `Composite · ${latestGaugeYear}` : "Current z"}
-                </p>
-              </div>
-            )}
-            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
-              <CloseIcon />
-            </button>
-          </div>
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
-          {/* Range selector */}
-          <div className="flex items-center gap-1">
-            {RISK_RANGES.map((r) => (
-              <button
-                key={r.from}
-                onClick={() => setRange(r.from)}
-                className={`px-3 py-1 rounded-lg text-xs transition-colors ${
-                  range === r.from
-                    ? "bg-ink text-brass-soft border border-brass/30"
-                    : "text-paper-dim hover:text-paper"
-                }`}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Chart */}
-          {rows === null ? (
-            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
-          ) : (
-            <div className="card p-4">
-              <p className="label text-[10px] mb-3">Debt/GDP z-score · {range}–present</p>
-              <ResponsiveContainer width="100%" height={260}>
-                <ComposedChart data={chartData} margin={{ top: 4, right: 44, bottom: 0, left: 0 }}>
-                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
-                  <XAxis
-                    dataKey="year"
-                    type="number"
-                    domain={[range, "dataMax"]}
-                    allowDecimals={false}
-                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={(v) => String(v)}
-                    interval="preserveStartEnd"
-                  />
-                  <YAxis
-                    yAxisId="left"
-                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={(v) => v.toFixed(1)}
-                    width={36}
-                  />
-                  <YAxis
-                    yAxisId="right"
-                    orientation="right"
-                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(2)}`}
-                    width={44}
-                  />
-                  <Tooltip content={<RiskTooltip />} />
-                  {/* Zone thresholds */}
-                  <ReferenceLine yAxisId="left" y={1}  stroke="#ef4444" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.5} />
-                  <ReferenceLine yAxisId="left" y={0}  stroke="#2A3240" strokeWidth={1} />
-                  <ReferenceLine yAxisId="left" y={-1} stroke="#22c55e" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.5} />
-                  <ReferenceLine yAxisId="right" y={0} stroke="#2A3240" strokeWidth={1} />
-                  <Bar yAxisId="right" dataKey="change" name="YoY Δ" maxBarSize={12}>
-                    {chartData.map((entry, i) => (
-                      <Cell
-                        key={i}
-                        fill={entry.change == null ? "transparent" : entry.change >= 0 ? "#E0635C" : "#3FB984"}
-                        fillOpacity={0.6}
-                      />
-                    ))}
-                  </Bar>
-                  <Line
-                    yAxisId="left"
-                    type="monotone"
-                    dataKey="zScore"
-                    name="Risk z-score"
-                    stroke="#C9A227"
-                    strokeWidth={2}
-                    dot={false}
-                    connectNulls
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
-              <div className="flex items-center gap-4 mt-3 text-[10px] text-paper-dim/70">
-                <span className="flex items-center gap-1"><span className="inline-block w-6 h-px bg-[#ef4444] opacity-50" /> Elevated (&gt; +1)</span>
-                <span className="flex items-center gap-1"><span className="inline-block w-6 h-px bg-[#22c55e] opacity-50" /> Low (&lt; −1)</span>
-              </div>
-            </div>
-          )}
-
-          {/* Actual gauge readings where available */}
-          {gaugeRows.length > 0 && (
-            <div className="card p-4">
-              <p className="label text-[10px] mb-3">Composite Gauge Readings (actual)</p>
-              <p className="text-[10px] text-paper-dim mb-2 leading-relaxed">
-                Composite of Debt/GDP z-score + Debt/Income z-score. Available annually.
-              </p>
-              <div className="space-y-1.5">
-                {gaugeRows.slice().reverse().map((r) => {
-                  const isPartial = r.gauge1 == null;
-                  return (
-                    <div key={r.year} className="flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-paper-dim">{r.year}</span>
-                        {isPartial && <span className="text-[9px] text-brass/60 border border-brass/20 rounded px-1">partial</span>}
-                      </div>
-                      <div className="flex items-center gap-3">
-                        {r.z_debt_gdp != null && (
-                          <span className="text-paper-dim text-[10px]">Debt/GDP: <span className="num text-paper">{Number(r.z_debt_gdp) >= 0 ? "+" : ""}{Number(r.z_debt_gdp).toFixed(2)}</span></span>
-                        )}
-                        {r.z_debt_income != null && (
-                          <span className="text-paper-dim text-[10px]">Debt/Inc: <span className="num text-paper">{Number(r.z_debt_income) >= 0 ? "+" : ""}{Number(r.z_debt_income).toFixed(2)}</span></span>
-                        )}
-                        {isPartial ? (
-                          <span className="num font-semibold text-paper-dim">—</span>
-                        ) : (
-                          <span className={`num font-semibold ${Number(r.gauge1) > 1 ? "text-loss" : Number(r.gauge1) < -1 ? "text-gain" : "text-brass-soft"}`}>
-                            {Number(r.gauge1) >= 0 ? "+" : ""}{Number(r.gauge1).toFixed(2)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          <p className="text-[10px] text-paper-dim/60 leading-relaxed">
-            z-score computed from full 1952–present history of Debt/GDP · <span className="font-mono">macro_debt_cycle</span>
-          </p>
-        </div>
-      </div>
-    </>
-  );
-}
-
 // ─── Shared utilities ─────────────────────────────────────────────────────────
 
 function buildZScoreData(rows, valueKey, range, invert = false) {
@@ -340,7 +128,7 @@ function StandardZScoreChart({ chartData, lineName = "Risk z-score" }) {
   );
 }
 
-function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, range, setRange, loading, renderChart, gaugeHistory, gaugeKey, subComponents = [], renderTable, infoContent, assessment }) {
+function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, range, setRange, loading, renderChart, gaugeHistory, gaugeKey, subComponents = [], renderTable, infoContent, assessment, currentZLabel }) {
   const [infoOpen, setInfoOpen] = useState(false);
   const gaugeRows = (gaugeHistory ?? []).filter((r) => r[gaugeKey] != null);
   const gaugeColor = latestGauge == null ? "text-paper-dim" : latestGauge > 1 ? "text-loss" : latestGauge < -1 ? "text-gain" : "text-brass-soft";
@@ -369,7 +157,7 @@ function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, rang
             {latestGauge != null && (
               <div className="text-right">
                 <p className={`num text-xl font-bold leading-none ${gaugeColor}`}>{latestGauge >= 0 ? "+" : ""}{Number(latestGauge).toFixed(2)}</p>
-                <p className="text-[10px] text-paper-dim mt-0.5">Current z</p>
+                <p className="text-[10px] text-paper-dim mt-0.5">{currentZLabel ?? "Current z"}</p>
               </div>
             )}
             <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5"><CloseIcon /></button>
@@ -441,6 +229,161 @@ function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, rang
         </div>
       </div>
     </>
+  );
+}
+
+// ─── Gauge 1: Debt Sustainability Risk ───────────────────────────────────────
+
+const DEBT_SUST_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">What this measures</p>
+      <p className="text-paper-dim">Debt Sustainability Risk tracks the total debt burden of the economy relative to two key benchmarks: gross domestic product (Debt/GDP) and income (Debt/Income). When debt grows faster than the economy's ability to generate output and income, the burden of servicing that debt becomes progressively harder to bear. This gauge captures both dimensions simultaneously, giving a composite view of how stretched the debt load is relative to historical norms going back to 1952.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">How it's calculated</p>
+      <p className="text-paper-dim">Two separate z-scores are computed — one for the Debt/GDP ratio and one for the Debt/Income ratio — each measured against the full available history. A z-score reflects how many standard deviations the current reading sits above or below the long-run mean. The two z-scores are then averaged to produce the composite gauge reading. A positive composite means debt is elevated relative to historical norms across both measures; a negative composite means it is below average.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Why it matters</p>
+      <p className="text-paper-dim">In Ray Dalio's long-term debt cycle framework, unsustainable debt is the central driver of deleveraging crises. When the debt burden becomes too heavy — typically after decades of credit expansion — debt service costs crowd out productive spending. Borrowers are forced to reduce debt faster than it can be grown away, triggering deflationary downturns. Historically, the peak of the long-term debt cycle has been followed by painful multi-year deleveragings. The higher this gauge, the closer the economy is to conditions that have historically preceded such cycles.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Thresholds</p>
+      <div className="space-y-1 text-[10px]">
+        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +2.0</span><span className="text-paper-dim">Critical — debt at historic extremes, structural deleveraging likely</span></div>
+        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.5</span><span className="text-paper-dim">Elevated Risk — significantly above historical norms, structural vulnerability building</span></div>
+        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.0</span><span className="text-paper-dim">Elevated — Watch — above average, monitor for acceleration</span></div>
+        <div className="flex gap-2"><span className="text-brass-soft font-mono w-16">0 to +1</span><span className="text-paper-dim">Mild pressure — modestly elevated, not yet alarming</span></div>
+        <div className="flex gap-2"><span className="text-gain font-mono w-16">&lt; 0</span><span className="text-paper-dim">Sustainable — debt levels at or below historical average</span></div>
+      </div>
+    </div>
+  </div>
+);
+
+function debtSustAssessment(gauge1) {
+  if (gauge1 == null) return null;
+  if (gauge1 > 2.0) return {
+    label: "Critical Risk",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "Debt/GDP and Debt/Income ratios are at or near their most extreme levels in the full historical record. Conditions at this level mirror the late stages of historical long-term debt cycles. The probability of a forced deleveraging — where debt is reduced not by growth but by defaults, inflation, or austerity — is meaningfully elevated. This is the highest-risk zone in Dalio's framework, where the structural imbalance is severe enough that a shock could trigger a self-reinforcing contraction.",
+  };
+  if (gauge1 > 1.5) return {
+    label: "Elevated Risk",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "Debt levels are significantly above their historical average across both the GDP and income dimensions, placing the economy in structurally vulnerable territory. Debt service costs are high relative to income, leaving households, corporations, and government with less flexibility to absorb economic shocks. Historical episodes at this level have been followed by extended periods of credit contraction. While an immediate crisis is not inevitable, the structural conditions are fragile — a negative shock could accelerate the deleveraging dynamic faster than in a healthier debt environment.",
+  };
+  if (gauge1 > 1.0) return {
+    label: "Elevated — Watch",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "The composite debt burden is above its long-run historical average, meaning debt as a share of GDP and income has grown beyond typical norms. The situation is not at crisis levels, but the trajectory matters — continued credit expansion without commensurate income growth will push this gauge higher. Monitor the rate of change: a gauge reading that is rising quickly is more concerning than a stable elevated reading, since it signals that the structural imbalance is still widening.",
+  };
+  if (gauge1 > 0.0) return {
+    label: "Mild Pressure",
+    color: "text-brass-soft", border: "border-brass/20", bg: "bg-brass/5",
+    text: "Debt levels are modestly above their historical average — above the long-run norm but not at extremes. This is a relatively common mid-cycle condition that does not, by itself, signal imminent stress. The economy retains meaningful capacity to service debt and absorb shocks. The risk to monitor is whether the trend continues higher: moving from mild pressure to elevated risk can occur gradually over several years before becoming apparent in economic data.",
+  };
+  return {
+    label: "Sustainable",
+    color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
+    text: "Debt/GDP and Debt/Income ratios are at or below their long-run historical average, consistent with a debt load the economy can comfortably service. Debt sustainability is not a binding constraint on growth at these levels. Households, corporations, and government retain the balance sheet capacity to borrow and spend if needed, and debt service costs are not crowding out productive activity.",
+  };
+}
+
+function DebtSustainabilityDrawer({ open, onClose, latestGauge, latestGaugeYear }) {
+  const [rows, setRows] = useState(null);
+  const [gaugeHistory, setGaugeHistory] = useState(null);
+  const [range, setRange] = useState(1952);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    Promise.all([
+      supabase.from("macro_debt_cycle").select("year,debt_to_gdp_pct").order("year"),
+      supabase.from("dalio_gauge_readings").select("year,gauge1,z_debt_gdp,z_debt_income").order("year"),
+    ]).then(([debt, gauge]) => {
+      setRows(debt.data ?? []);
+      setGaugeHistory(gauge.data ?? []);
+    });
+  }, [open, rows]);
+
+  const chartData = useMemo(() => buildZScoreData(rows, "debt_to_gdp_pct", range), [rows, range]);
+
+  const tableRows = useMemo(() => {
+    const gdpMap = Object.fromEntries(
+      (rows ?? []).filter((r) => r.debt_to_gdp_pct != null).map((r) => [r.year, Number(r.debt_to_gdp_pct)])
+    );
+    const gaugeMap = Object.fromEntries((gaugeHistory ?? []).map((r) => [r.year, r]));
+    const allYears = [...new Set([
+      ...(rows ?? []).map((r) => r.year),
+      ...(gaugeHistory ?? []).map((r) => r.year),
+    ])].sort((a, b) => b - a);
+    return allYears
+      .map((year) => ({
+        year,
+        debtGdp: gdpMap[year] ?? null,
+        zDebtGdp: gaugeMap[year]?.z_debt_gdp != null ? Number(gaugeMap[year].z_debt_gdp) : null,
+        zDebtInc: gaugeMap[year]?.z_debt_income != null ? Number(gaugeMap[year].z_debt_income) : null,
+        composite: gaugeMap[year]?.gauge1 != null ? Number(gaugeMap[year].gauge1) : null,
+      }))
+      .filter((r) => r.debtGdp != null || r.zDebtGdp != null || r.composite != null);
+  }, [rows, gaugeHistory]);
+
+  const assessed = debtSustAssessment(latestGauge);
+  const assessment = assessed ? (
+    <div className={`card p-4 border ${assessed.border} ${assessed.bg}`}>
+      <p className="label text-[10px] mb-2">Current Assessment</p>
+      <p className={`text-xs font-semibold mb-2 ${assessed.color}`}>{assessed.label}</p>
+      <p className="text-[11px] text-paper-dim leading-relaxed">{assessed.text}</p>
+    </div>
+  ) : null;
+
+  return (
+    <BaseGaugeDrawer
+      open={open} onClose={onClose}
+      title="Debt Sustainability Risk"
+      desc="Composite z-score · Debt/GDP + Debt/Income vs full history 1952–present"
+      source="macro_debt_cycle · debt_to_gdp_pct"
+      latestGauge={latestGauge}
+      currentZLabel={latestGaugeYear ? `Composite · ${latestGaugeYear}` : "Current z"}
+      range={range} setRange={setRange}
+      loading={rows === null}
+      renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Debt/GDP z" />}
+      gaugeHistory={gaugeHistory}
+      gaugeKey="gauge1"
+      infoContent={DEBT_SUST_INFO}
+      assessment={assessment}
+      renderTable={() => (
+        <div className="card p-4">
+          <p className="label text-[10px] mb-3">Composite Gauge Readings</p>
+          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(4, 68px)" }}>
+            <span>Year</span>
+            <span className="text-right">Debt/GDP%</span>
+            <span className="text-right">D/GDP z</span>
+            <span className="text-right">D/Inc z</span>
+            <span className="text-right">Composite</span>
+          </div>
+          <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+            {tableRows.map((r) => {
+              const isPartial = r.composite == null;
+              return (
+                <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(4, 68px)" }}>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-paper-dim">{r.year}</span>
+                    {isPartial && <span className="text-[9px] text-brass/60 border border-brass/20 rounded px-1">partial</span>}
+                  </div>
+                  <span className="num text-right text-paper">{r.debtGdp != null ? `${r.debtGdp.toFixed(1)}%` : "—"}</span>
+                  <span className="num text-right text-paper-dim">{r.zDebtGdp != null ? `${r.zDebtGdp >= 0 ? "+" : ""}${r.zDebtGdp.toFixed(2)}` : "—"}</span>
+                  <span className="num text-right text-paper-dim">{r.zDebtInc != null ? `${r.zDebtInc >= 0 ? "+" : ""}${r.zDebtInc.toFixed(2)}` : "—"}</span>
+                  <span className={`num text-right font-semibold ${r.composite == null ? "text-paper-dim" : r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
+                    {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    />
   );
 }
 
@@ -617,6 +560,62 @@ function PolicyRoomDrawer({ open, onClose, latestGauge }) {
 
 // ─── Gauge 3: Growth-Inflation Risk ──────────────────────────────────────────
 
+const GROWTH_INFL_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">What this measures</p>
+      <p className="text-paper-dim">Growth-Inflation Risk captures the simultaneous occurrence of two adverse economic conditions: elevated consumer price inflation and weak real economic growth. This combination — known as stagflation — is exceptionally damaging because the usual policy tools conflict: raising rates to fight inflation worsens growth, while cutting rates to support growth worsens inflation. The gauge uses 3-year trailing averages to smooth out short-term volatility and focus on persistent trends rather than temporary spikes.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">How it's calculated</p>
+      <p className="text-paper-dim">Two z-scores are computed from the full historical record: one for the 3-year trailing average CPI inflation rate, and one for the 3-year trailing average real GDP growth rate. The composite is formed as <span className="text-paper font-mono">(z_CPI − z_RealGrowth) / 2</span>. Subtracting the real growth z-score means that high growth reduces the risk reading, while adding the CPI z-score means high inflation increases it. Dividing by 2 keeps the scale comparable to a single z-score.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Why it matters</p>
+      <p className="text-paper-dim">In Dalio's asset cycle framework, stagflation is the worst macro regime for a diversified portfolio. Stocks fall because earnings compress under cost pressure and rate hikes reduce future cash flow valuations. Bonds fall because inflation erodes the real value of fixed coupons, while central banks must raise — not cut — rates to control prices. Cash loses real purchasing power. Only real assets (commodities, TIPS, gold) tend to outperform. A high reading on this gauge signals that investors should rotate away from conventional stocks and bonds and toward inflation-linked assets.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Thresholds</p>
+      <div className="space-y-1 text-[10px]">
+        <div className="flex gap-2"><span className="text-loss font-mono w-20">&gt; +1.5</span><span className="text-paper-dim">Stagflationary — severe simultaneous high inflation and weak growth</span></div>
+        <div className="flex gap-2"><span className="text-loss font-mono w-20">&gt; +1.0</span><span className="text-paper-dim">Elevated Risk — stagflation signal present and persistent</span></div>
+        <div className="flex gap-2"><span className="text-brass-soft font-mono w-20">&gt; +0.25</span><span className="text-paper-dim">Watch — early stagflation warning, trend worth monitoring</span></div>
+        <div className="flex gap-2"><span className="text-paper font-mono w-20">±0.25</span><span className="text-paper-dim">Neutral — balanced growth and inflation environment</span></div>
+        <div className="flex gap-2"><span className="text-gain font-mono w-20">&lt; −0.25</span><span className="text-paper-dim">Favorable — disinflationary boom or low-inflation growth</span></div>
+      </div>
+    </div>
+  </div>
+);
+
+function growthInflAssessment(gauge3) {
+  if (gauge3 == null) return null;
+  if (gauge3 > 1.5) return {
+    label: "Stagflationary",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "Both real growth and inflation are simultaneously far from benign levels — growth is well below average while inflation is well above average. This is the textbook stagflation regime. Conventional monetary policy cannot address both conditions simultaneously: rate hikes that control inflation worsen growth, while cuts that support growth worsen inflation. This configuration historically produces losses across equities and nominal bonds simultaneously. Allocation toward real assets and inflation-linked instruments is most consistent with this environment.",
+  };
+  if (gauge3 > 1.0) return {
+    label: "Elevated Risk",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "The stagflation signal is elevated — the combination of above-average inflation and below-average real growth is meaningful and persistent on a 3-year trailing basis. While not yet at extreme historical levels, this reading signals that the growth-inflation tradeoff is becoming adverse. Central banks face a policy dilemma: the appropriate response to inflation (tighten) conflicts with the appropriate response to weak growth (ease). Asset allocation should begin tilting toward inflation protection and away from long-duration nominal assets.",
+  };
+  if (gauge3 > 0.25) return {
+    label: "Watch — Mild Signal",
+    color: "text-brass-soft", border: "border-brass/20", bg: "bg-brass/5",
+    text: "An early stagflation signal is present — inflation is running modestly above its historical average while real growth is running below, but neither deviation is severe enough to qualify as a full stagflation episode. The 3-year trailing averages are still being influenced by recent data, and the trend direction matters more than the current level. If inflation continues to run hot while real growth decelerates, this reading will move into elevated territory. Monitoring the trend and trajectory is warranted.",
+  };
+  if (gauge3 > -0.25) return {
+    label: "Neutral",
+    color: "text-paper", border: "border-ink-line", bg: "bg-ink/40",
+    text: "The growth-inflation environment is broadly balanced. Neither inflation nor real growth is meaningfully deviating from its historical average in a way that creates a policy dilemma. This is consistent with a relatively normal business cycle environment where central banks have flexibility to respond to either direction of shock. No stagflation premium is warranted in asset allocation at this reading.",
+  };
+  return {
+    label: "Favorable",
+    color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
+    text: "The growth-inflation environment is favorable — either real growth is running well above average, inflation is running below average, or both. This is the disinflationary boom regime that is most supportive of broad asset returns: equities benefit from strong earnings growth, bonds benefit from low inflation expectations, and the central bank has room to ease if needed. This is the most benign configuration in Dalio's macro framework.",
+  };
+}
+
 function GrowthInflationDrawer({ open, onClose, latestGauge }) {
   const [rows, setRows] = useState(null);
   const [gaugeHistory, setGaugeHistory] = useState(null);
@@ -630,7 +629,6 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
     ]).then(([dc, gauge]) => { setRows(dc.data ?? []); setGaugeHistory(gauge.data ?? []); });
   }, [open, rows]);
 
-  // gauge3 = (z_cpi - z_real) / 2 — high CPI + low real growth = stagflation risk
   const chartData = useMemo(() => {
     if (!rows?.length) return [];
     const reals = rows.filter((r) => r.avg3_real != null).map((r) => Number(r.avg3_real));
@@ -653,6 +651,34 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
       });
   }, [rows, range]);
 
+  const tableRows = useMemo(() => {
+    const dcMap = Object.fromEntries((rows ?? []).map((r) => [r.year, r]));
+    const gaugeMap = Object.fromEntries((gaugeHistory ?? []).map((r) => [r.year, r]));
+    const allYears = [...new Set([
+      ...(rows ?? []).map((r) => r.year),
+      ...(gaugeHistory ?? []).map((r) => r.year),
+    ])].sort((a, b) => b - a);
+    return allYears
+      .map((year) => ({
+        year,
+        real: dcMap[year]?.avg3_real != null ? Number(dcMap[year].avg3_real) : null,
+        cpi: dcMap[year]?.avg3_cpi != null ? Number(dcMap[year].avg3_cpi) : null,
+        zReal: gaugeMap[year]?.z_real_growth_3yr != null ? Number(gaugeMap[year].z_real_growth_3yr) : null,
+        zCpi: gaugeMap[year]?.z_cpi_3yr != null ? Number(gaugeMap[year].z_cpi_3yr) : null,
+        composite: gaugeMap[year]?.gauge3 != null ? Number(gaugeMap[year].gauge3) : null,
+      }))
+      .filter((r) => r.real != null || r.zReal != null || r.composite != null);
+  }, [rows, gaugeHistory]);
+
+  const assessed = growthInflAssessment(latestGauge);
+  const assessment = assessed ? (
+    <div className={`card p-4 border ${assessed.border} ${assessed.bg}`}>
+      <p className="label text-[10px] mb-2">Current Assessment</p>
+      <p className={`text-xs font-semibold mb-2 ${assessed.color}`}>{assessed.label}</p>
+      <p className="text-[11px] text-paper-dim leading-relaxed">{assessed.text}</p>
+    </div>
+  ) : null;
+
   return (
     <BaseGaugeDrawer
       open={open} onClose={onClose}
@@ -665,12 +691,104 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
       renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Stagflation z" />}
       gaugeHistory={gaugeHistory}
       gaugeKey="gauge3"
-      subComponents={[{ key: "z_real_growth_3yr", label: "Real Growth z" }, { key: "z_cpi_3yr", label: "CPI z" }]}
+      infoContent={GROWTH_INFL_INFO}
+      assessment={assessment}
+      renderTable={() => (
+        <div className="card p-4">
+          <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
+          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(5, 60px)" }}>
+            <span>Year</span>
+            <span className="text-right">Real%</span>
+            <span className="text-right">CPI%</span>
+            <span className="text-right">Real z</span>
+            <span className="text-right">CPI z</span>
+            <span className="text-right">Composite</span>
+          </div>
+          <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+            {tableRows.map((r) => (
+              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(5, 60px)" }}>
+                <span className="text-paper-dim">{r.year}</span>
+                <span className="num text-right text-paper">
+                  {r.real != null ? `${r.real >= 0 ? "+" : ""}${r.real.toFixed(2)}%` : "—"}
+                </span>
+                <span className="num text-right text-paper">
+                  {r.cpi != null ? `${r.cpi.toFixed(2)}%` : "—"}
+                </span>
+                <span className="num text-right text-paper-dim">
+                  {r.zReal != null ? `${r.zReal >= 0 ? "+" : ""}${r.zReal.toFixed(2)}` : "—"}
+                </span>
+                <span className="num text-right text-paper-dim">
+                  {r.zCpi != null ? `${r.zCpi >= 0 ? "+" : ""}${r.zCpi.toFixed(2)}` : "—"}
+                </span>
+                <span className={`num text-right font-semibold ${r.composite == null ? "text-paper-dim" : r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
+                  {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     />
   );
 }
 
 // ─── Gauge 4: Income Affordability Risk ──────────────────────────────────────
+
+const INCOME_AFFORD_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">What this measures</p>
+      <p className="text-paper-dim">Income Affordability Risk measures whether total debt is growing faster than the income needed to service it. When debt growth consistently exceeds income growth, households, corporations, and government find themselves committing an ever-larger share of income to debt repayment rather than consumption and investment. This erosion of affordability — the gap between what is owed and what income is available to pay it — is a classic precursor to credit stress and is particularly sensitive to periods of rapid debt accumulation.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">How it's calculated</p>
+      <p className="text-paper-dim">The gauge is the z-score of total debt growth year-over-year, measured against the full history available. A z-score above zero means debt is growing faster than its historical average rate; below zero means it is growing more slowly. This captures the flow of new debt creation, not just the stock. Rapid credit expansion — even from a moderate starting debt level — can quickly create affordability stress if it runs significantly above what income growth can absorb.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Why it matters</p>
+      <p className="text-paper-dim">In Dalio's framework, the income affordability dimension transforms a high-but-stable debt burden into an active crisis. When households can no longer afford to service their debt obligations from current income, they are forced to cut spending, sell assets, or default. This simultaneous deleveraging across many borrowers produces the self-reinforcing contraction known as a deflationary debt spiral. The gauge is most dangerous when both elevated and rising — signaling that the rate of over-extension is accelerating, not merely persisting.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Thresholds</p>
+      <div className="space-y-1 text-[10px]">
+        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.0</span><span className="text-paper-dim">Elevated Risk — debt growing well above norms relative to income</span></div>
+        <div className="flex gap-2"><span className="text-brass-soft font-mono w-16">&gt; +0.25</span><span className="text-paper-dim">Watch — above-average debt growth, monitor for acceleration</span></div>
+        <div className="flex gap-2"><span className="text-paper font-mono w-16">±0.25</span><span className="text-paper-dim">Neutral — debt growth near historical average</span></div>
+        <div className="flex gap-2"><span className="text-gain font-mono w-16">&gt; −1.0</span><span className="text-paper-dim">Healthy — debt growth below average, improving affordability</span></div>
+        <div className="flex gap-2"><span className="text-gain font-mono w-16">&lt; −1.0</span><span className="text-paper-dim">Very Favorable — debt growth well below average or declining</span></div>
+      </div>
+    </div>
+  </div>
+);
+
+function incomeAffordAssessment(gauge4) {
+  if (gauge4 == null) return null;
+  if (gauge4 > 1.0) return {
+    label: "Elevated Risk",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "Total debt is growing well above its historical average rate relative to income, indicating that borrowers are taking on obligations at a pace that significantly exceeds income growth. The affordability buffer is narrowing: debt service costs are consuming a growing share of income, leaving less for consumption and investment. Historically, sustained periods above this threshold have preceded credit market stress as borrowers reach their affordability limits simultaneously.",
+  };
+  if (gauge4 > 0.25) return {
+    label: "Watch",
+    color: "text-brass-soft", border: "border-brass/20", bg: "bg-brass/5",
+    text: "Debt is growing modestly faster than its historical average, suggesting the economy is in a moderate credit expansion phase. While not at crisis levels, the rate of debt accumulation is running above the sustainable long-run pace. The key question is whether this is driven by productive investment — which generates future income to service the debt — or consumption-driven borrowing, which does not. Monitor the trend: if debt growth continues to accelerate while income growth remains flat, this reading will move into elevated risk territory.",
+  };
+  if (gauge4 > -0.25) return {
+    label: "Neutral",
+    color: "text-paper", border: "border-ink-line", bg: "bg-ink/40",
+    text: "Debt growth is near its historical average rate, consistent with a normal credit cycle environment. Income and debt are expanding at comparable rates, maintaining a stable affordability ratio. This reading does not signal imminent stress or unusual opportunity — it reflects a balanced relationship between credit creation and income that is consistent with sustainable long-run growth.",
+  };
+  if (gauge4 > -1.0) return {
+    label: "Healthy",
+    color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
+    text: "Debt growth is running below its historical average, meaning the rate of new debt creation is slower than typical. This is a healthy sign from an affordability perspective: existing debt is being paid down or rolled over without aggressive new addition, which gradually improves the ratio of debt to income. This environment is supportive of consumer balance sheet health and reduces the risk of a forced deleveraging cycle.",
+  };
+  return {
+    label: "Very Favorable",
+    color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
+    text: "Debt growth is well below its historical average — or debt is actually declining. This reflects active deleveraging or extremely conservative borrowing behavior, which dramatically improves income affordability ratios. While sustained deleveraging can itself be a drag on near-term growth, it sets the foundation for a healthier balance sheet environment and is the most favorable affordability reading in Dalio's framework.",
+  };
+}
 
 function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
   const [rows, setRows] = useState(null);
@@ -687,6 +805,39 @@ function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
 
   const chartData = useMemo(() => buildZScoreData(rows, "total_debt_growth_yoy", range), [rows, range]);
 
+  const tableRows = useMemo(() => {
+    const creditMap = Object.fromEntries(
+      (rows ?? []).filter((r) => r.total_debt_growth_yoy != null).map((r) => [r.year, Number(r.total_debt_growth_yoy)])
+    );
+    const gaugeMap = Object.fromEntries((gaugeHistory ?? []).map((r) => [r.year, r]));
+    const allYears = [...new Set([
+      ...(rows ?? []).map((r) => r.year),
+      ...(gaugeHistory ?? []).map((r) => r.year),
+    ])].sort((a, b) => b - a);
+    return allYears
+      .map((year) => {
+        const debtGrowth = creditMap[year] ?? null;
+        const prevDebtGrowth = creditMap[year - 1] ?? null;
+        return {
+          year,
+          debtGrowth,
+          netDelta: debtGrowth != null && prevDebtGrowth != null ? debtGrowth - prevDebtGrowth : null,
+          zDebtInc: gaugeMap[year]?.z_debt_growth_income != null ? Number(gaugeMap[year].z_debt_growth_income) : null,
+          composite: gaugeMap[year]?.gauge4 != null ? Number(gaugeMap[year].gauge4) : null,
+        };
+      })
+      .filter((r) => r.debtGrowth != null || r.zDebtInc != null || r.composite != null);
+  }, [rows, gaugeHistory]);
+
+  const assessed = incomeAffordAssessment(latestGauge);
+  const assessment = assessed ? (
+    <div className={`card p-4 border ${assessed.border} ${assessed.bg}`}>
+      <p className="label text-[10px] mb-2">Current Assessment</p>
+      <p className={`text-xs font-semibold mb-2 ${assessed.color}`}>{assessed.label}</p>
+      <p className="text-[11px] text-paper-dim leading-relaxed">{assessed.text}</p>
+    </div>
+  ) : null;
+
   return (
     <BaseGaugeDrawer
       open={open} onClose={onClose}
@@ -699,12 +850,100 @@ function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
       renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Debt Growth z" />}
       gaugeHistory={gaugeHistory}
       gaugeKey="gauge4"
-      subComponents={[{ key: "z_debt_growth_income", label: "Debt/Inc z" }]}
+      infoContent={INCOME_AFFORD_INFO}
+      assessment={assessment}
+      renderTable={() => (
+        <div className="card p-4">
+          <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
+          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(4, 72px)" }}>
+            <span>Year</span>
+            <span className="text-right">Debt Gth%</span>
+            <span className="text-right">Net Δ</span>
+            <span className="text-right">D/Inc z</span>
+            <span className="text-right">Composite</span>
+          </div>
+          <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+            {tableRows.map((r) => (
+              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(4, 72px)" }}>
+                <span className="text-paper-dim">{r.year}</span>
+                <span className="num text-right text-paper">
+                  {r.debtGrowth != null ? `${r.debtGrowth >= 0 ? "+" : ""}${r.debtGrowth.toFixed(2)}%` : "—"}
+                </span>
+                <span className={`num text-right ${r.netDelta == null ? "text-paper-dim" : r.netDelta > 0 ? "text-loss" : r.netDelta < 0 ? "text-gain" : "text-paper-dim"}`}>
+                  {r.netDelta != null ? `${r.netDelta >= 0 ? "+" : ""}${r.netDelta.toFixed(2)}%` : "—"}
+                </span>
+                <span className="num text-right text-paper-dim">
+                  {r.zDebtInc != null ? `${r.zDebtInc >= 0 ? "+" : ""}${r.zDebtInc.toFixed(2)}` : "—"}
+                </span>
+                <span className={`num text-right font-semibold ${r.composite == null ? "text-paper-dim" : r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
+                  {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     />
   );
 }
 
 // ─── Gauge 5: Reserve Confidence Risk ────────────────────────────────────────
+
+const RESERVE_CONF_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">What this measures</p>
+      <p className="text-paper-dim">Reserve Confidence Risk captures the degree to which global central banks and sovereign institutions are reducing their reliance on the US dollar as a reserve currency. It combines two signals: central bank net gold purchases (a direct substitution away from USD-denominated reserves) and US Treasury auction bid-to-cover ratios (which measure the appetite of the global investor base for US government debt). Together, these reflect the market's revealed confidence — or lack thereof — in the dominant reserve currency.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">How it's calculated</p>
+      <p className="text-paper-dim">Two z-scores are computed: one for annual central bank net gold purchases (from the World Gold Council), and one for the Treasury auction bid-to-cover ratio. Gold purchases are scored directly — heavy buying is elevated risk, since it signals reserve diversification away from dollar assets. Bid-to-cover is scored inversely — declining demand for Treasury auctions signals reduced confidence in US debt. The two z-scores are averaged to form the composite gauge reading.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Why it matters</p>
+      <p className="text-paper-dim">In Dalio's framework, the long-term debt cycle reaches its most dangerous inflection when the reserve currency's credibility is challenged. The United States can sustain an unusually high debt level precisely because the dollar's reserve status allows it to borrow in its own currency at low rates from global savers. If that privilege erodes — through excessive money printing, fiscal instability, or geopolitical fragmentation — foreign demand for US debt weakens, interest rates rise, and the ability to inflate or grow out of the debt burden is diminished. A rising reading on this gauge is one of the clearest signals of late-cycle reserve currency fragility.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Thresholds</p>
+      <div className="space-y-1 text-[10px]">
+        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.5</span><span className="text-paper-dim">Critical — extreme gold accumulation and/or severe Treasury demand decline</span></div>
+        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.0</span><span className="text-paper-dim">Elevated Risk — meaningful reserve diversification away from USD</span></div>
+        <div className="flex gap-2"><span className="text-brass-soft font-mono w-16">&gt; +0.25</span><span className="text-paper-dim">Watch — early signals of reserve reallocation, trend to monitor</span></div>
+        <div className="flex gap-2"><span className="text-paper font-mono w-16">±0.25</span><span className="text-paper-dim">Neutral — reserve confidence broadly intact</span></div>
+        <div className="flex gap-2"><span className="text-gain font-mono w-16">&lt; −0.25</span><span className="text-paper-dim">Low Risk — strong demand for USD assets and Treasuries</span></div>
+      </div>
+    </div>
+  </div>
+);
+
+function reserveConfAssessment(gauge5) {
+  if (gauge5 == null) return null;
+  if (gauge5 > 1.5) return {
+    label: "Critical",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "Central bank gold accumulation is at or near historic extremes, and/or Treasury auction demand has deteriorated severely. This combination signals a meaningful breakdown in global confidence in the US dollar as a reserve asset. The structural foundation that enables US fiscal deficits to be financed at low rates is under genuine strain. Capital flows are rotating away from dollar-denominated assets — if sustained, this would pressure the dollar, raise long-term interest rates, and reduce the US government's ability to inflate away its debt burden.",
+  };
+  if (gauge5 > 1.0) return {
+    label: "Elevated Risk",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "Central banks are buying gold at above-average rates and/or Treasury auction bid-to-cover ratios are declining meaningfully. This signals an active, sustained shift in reserve allocation away from the dollar. The magnitude is not yet at historic extremes, but the signal is consistent and directional. In Dalio's framework, this is the phase where reserve currency credibility begins to slip — slowly at first, then quickly. The risk premium on US assets has not yet repriced sharply, but the underlying trend is concerning.",
+  };
+  if (gauge5 > 0.25) return {
+    label: "Watch",
+    color: "text-brass-soft", border: "border-brass/20", bg: "bg-brass/5",
+    text: "Early signals of reserve reallocation are present — central bank gold buying is modestly above average and/or Treasury auction demand shows some softening. These signals are not severe enough to indicate a crisis of confidence, but they suggest that the marginal appetite for dollar assets among global central banks is declining. In the context of elevated US fiscal deficits and geopolitical fragmentation, this warrants monitoring for signs of acceleration.",
+  };
+  if (gauge5 > -0.25) return {
+    label: "Neutral",
+    color: "text-paper", border: "border-ink-line", bg: "bg-ink/40",
+    text: "Central bank gold purchases and Treasury auction demand are near their historical averages, indicating that reserve confidence is broadly intact. There is no significant signal of reserve diversification away from the dollar at this level. Global demand for US Treasury debt is in line with historical norms, and the structural advantage of dollar reserve status is not under measurable pressure.",
+  };
+  return {
+    label: "Low Risk",
+    color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
+    text: "Central bank gold purchases are below average and/or Treasury auction demand is strong, indicating elevated confidence in the US dollar as a reserve asset. Global savers are actively seeking dollar-denominated assets, which keeps long-term interest rates low and supports the US government's ability to finance its debt at favorable terms. Reserve currency privilege is being actively reinforced rather than eroded.",
+  };
+}
 
 function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
   const [rows, setRows] = useState(null);
@@ -721,6 +960,40 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
 
   const chartData = useMemo(() => buildZScoreData(rows, "tonnes", range), [rows, range]);
 
+  const tableRows = useMemo(() => {
+    const wgcMap = Object.fromEntries(
+      (rows ?? []).filter((r) => r.tonnes != null).map((r) => [r.year, Number(r.tonnes)])
+    );
+    const gaugeMap = Object.fromEntries((gaugeHistory ?? []).map((r) => [r.year, r]));
+    const allYears = [...new Set([
+      ...(rows ?? []).map((r) => r.year),
+      ...(gaugeHistory ?? []).map((r) => r.year),
+    ])].sort((a, b) => b - a);
+    return allYears
+      .map((year) => {
+        const tonnes = wgcMap[year] ?? null;
+        const prevTonnes = wgcMap[year - 1] ?? null;
+        return {
+          year,
+          tonnes,
+          netDelta: tonnes != null && prevTonnes != null ? tonnes - prevTonnes : null,
+          zCbGold: gaugeMap[year]?.z_cb_gold != null ? Number(gaugeMap[year].z_cb_gold) : null,
+          zBidCover: gaugeMap[year]?.z_bid_to_cover != null ? Number(gaugeMap[year].z_bid_to_cover) : null,
+          composite: gaugeMap[year]?.gauge5 != null ? Number(gaugeMap[year].gauge5) : null,
+        };
+      })
+      .filter((r) => r.tonnes != null || r.zCbGold != null || r.composite != null);
+  }, [rows, gaugeHistory]);
+
+  const assessed = reserveConfAssessment(latestGauge);
+  const assessment = assessed ? (
+    <div className={`card p-4 border ${assessed.border} ${assessed.bg}`}>
+      <p className="label text-[10px] mb-2">Current Assessment</p>
+      <p className={`text-xs font-semibold mb-2 ${assessed.color}`}>{assessed.label}</p>
+      <p className="text-[11px] text-paper-dim leading-relaxed">{assessed.text}</p>
+    </div>
+  ) : null;
+
   return (
     <BaseGaugeDrawer
       open={open} onClose={onClose}
@@ -733,7 +1006,43 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
       renderChart={() => <StandardZScoreChart chartData={chartData} lineName="CB Gold z" />}
       gaugeHistory={gaugeHistory}
       gaugeKey="gauge5"
-      subComponents={[{ key: "z_cb_gold", label: "CB Gold z" }, { key: "z_bid_to_cover", label: "Bid/Cover z" }]}
+      infoContent={RESERVE_CONF_INFO}
+      assessment={assessment}
+      renderTable={() => (
+        <div className="card p-4">
+          <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
+          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(5, 60px)" }}>
+            <span>Year</span>
+            <span className="text-right">CB Gold(t)</span>
+            <span className="text-right">Net Δ(t)</span>
+            <span className="text-right">CB Gold z</span>
+            <span className="text-right">Bid/Cov z</span>
+            <span className="text-right">Composite</span>
+          </div>
+          <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+            {tableRows.map((r) => (
+              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(5, 60px)" }}>
+                <span className="text-paper-dim">{r.year}</span>
+                <span className="num text-right text-paper">
+                  {r.tonnes != null ? Math.round(r.tonnes).toLocaleString() : "—"}
+                </span>
+                <span className={`num text-right ${r.netDelta == null ? "text-paper-dim" : r.netDelta > 0 ? "text-loss" : r.netDelta < 0 ? "text-gain" : "text-paper-dim"}`}>
+                  {r.netDelta != null ? `${r.netDelta >= 0 ? "+" : ""}${Math.round(r.netDelta).toLocaleString()}` : "—"}
+                </span>
+                <span className="num text-right text-paper-dim">
+                  {r.zCbGold != null ? `${r.zCbGold >= 0 ? "+" : ""}${r.zCbGold.toFixed(2)}` : "—"}
+                </span>
+                <span className="num text-right text-paper-dim">
+                  {r.zBidCover != null ? `${r.zBidCover >= 0 ? "+" : ""}${r.zBidCover.toFixed(2)}` : "—"}
+                </span>
+                <span className={`num text-right font-semibold ${r.composite == null ? "text-paper-dim" : r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
+                  {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     />
   );
 }
@@ -933,9 +1242,13 @@ export default function DalioGauges() {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-3">
         {GAUGE_META.map(({ key, label, desc }) => {
           const val = latest[key]?.value ?? null;
-          const statusLabelOverride = key === "gauge2" && val != null
-            ? policyRoomAssessment(val, null)?.label ?? null
-            : null;
+          const statusLabelOverride =
+            key === "gauge1" ? (debtSustAssessment(val)?.label ?? null)
+          : key === "gauge2" ? (policyRoomAssessment(val, null)?.label ?? null)
+          : key === "gauge3" ? (growthInflAssessment(val)?.label ?? null)
+          : key === "gauge4" ? (incomeAffordAssessment(val)?.label ?? null)
+          : key === "gauge5" ? (reserveConfAssessment(val)?.label ?? null)
+          : null;
           return (
             <SpeedometerGauge
               key={key}
