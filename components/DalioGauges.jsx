@@ -378,7 +378,18 @@ function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, rang
           ) : (
             <div className="card p-4">
               {renderChart()}
-              <div className="flex items-center gap-4 mt-3 text-[10px] text-paper-dim/70">
+              <div className="flex flex-wrap items-center gap-4 mt-3 text-[10px] text-paper-dim/70">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-6 h-[2px] rounded-sm bg-[#C9A227]" />
+                  z-score
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-flex gap-0.5">
+                    <span className="inline-block w-1.5 h-3 rounded-sm bg-[#E0635C] opacity-70" />
+                    <span className="inline-block w-1.5 h-3 rounded-sm bg-[#3FB984] opacity-70" />
+                  </span>
+                  YoY Δ
+                </span>
                 <span className="flex items-center gap-1"><span className="inline-block w-6 h-px bg-[#ef4444] opacity-50" /> Elevated (&gt; +1)</span>
                 <span className="flex items-center gap-1"><span className="inline-block w-6 h-px bg-[#22c55e] opacity-50" /> Low (&lt; −1)</span>
               </div>
@@ -388,7 +399,7 @@ function BaseGaugeDrawer({ open, onClose, title, desc, source, latestGauge, rang
           {gaugeRows.length > 0 && (
             <div className="card p-4">
               <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
-              <div className="space-y-1.5">
+              <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
                 {gaugeRows.slice().reverse().map((r) => (
                   <div key={r.year} className="flex items-center justify-between text-xs">
                     <span className="text-paper-dim">{r.year}</span>
