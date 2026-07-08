@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "../lib/supabase";
+import NotificationBell from "./NotificationBell";
 
 const links = [
   { href: "/dashboard", label: "Dashboard" },
@@ -62,19 +63,22 @@ export default function Nav() {
           <Link href="/dashboard" className="shrink-0">
             <Brand />
           </Link>
-          <nav className="flex items-center gap-1 ml-auto overflow-x-auto">
-            {links.map((l) => (
-              <Link key={l.href} href={l.href} className={linkClass(l.href)}>
-                {l.label}
+          <div className="flex items-center gap-1 ml-auto">
+            <nav className="flex items-center gap-1 overflow-x-auto">
+              {links.map((l) => (
+                <Link key={l.href} href={l.href} className={linkClass(l.href)}>
+                  {l.label}
+                </Link>
+              ))}
+              <Link href="/profile" className={linkClass("/profile")}>
+                Profile
               </Link>
-            ))}
-            <Link href="/profile" className={linkClass("/profile")}>
-              Profile
-            </Link>
-            <button onClick={signOut} className="px-3 py-1.5 text-sm text-paper-dim hover:text-paper">
-              Sign out
-            </button>
-          </nav>
+              <button onClick={signOut} className="px-3 py-1.5 text-sm text-paper-dim hover:text-paper">
+                Sign out
+              </button>
+            </nav>
+            <NotificationBell variant="mobile" />
+          </div>
         </div>
       </header>
 
@@ -100,6 +104,7 @@ export default function Nav() {
           <Link href="/profile" className={sidebarLinkClass("/profile")}>
             Profile
           </Link>
+          <NotificationBell variant="desktop" />
           <button
             onClick={signOut}
             className="w-full px-3 py-2 text-sm text-left rounded-lg text-paper-dim hover:text-paper border border-ink-line hover:border-brass/60 transition-colors"

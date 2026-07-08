@@ -22,8 +22,8 @@ import { applyNaiveRiskParity, solveTrueRiskParity } from "../../lib/riskParity"
 
 const LAYER_NAMES = {
   1: "Long-term Debt Cycle",
-  2: "Business Cycle",
-  3: "Quadrant Positioning",
+  2: "Short-Term Debt Cycle",
+  3: "Business Cycle",
   4: "Tail Risk",
 };
 
