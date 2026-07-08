@@ -564,11 +564,11 @@ const GROWTH_INFL_INFO = (
   <div className="space-y-4 text-[11px] leading-relaxed">
     <div>
       <p className="text-paper font-semibold mb-1">What this measures</p>
-      <p className="text-paper-dim">Growth-Inflation Risk captures the simultaneous occurrence of two adverse economic conditions: elevated consumer price inflation and weak real economic growth. This combination — known as stagflation — is exceptionally damaging because the usual policy tools conflict: raising rates to fight inflation worsens growth, while cutting rates to support growth worsens inflation. The gauge uses 3-year trailing averages to smooth out short-term volatility and focus on persistent trends rather than temporary spikes.</p>
+      <p className="text-paper-dim">Growth-Inflation Risk captures the simultaneous occurrence of two adverse economic conditions: elevated consumer price inflation and weak real economic growth. This combination — known as stagflation — is exceptionally damaging because the usual policy tools conflict: raising rates to fight inflation worsens growth, while cutting rates to support growth worsens inflation. The gauge uses 12-month rolling averages of monthly CPI and 4-quarter trailing averages of real GDP growth — short enough to detect turning points quickly, long enough to filter single-month noise.</p>
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">How it's calculated</p>
-      <p className="text-paper-dim">Two z-scores are computed from the full historical record: one for the 3-year trailing average CPI inflation rate, and one for the 3-year trailing average real GDP growth rate. The composite is formed as <span className="text-paper font-mono">(z_CPI − z_RealGrowth) / 2</span>. Subtracting the real growth z-score means that high growth reduces the risk reading, while adding the CPI z-score means high inflation increases it. Dividing by 2 keeps the scale comparable to a single z-score.</p>
+      <p className="text-paper-dim">Two z-scores are computed from the full historical record: one for the 12-month rolling average CPI inflation rate (CPIAUCSL monthly data), and one for the 4-quarter trailing average real GDP growth rate (GDPC1 quarterly data). The composite is formed as <span className="text-paper font-mono">(z_CPI − z_RealGrowth) / 2</span>. Subtracting the real growth z-score means that high growth reduces the risk reading, while adding the CPI z-score means high inflation increases it. Dividing by 2 keeps the scale comparable to a single z-score.</p>
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">Why it matters</p>
@@ -624,7 +624,7 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
   useEffect(() => {
     if (!open || rows !== null) return;
     Promise.all([
-      supabase.from("macro_debt_cycle_computed").select("year,avg3_real,avg3_cpi,avg3_core_cpi,cpi_yoy_annual,core_cpi_yoy_annual,nominal_gdp_yoy").order("year"),
+      supabase.from("macro_debt_cycle_computed").select("year,avg3_real,avg3_cpi,avg3_core_cpi,cpi_yoy_annual,core_cpi_yoy_annual,nominal_gdp_yoy,real_gdp_yoy").order("year"),
       supabase.from("dalio_gauge_readings").select("year,gauge3,z_real_growth_3yr,z_cpi_3yr").order("year"),
     ]).then(([dc, gauge]) => { setRows(dc.data ?? []); setGaugeHistory(gauge.data ?? []); });
   }, [open, rows]);
@@ -661,7 +661,8 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
     return allYears
       .map((year) => ({
         year,
-        real: dcMap[year]?.nominal_gdp_yoy != null && dcMap[year]?.cpi_yoy_annual != null
+        real: dcMap[year]?.real_gdp_yoy != null ? Number(dcMap[year].real_gdp_yoy)
+          : dcMap[year]?.nominal_gdp_yoy != null && dcMap[year]?.cpi_yoy_annual != null
           ? Number(dcMap[year].nominal_gdp_yoy) - Number(dcMap[year].cpi_yoy_annual)
           : dcMap[year]?.avg3_real != null ? Number(dcMap[year].avg3_real) : null,
         cpi: dcMap[year]?.cpi_yoy_annual != null ? Number(dcMap[year].cpi_yoy_annual) : null,
@@ -686,8 +687,8 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
     <BaseGaugeDrawer
       open={open} onClose={onClose}
       title="Growth-Inflation Risk"
-      desc="Stagflation z-score · (z_CPI − z_RealGrowth) / 2 · 3yr trailing averages"
-      source="macro_debt_cycle_computed · avg3_real, avg3_cpi"
+      desc="Stagflation z-score · (z_CPI − z_RealGrowth) / 2 · 12-month rolling avg"
+      source="macro_debt_cycle_computed · real_gdp_yoy, cpi_yoy_annual"
       latestGauge={latestGauge}
       range={range} setRange={setRange}
       loading={rows === null}
@@ -700,7 +701,7 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
         <div className="card p-4">
           <div className="flex items-baseline gap-2 mb-3">
             <p className="label text-[10px]">Annual Readings</p>
-            <p className="text-[9px] text-paper-dim/60">Real/CPI/Core = annual · z-scores use 3yr avg</p>
+            <p className="text-[9px] text-paper-dim/60">Real = 4q GDPC1 avg · CPI/Core = 12mo rolling avg · z-scores vs. full history</p>
           </div>
           <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(6, 56px)" }}>
             <span>Year</span>
