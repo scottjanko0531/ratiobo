@@ -624,7 +624,7 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
   useEffect(() => {
     if (!open || rows !== null) return;
     Promise.all([
-      supabase.from("macro_debt_cycle_computed").select("year,avg3_real,avg3_cpi").order("year"),
+      supabase.from("macro_debt_cycle_computed").select("year,avg3_real,avg3_cpi,avg3_core_cpi").order("year"),
       supabase.from("dalio_gauge_readings").select("year,gauge3,z_real_growth_3yr,z_cpi_3yr").order("year"),
     ]).then(([dc, gauge]) => { setRows(dc.data ?? []); setGaugeHistory(gauge.data ?? []); });
   }, [open, rows]);
@@ -663,6 +663,7 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
         year,
         real: dcMap[year]?.avg3_real != null ? Number(dcMap[year].avg3_real) : null,
         cpi: dcMap[year]?.avg3_cpi != null ? Number(dcMap[year].avg3_cpi) : null,
+        coreCpi: dcMap[year]?.avg3_core_cpi != null ? Number(dcMap[year].avg3_core_cpi) : null,
         zReal: gaugeMap[year]?.z_real_growth_3yr != null ? Number(gaugeMap[year].z_real_growth_3yr) : null,
         zCpi: gaugeMap[year]?.z_cpi_3yr != null ? Number(gaugeMap[year].z_cpi_3yr) : null,
         composite: gaugeMap[year]?.gauge3 != null ? Number(gaugeMap[year].gauge3) : null,
@@ -696,23 +697,27 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
       renderTable={() => (
         <div className="card p-4">
           <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
-          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(5, 60px)" }}>
+          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(6, 56px)" }}>
             <span>Year</span>
             <span className="text-right">Real%</span>
             <span className="text-right">CPI%</span>
+            <span className="text-right">Core%</span>
             <span className="text-right">Real z</span>
             <span className="text-right">CPI z</span>
             <span className="text-right">Composite</span>
           </div>
           <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
             {tableRows.map((r) => (
-              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(5, 60px)" }}>
+              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(6, 56px)" }}>
                 <span className="text-paper-dim">{r.year}</span>
                 <span className="num text-right text-paper">
                   {r.real != null ? `${r.real >= 0 ? "+" : ""}${r.real.toFixed(2)}%` : "—"}
                 </span>
                 <span className="num text-right text-paper">
                   {r.cpi != null ? `${r.cpi.toFixed(2)}%` : "—"}
+                </span>
+                <span className="num text-right text-paper-dim">
+                  {r.coreCpi != null ? `${r.coreCpi.toFixed(2)}%` : "—"}
                 </span>
                 <span className="num text-right text-paper-dim">
                   {r.zReal != null ? `${r.zReal >= 0 ? "+" : ""}${r.zReal.toFixed(2)}` : "—"}
