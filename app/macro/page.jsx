@@ -1031,7 +1031,7 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
     if (!rows?.length) return null;
     const mn = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
     const sd = (arr, mu) => Math.sqrt(arr.reduce((s, v) => s + (v - mu) ** 2, 0) / (arr.length - 1)) || 1;
-    const michVals    = rows.filter(r => r.michigan_inf_exp_1yr   != null).map(r => Number(r.michigan_inf_exp_1yr));
+    const michVals    = rows.filter(r => r.michigan_inf_exp_1yr != null && r.survey_date >= "2013-01-01").map(r => Number(r.michigan_inf_exp_1yr));
     const nyfedInfVals = rows.filter(r => r.nyfed_inf_exp_1yr     != null).map(r => Number(r.nyfed_inf_exp_1yr));
     const nyfedDVals  = rows.filter(r => r.nyfed_delinquency_prob != null).map(r => Number(r.nyfed_delinquency_prob));
     if (!michVals.length) return null;
@@ -1076,6 +1076,19 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
       }))
       .filter(r => r.michInf != null || r.nyfedInf != null || r.nyfedDelinq != null);
   }, [rows, stats]);
+
+  const thresholds = useMemo(() => {
+    if (!rows?.length) return { p50: 0, p80: 0.5 };
+    const vals = rows
+      .filter(r => r.composite_stress_z != null)
+      .map(r => Number(r.composite_stress_z))
+      .sort((a, b) => a - b);
+    if (!vals.length) return { p50: 0, p80: 0.5 };
+    return {
+      p50: vals[Math.floor(vals.length * 0.50)],
+      p80: vals[Math.floor(vals.length * 0.80)],
+    };
+  }, [rows]);
 
   return (
     <>
@@ -1161,11 +1174,24 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
                   />
                   <Tooltip content={<ExpTooltip />} />
                   <ReferenceLine yAxisId="inf" y={2}   stroke="#C9A227" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
-                  <ReferenceLine yAxisId="z"   y={0}   stroke="#2A3240" strokeWidth={1} />
-                  <ReferenceLine yAxisId="z"   y={1}   stroke="#E0635C" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
-                  <Line yAxisId="inf" type="monotone" dataKey="michInf"    name="Michigan 1yr"  stroke="#C9A227" strokeWidth={2}   dot={false} connectNulls />
-                  <Line yAxisId="inf" type="monotone" dataKey="nyfedInf"   name="NY Fed 1yr"    stroke="#A8ADB8" strokeWidth={1.5} strokeDasharray="4 2" dot={false} connectNulls />
-                  <Line yAxisId="z"   type="monotone" dataKey="compositeZ" name="Stress Index z" stroke="#E0635C" strokeWidth={2} strokeOpacity={0.9} dot={false} connectNulls />
+                  <ReferenceLine yAxisId="z" y={thresholds.p50} stroke="#3FB984" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.5} />
+                  <ReferenceLine yAxisId="z" y={thresholds.p80} stroke="#E0635C" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.5} />
+                  <Line yAxisId="inf" type="monotone" dataKey="michInf"  name="Michigan 1yr" stroke="#C9A227" strokeWidth={2}   dot={false} connectNulls />
+                  <Line yAxisId="inf" type="monotone" dataKey="nyfedInf" name="NY Fed 1yr"   stroke="#A8ADB8" strokeWidth={1.5} strokeDasharray="4 2" dot={false} connectNulls />
+                  <Bar yAxisId="z" dataKey="compositeZ" name="Stress Index z" maxBarSize={8}>
+                    {chartData.map((entry, i) => (
+                      <Cell
+                        key={i}
+                        fill={
+                          entry.compositeZ == null ? "transparent" :
+                          entry.compositeZ > thresholds.p80 ? "#E0635C" :
+                          entry.compositeZ > thresholds.p50 ? "#C9A227" :
+                          "#3FB984"
+                        }
+                        fillOpacity={0.85}
+                      />
+                    ))}
+                  </Bar>
                 </ComposedChart>
               </ResponsiveContainer>
               <div className="flex items-center justify-center gap-5 mt-3 text-[10px] text-paper-dim flex-wrap">
@@ -1180,7 +1206,9 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
                   NY Fed 1yr
                 </span>
                 <span className="flex items-center gap-1.5">
-                  <span className="inline-block w-5 h-[2px] bg-[#E0635C] rounded" />
+                  <span className="inline-block w-4 h-3 rounded-sm bg-[#E0635C] opacity-85" />
+                  <span className="inline-block w-4 h-3 rounded-sm bg-[#C9A227] opacity-85" />
+                  <span className="inline-block w-4 h-3 rounded-sm bg-[#3FB984] opacity-85" />
                   Stress Index z (right)
                 </span>
               </div>
@@ -1222,7 +1250,7 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
                     <span className={`num text-right ${r.zND == null ? "text-paper-dim" : Math.abs(r.zND) <= 1 ? "text-paper-dim" : r.zND > 1 ? "text-loss" : "text-gain"}`}>
                       {r.zND != null ? `${r.zND >= 0 ? "+" : ""}${r.zND.toFixed(2)}` : "—"}
                     </span>
-                    <span className={`num text-right font-medium ${r.composite == null ? "text-paper-dim" : r.composite > 1.5 ? "text-loss" : r.composite > 0.5 ? "text-brass-soft" : "text-gain"}`}>
+                    <span className={`num text-right font-medium ${r.composite == null ? "text-paper-dim" : r.composite > thresholds.p80 ? "text-loss" : r.composite > thresholds.p50 ? "text-brass-soft" : "text-gain"}`}>
                       {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
                     </span>
                   </div>
@@ -1232,11 +1260,11 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
           )}
 
           <div className="card p-4 space-y-2">
-            <p className="label text-[10px] mb-2">Historical Context</p>
+            <p className="label text-[10px] mb-2">Stress Index Thresholds · data-derived from full history</p>
             {[
-              { label: "Michigan historical avg (1978–)", val: "~3.2%", note: "long-run anchor" },
-              { label: "Delinquency prob. peak (2008 GFC)", val: "~16%", note: "stress peak" },
-              { label: "Delinquency prob. trough (2021)", val: "~8%", note: "pandemic stimulus" },
+              { label: "Watch threshold (50th pct)", val: `${thresholds.p50 >= 0 ? "+" : ""}${thresholds.p50.toFixed(2)}σ`, note: "above median → watch" },
+              { label: "Danger threshold (80th pct)", val: `${thresholds.p80 >= 0 ? "+" : ""}${thresholds.p80.toFixed(2)}σ`, note: "top quintile → danger" },
+              { label: "Michigan baseline avg (2013–)", val: "~3.3%", note: "modern-era anchor" },
               { label: "Fed inflation target", val: "2.0%", note: "PCE basis" },
             ].map(({ label, val, note }) => (
               <div key={label} className="flex items-center justify-between text-xs">
