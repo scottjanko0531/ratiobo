@@ -3,7 +3,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   PieChart, Pie, Cell,
-  ComposedChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
 } from "recharts";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
@@ -65,20 +65,21 @@ function PortfolioTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
   const entry = payload[0]?.payload;
   const c = entry?.dayChange ?? null;
-  if (c == null) return null;
-  const sign = c > 0 ? "+" : "";
-  const chgColor = c >= 0 ? "#3FB984" : "#E0635C";
+  const sign = c != null && c > 0 ? "+" : "";
+  const chgColor = c == null ? "#A8ADB8" : c >= 0 ? "#3FB984" : "#E0635C";
   return (
     <div className="bg-[#1B212B] border border-[#2A3240] rounded-lg px-3 py-2 text-xs shadow-lg space-y-1">
       <div className="text-[#A8ADB8] mb-0.5">{entry?.label}</div>
       <div className="flex items-center justify-between gap-4">
-        <span className="text-[#A8ADB8]">Day change</span>
-        <span className="font-medium" style={{ color: chgColor }}>{sign}{usd(c)}</span>
-      </div>
-      <div className="flex items-center justify-between gap-4">
         <span className="text-[#A8ADB8]">Value</span>
         <span className="text-[#F6F4EE] font-medium">{usd(entry?.value)}</span>
       </div>
+      {c != null && (
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-[#A8ADB8]">Day change</span>
+          <span className="font-medium" style={{ color: chgColor }}>{sign}{usd(c)}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -348,7 +349,7 @@ export default function Dashboard() {
             </div>
           ) : (
             <ResponsiveContainer width="100%" height={220}>
-              <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+              <ComposedChart data={chartData} margin={{ top: 4, right: 72, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
                 <XAxis
                   dataKey="label"
@@ -358,10 +359,26 @@ export default function Dashboard() {
                   interval="preserveStartEnd"
                 />
                 <YAxis
+                  yAxisId="left"
                   tick={{ fill: "#A8ADB8", fontSize: 11 }}
                   axisLine={false}
                   tickLine={false}
                   width={72}
+                  tickFormatter={(v) =>
+                    v >= 1_000_000
+                      ? `$${(v / 1_000_000).toFixed(1)}M`
+                      : v >= 1_000
+                      ? `$${(v / 1_000).toFixed(0)}K`
+                      : usd(v)
+                  }
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fill: "#A8ADB8", fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={68}
                   tickFormatter={(v) => {
                     const abs = Math.abs(v);
                     const sign = v > 0 ? "+" : v < 0 ? "-" : "";
@@ -371,15 +388,24 @@ export default function Dashboard() {
                   }}
                 />
                 <Tooltip content={<PortfolioTooltip />} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
-                <Bar dataKey="dayChange" maxBarSize={16} radius={[2, 2, 0, 0]}>
+                <Bar yAxisId="right" dataKey="dayChange" maxBarSize={16} radius={[2, 2, 0, 0]}>
                   {chartData.map((entry, i) => (
                     <Cell
                       key={i}
                       fill={entry.dayChange == null ? "transparent" : entry.dayChange >= 0 ? "#3FB984" : "#E0635C"}
-                      fillOpacity={0.85}
+                      fillOpacity={0.7}
                     />
                   ))}
                 </Bar>
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="value"
+                  stroke="#C9A227"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4, fill: "#C9A227", stroke: "#1B212B", strokeWidth: 2 }}
+                />
               </ComposedChart>
             </ResponsiveContainer>
           )}
