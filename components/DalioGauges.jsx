@@ -801,7 +801,7 @@ function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
     Promise.all([
       supabase.from("macro_credit_cycle").select("year,total_debt_growth_yoy").order("year"),
       supabase.from("dalio_gauge_readings").select("year,gauge4,z_debt_growth_income").order("year"),
-      supabase.from("macro_income").select("year,debt_service_pct").not("debt_service_pct", "is", null).order("year"),
+      supabase.from("macro_income").select("year,debt_service_pct,debt_service_as_of").not("debt_service_pct", "is", null).order("year"),
     ]).then(([credit, gauge, income]) => {
       setRows(credit.data ?? []);
       setGaugeHistory(gauge.data ?? []);
@@ -816,7 +816,7 @@ function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
       (rows ?? []).filter((r) => r.total_debt_growth_yoy != null).map((r) => [r.year, Number(r.total_debt_growth_yoy)])
     );
     const gaugeMap = Object.fromEntries((gaugeHistory ?? []).map((r) => [r.year, r]));
-    const debtSvcMap = Object.fromEntries((incomeData ?? []).map((r) => [r.year, Number(r.debt_service_pct)]));
+    const debtSvcMap = Object.fromEntries((incomeData ?? []).map((r) => [r.year, { pct: Number(r.debt_service_pct), asOf: r.debt_service_as_of ?? null }]));
     const allYears = [...new Set([
       ...(rows ?? []).map((r) => r.year),
       ...(gaugeHistory ?? []).map((r) => r.year),
@@ -829,7 +829,8 @@ function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
           year,
           debtGrowth,
           netDelta: debtGrowth != null && prevDebtGrowth != null ? debtGrowth - prevDebtGrowth : null,
-          debtSvc: debtSvcMap[year] ?? null,
+          debtSvc: debtSvcMap[year]?.pct ?? null,
+          debtSvcAsOf: debtSvcMap[year]?.asOf ?? null,
           zDebtInc: gaugeMap[year]?.z_debt_growth_income != null ? Number(gaugeMap[year].z_debt_growth_income) : null,
           composite: gaugeMap[year]?.gauge4 != null ? Number(gaugeMap[year].gauge4) : null,
         };
@@ -874,7 +875,14 @@ function IncomeAffordabilityDrawer({ open, onClose, latestGauge }) {
           <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
             {tableRows.map((r) => (
               <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(5, 62px)" }}>
-                <span className="text-paper-dim">{r.year}</span>
+                <span className="text-paper-dim">
+                  {r.year}
+                  {r.debtSvcAsOf && (
+                    <span className="ml-1 text-[9px] text-paper-dim/50">
+                      {`Q${Math.floor(new Date(r.debtSvcAsOf).getUTCMonth() / 3) + 1}`}
+                    </span>
+                  )}
+                </span>
                 <span className="num text-right text-paper">
                   {r.debtGrowth != null ? `${r.debtGrowth >= 0 ? "+" : ""}${r.debtGrowth.toFixed(2)}%` : "—"}
                 </span>
