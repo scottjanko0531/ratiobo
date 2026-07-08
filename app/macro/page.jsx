@@ -473,6 +473,13 @@ const CPI_PRESETS = [
   { label: "2010–", from: "2010-01", to: "" },
 ];
 
+const EXP_RANGES = [
+  { label: "All",   from: "1978-01-01" },
+  { label: "2000–", from: "2000-01-01" },
+  { label: "2013–", from: "2013-01-01" },
+  { label: "2020–", from: "2020-01-01" },
+];
+
 function CloseIcon() {
   return (
     <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round">
@@ -519,6 +526,24 @@ function CpiTooltip({ active, payload, label }) {
           <div key={p.dataKey} className="flex justify-between gap-4">
             <span style={{ color: p.fill ?? p.color }}>{p.name}</span>
             <span className="num text-paper">{formatted}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ExpTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="card px-3 py-2 text-xs space-y-1 min-w-[180px]">
+      <p className="font-semibold text-paper mb-1">{label?.slice(0, 7)}</p>
+      {payload.map((p) => {
+        if (p.value == null) return null;
+        return (
+          <div key={p.dataKey} className="flex justify-between gap-4">
+            <span style={{ color: p.color }}>{p.name}</span>
+            <span className="num text-paper">{Number(p.value).toFixed(2)}%</span>
           </div>
         );
       })}
@@ -984,6 +1009,243 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
   );
 }
 
+function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
+  const [rows, setRows] = useState(null);
+  const [range, setRange] = useState("2013-01-01");
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    supabase
+      .from("consumer_expectations")
+      .select("survey_date, michigan_inf_exp_1yr, nyfed_inf_exp_1yr, nyfed_delinquency_prob")
+      .order("survey_date")
+      .then(({ data }) => setRows(data ?? []));
+  }, [open, rows]);
+
+  const stats = useMemo(() => {
+    if (!rows?.length) return null;
+    const mn = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+    const sd = (arr, mu) => Math.sqrt(arr.reduce((s, v) => s + (v - mu) ** 2, 0) / (arr.length - 1)) || 1;
+    const michVals    = rows.filter(r => r.michigan_inf_exp_1yr   != null).map(r => Number(r.michigan_inf_exp_1yr));
+    const nyfedInfVals = rows.filter(r => r.nyfed_inf_exp_1yr     != null).map(r => Number(r.nyfed_inf_exp_1yr));
+    const nyfedDVals  = rows.filter(r => r.nyfed_delinquency_prob != null).map(r => Number(r.nyfed_delinquency_prob));
+    if (!michVals.length) return null;
+    const muM  = mn(michVals);  const sdM  = sd(michVals, muM);
+    const muNI = nyfedInfVals.length ? mn(nyfedInfVals) : 0;
+    const sdNI = nyfedInfVals.length ? sd(nyfedInfVals, muNI) : 1;
+    const muND = nyfedDVals.length  ? mn(nyfedDVals)   : 0;
+    const sdND = nyfedDVals.length  ? sd(nyfedDVals, muND)   : 1;
+    return { muM, sdM, muNI, sdNI, muND, sdND };
+  }, [rows]);
+
+  const chartData = useMemo(() => {
+    if (!rows) return [];
+    return rows
+      .filter(r => r.survey_date >= range)
+      .map(r => ({
+        date:        r.survey_date,
+        michInf:     r.michigan_inf_exp_1yr   != null ? Number(r.michigan_inf_exp_1yr)   : null,
+        nyfedInf:    r.nyfed_inf_exp_1yr      != null ? Number(r.nyfed_inf_exp_1yr)      : null,
+        nyfedDelinq: r.nyfed_delinquency_prob != null ? Number(r.nyfed_delinquency_prob) : null,
+      }));
+  }, [rows, range]);
+
+  const xTicks = useMemo(() =>
+    chartData.filter(r => r.date.slice(5, 7) === "01").map(r => r.date),
+  [chartData]);
+
+  const tableRows = useMemo(() => {
+    if (!rows || !stats) return [];
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const z  = (v, mu, s) => v != null ? r2((Number(v) - mu) / s) : null;
+    return [...rows].reverse()
+      .map(r => ({
+        date:        r.survey_date.slice(0, 7),
+        michInf:     r.michigan_inf_exp_1yr   != null ? Number(r.michigan_inf_exp_1yr)   : null,
+        nyfedInf:    r.nyfed_inf_exp_1yr      != null ? Number(r.nyfed_inf_exp_1yr)      : null,
+        nyfedDelinq: r.nyfed_delinquency_prob != null ? Number(r.nyfed_delinquency_prob) : null,
+        zM:  z(r.michigan_inf_exp_1yr,   stats.muM,  stats.sdM),
+        zNI: z(r.nyfed_inf_exp_1yr,      stats.muNI, stats.sdNI),
+        zND: z(r.nyfed_delinquency_prob, stats.muND, stats.sdND),
+      }))
+      .filter(r => r.michInf != null || r.nyfedInf != null || r.nyfedDelinq != null);
+  }, [rows, stats]);
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed right-0 top-0 h-full w-[580px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">Consumer Inflation Expectations</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">Michigan Survey (MICH) · NY Fed SCE · 1-year ahead · delinquency probability</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {currentValue != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${Number(currentValue) > 3.5 ? "text-loss" : Number(currentValue) > 2.5 ? "text-brass-soft" : "text-gain"}`}>
+                  {formatValue(currentValue, "%")}
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">Michigan · Current</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          <div className="flex items-center gap-1">
+            {EXP_RANGES.map((r) => (
+              <button
+                key={r.from}
+                onClick={() => setRange(r.from)}
+                className={`px-3 py-1 rounded-lg text-xs transition-colors ${
+                  range === r.from
+                    ? "bg-ink text-brass-soft border border-brass/30"
+                    : "text-paper-dim hover:text-paper"
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">1-Yr Inflation Expectation &amp; Delinquency Risk · monthly</p>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 44, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    type="category"
+                    ticks={xTicks}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => v.slice(0, 4)}
+                    interval={0}
+                  />
+                  <YAxis
+                    yAxisId="inf"
+                    domain={[0, "auto"]}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => `${v}%`}
+                    width={36}
+                  />
+                  <YAxis
+                    yAxisId="delinq"
+                    orientation="right"
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => `${Number(v).toFixed(0)}%`}
+                    width={36}
+                  />
+                  <Tooltip content={<ExpTooltip />} />
+                  <ReferenceLine yAxisId="inf" y={2} stroke="#C9A227" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
+                  <Line yAxisId="inf"    type="monotone" dataKey="michInf"     name="Michigan 1yr"  stroke="#C9A227" strokeWidth={2}   dot={false} connectNulls />
+                  <Line yAxisId="inf"    type="monotone" dataKey="nyfedInf"    name="NY Fed 1yr"    stroke="#A8ADB8" strokeWidth={1.5} strokeDasharray="4 2" dot={false} connectNulls />
+                  <Line yAxisId="delinq" type="monotone" dataKey="nyfedDelinq" name="Delinquency %" stroke="#E0635C" strokeWidth={1.5} strokeOpacity={0.8} dot={false} connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div className="flex items-center justify-center gap-5 mt-3 text-[10px] text-paper-dim flex-wrap">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-5 h-[2px] bg-[#C9A227] rounded" />
+                  Michigan 1yr
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <svg width="20" height="4" className="overflow-visible">
+                    <line x1="0" y1="2" x2="20" y2="2" stroke="#A8ADB8" strokeWidth="1.5" strokeDasharray="4 2" />
+                  </svg>
+                  NY Fed 1yr
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-5 h-[2px] bg-[#E0635C] rounded" />
+                  Delinquency Prob (right)
+                </span>
+              </div>
+            </div>
+          )}
+
+          {rows !== null && tableRows.length > 0 && (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Historical Readings with Z-Scores · newest first</p>
+              <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "64px repeat(6, 1fr)" }}>
+                <span>Date</span>
+                <span className="text-right">Mich%</span>
+                <span className="text-right">z(M)</span>
+                <span className="text-right">NYFed%</span>
+                <span className="text-right">z(NY)</span>
+                <span className="text-right">Delinq%</span>
+                <span className="text-right">z(D)</span>
+              </div>
+              <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
+                {tableRows.map((r) => (
+                  <div key={r.date} className="grid items-center text-xs" style={{ gridTemplateColumns: "64px repeat(6, 1fr)" }}>
+                    <span className="text-paper-dim text-[10px]">{r.date}</span>
+                    <span className={`num text-right ${r.michInf == null ? "text-paper-dim" : r.michInf > 3.5 ? "text-loss" : r.michInf < 2 ? "text-gain" : "text-brass-soft"}`}>
+                      {r.michInf != null ? `${r.michInf.toFixed(1)}%` : "—"}
+                    </span>
+                    <span className={`num text-right text-[10px] ${r.zM == null ? "text-paper-dim" : Math.abs(r.zM) <= 1 ? "text-paper-dim" : r.zM > 1 ? "text-loss" : "text-gain"}`}>
+                      {r.zM != null ? `${r.zM >= 0 ? "+" : ""}${r.zM.toFixed(2)}` : "—"}
+                    </span>
+                    <span className={`num text-right ${r.nyfedInf == null ? "text-paper-dim" : r.nyfedInf > 3.5 ? "text-loss" : r.nyfedInf < 2 ? "text-gain" : "text-brass-soft"}`}>
+                      {r.nyfedInf != null ? `${r.nyfedInf.toFixed(1)}%` : "—"}
+                    </span>
+                    <span className={`num text-right text-[10px] ${r.zNI == null ? "text-paper-dim" : Math.abs(r.zNI) <= 1 ? "text-paper-dim" : r.zNI > 1 ? "text-loss" : "text-gain"}`}>
+                      {r.zNI != null ? `${r.zNI >= 0 ? "+" : ""}${r.zNI.toFixed(2)}` : "—"}
+                    </span>
+                    <span className={`num text-right ${r.nyfedDelinq == null ? "text-paper-dim" : r.nyfedDelinq > 13 ? "text-loss" : r.nyfedDelinq > 11 ? "text-brass-soft" : "text-gain"}`}>
+                      {r.nyfedDelinq != null ? `${r.nyfedDelinq.toFixed(1)}%` : "—"}
+                    </span>
+                    <span className={`num text-right text-[10px] ${r.zND == null ? "text-paper-dim" : Math.abs(r.zND) <= 1 ? "text-paper-dim" : r.zND > 1 ? "text-loss" : "text-gain"}`}>
+                      {r.zND != null ? `${r.zND >= 0 ? "+" : ""}${r.zND.toFixed(2)}` : "—"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="card p-4 space-y-2">
+            <p className="label text-[10px] mb-2">Historical Context</p>
+            {[
+              { label: "Michigan historical avg (1978–)", val: "~3.2%", note: "long-run anchor" },
+              { label: "Delinquency prob. peak (2008 GFC)", val: "~16%", note: "stress peak" },
+              { label: "Delinquency prob. trough (2021)", val: "~8%", note: "pandemic stimulus" },
+              { label: "Fed inflation target", val: "2.0%", note: "PCE basis" },
+            ].map(({ label, val, note }) => (
+              <div key={label} className="flex items-center justify-between text-xs">
+                <div>
+                  <span className="text-paper-dim">{label}</span>
+                  <span className="text-paper-dim/50 ml-1.5 text-[10px]">{note}</span>
+                </div>
+                <span className="num text-paper shrink-0">{val}</span>
+              </div>
+            ))}
+          </div>
+
+          <p className="text-[10px] text-paper-dim/60 leading-relaxed">
+            Sources: U of Michigan / FRED <span className="font-mono">MICH</span> · NY Federal Reserve Bank Survey of Consumer Expectations
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 export default function MacroDashboard() {
@@ -994,6 +1256,7 @@ export default function MacroDashboard() {
   const [assetData, setAssetData] = useState(null);
   const [debtDrawerOpen, setDebtDrawerOpen] = useState(false);
   const [cpiDrawerOpen, setCpiDrawerOpen] = useState(false);
+  const [consumerExpOpen, setConsumerExpOpen] = useState(false);
 
   const fetchIndicators = useCallback(async () => {
     const { data, error: err } = await supabase
@@ -1140,6 +1403,7 @@ export default function MacroDashboard() {
                       onClick={
                           ind.name === "Total Debt / GDP" ? () => setDebtDrawerOpen(true)
                           : ind.name === "Core CPI (YoY)" ? () => setCpiDrawerOpen(true)
+                          : ind.name === "Consumer Inflation Expectations" ? () => setConsumerExpOpen(true)
                           : undefined
                         }
                     />
@@ -1177,6 +1441,11 @@ export default function MacroDashboard() {
         open={cpiDrawerOpen}
         onClose={() => setCpiDrawerOpen(false)}
         currentValue={indicators?.find((i) => i.name === "Core CPI (YoY)")?.current_value}
+      />
+      <ConsumerExpectationsDrawer
+        open={consumerExpOpen}
+        onClose={() => setConsumerExpOpen(false)}
+        currentValue={indicators?.find((i) => i.name === "Consumer Inflation Expectations")?.current_value}
       />
     </Shell>
   );
