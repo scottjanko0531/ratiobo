@@ -624,7 +624,7 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
   useEffect(() => {
     if (!open || rows !== null) return;
     Promise.all([
-      supabase.from("macro_debt_cycle_computed").select("year,avg3_real,avg3_cpi,avg3_core_cpi").order("year"),
+      supabase.from("macro_debt_cycle_computed").select("year,avg3_real,avg3_cpi,avg3_core_cpi,cpi_yoy_annual,core_cpi_yoy_annual,nominal_gdp_yoy").order("year"),
       supabase.from("dalio_gauge_readings").select("year,gauge3,z_real_growth_3yr,z_cpi_3yr").order("year"),
     ]).then(([dc, gauge]) => { setRows(dc.data ?? []); setGaugeHistory(gauge.data ?? []); });
   }, [open, rows]);
@@ -661,9 +661,11 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
     return allYears
       .map((year) => ({
         year,
-        real: dcMap[year]?.avg3_real != null ? Number(dcMap[year].avg3_real) : null,
-        cpi: dcMap[year]?.avg3_cpi != null ? Number(dcMap[year].avg3_cpi) : null,
-        coreCpi: dcMap[year]?.avg3_core_cpi != null ? Number(dcMap[year].avg3_core_cpi) : null,
+        real: dcMap[year]?.nominal_gdp_yoy != null && dcMap[year]?.cpi_yoy_annual != null
+          ? Number(dcMap[year].nominal_gdp_yoy) - Number(dcMap[year].cpi_yoy_annual)
+          : dcMap[year]?.avg3_real != null ? Number(dcMap[year].avg3_real) : null,
+        cpi: dcMap[year]?.cpi_yoy_annual != null ? Number(dcMap[year].cpi_yoy_annual) : null,
+        coreCpi: dcMap[year]?.core_cpi_yoy_annual != null ? Number(dcMap[year].core_cpi_yoy_annual) : null,
         zReal: gaugeMap[year]?.z_real_growth_3yr != null ? Number(gaugeMap[year].z_real_growth_3yr) : null,
         zCpi: gaugeMap[year]?.z_cpi_3yr != null ? Number(gaugeMap[year].z_cpi_3yr) : null,
         composite: gaugeMap[year]?.gauge3 != null ? Number(gaugeMap[year].gauge3) : null,
@@ -696,7 +698,10 @@ function GrowthInflationDrawer({ open, onClose, latestGauge }) {
       assessment={assessment}
       renderTable={() => (
         <div className="card p-4">
-          <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
+          <div className="flex items-baseline gap-2 mb-3">
+            <p className="label text-[10px]">Annual Readings</p>
+            <p className="text-[9px] text-paper-dim/60">Real/CPI/Core = annual · z-scores use 3yr avg</p>
+          </div>
           <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(6, 56px)" }}>
             <span>Year</span>
             <span className="text-right">Real%</span>
