@@ -15,8 +15,8 @@ const GAUGE_META = [
   },
   {
     key: "gauge2",
-    label: "Policy Room Risk",
-    desc: "Fed Funds rate inverted (low rates = less room to cut)",
+    label: "Short-Term Credit Cycle",
+    desc: "Yield curve · credit spreads · lending standards · debt service · LEI",
   },
   {
     key: "gauge3",
@@ -387,124 +387,104 @@ function DebtSustainabilityDrawer({ open, onClose, latestGauge, latestGaugeYear 
   );
 }
 
-// ─── Gauge 2: Policy Room Risk ────────────────────────────────────────────────
+// ─── Gauge 2: Short-Term Credit Cycle ────────────────────────────────────────
 
-const POLICY_ROOM_INFO = (
+const SHORT_TERM_CYCLE_INFO = (
   <div className="space-y-4 text-[11px] leading-relaxed">
     <div>
       <p className="text-paper font-semibold mb-1">What this measures</p>
-      <p className="text-paper-dim">Policy Room Risk quantifies how much capacity the Federal Reserve has to cut interest rates in response to an economic slowdown. When rates are near zero, the Fed's primary monetary tool is largely exhausted — it cannot provide its usual stimulus by cutting further. This structural constraint amplifies downturns because debt becomes harder to service in real terms and there is no rate relief available.</p>
+      <p className="text-paper-dim">The Short-Term Credit Cycle gauge tracks where we are in the 5–8 year business credit cycle, combining five signals that capture credit availability, market-based stress, institutional lending behavior, household debt burden, and economic momentum. A high positive reading means credit is tightening and the cycle is rolling over; a negative reading means credit is expanding and the cycle is in a healthy growth phase.</p>
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">How it's calculated</p>
-      <p className="text-paper-dim">The metric is an <span className="text-paper">inverted z-score</span> of the annual average Fed Funds rate measured against its full history (1954–present). A z-score shows how many standard deviations a reading sits above or below the long-run mean. Inverting the sign means a low rate (less room to cut) produces a high risk score, and a high rate (more room to cut) produces a low risk score.</p>
-    </div>
-    <div className="grid grid-cols-2 gap-2 text-[10px]">
-      <div className="bg-ink-soft rounded-lg p-2.5 border border-ink-line">
-        <p className="text-loss font-semibold mb-1">High z-score → Elevated Risk</p>
-        <p className="text-paper-dim">Rate is below historical average. Fed has limited room to cut. Easing capacity is constrained.</p>
-      </div>
-      <div className="bg-ink-soft rounded-lg p-2.5 border border-ink-line">
-        <p className="text-gain font-semibold mb-1">Low z-score → Low Risk</p>
-        <p className="text-paper-dim">Rate is above historical average. Fed has ample room to cut. Strong easing capacity available.</p>
-      </div>
+      <p className="text-paper-dim">Five z-scores are computed against 20 years of monthly history. Each is oriented so that <span className="text-paper">positive = stress, negative = expansion</span>. Composite: <span className="text-paper font-mono">25% yield curve (T10Y3M, inverted) + 25% HY spread (BAMLH0A0HYM2) + 20% lending standards (DRTSCILM) + 15% debt service ratio (TDSP) + 15% LEI momentum (USSLIND MoM%, inverted)</span>.</p>
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">Why it matters</p>
-      <p className="text-paper-dim">In Dalio's framework, a central bank without room to ease cannot break a debt deflation spiral. When households and businesses simultaneously deleverage, economic activity contracts sharply. If the Fed cannot cut rates — or if cuts lose effectiveness near zero — the downturn deepens and debt burdens become more severe. High policy room risk means the Fed is a weaker safety net against economic stress.</p>
+      <p className="text-paper-dim">In Dalio's framework, the short-term debt cycle is driven by the expansion and contraction of credit. The cycle begins when lending is easy; it ends when debt service costs rise, lending standards tighten, and credit contracts. Tightening credit conditions typically lead real economic data by 6–18 months. A gauge above +1 signals conditions similar to historical pre-recession environments.</p>
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">Thresholds</p>
       <div className="space-y-1 text-[10px]">
-        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.0</span><span className="text-paper-dim">Elevated — historically constrained, limited easing capacity</span></div>
-        <div className="flex gap-2"><span className="text-brass-soft font-mono w-16">0 to +1.0</span><span className="text-paper-dim">Neutral to mild — some constraint, monitor direction of travel</span></div>
-        <div className="flex gap-2"><span className="text-gain font-mono w-16">&lt; 0</span><span className="text-paper-dim">Low risk — rates above average, meaningful room to cut</span></div>
+        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.0</span><span className="text-paper-dim">Elevated — credit tightening significantly, recession risk rising</span></div>
+        <div className="flex gap-2"><span className="text-brass-soft font-mono w-16">&gt; +0.25</span><span className="text-paper-dim">Watch — mild tightening, monitor direction of travel</span></div>
+        <div className="flex gap-2"><span className="text-paper font-mono w-16">±0.25</span><span className="text-paper-dim">Neutral — credit conditions near historical average</span></div>
+        <div className="flex gap-2"><span className="text-gain font-mono w-16">&lt; −0.25</span><span className="text-paper-dim">Expansion — credit loose, cycle in healthy growth phase</span></div>
+        <div className="flex gap-2"><span className="text-gain font-mono w-16">&lt; −1.0</span><span className="text-paper-dim">Exceptionally loose — watch for over-extension in the next cycle</span></div>
       </div>
     </div>
   </div>
 );
 
-function policyRoomAssessment(gauge2, latestRate) {
+function shortTermCycleAssessment(gauge2) {
   if (gauge2 == null) return null;
-  const rateStr = latestRate != null ? `${Number(latestRate).toFixed(2)}%` : "the current rate";
-  const bps = latestRate != null ? Math.round(Number(latestRate) * 100) : null;
-  const bpsStr = bps != null ? `${bps} basis points` : "meaningful room";
-
-  if (gauge2 > 1.5) {
-    return {
-      label: "Severely Constrained", color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
-      text: `At ${rateStr}, the Fed Funds rate is far below its long-run historical average — conditions similar to 2009–2015 and 2020–2021. The Fed has almost no conventional room to cut further. Any economic shock from here would require reliance on unconventional tools such as quantitative easing and forward guidance, which are slower and less certain in their effect. This is the highest-risk configuration for policy room.`,
-    };
-  }
-  if (gauge2 > 1.0) {
-    return {
-      label: "Elevated Risk", color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
-      text: `At ${rateStr}, the Fed Funds rate is below its historical average, leaving less-than-normal easing capacity. While not at the zero bound, a sustained economic downturn could exhaust this buffer quickly. The Fed retains some conventional tools but would need to move aggressively and early to preserve them. Watch for further rate cuts that would push this score higher.`,
-    };
-  }
-  if (gauge2 > 0.25) {
-    return {
-      label: "Mild Risk — Watch", color: "text-brass-soft", border: "border-brass/20", bg: "bg-brass/5",
-      text: `At ${rateStr} the Fed Funds rate sits modestly below its long-run historical average. The Fed retains ${bpsStr} of conventional cutting room above zero — meaningful capacity, but not a position of exceptional strength. Recent rate cuts from the 2023 peak of 5.33% have consumed roughly 170 basis points of headroom. The reading is not alarming, but the direction matters: continued cuts without an offsetting improvement in growth would push this score toward elevated territory.`,
-    };
-  }
-  if (gauge2 > -0.25) {
-    return {
-      label: "Neutral", color: "text-paper", border: "border-ink-line", bg: "bg-ink/40",
-      text: `At ${rateStr}, the Fed Funds rate is near its long-run historical average, placing policy room in a balanced position. The Fed has a reasonable buffer to respond to economic weakness without approaching the zero lower bound. This reading does not flag policy space as a primary risk driver — the Fed retains conventional tools in sufficient quantity to respond to a moderate slowdown.`,
-    };
-  }
-  if (gauge2 > -1.0) {
-    return {
-      label: "Ample Room", color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
-      text: `At ${rateStr}, the Fed Funds rate is above its long-run historical average, indicating the Fed has significant room to cut if needed. A meaningful economic slowdown could be met with aggressive conventional easing before the zero bound becomes a constraint. Policy room risk is not a binding concern at this level.`,
-    };
-  }
+  if (gauge2 > 1.5) return {
+    label: "Significant Credit Stress",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "The short-term credit cycle composite is elevated, indicating simultaneous tightening across multiple dimensions: yield curve flattening, widening credit spreads, tighter lending standards, elevated debt service burdens, and/or deteriorating leading indicator momentum. Conditions at this level have historically preceded economic contractions within 6–18 months. Defensive asset allocation is consistent with this environment.",
+  };
+  if (gauge2 > 1.0) return {
+    label: "Elevated Risk",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "Credit cycle signals are tightening meaningfully across the composite. The yield curve, credit spreads, lending standards, debt service, or LEI are deteriorating in combination. This is not yet at crisis levels but signals that the credit cycle is moving into a contraction phase. Incremental caution in credit exposure is warranted.",
+  };
+  if (gauge2 > 0.25) return {
+    label: "Watch — Mild Tightening",
+    color: "text-brass-soft", border: "border-brass/20", bg: "bg-brass/5",
+    text: "Credit conditions are modestly tighter than their 20-year historical average. No single component is at a stress extreme, but the composite trend is worth watching. This is a watch condition, not an alarm — it can represent a mid-cycle slowdown that resolves without a contraction.",
+  };
+  if (gauge2 > -0.25) return {
+    label: "Neutral",
+    color: "text-paper", border: "border-ink-line", bg: "bg-ink/40",
+    text: "Credit cycle conditions are near their 20-year historical average. The yield curve has normal steepness, credit spreads are mid-range, lending standards are broadly neutral, debt service is manageable, and LEI momentum is around its long-run trend. No significant credit cycle risk is flagged.",
+  };
+  if (gauge2 > -1.0) return {
+    label: "Credit Expansion",
+    color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
+    text: "Credit conditions are looser than their historical average — yield curve is steep, spreads are tight, lending standards are relaxed, debt service burden is below average, and leading indicator momentum is positive. This is a favorable environment for credit growth and economic expansion. Monitor for over-extension building in later stages.",
+  };
   return {
-    label: "Maximum Policy Room", color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
-    text: `At ${rateStr}, the Fed Funds rate is well above its long-run historical average — historically a high-rate environment. The Fed has exceptional capacity to cut rates aggressively in response to economic stress. This is the most favorable configuration for policy room: monetary easing is a powerful and available tool, and the zero lower bound presents no near-term constraint.`,
+    label: "Exceptionally Loose",
+    color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
+    text: "Credit conditions are significantly looser than their historical average across the composite. While favorable for near-term growth, it signals that credit is being extended well beyond normal levels. History suggests that exceptionally easy credit eventually reverses — the more stretched it becomes, the more painful the eventual tightening.",
   };
 }
 
-function PolicyRoomDrawer({ open, onClose, latestGauge }) {
-  const [rows, setRows] = useState(null);
+const ST_CYCLE_COMPONENTS = [
+  { key: "z_yield_curve",  label: "3mo/10yr Yield Spread", weight: 0.25, desc: "Inverted: flat/inverted curve = stress" },
+  { key: "z_hy_spread",    label: "HY Credit Spread (OAS)", weight: 0.25, desc: "Wide spreads = stress" },
+  { key: "z_lending_stds", label: "Sr Loan Officer Survey",  weight: 0.20, desc: "Tight standards = stress" },
+  { key: "z_debt_service", label: "Consumer Debt Service",   weight: 0.15, desc: "High burden = stress" },
+  { key: "z_lei_momentum", label: "Conference Board LEI MoM",weight: 0.15, desc: "Inverted: declining momentum = stress" },
+];
+
+function ShortTermCreditCycleDrawer({ open, onClose, latestGauge }) {
   const [gaugeHistory, setGaugeHistory] = useState(null);
-  const [range, setRange] = useState(1954);
+  const [range, setRange] = useState(2010);
 
   useEffect(() => {
-    if (!open || rows !== null) return;
-    Promise.all([
-      supabase.from("macro_credit_cycle").select("year,fed_funds_rate,updated_at").order("year"),
-      supabase.from("dalio_gauge_readings").select("year,gauge2,z_fed_funds").order("year"),
-    ]).then(([credit, gauge]) => { setRows(credit.data ?? []); setGaugeHistory(gauge.data ?? []); });
-  }, [open, rows]);
+    if (!open || gaugeHistory !== null) return;
+    supabase.from("dalio_gauge_readings")
+      .select("year,gauge2,z_yield_curve,z_hy_spread,z_lending_stds,z_debt_service,z_lei_momentum")
+      .not("z_yield_curve", "is", null)
+      .order("year")
+      .then(({ data }) => setGaugeHistory(data ?? []));
+  }, [open, gaugeHistory]);
 
-  const chartData = useMemo(() => buildZScoreData(rows, "fed_funds_rate", range, true), [rows, range]);
+  const chartData = useMemo(() => {
+    if (!gaugeHistory?.length) return [];
+    return gaugeHistory
+      .filter((r) => r.year >= range)
+      .map((r, i, arr) => {
+        const prev = arr[i - 1];
+        const zs = Number(r.gauge2);
+        const pz = prev ? Number(prev.gauge2) : null;
+        return { year: r.year, zScore: Math.round(zs * 1000) / 1000, change: pz != null ? Math.round((zs - pz) * 1000) / 1000 : null };
+      });
+  }, [gaugeHistory, range]);
 
-  const tableRows = useMemo(() => {
-    if (!rows?.length) return [];
-    const gaugeMap = Object.fromEntries((gaugeHistory ?? []).map((r) => [r.year, r]));
-    const maxYear = Math.max(...rows.map((r) => r.year));
-    const desc = rows.slice().reverse();
-    return desc.map((r, i) => {
-      const prev = desc[i + 1];
-      const rate = r.fed_funds_rate != null ? Number(r.fed_funds_rate) : null;
-      const prevRate = prev?.fed_funds_rate != null ? Number(prev.fed_funds_rate) : null;
-      const netChange = rate != null && prevRate != null ? rate - prevRate : null;
-      const g = gaugeMap[r.year];
-      let yearLabel = String(r.year);
-      if (r.year === maxYear && r.updated_at) {
-        const d = new Date(r.updated_at);
-        d.setUTCMonth(d.getUTCMonth() - 1);
-        yearLabel = `${r.year} · ${d.toLocaleString("default", { month: "short" })}`;
-      }
-      return { year: r.year, yearLabel, rate, netChange, gauge2: g?.gauge2 != null ? Number(g.gauge2) : null };
-    });
-  }, [rows, gaugeHistory]);
-
-  const latestRate = rows?.length ? rows[rows.length - 1]?.fed_funds_rate : null;
-  const assessed = latestGauge != null ? policyRoomAssessment(latestGauge, latestRate) : null;
-
+  const latestRow = gaugeHistory?.[gaugeHistory.length - 1];
+  const assessed = shortTermCycleAssessment(latestGauge);
   const assessment = assessed ? (
     <div className={`card p-4 border ${assessed.border} ${assessed.bg}`}>
       <p className="label text-[10px] mb-2">Current Assessment</p>
@@ -516,42 +496,59 @@ function PolicyRoomDrawer({ open, onClose, latestGauge }) {
   return (
     <BaseGaugeDrawer
       open={open} onClose={onClose}
-      title="Policy Room Risk"
-      desc="Fed Funds rate z-score · inverted — low rates = less room to cut = higher risk"
-      source="macro_credit_cycle · fed_funds_rate"
+      title="Short-Term Credit Cycle"
+      desc="Composite z-score · positive = tightening/stress · negative = expansion"
+      source="FRED: T10Y3M · BAMLH0A0HYM2 · DRTSCILM · TDSP · USSLIND"
       latestGauge={latestGauge}
       range={range} setRange={setRange}
-      loading={rows === null}
-      renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Policy Room Risk z" />}
-      gaugeHistory={gaugeHistory}
+      loading={gaugeHistory === null}
+      renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Credit Cycle z" />}
+      gaugeHistory={gaugeHistory ?? []}
       gaugeKey="gauge2"
-      infoContent={POLICY_ROOM_INFO}
+      infoContent={SHORT_TERM_CYCLE_INFO}
       assessment={assessment}
       renderTable={() => (
         <div className="card p-4">
-          <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
-          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(3, 72px)" }}>
-            <span>Period</span>
-            <span className="text-right">Rate</span>
-            <span className="text-right">Net Δ</span>
+          <p className="label text-[10px] mb-3">Component Breakdown · {latestRow?.year ?? "—"}</p>
+          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line" style={{ gridTemplateColumns: "1fr 40px 56px 56px" }}>
+            <span>Component</span>
+            <span className="text-right">Wt.</span>
             <span className="text-right">Z-score</span>
+            <span className="text-right">Contrib.</span>
           </div>
-          <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
-            {tableRows.map((r) => (
-              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(3, 72px)" }}>
-                <span className="text-paper-dim">{r.yearLabel}</span>
-                <span className="num text-right text-paper">
-                  {r.rate != null ? `${r.rate.toFixed(2)}%` : "—"}
-                </span>
-                <span className={`num text-right ${r.netChange == null ? "text-paper-dim" : r.netChange > 0 ? "text-loss" : r.netChange < 0 ? "text-gain" : "text-paper-dim"}`}>
-                  {r.netChange != null ? `${r.netChange >= 0 ? "+" : ""}${r.netChange.toFixed(2)}%` : "—"}
-                </span>
-                <span className={`num text-right font-semibold ${r.gauge2 == null ? "text-paper-dim" : r.gauge2 > 1 ? "text-loss" : r.gauge2 < -1 ? "text-gain" : "text-brass-soft"}`}>
-                  {r.gauge2 != null ? `${r.gauge2 >= 0 ? "+" : ""}${r.gauge2.toFixed(2)}` : "—"}
+          {latestRow ? (
+            <div className="space-y-2.5">
+              {ST_CYCLE_COMPONENTS.map(({ key, label, weight, desc }) => {
+                const z = latestRow[key] != null ? Number(latestRow[key]) : null;
+                const contrib = z != null ? z * weight : null;
+                return (
+                  <div key={key} className="grid items-start gap-2" style={{ gridTemplateColumns: "1fr 40px 56px 56px" }}>
+                    <div>
+                      <p className="text-xs text-paper leading-snug">{label}</p>
+                      <p className="text-[10px] text-paper-dim/60 leading-snug">{desc}</p>
+                    </div>
+                    <span className="text-[10px] text-paper-dim text-right pt-0.5">{Math.round(weight * 100)}%</span>
+                    <span className={`num text-right text-xs font-semibold pt-0.5 ${z == null ? "text-paper-dim" : z > 0.5 ? "text-loss" : z < -0.5 ? "text-gain" : "text-brass-soft"}`}>
+                      {z != null ? `${z >= 0 ? "+" : ""}${z.toFixed(3)}` : "—"}
+                    </span>
+                    <span className={`num text-right text-xs pt-0.5 ${contrib == null ? "text-paper-dim" : contrib > 0 ? "text-loss/80" : "text-gain/80"}`}>
+                      {contrib != null ? `${contrib >= 0 ? "+" : ""}${contrib.toFixed(3)}` : "—"}
+                    </span>
+                  </div>
+                );
+              })}
+              <div className="grid items-center gap-2 pt-1.5 border-t border-ink-line" style={{ gridTemplateColumns: "1fr 40px 56px 56px" }}>
+                <span className="text-xs text-paper font-semibold">Composite</span>
+                <span className="text-[10px] text-paper-dim text-right">100%</span>
+                <span />
+                <span className={`num text-right text-xs font-bold ${latestRow.gauge2 == null ? "text-paper-dim" : Number(latestRow.gauge2) > 1 ? "text-loss" : Number(latestRow.gauge2) < -1 ? "text-gain" : "text-brass-soft"}`}>
+                  {latestRow.gauge2 != null ? `${Number(latestRow.gauge2) >= 0 ? "+" : ""}${Number(latestRow.gauge2).toFixed(4)}` : "—"}
                 </span>
               </div>
-            ))}
-          </div>
+            </div>
+          ) : (
+            <p className="text-sm text-paper-dim py-4 text-center">No component data yet — run the edge function to populate.</p>
+          )}
         </div>
       )}
     />
@@ -1195,12 +1192,12 @@ function PlusIcon() {
   );
 }
 
-export default function DalioGauges() {
+export default function DalioGauges({ gaugeKeys } = {}) {
   const [latest, setLatest] = useState(null);
   const [wgcData, setWgcData] = useState([]);
   const [showWgc, setShowWgc] = useState(false);
   const [debtSustOpen, setDebtSustOpen] = useState(false);
-  const [policyRoomOpen, setPolicyRoomOpen] = useState(false);
+  const [shortTermOpen, setShortTermOpen] = useState(false);
   const [growthInflOpen, setGrowthInflOpen] = useState(false);
   const [incomeAffordOpen, setIncomeAffordOpen] = useState(false);
   const [reserveConfOpen, setReserveConfOpen] = useState(false);
@@ -1267,15 +1264,20 @@ export default function DalioGauges() {
 
   if (!latest) return null;
 
+  const visibleGauges = gaugeKeys
+    ? GAUGE_META.filter(({ key }) => gaugeKeys.includes(key))
+    : GAUGE_META;
+  const showWgcPanel = !gaugeKeys || gaugeKeys.includes("gauge5");
+
   return (
     <div className="mb-2">
       {/* Gauge grid */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-3">
-        {GAUGE_META.map(({ key, label, desc }) => {
+        {visibleGauges.map(({ key, label, desc }) => {
           const val = latest[key]?.value ?? null;
           const statusLabelOverride =
             key === "gauge1" ? (debtSustAssessment(val)?.label ?? null)
-          : key === "gauge2" ? (policyRoomAssessment(val, null)?.label ?? null)
+          : key === "gauge2" ? (shortTermCycleAssessment(val)?.label ?? null)
           : key === "gauge3" ? (growthInflAssessment(val)?.label ?? null)
           : key === "gauge4" ? (incomeAffordAssessment(val)?.label ?? null)
           : key === "gauge5" ? (reserveConfAssessment(val)?.label ?? null)
@@ -1290,7 +1292,7 @@ export default function DalioGauges() {
               statusLabelOverride={statusLabelOverride}
               onClick={
                 key === "gauge1" ? () => setDebtSustOpen(true)
-              : key === "gauge2" ? () => setPolicyRoomOpen(true)
+              : key === "gauge2" ? () => setShortTermOpen(true)
               : key === "gauge3" ? () => setGrowthInflOpen(true)
               : key === "gauge4" ? () => setIncomeAffordOpen(true)
               : key === "gauge5" ? () => setReserveConfOpen(true)
@@ -1306,9 +1308,9 @@ export default function DalioGauges() {
         latestGauge={latest?.gauge1?.value ?? null}
         latestGaugeYear={latest?.gauge1?.year ?? null}
       />
-      <PolicyRoomDrawer
-        open={policyRoomOpen}
-        onClose={() => setPolicyRoomOpen(false)}
+      <ShortTermCreditCycleDrawer
+        open={shortTermOpen}
+        onClose={() => setShortTermOpen(false)}
         latestGauge={latest?.gauge2?.value ?? null}
       />
       <GrowthInflationDrawer
@@ -1331,16 +1333,16 @@ export default function DalioGauges() {
         z &gt; 1 = elevated risk · z &lt; −1 = low risk · each gauge scored against full history
       </p>
 
-      {/* WGC data management */}
-      <button
+      {/* WGC data management — only on the layer that includes gauge5 */}
+      {showWgcPanel && <button
         onClick={() => setShowWgc((v) => !v)}
         className="flex items-center gap-1.5 text-[10px] text-paper-dim hover:text-paper transition-colors"
       >
         <span className="text-[8px]">{showWgc ? "▾" : "▸"}</span>
         WGC Central Bank Gold Data (Gauge 5 input)
-      </button>
+      </button>}
 
-      {showWgc && (
+      {showWgcPanel && showWgc && (
         <div className="mt-3 card p-4">
           <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
             <p className="label text-xs">CB Net Gold Purchases — tonnes/year</p>

@@ -1428,8 +1428,10 @@ export default function MacroDashboard() {
                 </h2>
               </div>
 
-              {/* Dalio risk gauges sit above Layer 1 indicator cards */}
-              {layer === 1 && <DalioGauges />}
+              {layer === 1 && <DalioGauges gaugeKeys={["gauge1", "gauge5"]} />}
+              {layer === 2 && <DalioGauges gaugeKeys={["gauge2"]} />}
+              {layer === 3 && <DalioGauges gaugeKeys={["gauge3"]} />}
+              {layer === 4 && <DalioGauges gaugeKeys={["gauge4"]} />}
 
               {byLayer[layer].length === 0 ? (
                 <p className="text-paper-dim text-sm ml-9">No data yet.</p>
