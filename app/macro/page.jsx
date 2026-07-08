@@ -536,14 +536,19 @@ function CpiTooltip({ active, payload, label }) {
 function ExpTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="card px-3 py-2 text-xs space-y-1 min-w-[180px]">
+    <div className="card px-3 py-2 text-xs space-y-1 min-w-[190px]">
       <p className="font-semibold text-paper mb-1">{label?.slice(0, 7)}</p>
       {payload.map((p) => {
         if (p.value == null) return null;
+        const isZ = p.dataKey === "compositeZ";
         return (
           <div key={p.dataKey} className="flex justify-between gap-4">
             <span style={{ color: p.color }}>{p.name}</span>
-            <span className="num text-paper">{Number(p.value).toFixed(2)}%</span>
+            <span className="num text-paper">
+              {isZ
+                ? `${p.value >= 0 ? "+" : ""}${Number(p.value).toFixed(2)}σ`
+                : `${Number(p.value).toFixed(2)}%`}
+            </span>
           </div>
         );
       })}
@@ -1017,7 +1022,7 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
     if (!open || rows !== null) return;
     supabase
       .from("consumer_expectations")
-      .select("survey_date, michigan_inf_exp_1yr, nyfed_inf_exp_1yr, nyfed_delinquency_prob")
+      .select("survey_date, michigan_inf_exp_1yr, nyfed_inf_exp_1yr, nyfed_delinquency_prob, composite_stress_z")
       .order("survey_date")
       .then(({ data }) => setRows(data ?? []));
   }, [open, rows]);
@@ -1043,10 +1048,10 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
     return rows
       .filter(r => r.survey_date >= range)
       .map(r => ({
-        date:        r.survey_date,
-        michInf:     r.michigan_inf_exp_1yr   != null ? Number(r.michigan_inf_exp_1yr)   : null,
-        nyfedInf:    r.nyfed_inf_exp_1yr      != null ? Number(r.nyfed_inf_exp_1yr)      : null,
-        nyfedDelinq: r.nyfed_delinquency_prob != null ? Number(r.nyfed_delinquency_prob) : null,
+        date:       r.survey_date,
+        michInf:    r.michigan_inf_exp_1yr != null ? Number(r.michigan_inf_exp_1yr) : null,
+        nyfedInf:   r.nyfed_inf_exp_1yr    != null ? Number(r.nyfed_inf_exp_1yr)   : null,
+        compositeZ: r.composite_stress_z   != null ? Number(r.composite_stress_z)  : null,
       }));
   }, [rows, range]);
 
@@ -1064,6 +1069,7 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
         michInf:     r.michigan_inf_exp_1yr   != null ? Number(r.michigan_inf_exp_1yr)   : null,
         nyfedInf:    r.nyfed_inf_exp_1yr      != null ? Number(r.nyfed_inf_exp_1yr)      : null,
         nyfedDelinq: r.nyfed_delinquency_prob != null ? Number(r.nyfed_delinquency_prob) : null,
+        composite:   r.composite_stress_z     != null ? Number(r.composite_stress_z)     : null,
         zM:  z(r.michigan_inf_exp_1yr,   stats.muM,  stats.sdM),
         zNI: z(r.nyfed_inf_exp_1yr,      stats.muNI, stats.sdNI),
         zND: z(r.nyfed_delinquency_prob, stats.muND, stats.sdND),
@@ -1145,19 +1151,21 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
                     width={36}
                   />
                   <YAxis
-                    yAxisId="delinq"
+                    yAxisId="z"
                     orientation="right"
                     tick={{ fill: "#A8ADB8", fontSize: 10 }}
                     tickLine={false}
                     axisLine={false}
-                    tickFormatter={(v) => `${Number(v).toFixed(0)}%`}
-                    width={36}
+                    tickFormatter={(v) => `${v >= 0 ? "+" : ""}${Number(v).toFixed(1)}σ`}
+                    width={40}
                   />
                   <Tooltip content={<ExpTooltip />} />
-                  <ReferenceLine yAxisId="inf" y={2} stroke="#C9A227" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
-                  <Line yAxisId="inf"    type="monotone" dataKey="michInf"     name="Michigan 1yr"  stroke="#C9A227" strokeWidth={2}   dot={false} connectNulls />
-                  <Line yAxisId="inf"    type="monotone" dataKey="nyfedInf"    name="NY Fed 1yr"    stroke="#A8ADB8" strokeWidth={1.5} strokeDasharray="4 2" dot={false} connectNulls />
-                  <Line yAxisId="delinq" type="monotone" dataKey="nyfedDelinq" name="Delinquency %" stroke="#E0635C" strokeWidth={1.5} strokeOpacity={0.8} dot={false} connectNulls />
+                  <ReferenceLine yAxisId="inf" y={2}   stroke="#C9A227" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
+                  <ReferenceLine yAxisId="z"   y={0}   stroke="#2A3240" strokeWidth={1} />
+                  <ReferenceLine yAxisId="z"   y={1}   stroke="#E0635C" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
+                  <Line yAxisId="inf" type="monotone" dataKey="michInf"    name="Michigan 1yr"  stroke="#C9A227" strokeWidth={2}   dot={false} connectNulls />
+                  <Line yAxisId="inf" type="monotone" dataKey="nyfedInf"   name="NY Fed 1yr"    stroke="#A8ADB8" strokeWidth={1.5} strokeDasharray="4 2" dot={false} connectNulls />
+                  <Line yAxisId="z"   type="monotone" dataKey="compositeZ" name="Stress Index z" stroke="#E0635C" strokeWidth={2} strokeOpacity={0.9} dot={false} connectNulls />
                 </ComposedChart>
               </ResponsiveContainer>
               <div className="flex items-center justify-center gap-5 mt-3 text-[10px] text-paper-dim flex-wrap">
@@ -1173,7 +1181,7 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
                 </span>
                 <span className="flex items-center gap-1.5">
                   <span className="inline-block w-5 h-[2px] bg-[#E0635C] rounded" />
-                  Delinquency Prob (right)
+                  Stress Index z (right)
                 </span>
               </div>
             </div>
@@ -1182,7 +1190,7 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
           {rows !== null && tableRows.length > 0 && (
             <div className="card p-4">
               <p className="label text-[10px] mb-3">Historical Readings with Z-Scores · newest first</p>
-              <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "64px repeat(6, 1fr)" }}>
+              <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "60px repeat(7, 1fr)" }}>
                 <span>Date</span>
                 <span className="text-right">Mich%</span>
                 <span className="text-right">z(M)</span>
@@ -1190,28 +1198,32 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
                 <span className="text-right">z(NY)</span>
                 <span className="text-right">Delinq%</span>
                 <span className="text-right">z(D)</span>
+                <span className="text-right text-[#E0635C]/80">Stress z</span>
               </div>
               <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
                 {tableRows.map((r) => (
-                  <div key={r.date} className="grid items-center text-xs" style={{ gridTemplateColumns: "64px repeat(6, 1fr)" }}>
-                    <span className="text-paper-dim text-[10px]">{r.date}</span>
+                  <div key={r.date} className="grid items-center text-[10px]" style={{ gridTemplateColumns: "60px repeat(7, 1fr)" }}>
+                    <span className="text-paper-dim">{r.date}</span>
                     <span className={`num text-right ${r.michInf == null ? "text-paper-dim" : r.michInf > 3.5 ? "text-loss" : r.michInf < 2 ? "text-gain" : "text-brass-soft"}`}>
                       {r.michInf != null ? `${r.michInf.toFixed(1)}%` : "—"}
                     </span>
-                    <span className={`num text-right text-[10px] ${r.zM == null ? "text-paper-dim" : Math.abs(r.zM) <= 1 ? "text-paper-dim" : r.zM > 1 ? "text-loss" : "text-gain"}`}>
+                    <span className={`num text-right ${r.zM == null ? "text-paper-dim" : Math.abs(r.zM) <= 1 ? "text-paper-dim" : r.zM > 1 ? "text-loss" : "text-gain"}`}>
                       {r.zM != null ? `${r.zM >= 0 ? "+" : ""}${r.zM.toFixed(2)}` : "—"}
                     </span>
                     <span className={`num text-right ${r.nyfedInf == null ? "text-paper-dim" : r.nyfedInf > 3.5 ? "text-loss" : r.nyfedInf < 2 ? "text-gain" : "text-brass-soft"}`}>
                       {r.nyfedInf != null ? `${r.nyfedInf.toFixed(1)}%` : "—"}
                     </span>
-                    <span className={`num text-right text-[10px] ${r.zNI == null ? "text-paper-dim" : Math.abs(r.zNI) <= 1 ? "text-paper-dim" : r.zNI > 1 ? "text-loss" : "text-gain"}`}>
+                    <span className={`num text-right ${r.zNI == null ? "text-paper-dim" : Math.abs(r.zNI) <= 1 ? "text-paper-dim" : r.zNI > 1 ? "text-loss" : "text-gain"}`}>
                       {r.zNI != null ? `${r.zNI >= 0 ? "+" : ""}${r.zNI.toFixed(2)}` : "—"}
                     </span>
                     <span className={`num text-right ${r.nyfedDelinq == null ? "text-paper-dim" : r.nyfedDelinq > 13 ? "text-loss" : r.nyfedDelinq > 11 ? "text-brass-soft" : "text-gain"}`}>
                       {r.nyfedDelinq != null ? `${r.nyfedDelinq.toFixed(1)}%` : "—"}
                     </span>
-                    <span className={`num text-right text-[10px] ${r.zND == null ? "text-paper-dim" : Math.abs(r.zND) <= 1 ? "text-paper-dim" : r.zND > 1 ? "text-loss" : "text-gain"}`}>
+                    <span className={`num text-right ${r.zND == null ? "text-paper-dim" : Math.abs(r.zND) <= 1 ? "text-paper-dim" : r.zND > 1 ? "text-loss" : "text-gain"}`}>
                       {r.zND != null ? `${r.zND >= 0 ? "+" : ""}${r.zND.toFixed(2)}` : "—"}
+                    </span>
+                    <span className={`num text-right font-medium ${r.composite == null ? "text-paper-dim" : r.composite > 1.5 ? "text-loss" : r.composite > 0.5 ? "text-brass-soft" : "text-gain"}`}>
+                      {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
                     </span>
                   </div>
                 ))}
