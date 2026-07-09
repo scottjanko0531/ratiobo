@@ -30,6 +30,8 @@ const LAYER_NAMES = {
 
 const KEY_LABEL = Object.fromEntries(SIMULATOR_KEYS.map((s) => [s.key, s.label]));
 
+const ILLIQUID_KEYS = new Set(["alt_re", "alt_loan", "alt_pp", "alt_other"]);
+
 const STATUS_STYLE = {
   healthy: { text: "text-gain", bg: "bg-gain/10", border: "border-gain/20" },
   watch:   { text: "text-brass", bg: "bg-brass/10", border: "border-brass/20" },
@@ -328,6 +330,8 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
     ? Object.entries(suggestedPcts).reduce((s, [k, w]) => s + (w / 100) * (regimeReturns[k] ?? 0), 0)
     : null;
 
+  const [actionsOpen, setActionsOpen] = useState(false);
+
   // Group holdings by resolved simulator key
   const byKey = {};
   let grandTotal = 0;
@@ -367,6 +371,49 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
   const alignedPct = favoredBuckets.reduce((s, b) => s + b.pct, 0);
   const outsidePct = outsideBuckets.reduce((s, b) => s + b.pct, 0);
   const hasPortfolio = holdings && holdings.length > 0;
+
+  // Portfolio action rows: for each holding, compute add/sell delta vs. suggested allocation.
+  // Delta is distributed proportionally across holdings sharing the same bucket.
+  const actionRows = hasPortfolio && regimeKey && grandTotal > 0
+    ? (holdings ?? []).flatMap((h) => {
+        const key = resolveSimulatorKey(h);
+        if (!key) return [];
+        const currentVal = Number(h.current_value ?? 0);
+        if (currentVal <= 0) return [];
+        const currentPct = (currentVal / grandTotal) * 100;
+        const bucketTargetPct = suggestedPcts[key] ?? 0;
+        const bucketTotal = byKey[key]?.total ?? 0;
+        const holdingShare = bucketTotal > 0 ? currentVal / bucketTotal : 1;
+        const holdingTargetPct = bucketTargetPct * holdingShare;
+        const targetVal = (holdingTargetPct / 100) * grandTotal;
+        const deltaVal = targetVal - currentVal;
+        const isIlliquid = ILLIQUID_KEYS.has(key);
+        return [{
+          symbol: h.symbol ?? h.name ?? "—",
+          name: h.name,
+          currentVal,
+          currentPct,
+          newPct: holdingTargetPct,
+          newVal: isIlliquid && deltaVal < 0 ? currentVal : targetVal,
+          deltaVal,
+          isIlliquid,
+          key,
+        }];
+      }).sort((a, b) => Math.abs(b.deltaVal) - Math.abs(a.deltaVal))
+    : [];
+
+  // New buy recommendations: buckets with a target weight but no existing holdings
+  const buyRows = hasPortfolio && regimeKey && grandTotal > 0
+    ? Object.entries(suggestedPcts)
+        .filter(([k, pct]) => pct > 0 && !byKey[k])
+        .map(([k, pct]) => ({
+          key: k,
+          label: KEY_LABEL[k] ?? k,
+          targetPct: pct,
+          targetVal: (pct / 100) * grandTotal,
+        }))
+        .sort((a, b) => b.targetPct - a.targetPct)
+    : [];
 
   return (
     <div className="card p-5 mb-6">
@@ -636,6 +683,103 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                 <div className="h-full bg-gain/60 transition-all" style={{ width: `${alignedPct}%` }} />
                 <div className="h-full bg-loss/50 transition-all" style={{ width: `${outsidePct}%` }} />
               </div>
+            </div>
+          )}
+
+          {/* Portfolio Actions */}
+          {hasPortfolio && regimeKey && grandTotal > 0 && (actionRows.length > 0 || buyRows.length > 0) && (
+            <div>
+              <button
+                onClick={() => setActionsOpen((o) => !o)}
+                className="flex items-center gap-2 w-full text-left"
+              >
+                <p className="label">Portfolio Actions</p>
+                <svg
+                  className={`w-3 h-3 text-paper-dim transition-transform ${actionsOpen ? "rotate-90" : ""}`}
+                  viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"
+                  strokeLinecap="round" strokeLinejoin="round"
+                >
+                  <polyline points="6,3 11,8 6,13" />
+                </svg>
+              </button>
+
+              {actionsOpen && (
+                <div className="mt-2 border border-ink-line rounded-lg overflow-hidden text-[11px]">
+                  {/* Table header */}
+                  <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-1.5 bg-ink-soft/50 border-b border-ink-line text-[10px] text-paper-dim">
+                    <span>Holding</span>
+                    <span className="text-right">Current</span>
+                    <span className="text-right">Cur %</span>
+                    <span>Action</span>
+                    <span className="text-right">New %</span>
+                  </div>
+
+                  {/* Existing holding rows */}
+                  {actionRows.map((r) => {
+                    const delta = r.deltaVal;
+                    const absD = Math.abs(delta);
+                    const isNoop = absD < grandTotal * 0.005;
+                    let actionLabel, actionClass;
+                    if (r.isIlliquid && delta < 0) {
+                      actionLabel = "Illiquid — hold";
+                      actionClass = "text-paper-dim italic";
+                    } else if (isNoop) {
+                      actionLabel = "Hold";
+                      actionClass = "text-paper-dim";
+                    } else if (delta > 0) {
+                      actionLabel = `Add $${absD < 1000 ? absD.toFixed(0) : (absD / 1000).toFixed(1) + "k"}`;
+                      actionClass = "text-gain";
+                    } else {
+                      actionLabel = `Sell $${absD < 1000 ? absD.toFixed(0) : (absD / 1000).toFixed(1) + "k"}`;
+                      actionClass = "text-loss";
+                    }
+                    return (
+                      <div key={`${r.symbol}-${r.key}`} className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-2 border-b border-ink-line/50 items-center">
+                        <span className="font-medium text-paper truncate">{r.symbol}</span>
+                        <span className="num text-paper-dim text-right">
+                          {r.currentVal < 1000 ? `$${r.currentVal.toFixed(0)}` : `$${(r.currentVal / 1000).toFixed(1)}k`}
+                        </span>
+                        <span className="num text-paper-dim text-right">{r.currentPct.toFixed(1)}%</span>
+                        <span className={`${actionClass} font-medium`}>{actionLabel}</span>
+                        <span className={`num text-right ${isNoop || (r.isIlliquid && delta < 0) ? "text-paper-dim" : delta > 0 ? "text-gain" : "text-loss"}`}>
+                          {(r.isIlliquid && delta < 0 ? r.currentPct : r.newPct).toFixed(1)}%
+                        </span>
+                      </div>
+                    );
+                  })}
+
+                  {/* Divider + Recommendations header */}
+                  {buyRows.length > 0 && (
+                    <>
+                      <div className="px-3 py-1.5 bg-ink-soft/30 border-b border-ink-line text-[10px] text-paper-dim font-medium">
+                        Recommendations — no current holding
+                      </div>
+                      {buyRows.map((r) => (
+                        <div key={r.key} className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-2 border-b border-ink-line/50 items-center">
+                          <span className="font-medium text-paper truncate">{r.label}</span>
+                          <span className="num text-paper-dim text-right">$0</span>
+                          <span className="num text-paper-dim text-right">0.0%</span>
+                          <span className="text-gain font-medium">
+                            Buy ${r.targetVal < 1000 ? r.targetVal.toFixed(0) : (r.targetVal / 1000).toFixed(1) + "k"}
+                          </span>
+                          <span className="num text-gain text-right">{r.targetPct.toFixed(1)}%</span>
+                        </div>
+                      ))}
+                    </>
+                  )}
+
+                  {/* Totals row */}
+                  <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-2 bg-ink-soft/50 text-[10px] font-medium">
+                    <span className="text-paper-dim">Total</span>
+                    <span className="num text-right">
+                      {grandTotal < 1000 ? `$${grandTotal.toFixed(0)}` : `$${(grandTotal / 1000).toFixed(1)}k`}
+                    </span>
+                    <span className="num text-right">100%</span>
+                    <span />
+                    <span className="num text-right">100%</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
