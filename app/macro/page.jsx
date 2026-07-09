@@ -12,6 +12,7 @@ import {
   SIMULATOR_KEYS,
   REGIME_DEFAULT_WEIGHTS,
   REGIME_META,
+  REGIME_RETURNS,
   detectRegimeKey,
   resolveSimulatorKey,
   getSignalKeys,
@@ -322,6 +323,11 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
     ? computeSuggestedPcts(regimeKey, allocMethod, assetData)
     : {};
 
+  const regimeReturns = regimeKey ? (REGIME_RETURNS[regimeKey] ?? {}) : {};
+  const blendedReturn = regimeKey
+    ? Object.entries(suggestedPcts).reduce((s, [k, w]) => s + (w / 100) * (regimeReturns[k] ?? 0), 0)
+    : null;
+
   // Group holdings by resolved simulator key
   const byKey = {};
   let grandTotal = 0;
@@ -532,7 +538,14 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
           {/* Signal categories */}
           <div>
             <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
-              <p className="label">Positioning Signal — Favored Categories</p>
+              <div className="flex items-center gap-3">
+                <p className="label">Positioning Signal — Favored Categories</p>
+                {blendedReturn !== null && (
+                  <span className={`text-xs font-medium tabular-nums ${blendedReturn >= 0 ? "text-gain" : "text-loss"}`}>
+                    {blendedReturn >= 0 ? "+" : ""}{blendedReturn.toFixed(1)}% exp. return
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-0.5">
                 {[
                   { k: "default", l: "Default" },
