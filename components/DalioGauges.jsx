@@ -507,50 +507,96 @@ function ShortTermCreditCycleDrawer({ open, onClose, latestGauge }) {
       gaugeKey="gauge2"
       infoContent={SHORT_TERM_CYCLE_INFO}
       assessment={assessment}
-      renderTable={() => (
-        <div className="card p-4">
-          <p className="label text-[10px] mb-3">Component Breakdown · {latestRow?.year ?? "—"}</p>
-          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line" style={{ gridTemplateColumns: "1fr 40px 56px 56px" }}>
-            <span>Component</span>
-            <span className="text-right">Wt.</span>
-            <span className="text-right">Z-score</span>
-            <span className="text-right">Contrib.</span>
-          </div>
-          {latestRow ? (
-            <div className="space-y-2.5">
-              {ST_CYCLE_COMPONENTS.map(({ key, label, weight, desc }) => {
-                const z = latestRow[key] != null ? Number(latestRow[key]) : null;
-                const contrib = z != null ? z * weight : null;
-                return (
-                  <div key={key} className="grid items-start gap-2" style={{ gridTemplateColumns: "1fr 40px 56px 56px" }}>
-                    <div>
-                      <p className="text-xs text-paper leading-snug">{label}</p>
-                      <p className="text-[10px] text-paper-dim/60 leading-snug">{desc}</p>
-                    </div>
-                    <span className="text-[10px] text-paper-dim text-right pt-0.5">{Math.round(weight * 100)}%</span>
-                    <span className={`num text-right text-xs font-semibold pt-0.5 ${z == null ? "text-paper-dim" : z > 0.5 ? "text-loss" : z < -0.5 ? "text-gain" : "text-brass-soft"}`}>
-                      {z != null ? `${z >= 0 ? "+" : ""}${z.toFixed(3)}` : "—"}
-                    </span>
-                    <span className={`num text-right text-xs pt-0.5 ${contrib == null ? "text-paper-dim" : contrib > 0 ? "text-loss/80" : "text-gain/80"}`}>
-                      {contrib != null ? `${contrib >= 0 ? "+" : ""}${contrib.toFixed(3)}` : "—"}
+      renderTable={() => {
+        const zColor = (v) => v == null ? "text-paper-dim" : v > 0.5 ? "text-loss/80" : v < -0.5 ? "text-gain/80" : "text-paper-dim";
+        const fmt2 = (v) => v != null ? `${v >= 0 ? "+" : ""}${v.toFixed(2)}` : "—";
+        const histRows = (gaugeHistory ?? []).filter((r) => r.z_yield_curve != null).slice().reverse();
+        return (
+          <div className="space-y-4">
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Historical Z-Scores</p>
+              <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1"
+                   style={{ gridTemplateColumns: "1fr 52px 52px 52px 52px 52px 65px" }}>
+                <span>Year</span>
+                <span className="text-right">YC</span>
+                <span className="text-right">HY</span>
+                <span className="text-right">LS</span>
+                <span className="text-right">DS</span>
+                <span className="text-right">LEI</span>
+                <span className="text-right">Composite</span>
+              </div>
+              {histRows.length === 0 ? (
+                <p className="text-sm text-paper-dim py-4 text-center">No historical data yet.</p>
+              ) : (
+                <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+                  {histRows.map((r) => {
+                    const yc   = r.z_yield_curve  != null ? Number(r.z_yield_curve)  : null;
+                    const hy   = r.z_hy_spread    != null ? Number(r.z_hy_spread)    : null;
+                    const ls   = r.z_lending_stds != null ? Number(r.z_lending_stds) : null;
+                    const ds   = r.z_debt_service != null ? Number(r.z_debt_service) : null;
+                    const lei  = r.z_lei_momentum != null ? Number(r.z_lei_momentum) : null;
+                    const comp = r.gauge2          != null ? Number(r.gauge2)          : null;
+                    return (
+                      <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr 52px 52px 52px 52px 52px 65px" }}>
+                        <span className="text-paper-dim">{r.year}</span>
+                        <span className={`num text-right ${zColor(yc)}`}>{fmt2(yc)}</span>
+                        <span className={`num text-right ${zColor(hy)}`}>{fmt2(hy)}</span>
+                        <span className={`num text-right ${zColor(ls)}`}>{fmt2(ls)}</span>
+                        <span className={`num text-right ${zColor(ds)}`}>{fmt2(ds)}</span>
+                        <span className={`num text-right ${zColor(lei)}`}>{fmt2(lei)}</span>
+                        <span className={`num text-right font-semibold ${comp == null ? "text-paper-dim" : comp > 1 ? "text-loss" : comp < -1 ? "text-gain" : "text-brass-soft"}`}>
+                          {comp != null ? `${comp >= 0 ? "+" : ""}${comp.toFixed(4)}` : "—"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {latestRow && (
+              <div className="card p-4">
+                <p className="label text-[10px] mb-3">Component Breakdown · {latestRow.year}</p>
+                <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line" style={{ gridTemplateColumns: "1fr 40px 56px 56px" }}>
+                  <span>Component</span>
+                  <span className="text-right">Wt.</span>
+                  <span className="text-right">Z-score</span>
+                  <span className="text-right">Contrib.</span>
+                </div>
+                <div className="space-y-2.5">
+                  {ST_CYCLE_COMPONENTS.map(({ key, label, weight, desc }) => {
+                    const z = latestRow[key] != null ? Number(latestRow[key]) : null;
+                    const contrib = z != null ? z * weight : null;
+                    return (
+                      <div key={key} className="grid items-start gap-2" style={{ gridTemplateColumns: "1fr 40px 56px 56px" }}>
+                        <div>
+                          <p className="text-xs text-paper leading-snug">{label}</p>
+                          <p className="text-[10px] text-paper-dim/60 leading-snug">{desc}</p>
+                        </div>
+                        <span className="text-[10px] text-paper-dim text-right pt-0.5">{Math.round(weight * 100)}%</span>
+                        <span className={`num text-right text-xs font-semibold pt-0.5 ${z == null ? "text-paper-dim" : z > 0.5 ? "text-loss" : z < -0.5 ? "text-gain" : "text-brass-soft"}`}>
+                          {z != null ? `${z >= 0 ? "+" : ""}${z.toFixed(3)}` : "—"}
+                        </span>
+                        <span className={`num text-right text-xs pt-0.5 ${contrib == null ? "text-paper-dim" : contrib > 0 ? "text-loss/80" : "text-gain/80"}`}>
+                          {contrib != null ? `${contrib >= 0 ? "+" : ""}${contrib.toFixed(3)}` : "—"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <div className="grid items-center gap-2 pt-1.5 border-t border-ink-line" style={{ gridTemplateColumns: "1fr 40px 56px 56px" }}>
+                    <span className="text-xs text-paper font-semibold">Composite</span>
+                    <span className="text-[10px] text-paper-dim text-right">100%</span>
+                    <span />
+                    <span className={`num text-right text-xs font-bold ${latestRow.gauge2 == null ? "text-paper-dim" : Number(latestRow.gauge2) > 1 ? "text-loss" : Number(latestRow.gauge2) < -1 ? "text-gain" : "text-brass-soft"}`}>
+                      {latestRow.gauge2 != null ? `${Number(latestRow.gauge2) >= 0 ? "+" : ""}${Number(latestRow.gauge2).toFixed(4)}` : "—"}
                     </span>
                   </div>
-                );
-              })}
-              <div className="grid items-center gap-2 pt-1.5 border-t border-ink-line" style={{ gridTemplateColumns: "1fr 40px 56px 56px" }}>
-                <span className="text-xs text-paper font-semibold">Composite</span>
-                <span className="text-[10px] text-paper-dim text-right">100%</span>
-                <span />
-                <span className={`num text-right text-xs font-bold ${latestRow.gauge2 == null ? "text-paper-dim" : Number(latestRow.gauge2) > 1 ? "text-loss" : Number(latestRow.gauge2) < -1 ? "text-gain" : "text-brass-soft"}`}>
-                  {latestRow.gauge2 != null ? `${Number(latestRow.gauge2) >= 0 ? "+" : ""}${Number(latestRow.gauge2).toFixed(4)}` : "—"}
-                </span>
+                </div>
               </div>
-            </div>
-          ) : (
-            <p className="text-sm text-paper-dim py-4 text-center">No component data yet — run the edge function to populate.</p>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        );
+      }}
     />
   );
 }
