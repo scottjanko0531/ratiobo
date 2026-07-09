@@ -1517,13 +1517,11 @@ export default function MacroDashboard() {
     setRefreshing(true);
     setError("");
     try {
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/fetch-macro-data`, {
+      const { error: fnErr } = await supabase.functions.invoke("fetch-macro-data", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
+        body: {},
       });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) setError(body.error ?? `Refresh failed (${res.status})`);
+      if (fnErr) setError(fnErr.message ?? "Refresh failed");
       else await fetchIndicators();
     } catch (e) {
       setError(e.message);
