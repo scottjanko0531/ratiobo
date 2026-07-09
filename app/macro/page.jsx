@@ -278,9 +278,11 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
   const ism        = indicators.find((i) => i.name === "ISM Manufacturing PMI" || i.name === "ISM New Orders");
   const breakeven  = indicators.find((i) => i.name === "10Y Breakeven Inflation");
   const gdp3yAvg   = indicators.find((i) => i.name === "GDP Growth (3Y Avg)");
+  const cpi3yAvg   = indicators.find((i) => i.name === "CPI Growth (3Y Avg)");
 
   const breakevenVal = breakeven?.current_value != null ? Number(breakeven.current_value) : 2.5;
   const gdp3yAvgVal  = gdp3yAvg?.current_value  != null ? Number(gdp3yAvg.current_value)  : 0;
+  const cpi3yAvgVal  = cpi3yAvg?.current_value  != null ? Number(cpi3yAvg.current_value)  : null;
 
   // Use the same quadrant source as the Three Forces chart (3-yr trailing avg);
   // fall back to expectation-based detectRegimeKey only when DB data isn't ready.
@@ -294,6 +296,17 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
         : null);
 
   const regime = regimeKey ? REGIME_META[regimeKey] : null;
+
+  // Market-expectations regime: always computed fresh from actuals vs. T10YIE / GDP trend.
+  // Separate from regimeKey (which comes from the structural 3Y-trailing DB quadrant).
+  const marketRegimeKey = gdp?.current_value != null && cpi?.current_value != null
+    ? detectRegimeKey(Number(gdp.current_value), Number(cpi.current_value), {
+        breakeven: breakevenVal,
+        gdp3yAvg:  gdp3yAvgVal,
+      })
+    : null;
+  const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
+
   const [allocMethod, setAllocMethod] = useState("default");
 
   const signalKeys = regimeKey ? getSignalKeys(regimeKey) : [];
@@ -396,6 +409,124 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                 <p className="num text-sm">{formatValue(ism?.current_value, "index")}</p>
               </div>
             </div>
+          </div>
+
+          {/* ── Regime Signal Comparison ──────────────────────────────── */}
+          <div>
+            <p className="label mb-3">Regime Signal Comparison</p>
+            <div className="border border-ink-line rounded-lg overflow-hidden text-sm">
+
+              {/* Column headers */}
+              <div className="grid grid-cols-3 bg-ink-soft/50 border-b border-ink-line">
+                <div className="px-3 py-2" />
+                <div className="px-3 py-2 border-l border-ink-line">
+                  <p className="label text-[10px]">Structural</p>
+                  <p className="text-[10px] text-paper-dim">3-year trailing averages</p>
+                </div>
+                <div className="px-3 py-2 border-l border-ink-line">
+                  <p className="label text-[10px]">Market Expectations</p>
+                  <p className="text-[10px] text-paper-dim">Actuals vs. market-priced levels</p>
+                </div>
+              </div>
+
+              {/* Growth row */}
+              <div className="grid grid-cols-3 border-b border-ink-line">
+                <div className="px-3 py-3">
+                  <p className="label text-[10px] mb-1">Growth</p>
+                  <p className="num text-sm">{formatValue(gdp?.current_value, "%")}</p>
+                </div>
+                <div className="px-3 py-3 border-l border-ink-line">
+                  <p className="text-[10px] text-paper-dim mb-1">3Y avg — is trend positive?</p>
+                  {gdp3yAvg?.current_value != null ? (
+                    <>
+                      <p className={`font-medium ${gdp3yAvgVal > 0 ? "text-gain" : "text-loss"}`}>
+                        {gdp3yAvgVal > 0 ? "↑ Expanding" : "↓ Contracting"}
+                      </p>
+                      <p className="num text-[11px] text-paper-dim mt-0.5">{gdp3yAvgVal.toFixed(2)}% 3Y avg</p>
+                    </>
+                  ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
+                </div>
+                <div className="px-3 py-3 border-l border-ink-line">
+                  <p className="text-[10px] text-paper-dim mb-1">Current vs 3Y trend — surprise?</p>
+                  {gdp?.current_value != null && gdp3yAvg?.current_value != null ? (
+                    <>
+                      <p className={`font-medium ${Number(gdp.current_value) > gdp3yAvgVal ? "text-gain" : "text-loss"}`}>
+                        {Number(gdp.current_value) > gdp3yAvgVal ? "↑ Above trend" : "↓ Below trend"}
+                      </p>
+                      <p className="num text-[11px] text-paper-dim mt-0.5">trend {gdp3yAvgVal.toFixed(2)}%</p>
+                    </>
+                  ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
+                </div>
+              </div>
+
+              {/* Inflation row */}
+              <div className="grid grid-cols-3 border-b border-ink-line">
+                <div className="px-3 py-3">
+                  <p className="label text-[10px] mb-1">Inflation</p>
+                  <p className="num text-sm">{formatValue(cpi?.current_value, "%")}</p>
+                </div>
+                <div className="px-3 py-3 border-l border-ink-line">
+                  <p className="text-[10px] text-paper-dim mb-1">CPI 3Y avg — above 2% target?</p>
+                  {cpi3yAvgVal != null ? (
+                    <>
+                      <p className={`font-medium ${cpi3yAvgVal > 2 ? "text-loss" : "text-gain"}`}>
+                        {cpi3yAvgVal > 2 ? "↑ Above target" : "↓ Contained"}
+                      </p>
+                      <p className="num text-[11px] text-paper-dim mt-0.5">{cpi3yAvgVal.toFixed(2)}% 3Y avg</p>
+                    </>
+                  ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
+                </div>
+                <div className="px-3 py-3 border-l border-ink-line">
+                  <p className="text-[10px] text-paper-dim mb-1">CPI vs T10YIE — surprising markets?</p>
+                  {cpi?.current_value != null && breakeven?.current_value != null ? (
+                    <>
+                      <p className={`font-medium ${Number(cpi.current_value) > breakevenVal ? "text-loss" : "text-gain"}`}>
+                        {Number(cpi.current_value) > breakevenVal ? "↑ Surprising up" : "↓ In check"}
+                      </p>
+                      <p className="num text-[11px] text-paper-dim mt-0.5">T10YIE {breakevenVal.toFixed(2)}%</p>
+                    </>
+                  ) : <p className="text-paper-dim text-[11px]">—</p>}
+                </div>
+              </div>
+
+              {/* Regime row */}
+              <div className="grid grid-cols-3 bg-ink-soft/30">
+                <div className="px-3 py-3">
+                  <p className="label text-[10px]">Regime Read</p>
+                </div>
+                <div className="px-3 py-3 border-l border-ink-line">
+                  {regime ? (
+                    <>
+                      <p className={`font-semibold ${regime.color}`}>{regime.label}</p>
+                      <p className="text-[11px] text-paper-dim mt-0.5">{regime.desc}</p>
+                    </>
+                  ) : <p className="text-paper-dim text-[11px]">—</p>}
+                </div>
+                <div className="px-3 py-3 border-l border-ink-line">
+                  {marketMeta ? (
+                    <>
+                      <p className={`font-semibold ${marketMeta.color}`}>{marketMeta.label}</p>
+                      <p className="text-[11px] text-paper-dim mt-0.5">{marketMeta.desc}</p>
+                    </>
+                  ) : <p className="text-paper-dim text-[11px]">—</p>}
+                </div>
+              </div>
+
+            </div>
+
+            {/* Agreement / divergence banner */}
+            {regimeKey && marketRegimeKey && (
+              <div className={`mt-3 rounded-lg px-3 py-2 text-xs flex items-center gap-2 ${
+                regimeKey === marketRegimeKey
+                  ? "bg-gain/10 text-gain border border-gain/20"
+                  : "bg-brass/10 text-brass-soft border border-brass/20"
+              }`}>
+                {regimeKey === marketRegimeKey
+                  ? "✓ Both lenses agree — regime signal is clear"
+                  : "⚠ Lenses diverge — markets may be pricing a regime shift"
+                }
+              </div>
+            )}
           </div>
 
           {/* Signal categories */}
