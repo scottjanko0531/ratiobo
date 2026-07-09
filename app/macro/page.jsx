@@ -238,18 +238,25 @@ function computeSuggestedPcts(regimeKey, method, assetData) {
   } else if (method === "naive") {
     fractional = applyNaiveRiskParity(riskAssets);
   } else {
+    // Regime RP: run true risk parity only on regime-favored assets (Default weight ≥ 10%).
+    // Non-favored assets receive 0. This combines regime signal (which assets)
+    // with risk-parity math (how much), requiring no leverage.
+    const favoredKeys = new Set(getSignalKeys(regimeKey, 10));
+    const regimeAssets = riskAssets.filter((a) => favoredKeys.has(a.key));
+    const solverAssets = regimeAssets.length >= 2 ? regimeAssets : riskAssets;
     const subCorr = Object.fromEntries(
-      riskAssets.map((a) => [
+      solverAssets.map((a) => [
         a.key,
         Object.fromEntries(
-          riskAssets.map((b) => [
+          solverAssets.map((b) => [
             b.key,
             assetData.corrMatrix[a.key]?.[b.key] ?? (a.key === b.key ? 1 : 0),
           ])
         ),
       ])
     );
-    fractional = solveTrueRiskParity(riskAssets, subCorr);
+    const solved = solveTrueRiskParity(solverAssets, subCorr);
+    fractional = Object.fromEntries(riskAssets.map((a) => [a.key, solved[a.key] ?? 0]));
   }
 
   const intW = toIntWeights(fractional, budget);
@@ -369,7 +376,7 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                   { k: "default", l: "Default" },
                   { k: "equal",   l: "Equal Wt" },
                   { k: "naive",   l: "Naive RP" },
-                  { k: "true",    l: "True RP" },
+                  { k: "true",    l: "Regime RP" },
                 ].map((m) => (
                   <button
                     key={m.k}
