@@ -258,16 +258,25 @@ function computeSuggestedPcts(regimeKey, method, assetData) {
   return result;
 }
 
-function QuadrantCard({ indicators, holdings, assetData }) {
+const QUADRANT_TO_REGIME = {
+  goldilocks:  "rg_fi",
+  reflation:   "rg_ri",
+  bust:        "fg_fi",
+  stagflation: "fg_ri",
+};
+
+function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
   const gdp = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi = indicators.find((i) => i.name === "CPI (YoY)");
   const ism = indicators.find((i) => i.name === "ISM Manufacturing PMI" || i.name === "ISM New Orders");
 
-  // Detect regime from live indicator values
-  const regimeKey =
-    gdp?.current_value != null && cpi?.current_value != null
-      ? detectRegimeKey(Number(gdp.current_value), Number(cpi.current_value))
-      : null;
+  // Use the same quadrant source as the Three Forces chart (3-yr trailing avg);
+  // fall back to point-in-time detectRegimeKey only when DB data isn't ready.
+  const regimeKey = latestQuadrant
+    ? (QUADRANT_TO_REGIME[latestQuadrant] ?? null)
+    : (gdp?.current_value != null && cpi?.current_value != null
+        ? detectRegimeKey(Number(gdp.current_value), Number(cpi.current_value))
+        : null);
 
   const regime = regimeKey ? REGIME_META[regimeKey] : null;
   const [allocMethod, setAllocMethod] = useState("default");
@@ -1294,6 +1303,7 @@ export default function MacroDashboard() {
   const [error, setError] = useState("");
   const [portfolioHoldings, setPortfolioHoldings] = useState([]);
   const [assetData, setAssetData] = useState(null);
+  const [latestQuadrant, setLatestQuadrant] = useState(null);
   const [debtDrawerOpen, setDebtDrawerOpen] = useState(false);
   const [cpiDrawerOpen, setCpiDrawerOpen] = useState(false);
   const [consumerExpOpen, setConsumerExpOpen] = useState(false);
@@ -1308,6 +1318,18 @@ export default function MacroDashboard() {
   }, []);
 
   useEffect(() => { fetchIndicators(); }, [fetchIndicators]);
+
+  useEffect(() => {
+    supabase
+      .from("macro_debt_cycle_computed")
+      .select("year, quadrant")
+      .not("quadrant", "is", null)
+      .order("year", { ascending: false })
+      .limit(1)
+      .single()
+      .then(({ data }) => { if (data?.quadrant) setLatestQuadrant(data.quadrant); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => { getAssetData().then(setAssetData).catch(() => {}); }, []);
 
@@ -1402,7 +1424,7 @@ export default function MacroDashboard() {
         <p className="text-paper-dim text-sm py-12 text-center">Loading…</p>
       ) : (
         <>
-          <QuadrantCard indicators={indicators} holdings={portfolioHoldings} assetData={assetData} />
+          <QuadrantCard indicators={indicators} holdings={portfolioHoldings} assetData={assetData} latestQuadrant={latestQuadrant} />
 
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[
