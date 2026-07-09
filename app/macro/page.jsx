@@ -13,6 +13,7 @@ import {
   REGIME_DEFAULT_WEIGHTS,
   REGIME_META,
   REGIME_RETURNS,
+  SUGGESTED_FUNDS,
   detectRegimeKey,
   resolveSimulatorKey,
   getSignalKeys,
@@ -754,17 +755,29 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                       <div className="px-3 py-1.5 bg-ink-soft/30 border-b border-ink-line text-[10px] text-paper-dim font-medium">
                         Recommendations — no current holding
                       </div>
-                      {buyRows.map((r) => (
-                        <div key={r.key} className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-2 border-b border-ink-line/50 items-center">
-                          <span className="font-medium text-paper truncate">{r.label}</span>
-                          <span className="num text-paper-dim text-right">$0</span>
-                          <span className="num text-paper-dim text-right">0.0%</span>
-                          <span className="text-gain font-medium">
-                            Buy ${r.targetVal < 1000 ? r.targetVal.toFixed(0) : (r.targetVal / 1000).toFixed(1) + "k"}
-                          </span>
-                          <span className="num text-gain text-right">{r.targetPct.toFixed(1)}%</span>
-                        </div>
-                      ))}
+                      {buyRows.map((r) => {
+                        const funds = SUGGESTED_FUNDS[r.key] ?? [];
+                        return (
+                          <div key={r.key} className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-2 border-b border-ink-line/50 items-start">
+                            <div>
+                              <span className="font-medium text-paper">{r.label}</span>
+                              {funds.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {funds.map((f) => (
+                                    <span key={f} className="px-1.5 py-0.5 rounded bg-ink-line text-[9px] text-paper-dim font-mono">{f}</span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <span className="num text-paper-dim text-right">$0</span>
+                            <span className="num text-paper-dim text-right">0.0%</span>
+                            <span className="text-gain font-medium">
+                              Buy ${r.targetVal < 1000 ? r.targetVal.toFixed(0) : (r.targetVal / 1000).toFixed(1) + "k"}
+                            </span>
+                            <span className="num text-gain text-right">{r.targetPct.toFixed(1)}%</span>
+                          </div>
+                        );
+                      })}
                     </>
                   )}
 
