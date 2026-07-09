@@ -273,16 +273,24 @@ const QUADRANT_TO_REGIME = {
 };
 
 function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
-  const gdp = indicators.find((i) => i.name === "Real GDP Growth");
-  const cpi = indicators.find((i) => i.name === "CPI (YoY)");
-  const ism = indicators.find((i) => i.name === "ISM Manufacturing PMI" || i.name === "ISM New Orders");
+  const gdp        = indicators.find((i) => i.name === "Real GDP Growth");
+  const cpi        = indicators.find((i) => i.name === "CPI (YoY)");
+  const ism        = indicators.find((i) => i.name === "ISM Manufacturing PMI" || i.name === "ISM New Orders");
+  const breakeven  = indicators.find((i) => i.name === "10Y Breakeven Inflation");
+  const gdp3yAvg   = indicators.find((i) => i.name === "GDP Growth (3Y Avg)");
+
+  const breakevenVal = breakeven?.current_value != null ? Number(breakeven.current_value) : 2.5;
+  const gdp3yAvgVal  = gdp3yAvg?.current_value  != null ? Number(gdp3yAvg.current_value)  : 0;
 
   // Use the same quadrant source as the Three Forces chart (3-yr trailing avg);
-  // fall back to point-in-time detectRegimeKey only when DB data isn't ready.
+  // fall back to expectation-based detectRegimeKey only when DB data isn't ready.
   const regimeKey = latestQuadrant
     ? (QUADRANT_TO_REGIME[latestQuadrant] ?? null)
     : (gdp?.current_value != null && cpi?.current_value != null
-        ? detectRegimeKey(Number(gdp.current_value), Number(cpi.current_value))
+        ? detectRegimeKey(Number(gdp.current_value), Number(cpi.current_value), {
+            breakeven: breakevenVal,
+            gdp3yAvg:  gdp3yAvgVal,
+          })
         : null);
 
   const regime = regimeKey ? REGIME_META[regimeKey] : null;
@@ -354,16 +362,39 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
               <p className="text-paper-dim text-sm mt-1">{regime.desc}</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {[
-                { name: "GDP Growth", value: gdp?.current_value, unit: "%" },
-                { name: "CPI YoY",    value: cpi?.current_value, unit: "%" },
-                { name: "ISM PMI",    value: ism?.current_value, unit: "index" },
-              ].map(({ name, value, unit }) => (
-                <div key={name} className="bg-ink-soft rounded-lg px-3 py-1.5">
-                  <p className="label text-[10px]">{name}</p>
-                  <p className="num text-sm">{formatValue(value, unit)}</p>
-                </div>
-              ))}
+              {/* GDP: actual vs 3-year trend */}
+              <div className="bg-ink-soft rounded-lg px-3 py-1.5">
+                <p className="label text-[10px]">GDP Growth</p>
+                <p className="num text-sm">{formatValue(gdp?.current_value, "%")}</p>
+                {gdp3yAvg?.current_value != null && (
+                  <p className="text-[10px] text-paper-dim mt-0.5">
+                    {Number(gdp.current_value) > gdp3yAvgVal
+                      ? <span className="text-gain">↑</span>
+                      : <span className="text-loss">↓</span>
+                    }{" "}
+                    trend {gdp3yAvgVal.toFixed(1)}%
+                  </p>
+                )}
+              </div>
+              {/* CPI: actual vs 10Y breakeven */}
+              <div className="bg-ink-soft rounded-lg px-3 py-1.5">
+                <p className="label text-[10px]">CPI YoY</p>
+                <p className="num text-sm">{formatValue(cpi?.current_value, "%")}</p>
+                {breakeven?.current_value != null && (
+                  <p className="text-[10px] text-paper-dim mt-0.5">
+                    {Number(cpi.current_value) > breakevenVal
+                      ? <span className="text-loss">↑</span>
+                      : <span className="text-gain">↓</span>
+                    }{" "}
+                    mkt exp {breakevenVal.toFixed(2)}%
+                  </p>
+                )}
+              </div>
+              {/* ISM PMI */}
+              <div className="bg-ink-soft rounded-lg px-3 py-1.5">
+                <p className="label text-[10px]">ISM PMI</p>
+                <p className="num text-sm">{formatValue(ism?.current_value, "index")}</p>
+              </div>
             </div>
           </div>
 
