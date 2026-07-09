@@ -397,7 +397,7 @@ const SHORT_TERM_CYCLE_INFO = (
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">How it's calculated</p>
-      <p className="text-paper-dim">Five z-scores are computed against 20 years of monthly history. Each is oriented so that <span className="text-paper">positive = stress, negative = expansion</span>. Composite: <span className="text-paper font-mono">25% yield curve (T10Y3M, inverted) + 25% HY spread (BAMLH0A0HYM2) + 20% lending standards (DRTSCILM) + 15% debt service ratio (TDSP) + 15% LEI momentum (USSLIND MoM%, inverted)</span>.</p>
+      <p className="text-paper-dim">Five z-scores are computed against full available FRED history. Each is oriented so that <span className="text-paper">positive = stress, negative = expansion</span>. Composite: <span className="text-paper font-mono">25% yield curve (T10Y3M, inverted) + 25% Baa credit spread (DBAA−DGS10) + 20% lending standards (DRTSCILM) + 15% debt service ratio (TDSP) + 15% Chicago Fed NAI (CFNAI, inverted)</span>.</p>
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">Why it matters</p>
@@ -452,10 +452,10 @@ function shortTermCycleAssessment(gauge2) {
 
 const ST_CYCLE_COMPONENTS = [
   { key: "z_yield_curve",  label: "3mo/10yr Yield Spread", weight: 0.25, desc: "Inverted: flat/inverted curve = stress" },
-  { key: "z_hy_spread",    label: "HY Credit Spread (OAS)", weight: 0.25, desc: "Wide spreads = stress" },
+  { key: "z_hy_spread",    label: "Baa Credit Spread",       weight: 0.25, desc: "Wide spreads = stress" },
   { key: "z_lending_stds", label: "Sr Loan Officer Survey",  weight: 0.20, desc: "Tight standards = stress" },
   { key: "z_debt_service", label: "Consumer Debt Service",   weight: 0.15, desc: "High burden = stress" },
-  { key: "z_lei_momentum", label: "Conference Board LEI MoM",weight: 0.15, desc: "Inverted: declining momentum = stress" },
+  { key: "z_lei_momentum", label: "Chicago Fed NAI",         weight: 0.15, desc: "Inverted: below-trend = stress" },
 ];
 
 function ShortTermCreditCycleDrawer({ open, onClose, latestGauge }) {
@@ -498,7 +498,7 @@ function ShortTermCreditCycleDrawer({ open, onClose, latestGauge }) {
       open={open} onClose={onClose}
       title="Short-Term Credit Cycle"
       desc="Composite z-score · positive = tightening/stress · negative = expansion"
-      source="FRED: T10Y3M · BAMLH0A0HYM2 · DRTSCILM · TDSP · USSLIND"
+      source="FRED: T10Y3M · DBAA−DGS10 · DRTSCILM · TDSP · CFNAI"
       latestGauge={latestGauge}
       range={range} setRange={setRange}
       loading={gaugeHistory === null}
