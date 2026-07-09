@@ -124,7 +124,7 @@ export default function Dashboard() {
       supabase.from("holdings_valued").select("*").order("asset_type").order("current_value", { ascending: false }),
       supabase.from("portfolio_snapshots").select("holding_id, market_value").eq("snapshot_date", today),
       supabase.from("asset_types").select("code, label").eq("is_active", true),
-      supabase.from("portfolio_snapshots").select("snapshot_date, market_value").order("snapshot_date", { ascending: true }),
+      supabase.rpc("portfolio_daily_totals"),
     ]).then(([{ data, error: err }, { data: snaps }, { data: at }, { data: hist }]) => {
       if (err) setError(err.message);
       else {
@@ -141,19 +141,12 @@ export default function Dashboard() {
       for (const t of at ?? []) labelMap[t.code] = t.label;
       setAssetTypeLabels(labelMap);
 
-      // Aggregate snapshots by date → total portfolio value per day
-      const byDate = {};
-      for (const s of hist ?? []) {
-        byDate[s.snapshot_date] = (byDate[s.snapshot_date] ?? 0) + Number(s.market_value ?? 0);
-      }
       setPortfolioHistory(
-        Object.entries(byDate)
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([date, value]) => ({
-            date,
-            value,
-            label: new Date(date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-          }))
+        (hist ?? []).map((row) => ({
+          date:  row.snapshot_date,
+          value: Number(row.total_value ?? 0),
+          label: new Date(row.snapshot_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+        }))
       );
     });
   }, []);
