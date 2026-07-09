@@ -2,7 +2,6 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer,
-  PieChart, Pie, Cell,
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
 } from "recharts";
 import { supabase } from "../../lib/supabase";
@@ -46,10 +45,6 @@ function GainText({ value, pct }) {
 }
 
 // Design-system colors for pie slices
-const SLICE_COLORS = [
-  "#C9A227", "#3FB984", "#3b82f6", "#8b5cf6",
-  "#f97316", "#14b8a6", "#ec4899", "#E0635C",
-];
 
 function ChartTooltip({ active, payload, formatter }) {
   if (!active || !payload?.length) return null;
@@ -270,49 +265,54 @@ export default function Dashboard() {
 
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
-        {/* Allocation by type — pie / donut */}
-        <div className="card p-5">
-          <p className="label mb-4">Allocation by type</p>
+        {/* Allocation by type — proportion bars */}
+        <div className="card p-5 flex flex-col">
+          <div className="flex items-baseline justify-between mb-5">
+            <p className="label">Allocation, by proportion</p>
+            <span className="num text-paper text-sm">{usd(totals.value)}</span>
+          </div>
           {allocationData.length === 0 ? (
             <p className="text-paper-dim text-sm py-8 text-center">No holdings data.</p>
           ) : (
-            <div className="flex items-center gap-4">
-              <ResponsiveContainer width="55%" height={220}>
-                <PieChart>
-                  <Pie
-                    data={allocationData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={100}
-                    paddingAngle={2}
-                    dataKey="value"
-                  >
-                    {allocationData.map((entry, i) => (
-                      <Cell key={entry.code} fill={SLICE_COLORS[i % SLICE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    content={<ChartTooltip formatter={(v) => usd(v)} />}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="flex-1 space-y-2 min-w-0">
-                {allocationData.map((entry, i) => {
+            <>
+              <div className="space-y-4 flex-1">
+                {allocationData.map((entry) => {
                   const pct = totals.value > 0 ? (entry.value / totals.value) * 100 : 0;
                   return (
-                    <div key={entry.code} className="flex items-center gap-2 text-xs">
-                      <span
-                        className="w-2.5 h-2.5 rounded-sm shrink-0"
-                        style={{ backgroundColor: SLICE_COLORS[i % SLICE_COLORS.length] }}
-                      />
-                      <span className="text-paper-dim truncate flex-1">{entry.name}</span>
-                      <span className="num text-paper shrink-0">{pct.toFixed(1)}%</span>
+                    <div key={entry.code}>
+                      <div className="flex items-baseline justify-between mb-2">
+                        <span className="text-sm text-paper">{entry.name}</span>
+                        <span className="text-sm num">
+                          <span className="text-paper-dim">{usd(entry.value)}</span>
+                          <span className="text-brass ml-2">{pct.toFixed(0)}%</span>
+                        </span>
+                      </div>
+                      <div className="relative h-[3px] bg-ink-line rounded-full">
+                        <div
+                          className="absolute left-0 top-0 h-full bg-brass rounded-full"
+                          style={{ width: `${pct}%` }}
+                        />
+                        <div
+                          className="absolute top-1/2 -translate-y-1/2 w-[10px] h-[10px] rounded-full bg-brass"
+                          style={{ left: `calc(${pct}% - 5px)` }}
+                        />
+                      </div>
                     </div>
                   );
                 })}
               </div>
-            </div>
+              <div className="flex items-center justify-between mt-5 pt-4 border-t border-ink-line">
+                <p className="label">Unrealized gain</p>
+                <span className="num text-sm">
+                  <GainText value={totals.gain} />
+                  {totals.basis > 0 && (
+                    <span className="text-gain ml-2">
+                      +{((totals.gain / totals.basis) * 100).toFixed(1)}%
+                    </span>
+                  )}
+                </span>
+              </div>
+            </>
           )}
         </div>
 
