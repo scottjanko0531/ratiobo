@@ -261,7 +261,7 @@ function computeSuggestedPcts(regimeKey, method, assetData) {
 function QuadrantCard({ indicators, holdings, assetData }) {
   const gdp = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi = indicators.find((i) => i.name === "CPI (YoY)");
-  const ism = indicators.find((i) => i.name === "ISM Manufacturing PMI");
+  const ism = indicators.find((i) => i.name === "ISM Manufacturing PMI" || i.name === "ISM New Orders");
 
   // Detect regime from live indicator values
   const regimeKey =
