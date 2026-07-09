@@ -1,7 +1,7 @@
 "use client";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
-  ResponsiveContainer,
+  ResponsiveContainer, Cell,
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
 } from "recharts";
 import { supabase } from "../../lib/supabase";
