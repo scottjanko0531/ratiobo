@@ -7,6 +7,7 @@ import {
 } from "recharts";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
+import NotificationBanner from "../../components/NotificationBanner";
 
 const usd = (n) =>
   n == null
@@ -270,6 +271,9 @@ export default function Dashboard() {
           <p className="num text-xl"><GainText value={periodChanges.ytd} /></p>
         </div>
       </div>
+
+      {/* Notification banner */}
+      <NotificationBanner />
 
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
