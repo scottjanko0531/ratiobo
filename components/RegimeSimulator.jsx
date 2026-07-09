@@ -16,7 +16,7 @@ import {
   saveAltAssumption,
 } from "../lib/altAssets";
 import AltConfigPanel from "./AltConfigPanel";
-import { REGIME_DEFAULT_WEIGHTS, holdingsToWeights } from "../lib/simulatorKeys";
+import { REGIME_DEFAULT_WEIGHTS, getSignalKeys, holdingsToWeights } from "../lib/simulatorKeys";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -421,12 +421,19 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
     }));
   }
 
-  function applyTrue() {
-    const riskAssets = mergedAssets.filter((a) => a.key !== "cash" && !ALT_KEYS.has(a.key));
+  function applyRegimeRP() {
+    const allRiskAssets = mergedAssets.filter((a) => a.key !== "cash" && !ALT_KEYS.has(a.key));
     const { cashPct, budget } = rpBudget();
+    // Scope solver to regime-favored assets (Default weight ≥ 10%); fall back to
+    // full set if fewer than 2 favored assets to keep the solver well-conditioned.
+    const favoredKeys = new Set(getSignalKeys(activeRegime, 10));
+    const regimeAssets = allRiskAssets.filter((a) => favoredKeys.has(a.key));
+    const solverAssets = regimeAssets.length >= 2 ? regimeAssets : allRiskAssets;
+    const solved = solveTrueRiskParity(solverAssets, mergedCorrMatrix);
+    const fractional = Object.fromEntries(allRiskAssets.map((a) => [a.key, solved[a.key] ?? 0]));
     setWeights((prev) => ({
       ...prev,
-      ...toSliderWeights(solveTrueRiskParity(riskAssets, mergedCorrMatrix), budget),
+      ...toSliderWeights(fractional, budget),
       ...preservedOverrides(cashPct),
     }));
   }
@@ -619,8 +626,8 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
               <button onClick={applyNaive} className="btn-ghost py-2 text-xs">
                 Naive risk parity
               </button>
-              <button onClick={applyTrue} className="btn-ghost py-2 text-xs">
-                True risk parity
+              <button onClick={applyRegimeRP} className="btn-ghost py-2 text-xs">
+                Regime risk parity
               </button>
               <button onClick={applyEqual} className="btn-ghost py-2 text-xs col-span-2">
                 Reset to equal weight
@@ -629,9 +636,9 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
             <p className="mt-3 text-[10px] text-paper-dim leading-relaxed">
               <span className="text-paper-dim/80 font-medium">Naive</span> — weights ∝ 1/vol,
               ignoring correlation.{" "}
-              <span className="text-paper-dim/80 font-medium">True</span> — iterative solver
-              equalising marginal risk contributions (correlation-aware). Cash and alternative
-              assets are excluded from all three presets — their sliders stay where you set them.
+              <span className="text-paper-dim/80 font-medium">Regime RP</span> — runs the
+              risk-parity solver only on regime-favored assets, so asset selection is regime-driven
+              and sizing is risk-balanced. Cash and alternatives are excluded from all presets.
             </p>
           </div>
 
