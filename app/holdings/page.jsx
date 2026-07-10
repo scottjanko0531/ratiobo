@@ -685,7 +685,7 @@ export default function HoldingsPage() {
         unrealized: unr?.total ?? null,
         realized,
         income,
-        total: unr != null ? unr.total + realized + income : null,
+        total: (realized !== 0 || income !== 0 || unr != null) ? (unr?.total ?? 0) + realized + income : null,
         winners: unr?.winners ?? null,
         losers: unr?.losers ?? null,
       };
