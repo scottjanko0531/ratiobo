@@ -648,7 +648,7 @@ export default function HoldingsPage() {
     }
 
     const PERIODS = [
-      { key: "day",   label: "Day",        snapDate: ds(dayStart),   incomeFrom: todayStr },
+      { key: "day",   label: "Day",        snapDate: todayStr,        incomeFrom: todayStr },
       { key: "week",  label: "Week",        snapDate: ds(weekStart),  incomeFrom: ds(weekStart) },
       { key: "month", label: "Curr Month",  snapDate: ds(sub(monthStart, 1)), incomeFrom: ds(monthStart) },
       { key: "qtr",   label: "Qtr",         snapDate: ds(sub(qtrStart, 1)),   incomeFrom: ds(qtrStart) },
