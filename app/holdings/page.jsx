@@ -647,20 +647,40 @@ export default function HoldingsPage() {
       return { income, realized };
     }
 
+    // Day: use snapMap directly — same source as the holdings table Day CHG column
+    const dayIncome = incomeIn(todayStr);
+    let dayUnrealized = 0; let dayWinners = 0; let dayLosers = 0; let dayFound = 0;
+    for (const h of investmentHoldings) {
+      const prev = snapMap[h.id];
+      if (prev == null) continue;
+      dayFound++;
+      const d = Number(h.current_value ?? 0) - prev;
+      dayUnrealized += d;
+      if (d > 0.005) dayWinners++;
+      else if (d < -0.005) dayLosers++;
+    }
+
     const PERIODS = [
-      { key: "day",   label: "Day",        snapDate: todayStr,        incomeFrom: todayStr },
-      { key: "week",  label: "Week",        snapDate: ds(weekStart),  incomeFrom: ds(weekStart) },
-      { key: "month", label: "Curr Month",  snapDate: ds(sub(monthStart, 1)), incomeFrom: ds(monthStart) },
-      { key: "qtr",   label: "Qtr",         snapDate: ds(sub(qtrStart, 1)),   incomeFrom: ds(qtrStart) },
-      { key: "year",  label: "Year",        snapDate: ds(sub(yearStart, 1)),  incomeFrom: ds(yearStart) },
+      { key: "week",  label: "Week",       snapDate: ds(weekStart),          incomeFrom: ds(weekStart) },
+      { key: "month", label: "Curr Month", snapDate: ds(sub(monthStart, 1)), incomeFrom: ds(monthStart) },
+      { key: "qtr",   label: "Qtr",        snapDate: ds(sub(qtrStart, 1)),   incomeFrom: ds(qtrStart) },
+      { key: "year",  label: "Year",       snapDate: ds(sub(yearStart, 1)),  incomeFrom: ds(yearStart) },
     ];
 
-    const cols = {};
+    const cols = {
+      day: {
+        unrealized: dayFound > 0 ? dayUnrealized : null,
+        realized:   dayIncome.realized,
+        income:     dayIncome.income,
+        total:      dayFound > 0 ? dayUnrealized + dayIncome.realized + dayIncome.income : null,
+        winners:    dayFound > 0 ? dayWinners : null,
+        losers:     dayFound > 0 ? dayLosers  : null,
+      },
+    };
     for (const p of PERIODS) {
       const unr = unrealizedChange(p.snapDate);
       const { income, realized } = incomeIn(p.incomeFrom);
       cols[p.key] = {
-        label: p.label,
         unrealized: unr?.total ?? null,
         realized,
         income,
@@ -684,7 +704,7 @@ export default function HoldingsPage() {
     };
 
     return cols;
-  }, [holdings, allSnapshots, allTransactions]);
+  }, [holdings, snapMap, allSnapshots, allTransactions]);
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const filtersActive = filterSearch.trim() !== "" || filterSymbols.length > 0 || filterAssetTypes.length > 0 || filterAccounts.length > 0;
