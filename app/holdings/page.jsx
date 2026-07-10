@@ -584,8 +584,8 @@ export default function HoldingsPage() {
   const portfolioMetrics = useMemo(() => {
     if (!holdings || holdings.length === 0) return null;
 
-    // Exclude cash-equivalent holdings — only count true investment assets
-    const CASH_LIKE = new Set(["cash", "money_market"]);
+    // Exclude pure cash (USD transfers) — money market is kept to capture interest income
+    const CASH_LIKE = new Set(["cash"]);
     const investmentHoldings = holdings.filter((h) => !CASH_LIKE.has(h.asset_type));
     if (investmentHoldings.length === 0) return null;
 
