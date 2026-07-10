@@ -1,5 +1,5 @@
 "use client";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -83,6 +83,8 @@ export default function HoldingsPage() {
   const [assetTypes, setAssetTypes] = useState([]);
   const [txnTypes, setTxnTypes] = useState([]);
   const [snapMap, setSnapMap] = useState({});
+  const [allSnapshots, setAllSnapshots] = useState([]);
+  const [allTransactions, setAllTransactions] = useState([]);
   const [error, setError] = useState("");
 
   // Filter
@@ -154,13 +156,17 @@ export default function HoldingsPage() {
       { data: ac },
       { data: at },
       { data: tt },
-      { data: snaps }
+      { data: snaps },
+      { data: allSnaps },
+      { data: allTxns },
     ] = await Promise.all([
       supabase.from("holdings_valued").select("*").order("asset_type").order("symbol"),
       supabase.from("accounts").select("id, name").order("name"),
       supabase.from("asset_types").select("code, label").eq("is_active", true).order("sort_order"),
       supabase.from("transaction_types").select("code, label, affects_quantity").eq("is_active", true).order("sort_order"),
-      supabase.from("portfolio_snapshots").select("holding_id, market_value").eq("snapshot_date", today)
+      supabase.from("portfolio_snapshots").select("holding_id, market_value").eq("snapshot_date", today),
+      supabase.from("portfolio_snapshots").select("holding_id, snapshot_date, market_value"),
+      supabase.from("transactions").select("holding_id, txn_type, txn_date, amount, is_reinvested"),
     ]);
     if (hvErr) setError(hvErr.message);
     setHoldings(hv ?? []);
@@ -174,6 +180,8 @@ export default function HoldingsPage() {
     const sMap = {};
     for (const s of snaps ?? []) sMap[s.holding_id] = Number(s.market_value ?? 0);
     setSnapMap(sMap);
+    setAllSnapshots(allSnaps ?? []);
+    setAllTransactions(allTxns ?? []);
   }
 
   useEffect(() => { load(); }, []);
@@ -572,6 +580,104 @@ export default function HoldingsPage() {
     await openDetail(viewingHolding);
   }
 
+  // ── Portfolio metrics grid ────────────────────────────────────────────────
+  const portfolioMetrics = useMemo(() => {
+    if (!holdings || holdings.length === 0) return null;
+
+    const today = new Date();
+    const todayStr = today.toISOString().slice(0, 10);
+    const ds = (d) => d.toISOString().slice(0, 10);
+
+    const sub = (d, days) => { const r = new Date(d); r.setDate(r.getDate() - days); return r; };
+    const dayStart    = sub(today, 1);
+    const weekStart   = sub(today, 7);
+    const monthStart  = new Date(today.getFullYear(), today.getMonth(), 1);
+    const qtrStart    = new Date(today.getFullYear(), Math.floor(today.getMonth() / 3) * 3, 1);
+    const yearStart   = new Date(today.getFullYear(), 0, 1);
+
+    // Build per-holding snapshot lookup sorted descending by date
+    const snapsByHolding = {};
+    for (const s of allSnapshots) {
+      if (!snapsByHolding[s.holding_id]) snapsByHolding[s.holding_id] = [];
+      snapsByHolding[s.holding_id].push(s);
+    }
+    for (const arr of Object.values(snapsByHolding)) {
+      arr.sort((a, b) => b.snapshot_date.localeCompare(a.snapshot_date));
+    }
+
+    // Latest snapshot on or before dateStr
+    function snapAt(holdingId, dateStr) {
+      const arr = snapsByHolding[holdingId] ?? [];
+      return arr.find((s) => s.snapshot_date <= dateStr) ?? null;
+    }
+
+    // Unrealized gain change vs a period-start date, + winner/loser counts
+    function unrealizedChange(startDateStr) {
+      let total = 0; let winners = 0; let losers = 0; let found = 0;
+      for (const h of holdings) {
+        const snap = snapAt(h.id, startDateStr);
+        if (!snap) continue;
+        found++;
+        const d = Number(h.current_value ?? 0) - Number(snap.market_value ?? 0);
+        total += d;
+        if (d > 0.005) winners++;
+        else if (d < -0.005) losers++;
+      }
+      return found > 0 ? { total, winners, losers } : null;
+    }
+
+    // Income and realized gains from transactions in a date range (from exclusive, to inclusive = today)
+    function incomeIn(fromDateStr) {
+      let income = 0; let realized = 0;
+      for (const t of allTransactions) {
+        if (fromDateStr && t.txn_date < fromDateStr) continue;
+        if (t.txn_date > todayStr) continue;
+        if ((t.txn_type === "dividend" || t.txn_type === "interest") && !t.is_reinvested) income += Number(t.amount ?? 0);
+        if (t.txn_type === "fee") income -= Number(t.amount ?? 0);
+        if (t.txn_type === "sell") realized += Number(t.amount ?? 0);
+      }
+      return { income, realized };
+    }
+
+    const PERIODS = [
+      { key: "day",   label: "Day",        snapDate: ds(dayStart),   incomeFrom: todayStr },
+      { key: "week",  label: "Week",        snapDate: ds(weekStart),  incomeFrom: ds(weekStart) },
+      { key: "month", label: "Curr Month",  snapDate: ds(sub(monthStart, 1)), incomeFrom: ds(monthStart) },
+      { key: "qtr",   label: "Qtr",         snapDate: ds(sub(qtrStart, 1)),   incomeFrom: ds(qtrStart) },
+      { key: "year",  label: "Year",        snapDate: ds(sub(yearStart, 1)),  incomeFrom: ds(yearStart) },
+    ];
+
+    const cols = {};
+    for (const p of PERIODS) {
+      const unr = unrealizedChange(p.snapDate);
+      const { income, realized } = incomeIn(p.incomeFrom);
+      cols[p.key] = {
+        label: p.label,
+        unrealized: unr?.total ?? null,
+        realized,
+        income,
+        total: unr != null ? unr.total + realized + income : null,
+        winners: unr?.winners ?? null,
+        losers: unr?.losers ?? null,
+      };
+    }
+
+    // ALL: unrealized = sum of net_gain on each holding; income = all-time
+    const totalNetGain = holdings.reduce((s, h) => s + Number(h.net_gain ?? 0), 0);
+    const allIncome = incomeIn(null);
+    cols.all = {
+      label: "ALL",
+      unrealized: totalNetGain,
+      realized: allIncome.realized,
+      income: allIncome.income,
+      total: totalNetGain + allIncome.realized + allIncome.income,
+      winners: holdings.filter((h) => Number(h.net_gain ?? 0) > 0.005).length,
+      losers:  holdings.filter((h) => Number(h.net_gain ?? 0) < -0.005).length,
+    };
+
+    return cols;
+  }, [holdings, allSnapshots, allTransactions]);
+
   // ── Derived ───────────────────────────────────────────────────────────────
   const filtersActive = filterSearch.trim() !== "" || filterSymbols.length > 0 || filterAssetTypes.length > 0 || filterAccounts.length > 0;
   const filterCount = (filterSearch.trim() ? 1 : 0) + filterSymbols.length + filterAssetTypes.length + filterAccounts.length;
@@ -690,6 +796,67 @@ export default function HoldingsPage() {
           </button>
         </div>
       </div>
+
+      {/* Portfolio metrics grid */}
+      {portfolioMetrics && (() => {
+        const COLS = ["day", "week", "month", "qtr", "year", "all"];
+        const COL_LABELS = { day: "Day", week: "Week", month: "Curr Month", qtr: "Qtr", year: "Year", all: "ALL" };
+        const fmt = (n) => {
+          if (n == null) return <span className="text-paper-dim">—</span>;
+          const abs = Math.abs(n);
+          const s = abs >= 1_000_000 ? `$${(abs / 1_000_000).toFixed(2)}M`
+                  : abs >= 1_000    ? `$${(abs / 1_000).toFixed(1)}k`
+                  : `$${abs.toFixed(0)}`;
+          if (Math.abs(n) < 0.005) return <span className="text-paper-dim num">$0</span>;
+          return <span className={`num ${n > 0 ? "text-gain" : "text-loss"}`}>{n > 0 ? "+" : "-"}{s}</span>;
+        };
+        const ROWS = [
+          { key: "unrealized", label: "Unrealized Gains" },
+          { key: "realized",   label: "Realized Gains" },
+          { key: "income",     label: "Income" },
+          { key: "total",      label: "Total" },
+        ];
+        return (
+          <div className="card mb-4 overflow-x-auto">
+            <table className="w-full text-xs min-w-[520px]">
+              <thead>
+                <tr className="border-b border-ink-line">
+                  <th className="text-left px-4 py-2 text-paper-dim font-normal w-36" />
+                  {COLS.map((c) => (
+                    <th key={c} className="text-right px-3 py-2 text-paper-dim font-medium">{COL_LABELS[c]}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {ROWS.map((row, ri) => (
+                  <tr key={row.key} className={`border-b ${row.key === "total" ? "border-ink-line font-semibold" : "border-ink-line/40"}`}>
+                    <td className={`px-4 py-2 ${row.key === "total" ? "text-paper" : "text-paper-dim"}`}>{row.label}</td>
+                    {COLS.map((c) => (
+                      <td key={c} className="text-right px-3 py-2">{fmt(portfolioMetrics[c]?.[row.key])}</td>
+                    ))}
+                  </tr>
+                ))}
+                {/* Spacer */}
+                <tr className="h-2" />
+                <tr className="border-t border-ink-line/40">
+                  <td className="px-4 py-1.5 text-paper-dim">Winners</td>
+                  {COLS.map((c) => {
+                    const v = portfolioMetrics[c]?.winners;
+                    return <td key={c} className={`text-right px-3 py-1.5 num ${v == null ? "text-paper-dim" : "text-gain"}`}>{v ?? "—"}</td>;
+                  })}
+                </tr>
+                <tr>
+                  <td className="px-4 py-1.5 text-paper-dim">Losers</td>
+                  {COLS.map((c) => {
+                    const v = portfolioMetrics[c]?.losers;
+                    return <td key={c} className={`text-right px-3 py-1.5 num ${v == null ? "text-paper-dim" : v > 0 ? "text-loss" : "text-paper-dim"}`}>{v ?? "—"}</td>;
+                  })}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
 
       {/* Holdings table card */}
       <div className="card">
