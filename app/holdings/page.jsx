@@ -584,6 +584,11 @@ export default function HoldingsPage() {
   const portfolioMetrics = useMemo(() => {
     if (!holdings || holdings.length === 0) return null;
 
+    // Exclude cash-equivalent holdings — only count true investment assets
+    const CASH_LIKE = new Set(["cash", "money_market"]);
+    const investmentHoldings = holdings.filter((h) => !CASH_LIKE.has(h.asset_type));
+    if (investmentHoldings.length === 0) return null;
+
     const today = new Date();
     const todayStr = today.toISOString().slice(0, 10);
     const ds = (d) => d.toISOString().slice(0, 10);
@@ -614,7 +619,7 @@ export default function HoldingsPage() {
     // Unrealized gain change vs a period-start date, + winner/loser counts
     function unrealizedChange(startDateStr) {
       let total = 0; let winners = 0; let losers = 0; let found = 0;
-      for (const h of holdings) {
+      for (const h of investmentHoldings) {
         const snap = snapAt(h.id, startDateStr);
         if (!snap) continue;
         found++;
@@ -626,10 +631,13 @@ export default function HoldingsPage() {
       return found > 0 ? { total, winners, losers } : null;
     }
 
-    // Income and realized gains from transactions in a date range (from exclusive, to inclusive = today)
+    // Income and realized gains from transactions in a date range (from inclusive, to = today)
+    // Only count transactions on investment holdings (not cash/money_market)
+    const investmentHoldingIds = new Set(investmentHoldings.map((h) => h.id));
     function incomeIn(fromDateStr) {
       let income = 0; let realized = 0;
       for (const t of allTransactions) {
+        if (!investmentHoldingIds.has(t.holding_id)) continue;
         if (fromDateStr && t.txn_date < fromDateStr) continue;
         if (t.txn_date > todayStr) continue;
         if ((t.txn_type === "dividend" || t.txn_type === "interest") && !t.is_reinvested) income += Number(t.amount ?? 0);
@@ -662,8 +670,8 @@ export default function HoldingsPage() {
       };
     }
 
-    // ALL: unrealized = sum of net_gain on each holding; income = all-time
-    const totalNetGain = holdings.reduce((s, h) => s + Number(h.net_gain ?? 0), 0);
+    // ALL: unrealized = sum of net_gain on investment holdings only; income = all-time
+    const totalNetGain = investmentHoldings.reduce((s, h) => s + Number(h.net_gain ?? 0), 0);
     const allIncome = incomeIn(null);
     cols.all = {
       label: "ALL",
@@ -671,8 +679,8 @@ export default function HoldingsPage() {
       realized: allIncome.realized,
       income: allIncome.income,
       total: totalNetGain + allIncome.realized + allIncome.income,
-      winners: holdings.filter((h) => Number(h.net_gain ?? 0) > 0.005).length,
-      losers:  holdings.filter((h) => Number(h.net_gain ?? 0) < -0.005).length,
+      winners: investmentHoldings.filter((h) => Number(h.net_gain ?? 0) > 0.005).length,
+      losers:  investmentHoldings.filter((h) => Number(h.net_gain ?? 0) < -0.005).length,
     };
 
     return cols;
