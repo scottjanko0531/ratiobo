@@ -280,6 +280,71 @@ const QUADRANT_TO_REGIME = {
   stagflation: "fg_ri",
 };
 
+const FWD_GROWTH_SIGNALS = [
+  { label: "Yield Curve 2/10",  name: "2yr/10yr Yield Spread",     w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
+  { label: "Yield Curve 3m/10", name: "3mo/10yr Yield Spread",     w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
+  { label: "Loan Standards",    name: "Sr Loan Officer Survey",    w: 0.20, vote: v => v < 15  ? 1 : v <= 35   ? 0 : -1 },
+  { label: "LEI",               name: "Conference Board LEI",      w: 0.15, vote: v => v > 0   ? 1 : v >= -0.3 ? 0 : -1 },
+  { label: "HY Spread",         name: "HY Credit Spread (OAS)",   w: 0.10, vote: v => v < 4   ? 1 : v <= 6    ? 0 : -1 },
+  { label: "C&I Loans",         name: "C&I Loan Growth (YoY)",    w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
+];
+const FWD_INFL_SIGNALS = [
+  { label: "Infl Expectations", name: "Consumer Inflation Expectations", w: 0.25, vote: v => v > 4    ? 1 : v >= 2.5 ? 0 : -1 },
+  { label: "10Y Breakeven",     name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > 2.5  ? 1 : v >= 1.5 ? 0 : -1 },
+  { label: "Copper",            name: "Copper Price",                    w: 0.20, vote: v => v > 9000 ? 1 : v >= 7000 ? 0 : -1 },
+  { label: "WTI Crude",         name: "WTI Crude Oil",                  w: 0.15, vote: v => v > 90   ? 1 : v >= 70  ? 0 : -1 },
+  { label: "PPI",               name: "PPI (YoY)",                      w: 0.10, vote: v => v > 3    ? 1 : v >= 0   ? 0 : -1 },
+  { label: "M2 Growth",         name: "M2 Growth (YoY)",                w: 0.10, vote: v => v > 8    ? 1 : v >= 3   ? 0 : -1 },
+];
+
+function computeForwardSignal(indicators) {
+  const get = (name) => {
+    const ind = indicators.find(i => i.name === name);
+    return ind?.current_value != null ? Number(ind.current_value) : null;
+  };
+  const scoreGroup = (sigs) => {
+    let weighted = 0, totalW = 0;
+    const scored = sigs.map(s => {
+      const val = get(s.name);
+      if (val == null) return { ...s, val: null, vote: null };
+      const v = s.vote(val);
+      weighted += v * s.w;
+      totalW += s.w;
+      return { ...s, val, vote: v };
+    });
+    return { signals: scored, score: totalW > 0 ? weighted / totalW : null };
+  };
+  const growth = scoreGroup(FWD_GROWTH_SIGNALS);
+  const infl   = scoreGroup(FWD_INFL_SIGNALS);
+  const THRESH = 0.15;
+  const dir = s => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
+  const gDir = dir(growth.score);
+  const iDir = dir(infl.score);
+  const forwardKey =
+    gDir === "up"   && iDir === "down" ? "rg_fi" :
+    gDir === "up"   && iDir === "up"   ? "rg_ri" :
+    gDir === "down" && iDir === "up"   ? "fg_ri" :
+    gDir === "down" && iDir === "down" ? "fg_fi" : null;
+  // Confidence: weighted % of signals aligned with the composite direction
+  const consensus = (signals, d) => {
+    if (!d || d === "neutral") return null;
+    const target = d === "up" ? 1 : -1;
+    let agreed = 0, total = 0;
+    for (const s of signals) {
+      if (s.vote == null) continue;
+      total += s.w;
+      if (s.vote === target) agreed += s.w;
+    }
+    return total > 0 ? Math.round(agreed / total * 100) : null;
+  };
+  const gConf = consensus(growth.signals, gDir);
+  const iConf = consensus(infl.signals, iDir);
+  const confidence = forwardKey && gConf != null && iConf != null
+    ? Math.round((gConf + iConf) / 2)
+    : null;
+  return { growth, infl, gDir, iDir, forwardKey, confidence };
+}
+
 function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
   const gdp        = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi        = indicators.find((i) => i.name === "CPI (YoY)");
@@ -314,6 +379,7 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
       })
     : null;
   const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
+  const fwd = computeForwardSignal(indicators);
 
   const [allocMethod, setAllocMethod] = useState("default");
 
@@ -583,6 +649,68 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                   ? "✓ Both lenses agree — regime signal is clear"
                   : "⚠ Lenses diverge — markets may be pricing a regime shift"
                 }
+              </div>
+            )}
+          </div>
+
+          {/* Forward Signal */}
+          <div>
+            <p className="label mb-3">
+              Forward Signal
+              <span className="text-paper-dim font-normal ml-2 text-[10px] normal-case tracking-normal">6–18 month horizon</span>
+            </p>
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              {[
+                { title: "Growth Momentum", sigs: fwd.growth.signals, dir: fwd.gDir, upLabel: "Expanding", downLabel: "Contracting" },
+                { title: "Inflation Momentum", sigs: fwd.infl.signals, dir: fwd.iDir, upLabel: "Rising", downLabel: "Falling" },
+              ].map(({ title, sigs, dir, upLabel, downLabel }) => (
+                <div key={title} className="bg-ink-soft rounded-lg p-3">
+                  <p className="label text-[10px] mb-2">{title}</p>
+                  <div className="space-y-1 mb-2">
+                    {sigs.map(s => (
+                      <div key={s.label} className="flex items-center justify-between">
+                        <span className="text-[10px] text-paper-dim">{s.label}</span>
+                        <span className={`text-[10px] font-medium ${s.vote > 0 ? "text-gain" : s.vote < 0 ? "text-loss" : "text-paper-dim"}`}>
+                          {s.vote == null ? "—" : s.vote > 0 ? "↑" : s.vote < 0 ? "↓" : "→"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="pt-2 border-t border-ink-line">
+                    <span className={`text-xs font-semibold ${dir === "up" ? "text-gain" : dir === "down" ? "text-loss" : "text-paper-dim"}`}>
+                      {dir === "up" ? `↑ ${upLabel}` : dir === "down" ? `↓ ${downLabel}` : "→ Neutral"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {fwd.forwardKey ? (
+              <div className="flex items-center gap-3 bg-ink-soft/50 rounded-lg px-4 py-3">
+                <div>
+                  <p className="text-[10px] text-paper-dim mb-0.5">Current</p>
+                  <p className={`text-sm font-semibold ${regime?.color ?? "text-paper"}`}>{regime?.label ?? "—"}</p>
+                </div>
+                <svg className="w-6 h-4 text-paper-dim shrink-0" viewBox="0 0 24 16" fill="none">
+                  <path d="M1 8h18M13 2l6 6-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                <div>
+                  <p className="text-[10px] text-paper-dim mb-0.5">Forward Signal</p>
+                  <p className={`text-sm font-semibold ${REGIME_META[fwd.forwardKey]?.color ?? "text-paper"}`}>
+                    {REGIME_META[fwd.forwardKey]?.label}
+                  </p>
+                  <p className="text-[10px] text-paper-dim">{REGIME_META[fwd.forwardKey]?.desc}</p>
+                </div>
+                <div className="ml-auto text-right">
+                  <p className="text-[10px] text-paper-dim mb-0.5">Signal strength</p>
+                  <p className="num text-sm">{fwd.confidence}%</p>
+                  <p className="text-[10px] text-paper-dim">
+                    {fwd.confidence >= 60 ? "Strong" : fwd.confidence >= 30 ? "Moderate" : "Weak"}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-ink-soft/50 rounded-lg px-4 py-3 text-xs text-paper-dim">
+                Forward signal inconclusive — growth and inflation momentum point in the same or unclear direction.
               </div>
             )}
           </div>
