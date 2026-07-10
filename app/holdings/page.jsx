@@ -151,6 +151,7 @@ export default function HoldingsPage() {
 
   async function load() {
     const today = new Date().toISOString().slice(0, 10);
+    const yearStart = `${new Date().getFullYear()}-01-01`;
     const [
       { data: hv, error: hvErr },
       { data: ac },
@@ -165,8 +166,8 @@ export default function HoldingsPage() {
       supabase.from("asset_types").select("code, label").eq("is_active", true).order("sort_order"),
       supabase.from("transaction_types").select("code, label, affects_quantity").eq("is_active", true).order("sort_order"),
       supabase.from("portfolio_snapshots").select("holding_id, market_value").eq("snapshot_date", today),
-      supabase.from("portfolio_snapshots").select("holding_id, snapshot_date, market_value").limit(10000),
-      supabase.from("transactions").select("holding_id, txn_type, txn_date, amount, is_reinvested").limit(10000),
+      supabase.from("portfolio_snapshots").select("holding_id, snapshot_date, market_value").order("snapshot_date", { ascending: false }),
+      supabase.from("transactions").select("holding_id, txn_type, txn_date, amount, is_reinvested").gte("txn_date", yearStart),
     ]);
     if (hvErr) setError(hvErr.message);
     setHoldings(hv ?? []);
@@ -690,15 +691,18 @@ export default function HoldingsPage() {
       };
     }
 
-    // ALL: unrealized = sum of net_gain on investment holdings only; income = all-time
+    // ALL: unrealized = net_gain from view; income = pre-aggregated totals from holdings_valued
+    // (transactions are filtered to current year so can't be used for all-time income)
     const totalNetGain = investmentHoldings.reduce((s, h) => s + Number(h.net_gain ?? 0), 0);
-    const allIncome = incomeIn(null);
+    const allTimeIncome = investmentHoldings.reduce((s, h) =>
+      s + Number(h.total_interest ?? 0) + Number(h.total_dividends ?? 0) - Number(h.total_fees ?? 0), 0);
+    const allTimeRealized = incomeIn(null).realized;
     cols.all = {
       label: "ALL",
       unrealized: totalNetGain,
-      realized: allIncome.realized,
-      income: allIncome.income,
-      total: totalNetGain + allIncome.realized + allIncome.income,
+      realized: allTimeRealized,
+      income: allTimeIncome,
+      total: totalNetGain + allTimeRealized + allTimeIncome,
       winners: investmentHoldings.filter((h) => Number(h.net_gain ?? 0) > 0.005).length,
       losers:  investmentHoldings.filter((h) => Number(h.net_gain ?? 0) < -0.005).length,
     };
