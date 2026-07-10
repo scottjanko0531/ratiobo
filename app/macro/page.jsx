@@ -53,6 +53,10 @@ function formatValue(v, unit) {
   if (unit === "ratio")   return n.toFixed(2) + "x";
   if (unit === "z-score") return n.toFixed(3);
   if (unit === "index")   return n.toFixed(1);
+  if (unit === "$/bbl")   return "$" + n.toFixed(0) + "/bbl";
+  if (unit === "Kbbl")    return (n / 1000).toFixed(1) + "M bbl";
+  if (unit === "$/gal")   return "$" + n.toFixed(2) + "/gal";
+  if (unit === "$/mt")    return "$" + Math.round(n).toLocaleString("en-US") + "/mt";
   return n.toFixed(2);
 }
 
