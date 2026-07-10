@@ -165,8 +165,8 @@ export default function HoldingsPage() {
       supabase.from("asset_types").select("code, label").eq("is_active", true).order("sort_order"),
       supabase.from("transaction_types").select("code, label, affects_quantity").eq("is_active", true).order("sort_order"),
       supabase.from("portfolio_snapshots").select("holding_id, market_value").eq("snapshot_date", today),
-      supabase.from("portfolio_snapshots").select("holding_id, snapshot_date, market_value"),
-      supabase.from("transactions").select("holding_id, txn_type, txn_date, amount, is_reinvested"),
+      supabase.from("portfolio_snapshots").select("holding_id, snapshot_date, market_value").limit(10000),
+      supabase.from("transactions").select("holding_id, txn_type, txn_date, amount, is_reinvested").limit(10000),
     ]);
     if (hvErr) setError(hvErr.message);
     setHoldings(hv ?? []);
