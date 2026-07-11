@@ -640,24 +640,27 @@ export default function HoldingsPage() {
       return found > 0 ? { total, winners, losers } : null;
     }
 
-    // Income and realized gains from transactions in a date range (from inclusive, to = today)
-    // Only count transactions on investment holdings (not cash/money_market)
+    // Transaction aggregates for a date range (from inclusive, to = today)
     const investmentHoldingIds = new Set(investmentHoldings.map((h) => h.id));
-    function incomeIn(fromDateStr) {
-      let income = 0; let realized = 0;
+    function txnsIn(fromDateStr) {
+      let income = 0, realized = 0, principal = 0, buy = 0, reinvest = 0;
       for (const t of allTransactions) {
         if (!investmentHoldingIds.has(t.holding_id)) continue;
         if (fromDateStr && t.txn_date < fromDateStr) continue;
         if (t.txn_date > todayStr) continue;
-        if ((t.txn_type === "dividend" || t.txn_type === "interest") && !t.is_reinvested) income += Number(t.amount ?? 0);
-        if (t.txn_type === "fee") income -= Number(t.amount ?? 0);
-        if (t.txn_type === "sell") realized += Number(t.amount ?? 0);
+        const amt = Number(t.amount ?? 0);
+        if ((t.txn_type === "dividend" || t.txn_type === "interest") && !t.is_reinvested) income += amt;
+        if (t.txn_type === "fee") income -= amt;
+        if (t.txn_type === "sell") realized += amt;
+        if (t.txn_type === "principal") principal += amt;
+        if (t.txn_type === "buy") buy += amt;
+        if (t.is_reinvested) reinvest += amt;
       }
-      return { income, realized };
+      return { income, realized, principal, buy, reinvest };
     }
 
     // Day: use snapMap directly — same source as the holdings table Day CHG column
-    const dayIncome = incomeIn(todayStr);
+    const dayTxns = txnsIn(todayStr);
     let dayUnrealized = 0; let dayWinners = 0; let dayLosers = 0; let dayFound = 0;
     for (const h of investmentHoldings) {
       const prev = snapMap[h.id];
@@ -670,52 +673,56 @@ export default function HoldingsPage() {
     }
 
     const PERIODS = [
-      { key: "week",  incomeFrom: ds(sub(today, 7)) },
-      { key: "month", incomeFrom: ds(monthStart) },
-      { key: "qtr",   incomeFrom: ds(qtrStart) },
-      { key: "year",  incomeFrom: ds(yearStart) },
+      { key: "week",  from: ds(sub(today, 7)) },
+      { key: "month", from: ds(monthStart) },
+      { key: "qtr",   from: ds(qtrStart) },
+      { key: "year",  from: ds(yearStart) },
     ];
 
+    const mkCol = (unr, txns) => {
+      const { income, realized, principal, buy, reinvest } = txns;
+      const hasData = realized !== 0 || income !== 0 || principal !== 0 || unr != null;
+      return {
+        unrealized: unr?.total ?? null,
+        realized, income, principal, buy, reinvest,
+        total: hasData ? (unr?.total ?? 0) + realized + income + principal : null,
+        winners: unr?.winners ?? null,
+        losers:  unr?.losers  ?? null,
+      };
+    };
+
     const cols = {
-      day: {
-        unrealized: dayFound > 0 ? dayUnrealized : null,
-        realized:   dayIncome.realized,
-        income:     dayIncome.income,
-        total:      dayFound > 0 ? dayUnrealized + dayIncome.realized + dayIncome.income : null,
-        winners:    dayFound > 0 ? dayWinners : null,
-        losers:     dayFound > 0 ? dayLosers  : null,
-      },
+      day: mkCol(
+        dayFound > 0 ? { total: dayUnrealized, winners: dayWinners, losers: dayLosers } : null,
+        dayTxns
+      ),
     };
     for (const p of PERIODS) {
-      const unr = unrealizedChange(periodSnaps[p.key]);
-      const { income, realized } = incomeIn(p.incomeFrom);
-      cols[p.key] = {
-        unrealized: unr?.total ?? null,
-        realized,
-        income,
-        total: (realized !== 0 || income !== 0 || unr != null) ? (unr?.total ?? 0) + realized + income : null,
-        winners: unr?.winners ?? null,
-        losers: unr?.losers ?? null,
-      };
+      cols[p.key] = mkCol(unrealizedChange(periodSnaps[p.key]), txnsIn(p.from));
     }
 
     // ALL: unrealized = net_gain from view; income = pre-aggregated totals from holdings_valued
-    // (transactions are filtered to current year so can't be used for all-time income)
     const totalNetGain = investmentHoldings.reduce((s, h) => s + Number(h.net_gain ?? 0), 0);
     const allTimeIncome = investmentHoldings.reduce((s, h) =>
       s + Number(h.total_interest ?? 0) + Number(h.total_dividends ?? 0) - Number(h.total_fees ?? 0), 0);
-    const allTimeRealized = incomeIn(null).realized;
+    const ytdTxns = txnsIn(null);
     cols.all = {
-      label: "ALL",
       unrealized: totalNetGain,
-      realized: allTimeRealized,
-      income: allTimeIncome,
-      total: totalNetGain + allTimeRealized + allTimeIncome,
-      winners: investmentHoldings.filter((h) => Number(h.net_gain ?? 0) > 0.005).length,
-      losers:  investmentHoldings.filter((h) => Number(h.net_gain ?? 0) < -0.005).length,
+      realized:  ytdTxns.realized,
+      income:    allTimeIncome,
+      principal: ytdTxns.principal,
+      buy:       ytdTxns.buy,
+      reinvest:  ytdTxns.reinvest,
+      total:     totalNetGain + ytdTxns.realized + allTimeIncome + ytdTxns.principal,
+      winners:   investmentHoldings.filter((h) => Number(h.net_gain ?? 0) > 0.005).length,
+      losers:    investmentHoldings.filter((h) => Number(h.net_gain ?? 0) < -0.005).length,
     };
 
-    return cols;
+    // Portfolio-level totals for Portfolio Performance section
+    const totalValue     = investmentHoldings.reduce((s, h) => s + Number(h.current_value ?? 0), 0);
+    const totalCostBasis = investmentHoldings.reduce((s, h) => s + Number(h.cost_basis     ?? 0), 0);
+
+    return { ...cols, totalValue, totalCostBasis };
   }, [holdings, snapMap, periodSnaps, allTransactions]);
 
   // ── Derived ───────────────────────────────────────────────────────────────
@@ -839,6 +846,7 @@ export default function HoldingsPage() {
 
       {/* Portfolio metrics grid */}
       {portfolioMetrics && (() => {
+        const pm = portfolioMetrics;
         const COLS = ["day", "week", "month", "qtr", "year", "all"];
         const COL_LABELS = { day: "Day", week: "Week", month: "Curr Month", qtr: "Qtr", year: "Year", all: "ALL" };
         const fmt = (n) => {
@@ -850,51 +858,138 @@ export default function HoldingsPage() {
           if (Math.abs(n) < 0.005) return <span className="text-paper-dim num">$0</span>;
           return <span className={`num ${n > 0 ? "text-gain" : "text-loss"}`}>{n > 0 ? "+" : "-"}{s}</span>;
         };
-        const ROWS = [
-          { key: "unrealized", label: "Unrealized Gains" },
-          { key: "realized",   label: "Realized Gains" },
-          { key: "income",     label: "Income" },
-          { key: "total",      label: "Total" },
+        const fmtPos = (n) => {
+          if (n == null || n < 0.005) return <span className="text-paper-dim num">—</span>;
+          const abs = n;
+          const s = abs >= 1_000_000 ? `$${(abs / 1_000_000).toFixed(2)}M`
+                  : abs >= 1_000    ? `$${(abs / 1_000).toFixed(1)}k`
+                  : `$${abs.toFixed(0)}`;
+          return <span className="num text-paper">{s}</span>;
+        };
+        const fmtPct = (n) => {
+          if (n == null) return <span className="text-paper-dim">—</span>;
+          return <span className={`num ${n > 0 ? "text-gain" : n < 0 ? "text-loss" : "text-paper-dim"}`}>{n > 0 ? "+" : ""}{n.toFixed(2)}%</span>;
+        };
+        const SectionHeader = ({ label }) => (
+          <tr><td colSpan={7} className="px-4 pt-4 pb-1 text-paper text-xs font-semibold tracking-wide">{label}</td></tr>
+        );
+        const DataRow = ({ label, field, bold }) => (
+          <tr className={`border-b ${bold ? "border-ink-line font-semibold" : "border-ink-line/40"}`}>
+            <td className={`px-4 pl-8 py-2 ${bold ? "text-paper pl-4" : "text-paper-dim"}`}>{label}</td>
+            {COLS.map((c) => <td key={c} className="text-right px-3 py-2">{fmt(pm[c]?.[field])}</td>)}
+          </tr>
+        );
+        const TotalRow = ({ label, field }) => (
+          <tr className="border-b border-ink-line font-semibold">
+            <td className="px-4 py-2 text-paper">{label}</td>
+            {COLS.map((c) => <td key={c} className="text-right px-3 py-2">{fmt(pm[c]?.[field])}</td>)}
+          </tr>
+        );
+
+        // Portfolio Performance section data
+        const perfRows = [
+          { label: "MTD", c: "month" },
+          { label: "Qtr", c: "qtr" },
+          { label: "YTD", c: "year" },
+          { label: "All", c: "all" },
         ];
+        const totalCostBasis = pm.totalCostBasis ?? 0;
+
         return (
-          <div className="card mb-4 overflow-x-auto">
-            <table className="w-full text-xs min-w-[520px]">
-              <thead>
-                <tr className="border-b border-ink-line">
-                  <th className="text-left px-4 py-2 text-paper-dim font-normal w-36" />
-                  {COLS.map((c) => (
-                    <th key={c} className="text-right px-3 py-2 text-paper-dim font-medium">{COL_LABELS[c]}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {ROWS.map((row, ri) => (
-                  <tr key={row.key} className={`border-b ${row.key === "total" ? "border-ink-line font-semibold" : "border-ink-line/40"}`}>
-                    <td className={`px-4 py-2 ${row.key === "total" ? "text-paper" : "text-paper-dim"}`}>{row.label}</td>
+          <>
+            {/* ── Performance Results + Activity table ── */}
+            <div className="card mb-4 overflow-x-auto">
+              <table className="w-full text-xs min-w-[520px]">
+                <thead>
+                  <tr className="border-b border-ink-line">
+                    <th className="text-left px-4 py-2 text-paper-dim font-normal w-44" />
                     {COLS.map((c) => (
-                      <td key={c} className="text-right px-3 py-2">{fmt(portfolioMetrics[c]?.[row.key])}</td>
+                      <th key={c} className="text-right px-3 py-2 text-paper-dim font-medium">{COL_LABELS[c]}</th>
                     ))}
                   </tr>
-                ))}
-                {/* Spacer */}
-                <tr className="h-2" />
-                <tr className="border-t border-ink-line/40">
-                  <td className="px-4 py-1.5 text-paper-dim">Winners</td>
-                  {COLS.map((c) => {
-                    const v = portfolioMetrics[c]?.winners;
-                    return <td key={c} className={`text-right px-3 py-1.5 num ${v == null ? "text-paper-dim" : "text-gain"}`}>{v ?? "—"}</td>;
+                </thead>
+                <tbody>
+                  <SectionHeader label="Performance Results" />
+                  <DataRow label="Unrealized Gains"        field="unrealized" />
+                  <DataRow label="Realized Gains"          field="realized" />
+                  <DataRow label="Income"                  field="income" />
+                  <DataRow label="Return of Principal"     field="principal" />
+                  <TotalRow label="Total"                  field="total" />
+
+                  {/* Winners / Losers */}
+                  <tr className="h-2" />
+                  <tr className="border-t border-ink-line/40">
+                    <td className="px-4 py-1.5 text-paper-dim">Winners</td>
+                    {COLS.map((c) => {
+                      const v = pm[c]?.winners;
+                      return <td key={c} className={`text-right px-3 py-1.5 num ${v == null ? "text-paper-dim" : "text-gain"}`}>{v ?? "—"}</td>;
+                    })}
+                  </tr>
+                  <tr>
+                    <td className="px-4 py-1.5 text-paper-dim">Losers</td>
+                    {COLS.map((c) => {
+                      const v = pm[c]?.losers;
+                      return <td key={c} className={`text-right px-3 py-1.5 num ${v == null ? "text-paper-dim" : v > 0 ? "text-loss" : "text-paper-dim"}`}>{v ?? "—"}</td>;
+                    })}
+                  </tr>
+
+                  {/* Investment Activity */}
+                  <SectionHeader label="Investment Activity" />
+                  <DataRow label="Buy"     field="buy" />
+                  <DataRow label="Sell"    field="realized" />
+                  <DataRow label="Reinvest" field="reinvest" />
+
+                  {/* Total Portfolio Value Change */}
+                  <tr className="h-2" />
+                  <tr className="border-t border-ink-line font-semibold">
+                    <td className="px-4 py-2 text-paper">Total Portfolio Value Change</td>
+                    {COLS.map((c) => <td key={c} className="text-right px-3 py-2">{fmt(pm[c]?.total)}</td>)}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {/* ── Portfolio Performance table ── */}
+            <div className="card mb-4 overflow-x-auto">
+              <table className="w-full text-xs min-w-[640px]">
+                <thead>
+                  <tr className="border-b border-ink-line">
+                    <th className="text-left px-4 py-2 text-paper font-semibold text-xs tracking-wide w-16">Portfolio Performance</th>
+                    <th className="text-right px-3 py-2 text-paper-dim font-medium">Total Value</th>
+                    <th className="text-right px-3 py-2 text-paper-dim font-medium">Cost Basis</th>
+                    <th className="text-right px-3 py-2 text-paper-dim font-medium">Unrlzd Gains</th>
+                    <th className="text-right px-3 py-2 text-paper-dim font-medium">Realized</th>
+                    <th className="text-right px-3 py-2 text-paper-dim font-medium">Income</th>
+                    <th className="text-right px-3 py-2 text-paper-dim font-medium">Total Gain</th>
+                    <th className="text-right px-3 py-2 text-paper-dim font-medium">Gain %</th>
+                    <th className="text-right px-3 py-2 text-paper-dim font-medium">ROI %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perfRows.map(({ label, c }) => {
+                    const col = pm[c] ?? {};
+                    const totalGain = col.total ?? null;
+                    const gainPct = totalGain != null && totalCostBasis > 0 ? (totalGain / totalCostBasis) * 100 : null;
+                    const roiBase = pm.totalValue ?? 0;
+                    const roiPct  = totalGain != null && roiBase > 0 ? (totalGain / roiBase) * 100 : null;
+                    return (
+                      <tr key={label} className="border-b border-ink-line/40">
+                        <td className="px-4 py-2 text-paper-dim">{label}</td>
+                        <td className="text-right px-3 py-2">{fmtPos(pm.totalValue)}</td>
+                        <td className="text-right px-3 py-2">{fmtPos(totalCostBasis)}</td>
+                        <td className="text-right px-3 py-2">{fmt(col.unrealized)}</td>
+                        <td className="text-right px-3 py-2">{fmt(col.realized)}</td>
+                        <td className="text-right px-3 py-2">{fmt(col.income)}</td>
+                        <td className="text-right px-3 py-2">{fmt(totalGain)}</td>
+                        <td className="text-right px-3 py-2">{fmtPct(gainPct)}</td>
+                        <td className="text-right px-3 py-2">{fmtPct(roiPct)}</td>
+                      </tr>
+                    );
                   })}
-                </tr>
-                <tr>
-                  <td className="px-4 py-1.5 text-paper-dim">Losers</td>
-                  {COLS.map((c) => {
-                    const v = portfolioMetrics[c]?.losers;
-                    return <td key={c} className={`text-right px-3 py-1.5 num ${v == null ? "text-paper-dim" : v > 0 ? "text-loss" : "text-paper-dim"}`}>{v ?? "—"}</td>;
-                  })}
-                </tr>
-              </tbody>
-            </table>
-          </div>
+                </tbody>
+              </table>
+            </div>
+          </>
         );
       })()}
 
