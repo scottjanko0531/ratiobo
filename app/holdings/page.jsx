@@ -83,7 +83,7 @@ export default function HoldingsPage() {
   const [assetTypes, setAssetTypes] = useState([]);
   const [txnTypes, setTxnTypes] = useState([]);
   const [snapMap, setSnapMap] = useState({});
-  const [allSnapshots, setAllSnapshots] = useState([]);
+  const [periodSnaps, setPeriodSnaps] = useState({});
   const [allTransactions, setAllTransactions] = useState([]);
   const [error, setError] = useState("");
 
@@ -150,24 +150,44 @@ export default function HoldingsPage() {
   const [editTxnBusy, setEditTxnBusy] = useState(false);
 
   async function load() {
-    const today = new Date().toISOString().slice(0, 10);
-    const yearStart = `${new Date().getFullYear()}-01-01`;
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const yearStart = `${now.getFullYear()}-01-01`;
+    const ds = (d) => d.toISOString().slice(0, 10);
+    const subDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() - n); return r; };
+    const weekSnapDate  = ds(subDays(now, 7));
+    const monthSnapDate = ds(subDays(new Date(now.getFullYear(), now.getMonth(), 1), 1));
+    const qtrSnapDate   = ds(subDays(new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1), 1));
+    const yearSnapDate  = `${now.getFullYear() - 1}-12-31`;
+
+    const snapToMap = (rows) => {
+      const m = {};
+      for (const r of rows ?? []) m[r.holding_id] = Number(r.market_value ?? 0);
+      return m;
+    };
+
     const [
       { data: hv, error: hvErr },
       { data: ac },
       { data: at },
       { data: tt },
       { data: snaps },
-      { data: allSnaps },
       { data: allTxns },
+      { data: weekSnap },
+      { data: monthSnap },
+      { data: qtrSnap },
+      { data: yearSnap },
     ] = await Promise.all([
       supabase.from("holdings_valued").select("*").order("asset_type").order("symbol"),
       supabase.from("accounts").select("id, name").order("name"),
       supabase.from("asset_types").select("code, label").eq("is_active", true).order("sort_order"),
       supabase.from("transaction_types").select("code, label, affects_quantity").eq("is_active", true).order("sort_order"),
       supabase.from("portfolio_snapshots").select("holding_id, market_value").eq("snapshot_date", today),
-      supabase.from("portfolio_snapshots").select("holding_id, snapshot_date, market_value").order("snapshot_date", { ascending: false }),
       supabase.from("transactions").select("holding_id, txn_type, txn_date, amount, is_reinvested").gte("txn_date", yearStart),
+      supabase.rpc("snapshot_at", { snap_date: weekSnapDate }),
+      supabase.rpc("snapshot_at", { snap_date: monthSnapDate }),
+      supabase.rpc("snapshot_at", { snap_date: qtrSnapDate }),
+      supabase.rpc("snapshot_at", { snap_date: yearSnapDate }),
     ]);
     if (hvErr) setError(hvErr.message);
     setHoldings(hv ?? []);
@@ -181,7 +201,12 @@ export default function HoldingsPage() {
     const sMap = {};
     for (const s of snaps ?? []) sMap[s.holding_id] = Number(s.market_value ?? 0);
     setSnapMap(sMap);
-    setAllSnapshots(allSnaps ?? []);
+    setPeriodSnaps({
+      week:  snapToMap(weekSnap),
+      month: snapToMap(monthSnap),
+      qtr:   snapToMap(qtrSnap),
+      year:  snapToMap(yearSnap),
+    });
     setAllTransactions(allTxns ?? []);
   }
 
@@ -595,36 +620,19 @@ export default function HoldingsPage() {
     const ds = (d) => d.toISOString().slice(0, 10);
 
     const sub = (d, days) => { const r = new Date(d); r.setDate(r.getDate() - days); return r; };
-    const dayStart    = sub(today, 1);
-    const weekStart   = sub(today, 7);
     const monthStart  = new Date(today.getFullYear(), today.getMonth(), 1);
     const qtrStart    = new Date(today.getFullYear(), Math.floor(today.getMonth() / 3) * 3, 1);
     const yearStart   = new Date(today.getFullYear(), 0, 1);
 
-    // Build per-holding snapshot lookup sorted descending by date
-    const snapsByHolding = {};
-    for (const s of allSnapshots) {
-      if (!snapsByHolding[s.holding_id]) snapsByHolding[s.holding_id] = [];
-      snapsByHolding[s.holding_id].push(s);
-    }
-    for (const arr of Object.values(snapsByHolding)) {
-      arr.sort((a, b) => b.snapshot_date.localeCompare(a.snapshot_date));
-    }
-
-    // Latest snapshot on or before dateStr
-    function snapAt(holdingId, dateStr) {
-      const arr = snapsByHolding[holdingId] ?? [];
-      return arr.find((s) => s.snapshot_date <= dateStr) ?? null;
-    }
-
-    // Unrealized gain change vs a period-start date, + winner/loser counts
-    function unrealizedChange(startDateStr) {
+    // Unrealized gain change using a pre-fetched period snapshot map { holdingId: marketValue }
+    function unrealizedChange(snapForPeriod) {
+      if (!snapForPeriod || Object.keys(snapForPeriod).length === 0) return null;
       let total = 0; let winners = 0; let losers = 0; let found = 0;
       for (const h of investmentHoldings) {
-        const snap = snapAt(h.id, startDateStr);
-        if (!snap) continue;
+        const prev = snapForPeriod[h.id];
+        if (prev == null) continue;
         found++;
-        const d = Number(h.current_value ?? 0) - Number(snap.market_value ?? 0);
+        const d = Number(h.current_value ?? 0) - prev;
         total += d;
         if (d > 0.005) winners++;
         else if (d < -0.005) losers++;
@@ -662,10 +670,10 @@ export default function HoldingsPage() {
     }
 
     const PERIODS = [
-      { key: "week",  label: "Week",       snapDate: ds(weekStart),          incomeFrom: ds(weekStart) },
-      { key: "month", label: "Curr Month", snapDate: ds(sub(monthStart, 1)), incomeFrom: ds(monthStart) },
-      { key: "qtr",   label: "Qtr",        snapDate: ds(sub(qtrStart, 1)),   incomeFrom: ds(qtrStart) },
-      { key: "year",  label: "Year",       snapDate: ds(sub(yearStart, 1)),  incomeFrom: ds(yearStart) },
+      { key: "week",  incomeFrom: ds(sub(today, 7)) },
+      { key: "month", incomeFrom: ds(monthStart) },
+      { key: "qtr",   incomeFrom: ds(qtrStart) },
+      { key: "year",  incomeFrom: ds(yearStart) },
     ];
 
     const cols = {
@@ -679,7 +687,7 @@ export default function HoldingsPage() {
       },
     };
     for (const p of PERIODS) {
-      const unr = unrealizedChange(p.snapDate);
+      const unr = unrealizedChange(periodSnaps[p.key]);
       const { income, realized } = incomeIn(p.incomeFrom);
       cols[p.key] = {
         unrealized: unr?.total ?? null,
@@ -708,7 +716,7 @@ export default function HoldingsPage() {
     };
 
     return cols;
-  }, [holdings, snapMap, allSnapshots, allTransactions]);
+  }, [holdings, snapMap, periodSnaps, allTransactions]);
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const filtersActive = filterSearch.trim() !== "" || filterSymbols.length > 0 || filterAssetTypes.length > 0 || filterAccounts.length > 0;
