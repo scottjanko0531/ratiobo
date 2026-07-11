@@ -217,6 +217,13 @@ function IndicatorCard({ ind, onSave, onClick }) {
           </p>
         )}
       </div>
+      {ind.metadata?.spot_price != null && (
+        <p className="text-paper-dim text-xs">
+          Spot <span className="num text-paper">${Math.round(ind.metadata.spot_price).toLocaleString("en-US")}/oz</span>
+          <span className="mx-1 opacity-40">·</span>
+          3M avg <span className="num text-paper">${Math.round(Number(ind.current_value)).toLocaleString("en-US")}/oz</span>
+        </p>
+      )}
       <p className="text-paper-dim text-xs leading-snug line-clamp-2">{ind.description}</p>
     </div>
   );
