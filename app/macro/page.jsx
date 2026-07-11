@@ -57,6 +57,8 @@ function formatValue(v, unit) {
   if (unit === "Kbbl")    return (n / 1000).toFixed(1) + "M bbl";
   if (unit === "$/gal")   return "$" + n.toFixed(2) + "/gal";
   if (unit === "$/mt")    return "$" + Math.round(n).toLocaleString("en-US") + "/mt";
+  if (unit === "$/oz")    return "$" + Math.round(n).toLocaleString("en-US") + "/oz";
+  if (unit === "% YoY")  return n.toFixed(2) + "% YoY";
   return n.toFixed(2);
 }
 
