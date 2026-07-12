@@ -379,14 +379,11 @@ function RegimeHistoryChart({ data }) {
 
   const concordance = sorted.filter(r => r.structural_key === r.market_key).length / sorted.length;
   const divergences = sorted.filter(r => r.structural_key !== r.market_key);
-  const hasForward  = sorted.some(r => r.forward_key);
-
   const CELL_W = 10;
 
   const rows = [
     { key: "structural_key", label: "Structural" },
     { key: "market_key",     label: "Mkt Expect" },
-    ...(hasForward ? [{ key: "forward_key", label: "Forward" }] : []),
   ];
 
   return (
@@ -476,9 +473,6 @@ function RegimeHistoryChart({ data }) {
           CPI <span className="num text-paper">{tooltip.r.cpi_yoy}%</span>
           {tooltip.r.breakeven && (
             <><span className="mx-1">/</span>T10YIE <span className="num text-paper">{tooltip.r.breakeven}%</span></>
-          )}
-          {tooltip.key === "forward_key" && tooltip.r.forward_confidence != null && (
-            <span className="ml-2 text-paper-dim">confidence <span className="num text-paper">{tooltip.r.forward_confidence}%</span></span>
           )}
           {tooltip.r.structural_key !== tooltip.r.market_key && (
             <span className="ml-2 text-brass-soft">
