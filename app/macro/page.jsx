@@ -354,6 +354,164 @@ function computeForwardSignal(indicators) {
   return { growth, infl, gDir, iDir, forwardKey, confidence };
 }
 
+const REGIME_COLORS = {
+  rg_fi: "#4ade80",
+  rg_ri: "#C9A227",
+  fg_ri: "#f87171",
+  fg_fi: "#6b7280",
+};
+const REGIME_SHORT  = { rg_fi: "Boom", rg_ri: "Refl", fg_ri: "Stag", fg_fi: "Bust" };
+const REGIME_LABELS = {
+  rg_fi: "Disinflationary Boom",
+  rg_ri: "Reflation",
+  fg_ri: "Stagflation",
+  fg_fi: "Deflationary Bust",
+};
+
+function RegimeHistoryChart({ data }) {
+  const [tooltip, setTooltip] = useState(null);
+
+  const sorted = [...data].sort((a, b) => a.period_date.localeCompare(b.period_date));
+  if (sorted.length === 0) return <p className="text-xs text-paper-dim">No history data yet.</p>;
+
+  const concordance = sorted.filter(r => r.structural_key === r.market_key).length / sorted.length;
+  const divergences = sorted.filter(r => r.structural_key !== r.market_key);
+  const hasForward  = sorted.some(r => r.forward_key);
+
+  const CELL_W = 10;
+
+  const rows = [
+    { key: "structural_key", label: "Structural" },
+    { key: "market_key",     label: "Mkt Expect" },
+    ...(hasForward ? [{ key: "forward_key", label: "Forward" }] : []),
+  ];
+
+  return (
+    <div>
+      {/* Summary stats */}
+      <div className="flex flex-wrap gap-x-5 gap-y-1 mb-3 text-[11px]">
+        <span className="text-paper-dim">
+          Structural / Market concordance{" "}
+          <span className={`num font-medium ${concordance >= 0.7 ? "text-gain" : "text-brass-soft"}`}>
+            {Math.round(concordance * 100)}%
+          </span>
+        </span>
+        <span className="text-paper-dim">
+          Divergence periods{" "}
+          <span className="num text-paper">{divergences.length}</span>
+          {" "}of{" "}
+          <span className="num text-paper">{sorted.length}</span>
+          {" "}quarters
+        </span>
+        <span className="text-paper-dim">
+          {sorted[0].period_date.slice(0, 4)}–{sorted[sorted.length - 1].period_date.slice(0, 4)}
+        </span>
+      </div>
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3">
+        {Object.entries(REGIME_LABELS).map(([key, label]) => (
+          <span key={key} className="flex items-center gap-1.5 text-[10px] text-paper-dim">
+            <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: REGIME_COLORS[key] }} />
+            {label}
+          </span>
+        ))}
+      </div>
+
+      {/* Timeline */}
+      <div className="overflow-x-auto pb-1">
+        <div style={{ minWidth: sorted.length * (CELL_W + 1) + 72 }}>
+          {/* Year labels */}
+          <div className="flex mb-0.5 ml-[72px]">
+            {sorted.map((r, i) => {
+              const yr = r.period_date.slice(0, 4);
+              const isFirst = i === 0 || yr !== sorted[i - 1].period_date.slice(0, 4);
+              return (
+                <div key={r.period_date} style={{ width: CELL_W + 1, flexShrink: 0 }}>
+                  {isFirst && <span className="text-[9px] text-paper-dim/60 leading-none">{yr.slice(2)}</span>}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Regime rows */}
+          {rows.map(({ key, label }) => (
+            <div key={key} className="flex items-center mb-0.5">
+              <span className="text-[10px] text-paper-dim w-[72px] shrink-0">{label}</span>
+              <div className="flex gap-px">
+                {sorted.map((r) => {
+                  const rk = r[key];
+                  const isDivergent = key !== "structural_key" && rk && rk !== r.structural_key;
+                  return (
+                    <div
+                      key={r.period_date}
+                      style={{ width: CELL_W, height: 18, background: rk ? REGIME_COLORS[rk] : "transparent", opacity: rk ? (isDivergent ? 1 : 0.75) : 1, flexShrink: 0 }}
+                      className="rounded-sm cursor-default relative"
+                      onMouseEnter={() => setTooltip({ r, key })}
+                      onMouseLeave={() => setTooltip(null)}
+                    >
+                      {isDivergent && (
+                        <div className="absolute inset-0 rounded-sm border border-white/40" />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Tooltip */}
+      {tooltip && (
+        <div className="mt-2 px-3 py-2 rounded-lg bg-ink-soft border border-ink-line text-[11px] text-paper-dim">
+          <span className="text-paper font-medium mr-2">{tooltip.r.period_date.slice(0, 7)}</span>
+          <span style={{ color: REGIME_COLORS[tooltip.r[tooltip.key]] }}>{REGIME_LABELS[tooltip.r[tooltip.key]] ?? "—"}</span>
+          <span className="mx-2">·</span>
+          GDP <span className="num text-paper">{tooltip.r.gdp_yoy}%</span>
+          <span className="mx-1">/</span>
+          CPI <span className="num text-paper">{tooltip.r.cpi_yoy}%</span>
+          {tooltip.r.breakeven && (
+            <><span className="mx-1">/</span>T10YIE <span className="num text-paper">{tooltip.r.breakeven}%</span></>
+          )}
+          {tooltip.r.structural_key !== tooltip.r.market_key && (
+            <span className="ml-2 text-brass-soft">
+              ↕ divergence: {REGIME_SHORT[tooltip.r.structural_key]} vs {REGIME_SHORT[tooltip.r.market_key]}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Recent divergence table */}
+      {divergences.length > 0 && (
+        <div className="mt-4">
+          <p className="label mb-2">Recent Structural / Market Divergences</p>
+          <div className="space-y-1">
+            {divergences.slice(-8).reverse().map(r => (
+              <div key={r.period_date} className="flex items-center gap-2 text-[11px]">
+                <span className="text-paper-dim w-16 shrink-0">{r.period_date.slice(0, 7)}</span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: REGIME_COLORS[r.structural_key] }} />
+                  <span className="text-paper-dim">{REGIME_SHORT[r.structural_key]}</span>
+                </span>
+                <span className="text-paper-dim">vs</span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: REGIME_COLORS[r.market_key] }} />
+                  <span className="text-paper-dim">{REGIME_SHORT[r.market_key]}</span>
+                </span>
+                <span className="text-paper-dim/60 text-[10px]">
+                  GDP {r.gdp_yoy}% · CPI {r.cpi_yoy}%
+                  {r.breakeven ? ` · T10YIE ${r.breakeven}%` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const ALLOC_ASSET_META = [
   { key: "eq",   label: "US Equities",   color: "#C9A227" },
   { key: "intl", label: "International", color: "#A8832A" },
@@ -2156,6 +2314,7 @@ export default function MacroDashboard() {
   const [consumerExpOpen, setConsumerExpOpen] = useState(false);
   const [goldPriceOpen, setGoldPriceOpen] = useState(false);
   const [cbGoldOpen, setCbGoldOpen] = useState(false);
+  const [regimeHistory, setRegimeHistory] = useState([]);
 
   const fetchIndicators = useCallback(async () => {
     const { data, error: err } = await supabase
@@ -2181,6 +2340,15 @@ export default function MacroDashboard() {
   }, []);
 
   useEffect(() => { getAssetData().then(setAssetData).catch(() => {}); }, []);
+
+  useEffect(() => {
+    supabase
+      .from("macro_regime_history")
+      .select("period_date,gdp_yoy,cpi_yoy,breakeven,gdp_3y_avg,cpi_3y_avg,structural_key,market_key,forward_key,forward_confidence")
+      .order("period_date", { ascending: true })
+      .then(({ data }) => { if (data) setRegimeHistory(data); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
@@ -2272,6 +2440,13 @@ export default function MacroDashboard() {
       ) : (
         <>
           <QuadrantCard indicators={indicators} holdings={portfolioHoldings} assetData={assetData} latestQuadrant={latestQuadrant} />
+
+          {regimeHistory.length > 0 && (
+            <div className="card p-5 mb-6">
+              <p className="label mb-4">Regime History — Structural vs Market Expectations</p>
+              <RegimeHistoryChart data={regimeHistory} />
+            </div>
+          )}
 
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[
