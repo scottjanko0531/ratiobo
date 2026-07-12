@@ -1777,6 +1777,313 @@ function ConsumerExpectationsDrawer({ open, onClose, currentValue }) {
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
+function GoldPriceDrawer({ open, onClose, ind }) {
+  const [rows, setRows] = useState(null);
+  const [range, setRange] = useState("1Y");
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    supabase
+      .from("gold_daily_prices")
+      .select("date, close_price, avg_90d")
+      .order("date", { ascending: true })
+      .then(({ data }) => setRows(data ?? []));
+  }, [open, rows]);
+
+  const chartData = useMemo(() => {
+    if (!rows?.length) return [];
+    const cutoff = range === "1Y"
+      ? new Date(Date.now() - 366 * 24 * 3600 * 1000).toISOString().slice(0, 10)
+      : new Date(Date.now() - 732 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    return rows
+      .filter(r => r.date >= cutoff)
+      .map(r => ({
+        date: r.date,
+        spot: Number(r.close_price),
+        avg90: r.avg_90d != null ? Number(r.avg_90d) : null,
+      }));
+  }, [rows, range]);
+
+  const spotPrice = ind?.metadata?.spot_price != null ? Number(ind.metadata.spot_price) : null;
+  const avg3m = ind?.current_value != null ? Number(ind.current_value) : null;
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed right-0 top-0 h-full w-[560px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">Gold Price (COMEX GC=F)</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">Daily futures close · 90-day rolling average · Yahoo Finance</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {spotPrice != null && (
+              <div className="text-right">
+                <p className="num text-xl font-bold text-brass-soft leading-none">${Math.round(spotPrice).toLocaleString("en-US")}</p>
+                <p className="text-[10px] text-paper-dim mt-0.5">Spot /oz</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          <div className="flex items-center gap-1">
+            {["1Y", "2Y"].map(r => (
+              <button
+                key={r}
+                onClick={() => setRange(r)}
+                className={`px-3 py-1 rounded-lg text-xs transition-colors ${range === r ? "bg-ink text-brass-soft border border-brass/30" : "text-paper-dim hover:text-paper"}`}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+
+          {spotPrice != null && avg3m != null && (
+            <div className="card p-4 grid grid-cols-3 gap-4 text-center">
+              <div>
+                <p className="num text-lg text-paper">${Math.round(spotPrice).toLocaleString("en-US")}</p>
+                <p className="label text-[10px] mt-0.5">Spot /oz</p>
+              </div>
+              <div>
+                <p className="num text-lg text-brass-soft">${Math.round(avg3m).toLocaleString("en-US")}</p>
+                <p className="label text-[10px] mt-0.5">3M Average</p>
+              </div>
+              <div>
+                <p className={`num text-lg ${spotPrice < avg3m ? "text-gain" : "text-loss"}`}>
+                  {spotPrice < avg3m ? "▼" : "▲"} {Math.abs((spotPrice / avg3m - 1) * 100).toFixed(1)}%
+                </p>
+                <p className="label text-[10px] mt-0.5">Spot vs Avg</p>
+              </div>
+            </div>
+          )}
+
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : chartData.length === 0 ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">No data</div>
+          ) : (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Gold Futures Price ($/oz) · {range}</p>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={v => v.slice(0, 7)}
+                    interval={Math.floor(chartData.length / 6)}
+                  />
+                  <YAxis
+                    domain={["auto", "auto"]}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={v => `$${Math.round(v).toLocaleString()}`}
+                    width={70}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "#1A2030", border: "1px solid #2A3240", borderRadius: 8, fontSize: 11 }}
+                    labelStyle={{ color: "#A8ADB8" }}
+                    formatter={(v, name) => [`$${Math.round(v).toLocaleString()}/oz`, name === "spot" ? "Spot" : "90D Avg"]}
+                  />
+                  <Line type="monotone" dataKey="spot" stroke="#C8A96E" strokeWidth={1.5} dot={false} name="spot" />
+                  <Line type="monotone" dataKey="avg90" stroke="#A8ADB8" strokeWidth={1} dot={false} strokeDasharray="4 2" name="avg90" />
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div className="flex items-center gap-4 mt-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block w-4 h-px bg-brass-soft" style={{ height: 2 }} />
+                  <span className="text-[10px] text-paper-dim">Spot</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block w-4 border-t border-dashed border-paper-dim" />
+                  <span className="text-[10px] text-paper-dim">90D Avg</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {rows !== null && rows.length > 0 && (
+            <div className="card overflow-hidden">
+              <div className="px-4 py-3 border-b border-ink-line">
+                <p className="label text-[10px]">Daily Price History</p>
+              </div>
+              <div className="overflow-y-auto max-h-64">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-ink-soft">
+                    <tr className="border-b border-ink-line">
+                      <th className="px-4 py-2 text-left label text-[10px]">Date</th>
+                      <th className="px-4 py-2 text-right label text-[10px]">Close</th>
+                      <th className="px-4 py-2 text-right label text-[10px]">90D Avg</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...rows].reverse().map(r => (
+                      <tr key={r.date} className="border-b border-ink-line/40 hover:bg-ink/30">
+                        <td className="px-4 py-1.5 text-paper-dim">{r.date}</td>
+                        <td className="px-4 py-1.5 text-right num text-paper">${Math.round(Number(r.close_price)).toLocaleString()}</td>
+                        <td className="px-4 py-1.5 text-right num text-paper-dim">
+                          {r.avg_90d != null ? `$${Math.round(Number(r.avg_90d)).toLocaleString()}` : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60">Source: COMEX GC=F via Yahoo Finance · Updated daily</p>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function CbGoldDrawer({ open, onClose, ind }) {
+  const [rows, setRows] = useState(null);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    supabase
+      .from("wgc_gold_purchases")
+      .select("year, tonnes, is_actual")
+      .order("year", { ascending: true })
+      .then(({ data }) => setRows(data ?? []));
+  }, [open, rows]);
+
+  const chartData = useMemo(() => {
+    if (!rows?.length) return [];
+    return rows.map(r => ({ year: r.year, tonnes: Number(r.tonnes), isActual: r.is_actual }));
+  }, [rows]);
+
+  const currentValue = ind?.current_value != null ? Number(ind.current_value) : null;
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed right-0 top-0 h-full w-[560px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">Central Bank Gold Purchases</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">Annual net purchases in metric tonnes · World Gold Council</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {currentValue != null && (
+              <div className="text-right">
+                <p className="num text-xl font-bold text-brass-soft leading-none">{currentValue.toFixed(1)}%</p>
+                <p className="text-[10px] text-paper-dim mt-0.5">Gold YoY</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Net CB Gold Purchases (metric tonnes / year)</p>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="year"
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={v => `${v}t`}
+                    width={52}
+                  />
+                  <ReferenceLine y={0} stroke="#3A4458" strokeWidth={1} />
+                  <Tooltip
+                    contentStyle={{ background: "#1A2030", border: "1px solid #2A3240", borderRadius: 8, fontSize: 11 }}
+                    labelStyle={{ color: "#A8ADB8" }}
+                    formatter={(v, _n, props) => [
+                      `${v >= 0 ? "+" : ""}${v}t${props.payload.isActual ? "" : " (est.)"}`,
+                      "Net purchases",
+                    ]}
+                  />
+                  <Bar dataKey="tonnes" radius={[2, 2, 0, 0]}>
+                    {chartData.map((entry, i) => (
+                      <Cell
+                        key={i}
+                        fill={entry.tonnes >= 0 ? "#C8A96E" : "#E0635C"}
+                        fillOpacity={entry.isActual ? 1 : 0.5}
+                      />
+                    ))}
+                  </Bar>
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div className="flex items-center gap-4 mt-2">
+                <div className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-brass-soft" /><span className="text-[10px] text-paper-dim">WGC actual</span></div>
+                <div className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-brass-soft opacity-50" /><span className="text-[10px] text-paper-dim">Reconstructed</span></div>
+                <div className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-loss" /><span className="text-[10px] text-paper-dim">Net selling</span></div>
+              </div>
+            </div>
+          )}
+
+          {rows !== null && rows.length > 0 && (
+            <div className="card overflow-hidden">
+              <div className="px-4 py-3 border-b border-ink-line">
+                <p className="label text-[10px]">Annual Data</p>
+              </div>
+              <div className="overflow-y-auto max-h-72">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-ink-soft">
+                    <tr className="border-b border-ink-line">
+                      <th className="px-4 py-2 text-left label text-[10px]">Year</th>
+                      <th className="px-4 py-2 text-right label text-[10px]">Net Purchases</th>
+                      <th className="px-4 py-2 text-right label text-[10px]">Source</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...rows].reverse().map(r => (
+                      <tr key={r.year} className="border-b border-ink-line/40 hover:bg-ink/30">
+                        <td className="px-4 py-1.5 text-paper-dim">{r.year}</td>
+                        <td className={`px-4 py-1.5 text-right num ${Number(r.tonnes) >= 0 ? "text-brass-soft" : "text-loss"}`}>
+                          {Number(r.tonnes) >= 0 ? "+" : ""}{Number(r.tonnes).toLocaleString()}t
+                        </td>
+                        <td className="px-4 py-1.5 text-right text-paper-dim">{r.is_actual ? "WGC actual" : "reconstructed"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60">Source: World Gold Council · Pre-2014 values reconstructed from IMF IFS</p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export default function MacroDashboard() {
   const [indicators, setIndicators] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -1787,6 +2094,8 @@ export default function MacroDashboard() {
   const [debtDrawerOpen, setDebtDrawerOpen] = useState(false);
   const [cpiDrawerOpen, setCpiDrawerOpen] = useState(false);
   const [consumerExpOpen, setConsumerExpOpen] = useState(false);
+  const [goldPriceOpen, setGoldPriceOpen] = useState(false);
+  const [cbGoldOpen, setCbGoldOpen] = useState(false);
 
   const fetchIndicators = useCallback(async () => {
     const { data, error: err } = await supabase
@@ -1946,6 +2255,8 @@ export default function MacroDashboard() {
                           ind.name === "Total Debt / GDP" ? () => setDebtDrawerOpen(true)
                           : ind.name === "Core CPI (YoY)" ? () => setCpiDrawerOpen(true)
                           : ind.name === "Consumer Inflation Expectations" ? () => setConsumerExpOpen(true)
+                          : ind.name === "Gold Price (3M Avg)" ? () => setGoldPriceOpen(true)
+                          : ind.name === "CB Gold Reserves (YoY)" ? () => setCbGoldOpen(true)
                           : undefined
                         }
                     />
@@ -1988,6 +2299,16 @@ export default function MacroDashboard() {
         open={consumerExpOpen}
         onClose={() => setConsumerExpOpen(false)}
         currentValue={indicators?.find((i) => i.name === "Consumer Inflation Expectations")?.current_value}
+      />
+      <GoldPriceDrawer
+        open={goldPriceOpen}
+        onClose={() => setGoldPriceOpen(false)}
+        ind={indicators?.find((i) => i.name === "Gold Price (3M Avg)")}
+      />
+      <CbGoldDrawer
+        open={cbGoldOpen}
+        onClose={() => setCbGoldOpen(false)}
+        ind={indicators?.find((i) => i.name === "CB Gold Reserves (YoY)")}
       />
     </Shell>
   );
