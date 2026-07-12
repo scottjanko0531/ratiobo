@@ -371,6 +371,179 @@ const REGIME_LABELS = {
   fg_fi: "Deflationary Bust",
 };
 
+// ── Econ Release Calendar ─────────────────────────────────────────────────────
+
+const RELEASE_DEFS = [
+  // cadence: "monthly"|"quarterly"|"daily"  lagDays: days after period-end before release
+  { key: "gdp",   display: "GDP (Real, Advance)",       source: "BEA",   group: "regime",    cadence: "quarterly", lagDays: 28 },
+  { key: "cpi",   display: "CPI Inflation",              source: "BLS",   group: "inflation", cadence: "monthly",   lagDays: 14 },
+  { key: "ppi",   display: "PPI",                        source: "BLS",   group: "inflation", cadence: "monthly",   lagDays: 13 },
+  { key: "sloos", display: "Sr Loan Officer Survey",     source: "Fed",   group: "growth",    cadence: "quarterly", lagDays: 14 },
+  { key: "lei",   display: "Conference Board LEI",       source: "CB",    group: "growth",    cadence: "monthly",   lagDays: 21 },
+  { key: "mich",  display: "UMich Inflation Expectations", source: "UMich", group: "inflation", cadence: "monthly", lagDays: 14 },
+  { key: "m2",    display: "M2 Money Supply",            source: "Fed",   group: "inflation", cadence: "monthly",   lagDays: 25 },
+  { key: "ci",    display: "C&I Loan Growth",            source: "Fed",   group: "growth",    cadence: "monthly",   lagDays: 14 },
+];
+
+const FOMC_2026 = [
+  "2026-01-28", "2026-03-18", "2026-05-06", "2026-06-17",
+  "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
+];
+
+const GROUP_META = {
+  fomc:      { label: "FOMC",      color: "text-brass-soft",  dot: "bg-brass-soft" },
+  regime:    { label: "Regime",    color: "text-sky-400",     dot: "bg-sky-400" },
+  inflation: { label: "Inflation", color: "text-loss",        dot: "bg-loss" },
+  growth:    { label: "Growth",    color: "text-gain",        dot: "bg-gain" },
+};
+
+function econCalUtils() {
+  const eom = (y, m) => new Date(Date.UTC(y, m + 1, 0));       // end of month (m 0-indexed)
+  const eoq = (d) => {                                          // end of quarter containing d
+    const qm = Math.floor(d.getUTCMonth() / 3) * 3 + 2;
+    return new Date(Date.UTC(d.getUTCFullYear(), qm + 1, 0));
+  };
+  const addDays = (d, n) => new Date(d.getTime() + n * 864e5);
+  const fmtMon = (d) => d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+  const fmtQ   = (d) => `Q${Math.floor(d.getUTCMonth() / 3) + 1} ${d.getUTCFullYear()}`;
+
+  const lastReleasedPeriod = (cadence, lagDays, today) => {
+    if (cadence === "daily") return "Real-time";
+    if (cadence === "monthly") {
+      let y = today.getUTCFullYear(), m = today.getUTCMonth();
+      for (let i = 0; i < 6; i++) {
+        const end = eom(y, m);
+        if (addDays(end, lagDays) <= today) return fmtMon(end);
+        if (--m < 0) { m = 11; y--; }
+      }
+    } else {
+      let end = eoq(today);
+      for (let i = 0; i < 4; i++) {
+        if (addDays(end, lagDays) <= today) return fmtQ(end);
+        end = eoq(new Date(end.getTime() - 864e5)); // day before = prev quarter
+      }
+    }
+    return "—";
+  };
+
+  const upcomingEvents = (today, days = 90) => {
+    const cutoff = addDays(today, days);
+    const events = [];
+
+    for (const def of RELEASE_DEFS) {
+      if (def.cadence === "daily") continue;
+      let periodEnd = def.cadence === "monthly"
+        ? eom(today.getUTCFullYear(), today.getUTCMonth())
+        : eoq(today);
+
+      for (let iter = 0; iter < 5; iter++) {
+        const releaseDate = addDays(periodEnd, def.lagDays);
+        if (releaseDate > today && releaseDate <= cutoff) {
+          events.push({
+            date: releaseDate,
+            display: def.display,
+            source: def.source,
+            group: def.group,
+            period: def.cadence === "monthly" ? fmtMon(periodEnd) : fmtQ(periodEnd),
+            daysAway: Math.ceil((releaseDate - today) / 864e5),
+          });
+        }
+        if (releaseDate > cutoff) break;
+        // advance to next period
+        if (def.cadence === "monthly") {
+          const nm = periodEnd.getUTCMonth() === 11 ? 0 : periodEnd.getUTCMonth() + 1;
+          const ny = periodEnd.getUTCMonth() === 11 ? periodEnd.getUTCFullYear() + 1 : periodEnd.getUTCFullYear();
+          periodEnd = eom(ny, nm);
+        } else {
+          periodEnd = eoq(new Date(periodEnd.getTime() + 864e5));
+        }
+      }
+    }
+
+    for (const ds of FOMC_2026) {
+      const date = new Date(ds + "T12:00:00Z");
+      if (date > today && date <= cutoff) {
+        events.push({
+          date, display: "FOMC Rate Decision", source: "Fed", group: "fomc",
+          period: date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }),
+          daysAway: Math.ceil((date - today) / 864e5),
+        });
+      }
+    }
+
+    return events.sort((a, b) => a.date - b.date);
+  };
+
+  return { lastReleasedPeriod, upcomingEvents, eom, eoq, addDays, fmtMon, fmtQ };
+}
+
+function EconCalendar() {
+  const today = new Date();
+  const { lastReleasedPeriod, upcomingEvents } = econCalUtils();
+  const events = upcomingEvents(today, 90);
+
+  return (
+    <div>
+      {/* Current data window */}
+      <div className="mb-5">
+        <p className="label mb-2">Current Data Window</p>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-0.5">
+          {RELEASE_DEFS.map(def => {
+            const thru = lastReleasedPeriod(def.cadence, def.lagDays, today);
+            const gm = GROUP_META[def.group];
+            return (
+              <div key={def.key} className="flex items-baseline justify-between text-[11px] py-0.5 border-b border-ink-line/40">
+                <span className="text-paper-dim">{def.display}</span>
+                <span className="flex items-center gap-1.5 text-paper">
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${gm.dot}`} />
+                  {thru}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Upcoming events */}
+      <p className="label mb-2">Upcoming Releases <span className="font-normal text-paper-dim/60 ml-1">next 90 days</span></p>
+      {events.length === 0
+        ? <p className="text-xs text-paper-dim">No releases scheduled in window.</p>
+        : (
+          <div className="space-y-0">
+            {events.map((ev, i) => {
+              const gm = GROUP_META[ev.group];
+              const urgent = ev.daysAway <= 7;
+              const soon   = ev.daysAway <= 30;
+              return (
+                <div key={i} className={`flex items-center gap-3 py-1.5 border-b border-ink-line/40 ${urgent ? "bg-brass-soft/5 -mx-2 px-2 rounded" : ""}`}>
+                  <span className={`num text-[11px] w-16 shrink-0 ${urgent ? "text-brass-soft font-medium" : soon ? "text-paper" : "text-paper-dim"}`}>
+                    {ev.date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}
+                  </span>
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${gm.dot}`} />
+                  <span className="text-[11px] text-paper flex-1 min-w-0">
+                    {ev.display}
+                    <span className="text-paper-dim ml-1.5">({ev.period})</span>
+                  </span>
+                  <span className="text-[10px] text-paper-dim/60 shrink-0">{ev.source}</span>
+                  <span className={`text-[10px] shrink-0 ${gm.color}`}>{gm.label}</span>
+                  <span className={`num text-[10px] w-12 text-right shrink-0 ${urgent ? "text-brass-soft font-medium" : "text-paper-dim/60"}`}>
+                    {ev.daysAway === 0 ? "today" : `${ev.daysAway}d`}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )
+      }
+
+      <p className="text-[10px] text-paper-dim/40 mt-3">
+        Daily market data (yield curves, breakevens, credit spreads, crude, copper) updates continuously and is not shown.
+        FOMC dates are 2026 scheduled meetings; confirm at federalreserve.gov.
+      </p>
+    </div>
+  );
+}
+
 function RegimeHistoryChart({ data }) {
   const [tooltip, setTooltip] = useState(null);
 
@@ -2447,6 +2620,11 @@ export default function MacroDashboard() {
               <RegimeHistoryChart data={regimeHistory} />
             </div>
           )}
+
+          <div className="card p-5 mb-6">
+            <p className="label mb-4">Economic Release Calendar</p>
+            <EconCalendar />
+          </div>
 
           <div className="grid grid-cols-3 gap-3 mb-8">
             {[
