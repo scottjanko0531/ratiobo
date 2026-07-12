@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
@@ -354,6 +354,17 @@ function computeForwardSignal(indicators) {
   return { growth, infl, gDir, iDir, forwardKey, confidence };
 }
 
+const ALLOC_ASSET_META = [
+  { key: "eq",   label: "US Equities",   color: "#C9A227" },
+  { key: "intl", label: "International", color: "#A8832A" },
+  { key: "em",   label: "EM Equities",   color: "#7A6020" },
+  { key: "nb",   label: "Nominal Bonds", color: "#5B8DB8" },
+  { key: "tip",  label: "TIPS",          color: "#7BA7CC" },
+  { key: "com",  label: "Commodities",   color: "#CC7B2E" },
+  { key: "gld",  label: "Gold",          color: "#F0C040" },
+  { key: "cash", label: "Cash",          color: "#A8ADB8" },
+];
+
 function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
   const gdp        = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi        = indicators.find((i) => i.name === "CPI (YoY)");
@@ -411,6 +422,23 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
     : null;
 
   const [actionsOpen, setActionsOpen] = useState(false);
+
+  const prevRegimeKeyRef = useRef(null);
+  const [prevRegimeKey, setPrevRegimeKey] = useState(null);
+  const [regimeChangedAt, setRegimeChangedAt] = useState(null);
+
+  useEffect(() => {
+    if (!regimeKey) return;
+    if (prevRegimeKeyRef.current && prevRegimeKeyRef.current !== regimeKey) {
+      setPrevRegimeKey(prevRegimeKeyRef.current);
+      setRegimeChangedAt(new Date());
+    }
+    prevRegimeKeyRef.current = regimeKey;
+  }, [regimeKey]);
+
+  const prevSuggestedPcts = prevRegimeKey
+    ? computeSuggestedPcts(prevRegimeKey, allocMethod, assetData)
+    : null;
 
   // Group holdings by resolved simulator key
   const byKey = {};
@@ -724,7 +752,7 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
             )}
           </div>
 
-          {/* Signal categories */}
+          {/* Allocation bars */}
           <div>
             <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
               <div className="flex items-center gap-3">
@@ -757,69 +785,101 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                 ))}
               </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-              {favoredBuckets.map((b) => (
-                <div
-                  key={b.key}
-                  className={`rounded-lg border p-2.5 ${b.pct > 0 ? "bg-brass/10 border-brass/20" : "bg-ink-soft border-ink-line opacity-60"}`}
-                >
-                  <div className="flex items-center justify-between gap-1 mb-1.5">
-                    <span className={`text-xs font-medium truncate ${b.pct > 0 ? "text-brass-soft" : "text-paper-dim"}`}>{b.label}</span>
+
+            {/* Regime transition callout */}
+            {prevRegimeKey && regimeChangedAt && (
+              <div className="flex items-center gap-2 px-3 py-2 mb-3 rounded-lg bg-brass/10 border border-brass/20 text-xs">
+                <span className="text-brass-soft shrink-0">⟳</span>
+                <span className="text-paper-dim">
+                  Shifted from{" "}
+                  <span className={REGIME_META[prevRegimeKey]?.color ?? "text-paper"}>
+                    {REGIME_META[prevRegimeKey]?.label}
+                  </span>
+                  {" → "}
+                  <span className={regime?.color ?? "text-paper"}>{regime?.label}</span>
+                  {" · allocation updated"}
+                </span>
+              </div>
+            )}
+
+            {/* Animated allocation bars */}
+            <div className="space-y-2">
+              {ALLOC_ASSET_META.map(({ key, label, color }) => {
+                const allocPct = suggestedPcts[key] ?? 0;
+                const prevPct  = prevSuggestedPcts?.[key] ?? 0;
+                const portPct  = pct(byKey[key]?.total ?? 0);
+                const changed  = prevSuggestedPcts != null && allocPct !== prevPct;
+                return (
+                  <div key={key} className="flex items-center gap-3">
+                    <span className="text-[11px] text-paper-dim w-[104px] shrink-0 truncate">{label}</span>
+                    <div className="flex-1 relative h-4 rounded overflow-hidden bg-ink-line/40">
+                      {/* Ghost bar — previous regime */}
+                      {prevSuggestedPcts && prevPct > 0 && (
+                        <div
+                          className="absolute left-0 top-0 h-full rounded transition-[width] duration-700 ease-out"
+                          style={{ width: `${prevPct}%`, background: color, opacity: 0.18 }}
+                        />
+                      )}
+                      {/* Current regime bar */}
+                      <div
+                        className="absolute left-0 top-0 h-full rounded transition-[width] duration-500 ease-out"
+                        style={{ width: `${allocPct}%`, background: color, opacity: allocPct > 0 ? 0.75 : 0 }}
+                      />
+                      {/* Portfolio position marker */}
+                      {portPct > 0 && (
+                        <div
+                          className="absolute top-0 h-full w-px bg-white/50"
+                          style={{ left: `${Math.min(portPct, 99)}%` }}
+                        />
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 w-20 justify-end">
+                      {changed && (
+                        <span className={`text-[10px] num ${allocPct > prevPct ? "text-gain" : "text-loss"}`}>
+                          {allocPct > prevPct ? "+" : ""}{allocPct - prevPct}%
+                        </span>
+                      )}
+                      <span className={`num text-[11px] w-8 text-right ${allocPct === 0 ? "text-paper-dim/40" : "text-paper"}`}>
+                        {allocPct > 0 ? `${allocPct}%` : "—"}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between gap-1 mb-1">
-                    <span className="text-[10px] text-paper-dim">Suggested</span>
-                    <span className="num text-[10px] text-brass-soft">{suggestedPcts[b.key] ?? 0}%</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-1 mb-1">
-                    <span className="text-[10px] text-paper-dim">Portfolio</span>
-                    <span className={`num text-[10px] ${b.pct > 0 ? "text-gain" : "text-paper-dim"}`}>
-                      {b.pct > 0 ? `${b.pct}%` : "—"}
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-paper-dim truncate">
-                    {b.holdings.length > 0
-                      ? [b.holdings.slice(0, 3).map((h) => h.symbol).join(", "), b.holdings.length > 3 ? `+${b.holdings.length - 3}` : ""].filter(Boolean).join(" ")
-                      : "no holdings"}
-                  </p>
-                </div>
-              ))}
+                );
+              })}
+            </div>
+
+            {/* Legend */}
+            <div className="flex items-center gap-4 mt-3 text-[10px] text-paper-dim">
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block w-8 h-2.5 rounded bg-brass/70" />
+                Suggested
+              </span>
+              {prevSuggestedPcts && (
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-8 h-2.5 rounded bg-brass/20" />
+                  Prior regime
+                </span>
+              )}
+              {hasPortfolio && (
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-px h-3 bg-white/50" />
+                  Your portfolio
+                </span>
+              )}
             </div>
           </div>
 
-          {/* Outside-signal holdings */}
-          <div>
-            <p className="label mb-2">
-              Outside Signal{outsideBuckets.length > 0 ? ` · ${outsidePct}% of portfolio` : ""}
-            </p>
-            {outsideBuckets.length > 0 ? (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-                {outsideBuckets.map((b) => (
-                  <div key={b.key} className="rounded-lg border bg-loss/10 border-loss/20 p-2.5">
-                    <div className="flex items-center justify-between gap-1 mb-1">
-                      <span className="text-xs font-medium text-loss/80 truncate">{b.label}</span>
-                      <span className="num text-xs text-loss shrink-0">{b.pct}%</span>
-                    </div>
-                    <p className="text-[10px] text-paper-dim truncate">
-                      {[b.holdings.slice(0, 3).map((h) => h.symbol).join(", "), b.holdings.length > 3 ? `+${b.holdings.length - 3}` : ""].filter(Boolean).join(" ")}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : hasPortfolio ? (
-              <p className="text-xs text-paper-dim">All classified holdings align with the current signal.</p>
-            ) : (
-              <p className="text-xs text-paper-dim">
-                Set a simulator bucket on your holdings to see portfolio exposure here.
-              </p>
-            )}
-          </div>
-
-          {/* Alignment bar */}
-          {hasPortfolio && (grandTotal > 0) && (
+          {/* Outside-signal summary + alignment bar */}
+          {hasPortfolio && grandTotal > 0 && (
             <div>
-              <div className="flex justify-between text-[10px] text-paper-dim mb-1">
+              <div className="flex justify-between text-[10px] text-paper-dim mb-1.5">
                 <span>Signal aligned <span className="num text-gain">{alignedPct}%</span></span>
-                <span>Outside signal <span className="num text-loss">{outsidePct}%</span></span>
+                {outsideBuckets.length > 0 && (
+                  <span>
+                    Outside signal <span className="num text-loss">{outsidePct}%</span>
+                    {" · "}{outsideBuckets.map((b) => b.label).join(", ")}
+                  </span>
+                )}
               </div>
               <div className="h-1.5 rounded-full bg-ink-line overflow-hidden flex">
                 <div className="h-full bg-gain/60 transition-all" style={{ width: `${alignedPct}%` }} />
