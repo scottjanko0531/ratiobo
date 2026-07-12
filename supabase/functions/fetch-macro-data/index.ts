@@ -828,6 +828,179 @@ async function backfillRegimeHistory(): Promise<void> {
   } catch (e) { console.error("[regime_history] backfill:", e); }
 }
 
+function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null; confidence: number | null } {
+  const get = (name: string) => { const r = rows.find(r => r.name === name); return r?.current_value != null ? Number(r.current_value) : null; };
+  type Sig = { name: string; w: number; vote: (v: number) => number };
+  const G: Sig[] = [
+    { name: "2yr/10yr Yield Spread",  w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
+    { name: "3mo/10yr Yield Spread",  w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
+    { name: "Sr Loan Officer Survey", w: 0.20, vote: v => v < 15  ? 1 : v <= 35   ? 0 : -1 },
+    { name: "Conference Board LEI",   w: 0.15, vote: v => v > 0   ? 1 : v >= -0.3 ? 0 : -1 },
+    { name: "HY Credit Spread (OAS)", w: 0.10, vote: v => v < 4   ? 1 : v <= 6    ? 0 : -1 },
+    { name: "C&I Loan Growth (YoY)",  w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
+  ];
+  const I: Sig[] = [
+    { name: "Consumer Inflation Expectations", w: 0.25, vote: v => v > 4    ? 1 : v >= 2.5 ? 0 : -1 },
+    { name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > 2.5  ? 1 : v >= 1.5 ? 0 : -1 },
+    { name: "Copper Price",                    w: 0.20, vote: v => v > 9000 ? 1 : v >= 7000 ? 0 : -1 },
+    { name: "WTI Crude Oil",                   w: 0.15, vote: v => v > 90   ? 1 : v >= 70  ? 0 : -1 },
+    { name: "PPI (YoY)",                       w: 0.10, vote: v => v > 3    ? 1 : v >= 0   ? 0 : -1 },
+    { name: "M2 Growth (YoY)",                 w: 0.10, vote: v => v > 8    ? 1 : v >= 3   ? 0 : -1 },
+  ];
+  type ScoreSig = { w: number; vote: number | null };
+  const scoreGroup = (sigs: Sig[]): { signals: ScoreSig[]; score: number | null } => {
+    let weighted = 0, totalW = 0;
+    const signals: ScoreSig[] = sigs.map(s => {
+      const val = get(s.name);
+      if (val == null) return { w: s.w, vote: null };
+      const v = s.vote(val);
+      weighted += v * s.w; totalW += s.w;
+      return { w: s.w, vote: v };
+    });
+    return { signals, score: totalW > 0 ? weighted / totalW : null };
+  };
+  const growth = scoreGroup(G);
+  const infl   = scoreGroup(I);
+  const THRESH = 0.05;
+  const dir = (s: number | null) => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
+  const rawGDir = dir(growth.score);
+  const rawIDir = dir(infl.score);
+  const gDir = rawGDir === "neutral" ? (growth.score! >= 0 ? "up" : "down") : rawGDir;
+  const iDir = rawIDir === "neutral" ? (infl.score! >= 0 ? "up" : "down") : rawIDir;
+  const forwardKey =
+    gDir === "up"   && iDir === "down" ? "rg_fi" :
+    gDir === "up"   && iDir === "up"   ? "rg_ri" :
+    gDir === "down" && iDir === "up"   ? "fg_ri" :
+    gDir === "down" && iDir === "down" ? "fg_fi" : null;
+  if (!forwardKey) return { forwardKey: null, confidence: null };
+  const consensus = (sigs: ScoreSig[], d: string) => {
+    const target = d === "up" ? 1 : -1;
+    let agreed = 0, total = 0;
+    for (const s of sigs) { if (s.vote == null) continue; total += s.w; if (s.vote === target) agreed += s.w; }
+    return total > 0 ? Math.round(agreed / total * 100) : null;
+  };
+  const gConf = consensus(growth.signals, gDir!);
+  const iConf = consensus(infl.signals, iDir!);
+  return { forwardKey, confidence: gConf != null && iConf != null ? Math.round((gConf + iConf) / 2) : null };
+}
+
+async function backfillForwardSignals(): Promise<void> {
+  try {
+    const now = new Date();
+    const curQStart = `${now.getUTCFullYear()}-${String(Math.floor(now.getUTCMonth() / 3) * 3 + 1).padStart(2, "0")}-01`;
+    const { data: pending } = await supabase.from("macro_regime_history").select("period_date").is("forward_key", null).lt("period_date", curQStart).limit(1);
+    if (!pending?.length) return;
+
+    const fm = (id: string, extra = "") =>
+      fetch(`${FRED}?series_id=${id}&api_key=${apiKey}&sort_order=desc&limit=320${extra}&file_type=json`)
+        .then(r => r.json())
+        .then((j: { observations: { date: string; value: string }[] }) =>
+          (j.observations ?? []).filter(o => o.value !== "." && o.value !== "")
+            .map(o => ({ date: o.date, value: parseFloat(o.value) }))
+            .filter(o => !isNaN(o.value)).reverse()
+        );
+
+    const [t10y2y, t10y3m, baml, mich, t10yie, copper, wti, sloos, usslind, busloans, ppiaco, m2sl] = await Promise.all([
+      fm("T10Y2Y",       "&frequency=m&aggregation_method=avg"),
+      fm("T10Y3M",       "&frequency=m&aggregation_method=avg"),
+      fm("BAMLH0A0HYM2", "&frequency=m&aggregation_method=avg"),
+      fm("MICH"),
+      fm("T10YIE",       "&frequency=m&aggregation_method=avg"),
+      fm("PCOPPUSDM"),
+      fm("DCOILWTICO",   "&frequency=m&aggregation_method=avg"),
+      fm("DRTSCILM",     "&frequency=q"),
+      fm("USSLIND"),
+      fm("BUSLOANS"),
+      fm("PPIACO"),
+      fm("M2SL"),
+    ]);
+
+    const bm = (obs: { date: string; value: number }[]) => {
+      const m = new Map<string, number>();
+      for (const o of obs) m.set(o.date.slice(0, 7), o.value);
+      return m;
+    };
+    // SLOOS is quarterly — remap from quarter-start to quarter-end month key
+    const mkSloos = new Map<string, number>();
+    for (const o of sloos) {
+      const d = new Date(o.date);
+      const em = d.getUTCMonth() + 3; // 0-indexed start + 3 = 1-indexed end
+      mkSloos.set(`${d.getUTCFullYear()}-${String(em).padStart(2, "0")}`, o.value);
+    }
+    const yoy = (obs: { date: string; value: number }[]) => {
+      const m = new Map<string, number>();
+      for (const o of obs) {
+        const d = new Date(o.date);
+        const yaKey = `${d.getUTCFullYear() - 1}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+        const ya = obs.find(x => x.date.slice(0, 7) === yaKey);
+        if (ya) m.set(o.date.slice(0, 7), (o.value / ya.value - 1) * 100);
+      }
+      return m;
+    };
+
+    const mkT10y2y = bm(t10y2y), mkT10y3m = bm(t10y3m), mkBaml = bm(baml);
+    const mkMich = bm(mich), mkT10yie = bm(t10yie), mkCopper = bm(copper), mkWti = bm(wti);
+    const mkUsslind = bm(usslind), mkBusYoY = yoy(busloans), mkPpiYoY = yoy(ppiaco), mkM2YoY = yoy(m2sl);
+
+    type MapSig = { map: Map<string, number>; w: number; vote: (v: number) => number };
+    const GS: MapSig[] = [
+      { map: mkT10y2y,  w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
+      { map: mkT10y3m,  w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
+      { map: mkSloos,   w: 0.20, vote: v => v < 15  ? 1 : v <= 35   ? 0 : -1 },
+      { map: mkUsslind, w: 0.15, vote: v => v > 0   ? 1 : v >= -0.3 ? 0 : -1 },
+      { map: mkBaml,    w: 0.10, vote: v => v < 4   ? 1 : v <= 6    ? 0 : -1 },
+      { map: mkBusYoY,  w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
+    ];
+    const IS: MapSig[] = [
+      { map: mkMich,   w: 0.25, vote: v => v > 4    ? 1 : v >= 2.5 ? 0 : -1 },
+      { map: mkT10yie, w: 0.20, vote: v => v > 2.5  ? 1 : v >= 1.5 ? 0 : -1 },
+      { map: mkCopper, w: 0.20, vote: v => v > 9000 ? 1 : v >= 7000 ? 0 : -1 },
+      { map: mkWti,    w: 0.15, vote: v => v > 90   ? 1 : v >= 70  ? 0 : -1 },
+      { map: mkPpiYoY, w: 0.10, vote: v => v > 3    ? 1 : v >= 0   ? 0 : -1 },
+      { map: mkM2YoY,  w: 0.10, vote: v => v > 8    ? 1 : v >= 3   ? 0 : -1 },
+    ];
+    type ScoreSig = { w: number; vote: number | null };
+    const sg = (sigs: MapSig[], mk: string): { signals: ScoreSig[]; score: number | null } => {
+      let weighted = 0, totalW = 0;
+      const signals: ScoreSig[] = sigs.map(s => {
+        const val = s.map.get(mk);
+        if (val == null) return { w: s.w, vote: null };
+        const v = s.vote(val); weighted += v * s.w; totalW += s.w;
+        return { w: s.w, vote: v };
+      });
+      return { signals, score: totalW > 0 ? weighted / totalW : null };
+    };
+    const fwd = (mk: string): { forwardKey: string | null; confidence: number | null } => {
+      const g = sg(GS, mk), inf = sg(IS, mk);
+      const THRESH = 0.05;
+      const dir = (s: number | null) => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
+      const rawGd = dir(g.score), rawId = dir(inf.score);
+      // fall back to sign when score is in the neutral band
+      const gd = rawGd === "neutral" ? (g.score! >= 0 ? "up" : "down") : rawGd;
+      const id = rawId === "neutral" ? (inf.score! >= 0 ? "up" : "down") : rawId;
+      const fk = gd === "up" && id === "down" ? "rg_fi" : gd === "up" && id === "up" ? "rg_ri" : gd === "down" && id === "up" ? "fg_ri" : gd === "down" && id === "down" ? "fg_fi" : null;
+      if (!fk) return { forwardKey: null, confidence: null };
+      const cons = (sigs: ScoreSig[], d: string) => { const t = d === "up" ? 1 : -1; let a = 0, tot = 0; for (const s of sigs) { if (s.vote == null) continue; tot += s.w; if (s.vote === t) a += s.w; } return tot > 0 ? Math.round(a / tot * 100) : null; };
+      const gc = cons(g.signals, gd!), ic = cons(inf.signals, id!);
+      return { forwardKey: fk, confidence: gc != null && ic != null ? Math.round((gc + ic) / 2) : null };
+    };
+
+    const { data: rows } = await supabase.from("macro_regime_history").select("period_date").is("forward_key", null).lt("period_date", curQStart).order("period_date");
+    if (!rows?.length) return;
+    const updates = rows.map(r => {
+      const d = new Date(r.period_date);
+      const endMon = String(d.getUTCMonth() + 3).padStart(2, "0");
+      const mk = `${d.getUTCFullYear()}-${endMon}`;
+      const { forwardKey, confidence } = fwd(mk);
+      return { period_date: r.period_date, forward_key: forwardKey, forward_confidence: confidence };
+    });
+    for (let i = 0; i < updates.length; i += 50) {
+      await supabase.from("macro_regime_history").upsert(updates.slice(i, i + 50), { onConflict: "period_date" });
+    }
+    console.log(`[fwd_history] backfilled ${updates.length} forward signals`);
+  } catch (e) { console.error("[fwd_history]", e); }
+}
+
 async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promise<void> {
   try {
     const gdpRow  = processedRows.find(r => r.name === "Real GDP Growth");
@@ -848,6 +1021,7 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const periodDate = `${now.getUTCFullYear()}-${String(q * 3 + 1).padStart(2, "0")}-01`;
     const r2 = (n: number) => Math.round(n * 100) / 100;
 
+    const { forwardKey, confidence } = computeEdgeFwdSignal(processedRows);
     await supabase.from("macro_regime_history").upsert({
       period_date: periodDate,
       gdp_yoy: r2(gdpYoy), cpi_yoy: r2(cpiYoy),
@@ -855,6 +1029,8 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       gdp_3y_avg: r2(gdp3y), cpi_3y_avg: r2(cpi3y),
       structural_key: detectRegimeKey(gdpYoy, cpiYoy, gdp3y, cpi3y),
       market_key: detectRegimeKey(gdpYoy, cpiYoy, gdp3y, bre ?? cpi3y),
+      forward_key: forwardKey,
+      forward_confidence: confidence,
       updated_at: new Date().toISOString(),
     }, { onConflict: "period_date", ignoreDuplicates: false });
   } catch (e) { console.error("[regime_history] current update:", e); }
@@ -1290,6 +1466,7 @@ Deno.serve(async (req: Request) => {
     }
     await backfillRegimeHistory();
     await updateCurrentRegimeHistory(rows);
+    await backfillForwardSignals();
     await updateCurrentYearLongCycle(rows);
     await computeGauge1();
     await computeGauge2();

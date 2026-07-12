@@ -325,10 +325,13 @@ function computeForwardSignal(indicators) {
   };
   const growth = scoreGroup(FWD_GROWTH_SIGNALS);
   const infl   = scoreGroup(FWD_INFL_SIGNALS);
-  const THRESH = 0.15;
+  const THRESH = 0.05;
   const dir = s => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
-  const gDir = dir(growth.score);
-  const iDir = dir(infl.score);
+  const rawGDir = dir(growth.score);
+  const rawIDir = dir(infl.score);
+  // fall back to sign when score is in the neutral band
+  const gDir = rawGDir === "neutral" ? (growth.score >= 0 ? "up" : "down") : rawGDir;
+  const iDir = rawIDir === "neutral" ? (infl.score >= 0 ? "up" : "down") : rawIDir;
   const forwardKey =
     gDir === "up"   && iDir === "down" ? "rg_fi" :
     gDir === "up"   && iDir === "up"   ? "rg_ri" :
@@ -473,6 +476,9 @@ function RegimeHistoryChart({ data }) {
           CPI <span className="num text-paper">{tooltip.r.cpi_yoy}%</span>
           {tooltip.r.breakeven && (
             <><span className="mx-1">/</span>T10YIE <span className="num text-paper">{tooltip.r.breakeven}%</span></>
+          )}
+          {tooltip.key === "forward_key" && tooltip.r.forward_confidence != null && (
+            <span className="ml-2 text-paper-dim">confidence <span className="num text-paper">{tooltip.r.forward_confidence}%</span></span>
           )}
           {tooltip.r.structural_key !== tooltip.r.market_key && (
             <span className="ml-2 text-brass-soft">
