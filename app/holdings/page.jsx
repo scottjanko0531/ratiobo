@@ -93,6 +93,7 @@ export default function HoldingsPage() {
   const [filterSymbols, setFilterSymbols] = useState([]);
   const [filterAssetTypes, setFilterAssetTypes] = useState([]);
   const [filterAccounts, setFilterAccounts] = useState([]);
+  const [filterStatus, setFilterStatus] = useState("all"); // "all" | "active" | "inactive"
 
   // Collapsible asset-type groups
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
@@ -726,35 +727,45 @@ export default function HoldingsPage() {
   }, [holdings, snapMap, periodSnaps, allTransactions]);
 
   // ── Derived ───────────────────────────────────────────────────────────────
-  const filtersActive = filterSearch.trim() !== "" || filterSymbols.length > 0 || filterAssetTypes.length > 0 || filterAccounts.length > 0;
-  const filterCount = (filterSearch.trim() ? 1 : 0) + filterSymbols.length + filterAssetTypes.length + filterAccounts.length;
+  const isActiveHolding = (h) => Number(h.quantity ?? 0) > 0 || Number(h.current_value ?? 0) > 0;
+  const filtersActive = filterSearch.trim() !== "" || filterSymbols.length > 0 || filterAssetTypes.length > 0 || filterAccounts.length > 0 || filterStatus !== "all";
+  const filterCount = (filterSearch.trim() ? 1 : 0) + filterSymbols.length + filterAssetTypes.length + filterAccounts.length + (filterStatus !== "all" ? 1 : 0);
   const filteredHoldings = (holdings ?? []).filter((h) => {
     const q = filterSearch.trim().toLowerCase();
     const searchOk = q === "" || (h.symbol ?? "").toLowerCase().includes(q) || (h.name ?? "").toLowerCase().includes(q);
     const symbolOk = filterSymbols.length === 0 || filterSymbols.includes(h.symbol);
     const typeOk = filterAssetTypes.length === 0 || filterAssetTypes.includes(h.asset_type);
     const acctOk = filterAccounts.length === 0 || filterAccounts.includes(h.account_id);
-    return searchOk && symbolOk && typeOk && acctOk;
+    const active = isActiveHolding(h);
+    const statusOk = filterStatus === "all" || (filterStatus === "active" && active) || (filterStatus === "inactive" && !active);
+    return searchOk && symbolOk && typeOk && acctOk && statusOk;
   });
   const uniqueAssetTypeCodes = [...new Set((holdings ?? []).map((h) => h.asset_type))].sort();
   const uniqueSymbols = [...new Set((holdings ?? []).map((h) => h.symbol).filter(Boolean))].sort();
 
-  // Group filteredHoldings by asset_type (DB already orders by asset_type then symbol)
+  // Group filteredHoldings by asset_type, then sub-group by Active/Inactive
   const holdingGroups = (() => {
     const groups = [];
     const seen = {};
     for (const h of filteredHoldings) {
       if (!seen[h.asset_type]) {
-        seen[h.asset_type] = [];
+        seen[h.asset_type] = { active: [], inactive: [] };
         groups.push({
           code: h.asset_type,
           label: assetTypes.find((a) => a.code === h.asset_type)?.label ?? h.asset_type,
-          items: seen[h.asset_type],
+          buckets: seen[h.asset_type],
         });
       }
-      seen[h.asset_type].push(h);
+      if (isActiveHolding(h)) seen[h.asset_type].active.push(h);
+      else seen[h.asset_type].inactive.push(h);
     }
-    return groups;
+    return groups.map((g) => ({
+      ...g,
+      items: [...g.buckets.active, ...g.buckets.inactive],
+      activeItems: g.buckets.active,
+      inactiveItems: g.buckets.inactive,
+      showSubGroups: filterStatus === "all" && g.buckets.active.length > 0 && g.buckets.inactive.length > 0,
+    }));
   })();
   const filteredTxns = filterTxnTypes.length === 0
     ? transactions
@@ -1031,6 +1042,23 @@ export default function HoldingsPage() {
                 </div>
               )}
               <div>
+                <p className="label mb-2">Status</p>
+                <div className="space-y-1.5">
+                  {[["all", "All"], ["active", "Active"], ["inactive", "Inactive"]].map(([val, lbl]) => (
+                    <label key={val} className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="radio"
+                        className="accent-brass"
+                        name="filterStatus"
+                        checked={filterStatus === val}
+                        onChange={() => setFilterStatus(val)}
+                      />
+                      {lbl}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
                 <p className="label mb-2">Asset type</p>
                 <div className="space-y-1.5">
                   {uniqueAssetTypeCodes.map((code) => (
@@ -1075,7 +1103,7 @@ export default function HoldingsPage() {
               {filtersActive && (
                 <button
                   className="text-xs text-paper-dim hover:text-paper transition-colors"
-                  onClick={() => { setFilterSearch(""); setFilterSymbols([]); setFilterAssetTypes([]); setFilterAccounts([]); }}
+                  onClick={() => { setFilterSearch(""); setFilterSymbols([]); setFilterAssetTypes([]); setFilterAccounts([]); setFilterStatus("all"); }}
                 >
                   Clear all
                 </button>
@@ -1111,7 +1139,7 @@ export default function HoldingsPage() {
                     </td>
                   </tr>
                 )}
-                {holdingGroups.map(({ code, label, items }) => {
+                {holdingGroups.map(({ code, label, items, activeItems, inactiveItems, showSubGroups }) => {
                   const isCollapsed = collapsedGroups.has(code);
                   const groupValue = items.reduce((s, h) => s + Number(h.current_value ?? 0), 0);
                   const groupGain  = items.reduce((s, h) => {
@@ -1149,8 +1177,9 @@ export default function HoldingsPage() {
                         </td>
                       </tr>
 
-                      {/* Individual holding rows */}
-                      {!isCollapsed && items.map((h) => {
+                      {/* Individual holding rows, sub-grouped by Active/Inactive when both present */}
+                      {!isCollapsed && (() => {
+                        const renderHolding = (h, inactive = false) => {
                         const netIncome = Number(h.total_interest ?? 0) + Number(h.total_dividends ?? 0) - Number(h.total_fees ?? 0);
                         const gain = h.asset_type === "loan" ? netIncome : Number(h.net_gain ?? 0) + netIncome;
                         const snap = snapMap[h.id];
@@ -1158,7 +1187,7 @@ export default function HoldingsPage() {
                         return (
                           <tr
                             key={h.id}
-                            className="border-b border-ink-line/60 last:border-0 cursor-pointer hover:bg-ink-soft/40 transition-colors"
+                            className={`border-b border-ink-line/60 last:border-0 cursor-pointer hover:bg-ink-soft/40 transition-colors ${inactive ? "opacity-50" : ""}`}
                             onClick={() => openDetail(h)}
                           >
                             <td className="px-2 py-3">
@@ -1219,7 +1248,25 @@ export default function HoldingsPage() {
                             </td>
                           </tr>
                         );
-                      })}
+                        };
+                        if (showSubGroups) {
+                          return (
+                            <Fragment key="subgroups">
+                              <tr className="border-b border-ink-line/30 bg-ink-soft/30">
+                                <td />
+                                <td className="px-4 py-1 text-[10px] text-gain/80 font-medium tracking-widest" colSpan={6}>ACTIVE · {activeItems.length}</td>
+                              </tr>
+                              {activeItems.map(h => renderHolding(h, false))}
+                              <tr className="border-b border-ink-line/30 bg-ink-soft/30">
+                                <td />
+                                <td className="px-4 py-1 text-[10px] text-paper-dim/60 font-medium tracking-widest" colSpan={6}>INACTIVE · {inactiveItems.length}</td>
+                              </tr>
+                              {inactiveItems.map(h => renderHolding(h, true))}
+                            </Fragment>
+                          );
+                        }
+                        return items.map(h => renderHolding(h, false));
+                      })()}
                     </Fragment>
                   );
                 })}
