@@ -113,14 +113,14 @@ export default function HoldingsPage() {
 
   // Add holding drawer
   const [showAdd, setShowAdd] = useState(false);
-  const [addForm, setAddForm] = useState({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", cost_basis: "", price_override: "" });
+  const [addForm, setAddForm] = useState({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", cost_basis: "", price_override: "", interest_rate: "", maturity_date: "" });
   const [addError, setAddError] = useState("");
   const [addBusy, setAddBusy] = useState(false);
   const [addLookupBusy, setAddLookupBusy] = useState(false);
 
   // Edit holding drawer
   const [editingHolding, setEditingHolding] = useState(null);
-  const [editForm, setEditForm] = useState({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", price_override: "", simulator_key: "" });
+  const [editForm, setEditForm] = useState({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", price_override: "", simulator_key: "", interest_rate: "", maturity_date: "" });
   const [editError, setEditError] = useState("");
   const [editBusy, setEditBusy] = useState(false);
 
@@ -274,7 +274,9 @@ export default function HoldingsPage() {
         asset_type: addForm.asset_type,
         account_id: addForm.account_id || null,
         quantity: 0,
-        price_override: priceOverride
+        price_override: priceOverride,
+        interest_rate: addForm.interest_rate !== "" ? Number(addForm.interest_rate) : null,
+        maturity_date: addForm.maturity_date || null,
       })
       .select()
       .single();
@@ -301,7 +303,7 @@ export default function HoldingsPage() {
 
     setAddBusy(false);
     setShowAdd(false);
-    setAddForm({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", cost_basis: "", price_override: "" });
+    setAddForm({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", cost_basis: "", price_override: "", interest_rate: "", maturity_date: "" });
     load();
   }
 
@@ -316,6 +318,8 @@ export default function HoldingsPage() {
       quantity: holding.quantity != null ? String(holding.quantity) : "",
       price_override: holding.price_override != null ? String(holding.price_override) : "",
       simulator_key: holding.simulator_key ?? "",
+      interest_rate: holding.interest_rate != null ? String(holding.interest_rate) : "",
+      maturity_date: holding.maturity_date ?? "",
     });
     setEditError("");
     setMenuOpenId(null);
@@ -337,6 +341,8 @@ export default function HoldingsPage() {
       account_id: editForm.account_id || null,
       price_override: isManual && editForm.price_override !== "" ? Number(editForm.price_override) : null,
       simulator_key: editForm.simulator_key || null,
+      interest_rate: editForm.interest_rate !== "" ? Number(editForm.interest_rate) : null,
+      maturity_date: editForm.maturity_date || null,
     };
     if (!isMarket) updates.quantity = editForm.quantity === "" ? 0 : Number(editForm.quantity);
     const { error } = await supabase
@@ -370,7 +376,7 @@ export default function HoldingsPage() {
         .or(`holding_id.eq.${holding.id},cash_holding_id.eq.${holding.id}`)
         .order("txn_date", { ascending: false }),
       supabase.from("holdings_valued")
-        .select("id, symbol, name, asset_type, account_id, quantity, price_override, cost_basis, current_value, net_gain, net_gain_pct, market_price, simulator_key")
+        .select("id, symbol, name, asset_type, account_id, quantity, price_override, cost_basis, current_value, net_gain, net_gain_pct, market_price, simulator_key, interest_rate, maturity_date")
         .eq("id", holding.id)
         .single(),
       supabase.from("portfolio_snapshots")
@@ -1404,6 +1410,28 @@ export default function HoldingsPage() {
               />
             </div>
           )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label block mb-1.5">Interest Rate (%)</label>
+              <input
+                className="field num"
+                type="number"
+                step="any"
+                placeholder="0.00"
+                value={addForm.interest_rate}
+                onChange={(e) => setAddForm({ ...addForm, interest_rate: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="label block mb-1.5">Maturity Date</label>
+              <input
+                className="field"
+                type="date"
+                value={addForm.maturity_date}
+                onChange={(e) => setAddForm({ ...addForm, maturity_date: e.target.value })}
+              />
+            </div>
+          </div>
           {addError && <p className="text-loss text-sm">{addError}</p>}
           <button
             className="btn w-full"
@@ -1516,6 +1544,28 @@ export default function HoldingsPage() {
                   />
                 </div>
               )}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label block mb-1.5">Interest Rate (%)</label>
+                  <input
+                    className="field num"
+                    type="number"
+                    step="any"
+                    placeholder="0.00"
+                    value={editForm.interest_rate}
+                    onChange={(e) => { const v = e.target.value; setEditForm((prev) => ({ ...prev, interest_rate: v })); }}
+                  />
+                </div>
+                <div>
+                  <label className="label block mb-1.5">Maturity Date</label>
+                  <input
+                    className="field"
+                    type="date"
+                    value={editForm.maturity_date}
+                    onChange={(e) => { const v = e.target.value; setEditForm((prev) => ({ ...prev, maturity_date: v })); }}
+                  />
+                </div>
+              </div>
               {editError && <p className="text-loss text-sm">{editError}</p>}
               <button
                 className="btn w-full"
