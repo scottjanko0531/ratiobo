@@ -13,7 +13,9 @@ export default function NewHoldingPage() {
     name: "",
     asset_type: "",
     account_id: "",
-    quantity: ""
+    quantity: "",
+    interest_rate: "",
+    maturity_date: ""
   });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -38,7 +40,9 @@ export default function NewHoldingPage() {
       name: form.name || null,
       asset_type: form.asset_type,
       account_id: form.account_id || null,
-      quantity: form.quantity === "" ? 0 : Number(form.quantity)
+      quantity: form.quantity === "" ? 0 : Number(form.quantity),
+      interest_rate: form.interest_rate !== "" ? Number(form.interest_rate) : null,
+      maturity_date: form.maturity_date || null
     });
     setBusy(false);
     if (error) setError(error.message);
@@ -115,6 +119,30 @@ export default function NewHoldingPage() {
           Tip: quantity can also stay 0 here — buy transactions you record will tell the
           story, and the price sync picks up the symbol automatically.
         </p>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="label block mb-1.5" htmlFor="h-rate">Interest Rate (%)</label>
+            <input
+              id="h-rate"
+              className="field num"
+              type="number"
+              step="any"
+              placeholder="0.00"
+              value={form.interest_rate}
+              onChange={(e) => setForm({ ...form, interest_rate: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="label block mb-1.5" htmlFor="h-maturity">Maturity Date</label>
+            <input
+              id="h-maturity"
+              className="field"
+              type="date"
+              value={form.maturity_date}
+              onChange={(e) => setForm({ ...form, maturity_date: e.target.value })}
+            />
+          </div>
+        </div>
         {error && <p className="text-loss text-sm">{error}</p>}
         <button
           className="btn w-full"

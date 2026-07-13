@@ -102,7 +102,7 @@ export default function AccountsPage() {
   const [holdingMenuOpenId, setHoldingMenuOpenId] = useState(null);
   const [holdingMenuPos, setHoldingMenuPos] = useState({ top: 0, left: 0 });
   const [editingHolding, setEditingHolding] = useState(null);
-  const [editHoldingForm, setEditHoldingForm] = useState({ symbol: "", name: "", asset_type: "", quantity: "", price_override: "", simulator_key: "" });
+  const [editHoldingForm, setEditHoldingForm] = useState({ symbol: "", name: "", asset_type: "", quantity: "", price_override: "", simulator_key: "", interest_rate: "", maturity_date: "" });
   const [editHoldingError, setEditHoldingError] = useState("");
   const [editHoldingBusy, setEditHoldingBusy] = useState(false);
 
@@ -126,7 +126,7 @@ export default function AccountsPage() {
   const [addTxnBusy, setAddTxnBusy] = useState(false);
 
   const [addingHolding, setAddingHolding] = useState(false);
-  const [addHoldingForm, setAddHoldingForm] = useState({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "" });
+  const [addHoldingForm, setAddHoldingForm] = useState({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "", interest_rate: "", maturity_date: "" });
   const [addHoldingError, setAddHoldingError] = useState("");
   const [addHoldingBusy, setAddHoldingBusy] = useState(false);
   const [addHoldingLookupBusy, setAddHoldingLookupBusy] = useState(false);
@@ -335,7 +335,7 @@ export default function AccountsPage() {
     const [{ data }, { data: snaps }] = await Promise.all([
       supabase
         .from("holdings_valued")
-        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain, simulator_key")
+        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain, simulator_key, interest_rate, maturity_date")
         .eq("account_id", account.id)
         .order("asset_type")
         .order("symbol"),
@@ -387,7 +387,7 @@ export default function AccountsPage() {
     setFilterTypes([]);
     setFilterSymbols([]);
     setAddingHolding(false);
-    setAddHoldingForm({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "" });
+    setAddHoldingForm({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "", interest_rate: "", maturity_date: "" });
     setAddHoldingError("");
     setHoldingSnapshots({});
     setHoldingIncomeMap({});
@@ -406,7 +406,7 @@ export default function AccountsPage() {
         .order("txn_date", { ascending: false }),
       supabase
         .from("holdings_valued")
-        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain, simulator_key")
+        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain, simulator_key, interest_rate, maturity_date")
         .eq("id", holding.id)
         .single(),
       supabase
@@ -541,6 +541,8 @@ export default function AccountsPage() {
       quantity: holding.quantity != null ? String(holding.quantity) : "",
       price_override: holding.price_override != null ? String(holding.price_override) : "",
       simulator_key: holding.simulator_key ?? "",
+      interest_rate: holding.interest_rate != null ? String(holding.interest_rate) : "",
+      maturity_date: holding.maturity_date ?? "",
     });
     setEditHoldingError("");
     setHoldingMenuOpenId(null);
@@ -563,6 +565,8 @@ export default function AccountsPage() {
         ? Number(editHoldingForm.price_override)
         : null,
       simulator_key: editHoldingForm.simulator_key || null,
+      interest_rate: editHoldingForm.interest_rate !== "" ? Number(editHoldingForm.interest_rate) : null,
+      maturity_date: editHoldingForm.maturity_date || null,
     };
     if (!isMarket) {
       updates.quantity = editHoldingForm.quantity === "" ? 0 : Number(editHoldingForm.quantity);
@@ -749,7 +753,9 @@ export default function AccountsPage() {
         name: addHoldingForm.name || null,
         asset_type: addHoldingForm.asset_type,
         quantity: 0,
-        price_override: priceOverride
+        price_override: priceOverride,
+        interest_rate: addHoldingForm.interest_rate !== "" ? Number(addHoldingForm.interest_rate) : null,
+        maturity_date: addHoldingForm.maturity_date || null,
       })
       .select()
       .single();
@@ -774,7 +780,7 @@ export default function AccountsPage() {
 
     setAddHoldingBusy(false);
     setAddingHolding(false);
-    setAddHoldingForm({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "" });
+    setAddHoldingForm({ symbol: "", name: "", asset_type: "", quantity: "", cost_basis: "", price_override: "", interest_rate: "", maturity_date: "" });
     load();
     await openDetail(viewingAccount);
   }
@@ -2291,6 +2297,30 @@ export default function AccountsPage() {
               />
             </div>
           )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label block mb-1.5" htmlFor="eh-rate">Interest Rate (%)</label>
+              <input
+                id="eh-rate"
+                className="field num"
+                type="number"
+                step="any"
+                placeholder="0.00"
+                value={editHoldingForm.interest_rate}
+                onChange={(e) => setEditHoldingForm({ ...editHoldingForm, interest_rate: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="label block mb-1.5" htmlFor="eh-maturity">Maturity Date</label>
+              <input
+                id="eh-maturity"
+                className="field"
+                type="date"
+                value={editHoldingForm.maturity_date}
+                onChange={(e) => setEditHoldingForm({ ...editHoldingForm, maturity_date: e.target.value })}
+              />
+            </div>
+          </div>
           {editHoldingError && <p className="text-loss text-sm">{editHoldingError}</p>}
           <div className="flex gap-3">
             <button
@@ -2397,6 +2427,30 @@ export default function AccountsPage() {
               />
             </div>
           )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label block mb-1.5" htmlFor="ah-rate">Interest Rate (%)</label>
+              <input
+                id="ah-rate"
+                className="field num"
+                type="number"
+                step="any"
+                placeholder="0.00"
+                value={addHoldingForm.interest_rate}
+                onChange={(e) => setAddHoldingForm({ ...addHoldingForm, interest_rate: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="label block mb-1.5" htmlFor="ah-maturity">Maturity Date</label>
+              <input
+                id="ah-maturity"
+                className="field"
+                type="date"
+                value={addHoldingForm.maturity_date}
+                onChange={(e) => setAddHoldingForm({ ...addHoldingForm, maturity_date: e.target.value })}
+              />
+            </div>
+          </div>
           {addHoldingError && <p className="text-loss text-sm">{addHoldingError}</p>}
           <div className="flex gap-3">
             <button
