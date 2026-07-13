@@ -2297,30 +2297,32 @@ export default function AccountsPage() {
               />
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label block mb-1.5" htmlFor="eh-rate">Interest Rate (%)</label>
-              <input
-                id="eh-rate"
-                className="field num"
-                type="number"
-                step="any"
-                placeholder="0.00"
-                value={editHoldingForm.interest_rate}
-                onChange={(e) => setEditHoldingForm({ ...editHoldingForm, interest_rate: e.target.value })}
-              />
+          {["bond", "loan"].includes(editHoldingForm.asset_type) && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label block mb-1.5" htmlFor="eh-rate">Interest Rate (%)</label>
+                <input
+                  id="eh-rate"
+                  className="field num"
+                  type="number"
+                  step="any"
+                  placeholder="0.00"
+                  value={editHoldingForm.interest_rate}
+                  onChange={(e) => setEditHoldingForm({ ...editHoldingForm, interest_rate: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="label block mb-1.5" htmlFor="eh-maturity">Maturity Date</label>
+                <input
+                  id="eh-maturity"
+                  className="field"
+                  type="date"
+                  value={editHoldingForm.maturity_date}
+                  onChange={(e) => setEditHoldingForm({ ...editHoldingForm, maturity_date: e.target.value })}
+                />
+              </div>
             </div>
-            <div>
-              <label className="label block mb-1.5" htmlFor="eh-maturity">Maturity Date</label>
-              <input
-                id="eh-maturity"
-                className="field"
-                type="date"
-                value={editHoldingForm.maturity_date}
-                onChange={(e) => setEditHoldingForm({ ...editHoldingForm, maturity_date: e.target.value })}
-              />
-            </div>
-          </div>
+          )}
           {editHoldingError && <p className="text-loss text-sm">{editHoldingError}</p>}
           <div className="flex gap-3">
             <button
@@ -2427,30 +2429,32 @@ export default function AccountsPage() {
               />
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label block mb-1.5" htmlFor="ah-rate">Interest Rate (%)</label>
-              <input
-                id="ah-rate"
-                className="field num"
-                type="number"
-                step="any"
-                placeholder="0.00"
-                value={addHoldingForm.interest_rate}
-                onChange={(e) => setAddHoldingForm({ ...addHoldingForm, interest_rate: e.target.value })}
-              />
+          {["bond", "loan"].includes(addHoldingForm.asset_type) && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label block mb-1.5" htmlFor="ah-rate">Interest Rate (%)</label>
+                <input
+                  id="ah-rate"
+                  className="field num"
+                  type="number"
+                  step="any"
+                  placeholder="0.00"
+                  value={addHoldingForm.interest_rate}
+                  onChange={(e) => setAddHoldingForm({ ...addHoldingForm, interest_rate: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="label block mb-1.5" htmlFor="ah-maturity">Maturity Date</label>
+                <input
+                  id="ah-maturity"
+                  className="field"
+                  type="date"
+                  value={addHoldingForm.maturity_date}
+                  onChange={(e) => setAddHoldingForm({ ...addHoldingForm, maturity_date: e.target.value })}
+                />
+              </div>
             </div>
-            <div>
-              <label className="label block mb-1.5" htmlFor="ah-maturity">Maturity Date</label>
-              <input
-                id="ah-maturity"
-                className="field"
-                type="date"
-                value={addHoldingForm.maturity_date}
-                onChange={(e) => setAddHoldingForm({ ...addHoldingForm, maturity_date: e.target.value })}
-              />
-            </div>
-          </div>
+          )}
           {addHoldingError && <p className="text-loss text-sm">{addHoldingError}</p>}
           <div className="flex gap-3">
             <button

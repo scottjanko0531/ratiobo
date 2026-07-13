@@ -1410,28 +1410,30 @@ export default function HoldingsPage() {
               />
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label block mb-1.5">Interest Rate (%)</label>
-              <input
-                className="field num"
-                type="number"
-                step="any"
-                placeholder="0.00"
-                value={addForm.interest_rate}
-                onChange={(e) => setAddForm({ ...addForm, interest_rate: e.target.value })}
-              />
+          {["bond", "loan"].includes(addForm.asset_type) && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label block mb-1.5">Interest Rate (%)</label>
+                <input
+                  className="field num"
+                  type="number"
+                  step="any"
+                  placeholder="0.00"
+                  value={addForm.interest_rate}
+                  onChange={(e) => setAddForm({ ...addForm, interest_rate: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="label block mb-1.5">Maturity Date</label>
+                <input
+                  className="field"
+                  type="date"
+                  value={addForm.maturity_date}
+                  onChange={(e) => setAddForm({ ...addForm, maturity_date: e.target.value })}
+                />
+              </div>
             </div>
-            <div>
-              <label className="label block mb-1.5">Maturity Date</label>
-              <input
-                className="field"
-                type="date"
-                value={addForm.maturity_date}
-                onChange={(e) => setAddForm({ ...addForm, maturity_date: e.target.value })}
-              />
-            </div>
-          </div>
+          )}
           {addError && <p className="text-loss text-sm">{addError}</p>}
           <button
             className="btn w-full"
@@ -1544,28 +1546,30 @@ export default function HoldingsPage() {
                   />
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label block mb-1.5">Interest Rate (%)</label>
-                  <input
-                    className="field num"
-                    type="number"
-                    step="any"
-                    placeholder="0.00"
-                    value={editForm.interest_rate}
-                    onChange={(e) => { const v = e.target.value; setEditForm((prev) => ({ ...prev, interest_rate: v })); }}
-                  />
+              {["bond", "loan"].includes(editForm.asset_type) && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label block mb-1.5">Interest Rate (%)</label>
+                    <input
+                      className="field num"
+                      type="number"
+                      step="any"
+                      placeholder="0.00"
+                      value={editForm.interest_rate}
+                      onChange={(e) => { const v = e.target.value; setEditForm((prev) => ({ ...prev, interest_rate: v })); }}
+                    />
+                  </div>
+                  <div>
+                    <label className="label block mb-1.5">Maturity Date</label>
+                    <input
+                      className="field"
+                      type="date"
+                      value={editForm.maturity_date}
+                      onChange={(e) => { const v = e.target.value; setEditForm((prev) => ({ ...prev, maturity_date: v })); }}
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="label block mb-1.5">Maturity Date</label>
-                  <input
-                    className="field"
-                    type="date"
-                    value={editForm.maturity_date}
-                    onChange={(e) => { const v = e.target.value; setEditForm((prev) => ({ ...prev, maturity_date: v })); }}
-                  />
-                </div>
-              </div>
+              )}
               {editError && <p className="text-loss text-sm">{editError}</p>}
               <button
                 className="btn w-full"
