@@ -1410,7 +1410,7 @@ export default function HoldingsPage() {
               />
             </div>
           )}
-          {["bond", "loan"].includes(addForm.asset_type) && (
+          {["bond", "loan", "cd"].includes(addForm.asset_type) && (
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="label block mb-1.5">Interest Rate (%)</label>
@@ -1546,7 +1546,7 @@ export default function HoldingsPage() {
                   />
                 </div>
               )}
-              {["bond", "loan"].includes(editForm.asset_type) && (
+              {["bond", "loan", "cd"].includes(editForm.asset_type) && (
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="label block mb-1.5">Interest Rate (%)</label>

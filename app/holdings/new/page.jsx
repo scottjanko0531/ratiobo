@@ -119,7 +119,7 @@ export default function NewHoldingPage() {
           Tip: quantity can also stay 0 here — buy transactions you record will tell the
           story, and the price sync picks up the symbol automatically.
         </p>
-        {["bond", "loan"].includes(form.asset_type) && (
+        {["bond", "loan", "cd"].includes(form.asset_type) && (
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="label block mb-1.5" htmlFor="h-rate">Interest Rate (%)</label>
