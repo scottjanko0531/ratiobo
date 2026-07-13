@@ -94,6 +94,7 @@ export default function HoldingsPage() {
   const [filterAssetTypes, setFilterAssetTypes] = useState([]);
   const [filterAccounts, setFilterAccounts] = useState([]);
   const [filterStatus, setFilterStatus] = useState("all"); // "all" | "active" | "inactive"
+  const [activityCollapsed, setActivityCollapsed] = useState(false);
 
   // Collapsible asset-type groups
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
@@ -908,56 +909,77 @@ export default function HoldingsPage() {
 
         return (
           <>
-            {/* ── Performance Results + Activity table ── */}
+            {/* ── Portfolio Activity table (collapsible) ── */}
             <div className="card mb-4 overflow-x-auto">
-              <table className="w-full text-xs min-w-[520px]">
-                <thead>
-                  <tr className="border-b border-ink-line">
-                    <th className="text-left px-4 py-2 text-paper-dim font-normal w-44" />
-                    {COLS.map((c) => (
-                      <th key={c} className="text-right px-3 py-2 text-paper-dim font-medium">{COL_LABELS[c]}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  <SectionHeader label="Performance Results" />
-                  <DataRow label="Unrealized Gains"        field="unrealized" />
-                  <DataRow label="Realized Gains"          field="realized" />
-                  <DataRow label="Income"                  field="income" />
-                  <DataRow label="Return of Principal"     field="principal" />
-                  <TotalRow label="Total"                  field="total" />
+              {/* Header */}
+              <button
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-ink-line hover:bg-ink-soft/40 transition-colors select-none"
+                onClick={() => setActivityCollapsed(v => !v)}
+              >
+                <span className="text-sm font-semibold text-paper">Portfolio Activity</span>
+                <ChevronIcon collapsed={activityCollapsed} />
+              </button>
 
-                  {/* Winners / Losers */}
-                  <tr className="h-2" />
-                  <tr className="border-t border-ink-line/40">
-                    <td className="px-4 py-1.5 text-paper-dim">Winners</td>
-                    {COLS.map((c) => {
-                      const v = pm[c]?.winners;
-                      return <td key={c} className={`text-right px-3 py-1.5 num ${v == null ? "text-paper-dim" : "text-gain"}`}>{v ?? "—"}</td>;
-                    })}
-                  </tr>
-                  <tr>
-                    <td className="px-4 py-1.5 text-paper-dim">Losers</td>
-                    {COLS.map((c) => {
-                      const v = pm[c]?.losers;
-                      return <td key={c} className={`text-right px-3 py-1.5 num ${v == null ? "text-paper-dim" : v > 0 ? "text-loss" : "text-paper-dim"}`}>{v ?? "—"}</td>;
-                    })}
-                  </tr>
+              {activityCollapsed ? (
+                /* Collapsed: show only Total Portfolio Value Change */
+                <table className="w-full text-xs min-w-[520px]">
+                  <tbody>
+                    <tr>
+                      <td className="px-4 py-2.5 text-paper font-semibold w-44">Total Portfolio Value Change</td>
+                      {COLS.map((c) => (
+                        <td key={c} className="text-right px-3 py-2.5 font-semibold">{fmt(pm[c]?.total)}</td>
+                      ))}
+                    </tr>
+                  </tbody>
+                </table>
+              ) : (
+                /* Expanded: full table */
+                <table className="w-full text-xs min-w-[520px]">
+                  <thead>
+                    <tr className="border-b border-ink-line">
+                      <th className="text-left px-4 py-2 text-paper-dim font-normal w-44" />
+                      {COLS.map((c) => (
+                        <th key={c} className="text-right px-3 py-2 text-paper-dim font-medium">{COL_LABELS[c]}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <SectionHeader label="Performance Results" />
+                    <DataRow label="Unrealized Gains"    field="unrealized" />
+                    <DataRow label="Realized Gains"      field="realized" />
+                    <DataRow label="Income"              field="income" />
+                    <DataRow label="Return of Principal" field="principal" />
+                    <TotalRow label="Total"              field="total" />
 
-                  {/* Investment Activity */}
-                  <SectionHeader label="Investment Activity" />
-                  <DataRow label="Buy"     field="buy" />
-                  <DataRow label="Sell"    field="realized" />
-                  <DataRow label="Reinvest" field="reinvest" />
+                    <tr className="h-2" />
+                    <tr className="border-t border-ink-line/40">
+                      <td className="px-4 py-1.5 text-paper-dim">Winners</td>
+                      {COLS.map((c) => {
+                        const v = pm[c]?.winners;
+                        return <td key={c} className={`text-right px-3 py-1.5 num ${v == null ? "text-paper-dim" : "text-gain"}`}>{v ?? "—"}</td>;
+                      })}
+                    </tr>
+                    <tr>
+                      <td className="px-4 py-1.5 text-paper-dim">Losers</td>
+                      {COLS.map((c) => {
+                        const v = pm[c]?.losers;
+                        return <td key={c} className={`text-right px-3 py-1.5 num ${v == null ? "text-paper-dim" : v > 0 ? "text-loss" : "text-paper-dim"}`}>{v ?? "—"}</td>;
+                      })}
+                    </tr>
 
-                  {/* Total Portfolio Value Change */}
-                  <tr className="h-2" />
-                  <tr className="border-t border-ink-line font-semibold">
-                    <td className="px-4 py-2 text-paper">Total Portfolio Value Change</td>
-                    {COLS.map((c) => <td key={c} className="text-right px-3 py-2">{fmt(pm[c]?.total)}</td>)}
-                  </tr>
-                </tbody>
-              </table>
+                    <SectionHeader label="Investment Activity" />
+                    <DataRow label="Buy"      field="buy" />
+                    <DataRow label="Sell"     field="realized" />
+                    <DataRow label="Reinvest" field="reinvest" />
+
+                    <tr className="h-2" />
+                    <tr className="border-t border-ink-line font-semibold">
+                      <td className="px-4 py-2 text-paper">Total Portfolio Value Change</td>
+                      {COLS.map((c) => <td key={c} className="text-right px-3 py-2">{fmt(pm[c]?.total)}</td>)}
+                    </tr>
+                  </tbody>
+                </table>
+              )}
             </div>
 
             {/* ── Portfolio Performance table ── */}
