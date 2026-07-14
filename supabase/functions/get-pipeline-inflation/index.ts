@@ -40,19 +40,20 @@ function scoreChange(change: number | null, posT: number, negT: number): -1 | 0 
 }
 
 // Z-score of the most recent 3M % change vs the full historical distribution of 3M % changes.
-// Uses the series' own observation array (oldest → newest), bypassing the backbone date alignment.
+// Uses calendar date lookup (same logic as change3m) to handle gaps in monthly series.
 function computeZScore(obs: { date: string; value: number }[]): number | null {
+  const byDate = Object.fromEntries(obs.map((o) => [o.date, o.value]));
   const changes: number[] = [];
-  for (let i = 3; i < obs.length; i++) {
-    const now = obs[i].value;
-    const prev = obs[i - 3].value;
-    if (prev !== 0) changes.push((now / prev - 1) * 100);
+  for (const o of obs) {
+    const d = new Date(o.date + "-01");
+    const m3 = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 3, 1)).toISOString().slice(0, 7);
+    const prev = byDate[m3];
+    if (prev != null && prev !== 0) changes.push((o.value / prev - 1) * 100);
   }
   if (changes.length < 12) return null;
   const current = changes[changes.length - 1];
   const mean = changes.reduce((s, v) => s + v, 0) / changes.length;
-  const variance = changes.reduce((s, v) => s + (v - mean) ** 2, 0) / changes.length;
-  const std = Math.sqrt(variance);
+  const std = Math.sqrt(changes.reduce((s, v) => s + (v - mean) ** 2, 0) / changes.length);
   if (std < 0.001) return null;
   return Math.round(((current - mean) / std) * 100) / 100;
 }
