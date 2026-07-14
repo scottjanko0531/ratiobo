@@ -1124,11 +1124,11 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
 // ─── Pipeline Inflation ──────────────────────────────────────────────────────
 
 const PIPE_META = [
-  { key: "ism",    short: "ISM", name: "ISM Prices Paid",  unit: "index",    desc: "Level ≥55 rising / ≤45 falling" },
-  { key: "ppi",    short: "PPI", name: "PPI Final Demand", unit: "index",    desc: "3-month % change · ±0.5% threshold" },
-  { key: "wti",    short: "Oil", name: "WTI Crude Oil",    unit: "$/bbl",    desc: "3-month % change · ±5% threshold" },
-  { key: "copper", short: "Cu",  name: "Copper",           unit: "$/mt",     desc: "3-month % change · ±5% threshold" },
-  { key: "natgas", short: "Gas", name: "Natural Gas",      unit: "$/MMBtu",  desc: "3-month % change · ±10% threshold" },
+  { key: "crude",  short: "PPI", name: "PPI All Commodities", unit: "index",   desc: "3-month % change · ±3% threshold" },
+  { key: "ppi",    short: "PPI", name: "PPI Final Demand",    unit: "index",   desc: "3-month % change · ±0.5% threshold" },
+  { key: "wti",    short: "Oil", name: "WTI Crude Oil",       unit: "$/bbl",   desc: "3-month % change · ±5% threshold" },
+  { key: "copper", short: "Cu",  name: "Copper",              unit: "$/mt",    desc: "3-month % change · ±5% threshold" },
+  { key: "natgas", short: "Gas", name: "Natural Gas",         unit: "$/MMBtu", desc: "3-month % change · ±10% threshold" },
 ];
 
 function ScoreDot({ score }) {
@@ -1240,7 +1240,7 @@ function PipelineDrawer({ open, onClose, data }) {
                       <div className="text-right shrink-0">
                         {c.current != null && (
                           <p className="text-xs num text-paper">
-                            {c.isIsm ? c.current : `${Number(c.current).toLocaleString()} ${meta?.unit}`}
+                            {Number(c.current).toLocaleString()} {meta?.unit}
                           </p>
                         )}
                         {c.change3m != null && (
@@ -1315,7 +1315,7 @@ function PipelineDrawer({ open, onClose, data }) {
               <div className="flex gap-2"><span className="text-gain font-mono w-20">−1 to −2</span><span className="text-paper-dim">Easing — input costs falling, CPI likely to soften</span></div>
               <div className="flex gap-2"><span className="text-gain font-mono w-20">≤ −3</span><span className="text-paper-dim">Strongly Easing — broad disinflation in pipeline</span></div>
             </div>
-            <p className="text-paper-dim/60 text-[10px]">Sources: FRED — NAPMPI · PPIFID · DCOILWTICO · PCOPPUSDM · MHHNGSP</p>
+            <p className="text-paper-dim/60 text-[10px]">Sources: FRED — PPIACO · PPIFID · DCOILWTICO · PCOPPUSDM · MHHNGSP</p>
           </div>
         </div>
       </div>
