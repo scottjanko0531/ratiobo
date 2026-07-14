@@ -1190,13 +1190,11 @@ async function computeGauge3(): Promise<void> {
           .map(o => { const d = new Date(o.date); const ya = new Date(Date.UTC(d.getUTCFullYear()-1, d.getUTCMonth(), 1)).toISOString().slice(0,10); return (o.value / byDate[ya] - 1) * 100; });
       };
       const cpiYoys = obsToYoy(cpiObs); const coreYoys = obsToYoy(coreObs);
-      const n = Math.min(12, cpiYoys.length);
-      if (n >= 6) {
-        const cpi12 = r2(cpiYoys.slice(0,n).reduce((s,v)=>s+v,0)/n);
-        const cn = Math.min(12, coreYoys.length);
-        const core12 = cn>=6 ? r2(coreYoys.slice(0,cn).reduce((s,v)=>s+v,0)/cn) : null;
-        const upd: Record<string, unknown> = { year: currentYear, cpi_yoy_annual: cpi12 };
-        if (core12 != null) upd.core_cpi_yoy_annual = core12;
+      if (cpiYoys.length >= 1) {
+        const cpiSpot = r2(cpiYoys[0]);
+        const coreSpot = coreYoys.length >= 1 ? r2(coreYoys[0]) : null;
+        const upd: Record<string, unknown> = { year: currentYear, cpi_yoy_annual: cpiSpot };
+        if (coreSpot != null) upd.core_cpi_yoy_annual = coreSpot;
         await supabase.from("macro_debt_cycle").upsert(upd, { onConflict: "year", ignoreDuplicates: false });
       }
     } catch (e) { console.error("[gauge3] CPI 12mo:", e); }
@@ -1206,10 +1204,9 @@ async function computeGauge3(): Promise<void> {
       const gdpcYoys = gdpcObs
         .filter(o => { const d = new Date(o.date); return byDate[new Date(Date.UTC(d.getUTCFullYear()-1,d.getUTCMonth(),1)).toISOString().slice(0,10)] != null; })
         .map(o => { const d = new Date(o.date); const ya = byDate[new Date(Date.UTC(d.getUTCFullYear()-1,d.getUTCMonth(),1)).toISOString().slice(0,10)]; return (o.value/ya-1)*100; });
-      const q = Math.min(4, gdpcYoys.length);
-      if (q >= 2) {
-        const avg4q = r2(gdpcYoys.slice(0,q).reduce((s,v)=>s+v,0)/q);
-        await supabase.from("macro_debt_cycle").upsert({ year: currentYear, real_gdp_yoy: avg4q }, { onConflict: "year", ignoreDuplicates: false });
+      if (gdpcYoys.length >= 1) {
+        const gdpSpot = r2(gdpcYoys[0]);
+        await supabase.from("macro_debt_cycle").upsert({ year: currentYear, real_gdp_yoy: gdpSpot }, { onConflict: "year", ignoreDuplicates: false });
       }
     } catch (e) { console.error("[gauge3] real GDP 4q:", e); }
     const { data: computed, error: viewErr } = await supabase.from("macro_debt_cycle_computed").select("year,avg3_real,avg3_cpi");

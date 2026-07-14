@@ -1353,6 +1353,13 @@ const CPI_PRESETS = [
   { label: "2010–", from: "2010-01", to: "" },
 ];
 
+const PPI_PRESETS = [
+  { label: "All",   from: "1947-01", to: "" },
+  { label: "1990–", from: "1990-01", to: "" },
+  { label: "2000–", from: "2000-01", to: "" },
+  { label: "2010–", from: "2010-01", to: "" },
+];
+
 const EXP_RANGES = [
   { label: "All",   from: "1978-01-01" },
   { label: "2000–", from: "2000-01-01" },
@@ -1399,6 +1406,28 @@ function CpiTooltip({ active, payload, label }) {
       {payload.map((p) => {
         if (p.value == null) return null;
         const isAccel = p.dataKey === "coreAccel";
+        const formatted = isAccel
+          ? `${p.value >= 0 ? "+" : ""}${Number(p.value).toFixed(2)} pp`
+          : `${Number(p.value).toFixed(2)}%`;
+        return (
+          <div key={p.dataKey} className="flex justify-between gap-4">
+            <span style={{ color: p.fill ?? p.color }}>{p.name}</span>
+            <span className="num text-paper">{formatted}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PpiTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="card px-3 py-2 text-xs space-y-1 min-w-[170px]">
+      <p className="font-semibold text-paper mb-1">{label?.slice(0, 7)}</p>
+      {payload.map((p) => {
+        if (p.value == null) return null;
+        const isAccel = p.dataKey === "ppiAccel";
         const formatted = isAccel
           ? `${p.value >= 0 ? "+" : ""}${Number(p.value).toFixed(2)} pp`
           : `${Number(p.value).toFixed(2)}%`;
@@ -1887,6 +1916,279 @@ function CoreCpiDrawer({ open, onClose, currentValue }) {
 
           <p className="text-[10px] text-paper-dim/60 leading-relaxed">
             Source: BLS · FRED <span className="font-mono">CPILFESL</span> / <span className="font-mono">CPIAUCSL</span>
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function PpiDrawer({ open, onClose, currentValue }) {
+  const [rows, setRows] = useState(null);
+  const [fromDate, setFromDate] = useState("2000-01");
+  const [toDate, setToDate] = useState("");
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-ppi-history`)
+      .then((r) => r.json())
+      .then((data) => setRows(Array.isArray(data) ? data : []))
+      .catch(() => setRows([]));
+  }, [open, rows]);
+
+  const chartData = useMemo(() => {
+    if (!rows) return [];
+    const from = fromDate ? `${fromDate}-01` : "1947-01-01";
+    const to   = toDate   ? `${toDate}-01`   : "9999-12-01";
+    return rows.filter((r) => r.date >= from && r.date <= to && r.ppiYoy != null);
+  }, [rows, fromDate, toDate]);
+
+  const xTicks = useMemo(() => {
+    const total = chartData.length;
+    const stepYears = total > 400 ? 10 : total > 200 ? 5 : total > 80 ? 2 : 1;
+    return chartData
+      .filter((r) => {
+        const yr = parseInt(r.date.slice(0, 4));
+        return r.date.slice(5, 7) === "01" && yr % stepYears === 0;
+      })
+      .map((r) => r.date);
+  }, [chartData]);
+
+  const [minVal, maxVal] = useMemo(() => {
+    if (!chartData.length) return [-5, 20];
+    const vals = chartData.map((r) => r.ppiYoy);
+    return [
+      Math.min(0, Math.floor(Math.min(...vals)) - 1),
+      Math.ceil(Math.max(...vals)) + 1,
+    ];
+  }, [chartData]);
+
+  const summaryRows = useMemo(() => {
+    if (!rows?.length) return [];
+    const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const latest = rows[rows.length - 1];
+    const result = [];
+
+    if (latest.date.slice(5, 7) !== "12") {
+      const mo = parseInt(latest.date.slice(5, 7)) - 1;
+      const yr = latest.date.slice(0, 4);
+      result.push({ label: `${MONTHS[mo]} ${yr}`, ...latest, isLatest: true });
+    }
+
+    const seen = new Set();
+    for (let i = rows.length - 1; i >= 0 && seen.size < 5; i--) {
+      const r = rows[i];
+      if (r.date.slice(5, 7) === "12") {
+        const yr = r.date.slice(0, 4);
+        if (!seen.has(yr)) {
+          seen.add(yr);
+          result.push({ label: `Dec ${yr}`, ...r });
+        }
+      }
+    }
+    return result;
+  }, [rows]);
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed right-0 top-0 h-full w-[520px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">PPI History</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">All Commodities · Monthly (FRED PPIACO)</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {currentValue != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${Number(currentValue) > 3 ? "text-loss" : Number(currentValue) < 0 ? "text-gain" : "text-brass-soft"}`}>
+                  {formatValue(currentValue, "%")}
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">YoY · Current</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 flex-1">
+                <label className="text-[10px] text-paper-dim shrink-0 w-6">From</label>
+                <input
+                  type="month"
+                  value={fromDate}
+                  min="1947-01"
+                  max={toDate || undefined}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  className="flex-1 bg-ink border border-ink-line rounded px-2 py-1 text-xs text-paper focus:outline-none focus:border-brass/60 [color-scheme:dark]"
+                />
+              </div>
+              <span className="text-paper-dim text-xs shrink-0">→</span>
+              <div className="flex items-center gap-1.5 flex-1">
+                <label className="text-[10px] text-paper-dim shrink-0 w-4">To</label>
+                <input
+                  type="month"
+                  value={toDate}
+                  min={fromDate || undefined}
+                  onChange={(e) => setToDate(e.target.value)}
+                  className="flex-1 bg-ink border border-ink-line rounded px-2 py-1 text-xs text-paper focus:outline-none focus:border-brass/60 [color-scheme:dark]"
+                />
+              </div>
+              {toDate && (
+                <button
+                  onClick={() => setToDate("")}
+                  className="text-paper-dim hover:text-paper text-[10px] shrink-0"
+                  title="Clear end date"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-1">
+              {PPI_PRESETS.map((p) => {
+                const isActive = fromDate === p.from && toDate === p.to;
+                return (
+                  <button
+                    key={p.label}
+                    onClick={() => { setFromDate(p.from); setToDate(p.to); }}
+                    className={`px-3 py-1 rounded-lg text-xs transition-colors ${
+                      isActive
+                        ? "bg-ink text-brass-soft border border-brass/30"
+                        : "text-paper-dim hover:text-paper"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">YoY % · monthly</p>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 44, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    type="category"
+                    ticks={xTicks}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => v.slice(0, 4)}
+                    interval={0}
+                  />
+                  <YAxis
+                    yAxisId="left"
+                    domain={[minVal, maxVal]}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => `${v}%`}
+                    width={36}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => `${v > 0 ? "+" : ""}${Number(v).toFixed(1)}`}
+                    width={40}
+                  />
+                  <Tooltip content={<PpiTooltip />} />
+                  <ReferenceLine yAxisId="left" y={0} stroke="#2A3240" strokeWidth={1} />
+                  <ReferenceLine yAxisId="left" y={3} stroke="#C9A227" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.5} />
+                  <Bar yAxisId="right" dataKey="ppiAccel" name="Acceleration" maxBarSize={6}>
+                    {chartData.map((entry, i) => (
+                      <Cell
+                        key={i}
+                        fill={(entry.ppiAccel ?? 0) >= 0 ? "#E0635C" : "#3FB984"}
+                        fillOpacity={0.55}
+                      />
+                    ))}
+                  </Bar>
+                  <Line
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="ppiYoy"
+                    name="PPI YoY"
+                    stroke="#C9A227"
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+
+              <div className="flex items-center justify-center gap-5 mt-3 text-[10px] text-paper-dim">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-5 h-[2px] bg-[#C9A227] rounded" />
+                  PPI YoY
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-flex gap-0.5">
+                    <span className="inline-block w-2 h-3 rounded-sm" style={{ backgroundColor: "#E0635C", opacity: 0.55 }} />
+                    <span className="inline-block w-2 h-3 rounded-sm" style={{ backgroundColor: "#3FB984", opacity: 0.55 }} />
+                  </span>
+                  MoM Accel.
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-5 h-[1px] bg-[#C9A227] opacity-50" style={{ borderTop: "1px dashed #C9A227" }} />
+                  3% threshold
+                </span>
+              </div>
+            </div>
+          )}
+
+          {summaryRows.length > 0 && (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Year-End Summary · last 5 years</p>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-paper-dim text-[10px]">
+                    <th className="text-left pb-2 font-medium">Period</th>
+                    <th className="text-right pb-2 font-medium">PPI YoY</th>
+                    <th className="text-right pb-2 font-medium">MoM Accel.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summaryRows.map((r) => (
+                    <tr key={r.label} className={`border-t border-ink-line/50 ${r.isLatest ? "text-paper" : "text-paper-dim"}`}>
+                      <td className="py-1.5">
+                        {r.label}
+                        {r.isLatest && (
+                          <span className="ml-1.5 text-[9px] text-brass-soft border border-brass/30 rounded px-1 py-0.5">Latest</span>
+                        )}
+                      </td>
+                      <td className={`py-1.5 text-right num ${Number(r.ppiYoy) > 3 ? "text-loss" : Number(r.ppiYoy) < 0 ? "text-gain" : "text-brass-soft"}`}>
+                        {r.ppiYoy != null ? `${Number(r.ppiYoy).toFixed(2)}%` : "—"}
+                      </td>
+                      <td className={`py-1.5 text-right num ${r.ppiAccel != null ? (Number(r.ppiAccel) > 0 ? "text-loss" : "text-gain") : "text-paper-dim"}`}>
+                        {r.ppiAccel != null ? `${Number(r.ppiAccel) >= 0 ? "+" : ""}${Number(r.ppiAccel).toFixed(2)} pp` : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60 leading-relaxed">
+            Source: BLS · FRED <span className="font-mono">PPIACO</span> (All Commodities, not seasonally adjusted)
           </p>
         </div>
       </div>
@@ -2487,6 +2789,7 @@ export default function MacroDashboard() {
   const [consumerExpOpen, setConsumerExpOpen] = useState(false);
   const [goldPriceOpen, setGoldPriceOpen] = useState(false);
   const [cbGoldOpen, setCbGoldOpen] = useState(false);
+  const [ppiDrawerOpen, setPpiDrawerOpen] = useState(false);
   const [regimeHistory, setRegimeHistory] = useState([]);
 
   const fetchIndicators = useCallback(async () => {
@@ -2670,6 +2973,7 @@ export default function MacroDashboard() {
                           : ind.name === "Consumer Inflation Expectations" ? () => setConsumerExpOpen(true)
                           : ind.name === "Gold Price (3M Avg)" ? () => setGoldPriceOpen(true)
                           : ind.name === "CB Gold Reserves (YoY)" ? () => setCbGoldOpen(true)
+                          : ind.name === "PPI (YoY)" ? () => setPpiDrawerOpen(true)
                           : undefined
                         }
                     />
@@ -2722,6 +3026,11 @@ export default function MacroDashboard() {
         open={cbGoldOpen}
         onClose={() => setCbGoldOpen(false)}
         ind={indicators?.find((i) => i.name === "CB Gold Reserves (YoY)")}
+      />
+      <PpiDrawer
+        open={ppiDrawerOpen}
+        onClose={() => setPpiDrawerOpen(false)}
+        currentValue={indicators?.find((i) => i.name === "PPI (YoY)")?.current_value}
       />
     </Shell>
   );
