@@ -1246,6 +1246,11 @@ function PipelineDrawer({ open, onClose, data }) {
                         {c.change3m != null && (
                           <p className={`text-[10px] num ${c.change3m > 0 ? "text-loss" : c.change3m < 0 ? "text-gain" : "text-paper-dim"}`}>
                             {c.change3m > 0 ? "+" : ""}{c.change3m.toFixed(1)}% · 3M
+                            {c.zScore != null && (
+                              <span className={`ml-1.5 ${Math.abs(c.zScore) >= 2 ? (c.zScore > 0 ? "text-loss" : "text-gain") : Math.abs(c.zScore) >= 1 ? "text-brass-soft" : "text-paper-dim/60"}`}>
+                                z {c.zScore >= 0 ? "+" : ""}{c.zScore.toFixed(1)}σ
+                              </span>
+                            )}
                           </p>
                         )}
                         <p className={`text-[10px] font-semibold ${sigColor}`}>{sigLabel}</p>

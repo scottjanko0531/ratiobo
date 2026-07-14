@@ -7,8 +7,7 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// For monthly series — no frequency conversion
-async function fetchMonthly(series: string, limit = 32): Promise<{ date: string; value: number }[]> {
+async function fetchMonthly(series: string, limit = 87): Promise<{ date: string; value: number }[]> {
   const url = `${FRED}?series_id=${series}&api_key=${KEY}&sort_order=desc&limit=${limit}&file_type=json`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${series}: HTTP ${res.status}`);
@@ -16,11 +15,10 @@ async function fetchMonthly(series: string, limit = 32): Promise<{ date: string;
   return (j.observations as { date: string; value: string }[])
     .filter((o) => o.value !== "." && o.value !== "" && !isNaN(parseFloat(o.value)))
     .map((o) => ({ date: o.date.slice(0, 7), value: parseFloat(o.value) }))
-    .reverse(); // oldest → newest
+    .reverse();
 }
 
-// For daily/weekly series — average down to monthly
-async function fetchAsMonthly(series: string, limit = 32): Promise<{ date: string; value: number }[]> {
+async function fetchAsMonthly(series: string, limit = 87): Promise<{ date: string; value: number }[]> {
   const url = `${FRED}?series_id=${series}&api_key=${KEY}&sort_order=desc&limit=${limit}&file_type=json&frequency=m&aggregation_method=avg`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${series}: HTTP ${res.status}`);
@@ -28,7 +26,7 @@ async function fetchAsMonthly(series: string, limit = 32): Promise<{ date: strin
   return (j.observations as { date: string; value: string }[])
     .filter((o) => o.value !== "." && o.value !== "" && !isNaN(parseFloat(o.value)))
     .map((o) => ({ date: o.date.slice(0, 7), value: parseFloat(o.value) }))
-    .reverse(); // oldest → newest
+    .reverse();
 }
 
 function pct(now: number | null, prev: number | null): number | null {
@@ -41,13 +39,30 @@ function scoreChange(change: number | null, posT: number, negT: number): -1 | 0 
   return change >= posT ? 1 : change <= negT ? -1 : 0;
 }
 
-// PPIACO (All Commodities) confirmed working; PPIFID, PCOPPUSDM monthly; DCOILWTICO daily; MHHNGSP weekly
+// Z-score of the most recent 3M % change vs the full historical distribution of 3M % changes.
+// Uses the series' own observation array (oldest → newest), bypassing the backbone date alignment.
+function computeZScore(obs: { date: string; value: number }[]): number | null {
+  const changes: number[] = [];
+  for (let i = 3; i < obs.length; i++) {
+    const now = obs[i].value;
+    const prev = obs[i - 3].value;
+    if (prev !== 0) changes.push((now / prev - 1) * 100);
+  }
+  if (changes.length < 12) return null;
+  const current = changes[changes.length - 1];
+  const mean = changes.reduce((s, v) => s + v, 0) / changes.length;
+  const variance = changes.reduce((s, v) => s + (v - mean) ** 2, 0) / changes.length;
+  const std = Math.sqrt(variance);
+  if (std < 0.001) return null;
+  return Math.round(((current - mean) / std) * 100) / 100;
+}
+
 const COMPONENTS = [
-  { key: "crude",  series: "PPIACO",    name: "PPI All Commodities", unit: "index",   posT: 3,   negT: -3,  daily: false },
-  { key: "ppi",    series: "PPIFID",    name: "PPI Final Demand",    unit: "index",   posT: 0.5, negT: -0.5, daily: false },
-  { key: "wti",    series: "DCOILWTICO",name: "WTI Crude Oil",       unit: "$/bbl",   posT: 5,   negT: -5,  daily: true  },
-  { key: "copper", series: "PCOPPUSDM", name: "Copper",              unit: "$/mt",    posT: 5,   negT: -5,  daily: false },
-  { key: "natgas", series: "MHHNGSP",   name: "Natural Gas",         unit: "$/MMBtu", posT: 10,  negT: -10, daily: true  },
+  { key: "crude",  series: "PPIACO",     name: "PPI All Commodities", unit: "index",   posT: 3,   negT: -3,   daily: false },
+  { key: "ppi",    series: "PPIFID",     name: "PPI Final Demand",    unit: "index",   posT: 0.5, negT: -0.5, daily: false },
+  { key: "wti",    series: "DCOILWTICO", name: "WTI Crude Oil",       unit: "$/bbl",   posT: 5,   negT: -5,   daily: true  },
+  { key: "copper", series: "PCOPPUSDM",  name: "Copper",              unit: "$/mt",    posT: 5,   negT: -5,   daily: false },
+  { key: "natgas", series: "MHHNGSP",    name: "Natural Gas",         unit: "$/MMBtu", posT: 10,  negT: -10,  daily: true  },
 ] as const;
 
 Deno.serve(async (req: Request) => {
@@ -55,13 +70,12 @@ Deno.serve(async (req: Request) => {
 
   try {
     const obsArrays = await Promise.all(
-      COMPONENTS.map((c) => c.daily ? fetchAsMonthly(c.series, 32) : fetchMonthly(c.series, 32))
+      COMPONENTS.map((c) => c.daily ? fetchAsMonthly(c.series) : fetchMonthly(c.series))
     );
     const maps = obsArrays.map((obs) => Object.fromEntries(obs.map((o) => [o.date, o.value])));
     const backbone = obsArrays[0]; // PPIACO as timeline backbone
 
     type HistRow = { month: string; composite: number; [k: string]: number | string };
-
     const history: HistRow[] = [];
 
     for (let i = 3; i < backbone.length; i++) {
@@ -72,7 +86,6 @@ Deno.serve(async (req: Request) => {
 
       const row: HistRow = { month, composite: 0 };
       let sum = 0;
-
       COMPONENTS.forEach((comp, idx) => {
         const now = maps[idx][month] ?? null;
         const prev = maps[idx][m3] ?? null;
@@ -80,7 +93,6 @@ Deno.serve(async (req: Request) => {
         row[comp.key] = s;
         sum += s;
       });
-
       row.composite = sum;
       history.push(row);
     }
@@ -97,6 +109,7 @@ Deno.serve(async (req: Request) => {
       const prev = maps[idx][m3] ?? null;
       const change = pct(now, prev);
       const score = scoreChange(change, comp.posT, comp.negT);
+      const zScore = computeZScore(obsArrays[idx]);
       return {
         key: comp.key,
         name: comp.name,
@@ -106,6 +119,7 @@ Deno.serve(async (req: Request) => {
         score,
         posT: comp.posT,
         negT: comp.negT,
+        zScore,
       };
     });
 
