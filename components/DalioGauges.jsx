@@ -1365,7 +1365,7 @@ function PipelineDrawer({ open, onClose, data }) {
 // SVG speedometer gauge.
 // Scale: z-score from -3 (low risk, green/left) to +3 (elevated risk, red/right).
 // Zones: green ≤ -1, brass -1..+1, red ≥ +1.
-function SpeedometerGauge({ value, label, desc, year, onClick, statusLabelOverride }) {
+function SpeedometerGauge({ value, label, desc, year, onClick, statusLabelOverride, pipelineAnnotation }) {
   // cy=82 keeps the arc bottom within viewBox "20 10 160 80" (visible y: 10–90)
   const cx = 100, cy = 82, r = 68;
   const nl = 56;
@@ -1462,6 +1462,11 @@ function SpeedometerGauge({ value, label, desc, year, onClick, statusLabelOverri
       <p className={`text-xs font-semibold mt-1 ${statusClass}`}>{statusLabel}</p>
       {year && (
         <p className="text-[9px] text-paper-dim/60 mt-0.5">As of {year}</p>
+      )}
+      {pipelineAnnotation && (
+        <p className={`text-[9px] font-medium mt-2 px-1.5 py-0.5 rounded border ${pipelineAnnotation.cls}`}>
+          {pipelineAnnotation.label}
+        </p>
       )}
       {desc && (
         <p className="text-[10px] text-paper-dim text-center mt-1.5 leading-snug">{desc}</p>
@@ -1582,6 +1587,15 @@ export default function DalioGauges({ gaugeKeys } = {}) {
           : key === "gauge4" ? (incomeAffordAssessment(val)?.label ?? null)
           : key === "gauge5" ? (reserveConfAssessment(val)?.label ?? null)
           : null;
+          let pipelineAnnotation = null;
+          if (key === "gauge3" && pipelineData?.compositeZ != null) {
+            const z = pipelineData.compositeZ;
+            pipelineAnnotation = z >= 1.0
+              ? { label: "↑ Inflation building", cls: "text-loss border-loss/30 bg-loss/5" }
+              : z <= -1.0
+              ? { label: "↓ Inflation easing",   cls: "text-gain border-gain/30 bg-gain/5" }
+              : { label: "→ Pipeline neutral",    cls: "text-paper-dim border-paper-dim/20 bg-transparent" };
+          }
           return (
             <SpeedometerGauge
               key={key}
@@ -1590,6 +1604,7 @@ export default function DalioGauges({ gaugeKeys } = {}) {
               label={label}
               desc={desc}
               statusLabelOverride={statusLabelOverride}
+              pipelineAnnotation={pipelineAnnotation}
               onClick={
                 key === "gauge1" ? () => setDebtSustOpen(true)
               : key === "gauge2" ? () => setShortTermOpen(true)
