@@ -1121,6 +1121,208 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
   );
 }
 
+// ─── Pipeline Inflation ──────────────────────────────────────────────────────
+
+const PIPE_META = [
+  { key: "ism",    short: "ISM", name: "ISM Prices Paid",  unit: "index",    desc: "Level ≥55 rising / ≤45 falling" },
+  { key: "ppi",    short: "PPI", name: "PPI Final Demand", unit: "index",    desc: "3-month % change · ±0.5% threshold" },
+  { key: "wti",    short: "Oil", name: "WTI Crude Oil",    unit: "$/bbl",    desc: "3-month % change · ±5% threshold" },
+  { key: "copper", short: "Cu",  name: "Copper",           unit: "$/mt",     desc: "3-month % change · ±5% threshold" },
+  { key: "natgas", short: "Gas", name: "Natural Gas",      unit: "$/MMBtu",  desc: "3-month % change · ±10% threshold" },
+];
+
+function ScoreDot({ score }) {
+  if (score === 1)  return <span className="w-3 h-3 rounded-full bg-loss   inline-block shrink-0" />;
+  if (score === -1) return <span className="w-3 h-3 rounded-full bg-gain   inline-block shrink-0" />;
+  return                   <span className="w-3 h-3 rounded-full border border-paper-dim/40 inline-block shrink-0" />;
+}
+
+function PipeTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  const v = payload[0]?.value;
+  return (
+    <div className="card px-3 py-2 text-xs min-w-[130px]">
+      <p className="font-semibold text-paper mb-1">{label}</p>
+      <div className="flex justify-between gap-4">
+        <span className="text-paper-dim">Composite</span>
+        <span className={`num font-semibold ${v >= 2 ? "text-loss" : v <= -2 ? "text-gain" : "text-brass-soft"}`}>
+          {v >= 0 ? "+" : ""}{v} / 5
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function PipelineCard({ data, onOpen }) {
+  if (!data) {
+    return (
+      <div className="card p-4 flex flex-col items-center gap-2 cursor-pointer hover:border-brass/40 transition-colors min-h-[180px] justify-center" onClick={onOpen}>
+        <p className="text-xs font-medium text-paper text-center leading-snug">Pipeline Inflation Pressure</p>
+        <p className="text-paper-dim text-xs mt-2">Loading…</p>
+      </div>
+    );
+  }
+  const { composite, label, components } = data;
+  const color = composite >= 2 ? "text-loss" : composite <= -2 ? "text-gain" : "text-brass-soft";
+  return (
+    <div className="card p-4 flex flex-col items-center cursor-pointer hover:border-brass/40 transition-colors" onClick={onOpen}>
+      <p className="text-xs font-medium text-paper text-center leading-snug mb-2 min-h-[2rem]">
+        Pipeline Inflation Pressure
+      </p>
+      <div className="flex items-end justify-center gap-3 py-5">
+        {components.map((c) => (
+          <div key={c.key} className="flex flex-col items-center gap-1.5">
+            <ScoreDot score={c.score} />
+            <span className="text-[9px] text-paper-dim">{PIPE_META.find((m) => m.key === c.key)?.short}</span>
+          </div>
+        ))}
+      </div>
+      <p className={`num text-xl font-bold leading-none ${color}`}>{composite >= 0 ? "+" : ""}{composite}</p>
+      <p className={`text-xs font-semibold mt-1 ${color}`}>{label}</p>
+      <p className="text-[10px] text-paper-dim mt-1">of 5 signals</p>
+      <p className="text-[9px] text-paper-dim/60 mt-0.5">1–3 month CPI lead</p>
+    </div>
+  );
+}
+
+function PipelineDrawer({ open, onClose, data }) {
+  const composite = data?.composite ?? null;
+  const label = data?.label ?? "—";
+  const components = data?.components ?? [];
+  const history = data?.history ?? [];
+  const asOf = data?.asOf ?? "";
+  const color = composite == null ? "text-paper-dim" : composite >= 2 ? "text-loss" : composite <= -2 ? "text-gain" : "text-brass-soft";
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed right-0 top-0 h-full w-[560px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">Pipeline Inflation Pressure</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">Input cost momentum · 1–3 month CPI lead</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {composite != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${color}`}>{composite >= 0 ? "+" : ""}{composite} / 5</p>
+                <p className={`text-xs font-semibold mt-0.5 ${color}`}>{label}</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5"><CloseIcon /></button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          {/* Signal breakdown */}
+          {components.length > 0 && (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Signal Breakdown · as of {asOf}</p>
+              <div className="space-y-3.5">
+                {components.map((c) => {
+                  const meta = PIPE_META.find((m) => m.key === c.key);
+                  const sigColor = c.score === 1 ? "text-loss" : c.score === -1 ? "text-gain" : "text-paper-dim";
+                  const sigLabel = c.score === 1 ? "↑ Building" : c.score === -1 ? "↓ Easing" : "→ Neutral";
+                  return (
+                    <div key={c.key} className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <div className="mt-0.5"><ScoreDot score={c.score} /></div>
+                        <div>
+                          <p className="text-xs text-paper leading-snug">{meta?.name}</p>
+                          <p className="text-[10px] text-paper-dim/70 leading-snug">{meta?.desc}</p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        {c.current != null && (
+                          <p className="text-xs num text-paper">
+                            {c.isIsm ? c.current : `${Number(c.current).toLocaleString()} ${meta?.unit}`}
+                          </p>
+                        )}
+                        {c.change3m != null && (
+                          <p className={`text-[10px] num ${c.change3m > 0 ? "text-loss" : c.change3m < 0 ? "text-gain" : "text-paper-dim"}`}>
+                            {c.change3m > 0 ? "+" : ""}{c.change3m.toFixed(1)}% · 3M
+                          </p>
+                        )}
+                        <p className={`text-[10px] font-semibold ${sigColor}`}>{sigLabel}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* History chart */}
+          {history.length > 0 && (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Composite Score · last 24 months</p>
+              <ResponsiveContainer width="100%" height={200}>
+                <ComposedChart data={history} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="month"
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => v.slice(0, 7)}
+                    interval={5}
+                  />
+                  <YAxis
+                    domain={[-5, 5]}
+                    ticks={[-4, -2, 0, 2, 4]}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => (v >= 0 ? `+${v}` : `${v}`)}
+                    width={28}
+                  />
+                  <Tooltip content={<PipeTooltip />} />
+                  <ReferenceLine y={0}  stroke="#2A3240" strokeWidth={1} />
+                  <ReferenceLine y={2}  stroke="#ef4444" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
+                  <ReferenceLine y={-2} stroke="#22c55e" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
+                  <Bar dataKey="composite" name="Composite" maxBarSize={18} radius={[2, 2, 0, 0]}>
+                    {history.map((entry, i) => (
+                      <Cell
+                        key={i}
+                        fill={entry.composite >= 2 ? "#E0635C" : entry.composite <= -2 ? "#3FB984" : "#C9A227"}
+                        fillOpacity={0.75}
+                      />
+                    ))}
+                  </Bar>
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div className="flex items-center justify-center gap-5 mt-3 text-[10px] text-paper-dim">
+                <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-[#E0635C] opacity-75" /> Building (≥+2)</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-[#C9A227] opacity-75" /> Neutral</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-[#3FB984] opacity-75" /> Easing (≤−2)</span>
+              </div>
+            </div>
+          )}
+
+          {/* Methodology */}
+          <div className="card p-4 space-y-3 text-[11px] leading-relaxed">
+            <p className="text-paper font-semibold">How it's scored</p>
+            <p className="text-paper-dim">Each signal is scored −1 (easing), 0 (neutral), or +1 (building). Scores sum to a composite −5 to +5. This measures where cost pressures are heading, not where CPI is today — a leading indicator, not coincident.</p>
+            <div className="space-y-1 text-[10px]">
+              <div className="flex gap-2"><span className="text-loss font-mono w-20">≥ +3</span><span className="text-paper-dim">Building — broad upstream pressure, CPI likely to rise</span></div>
+              <div className="flex gap-2"><span className="text-loss font-mono w-20">+1 to +2</span><span className="text-paper-dim">Mild Pressure — some signals building, watch trend</span></div>
+              <div className="flex gap-2"><span className="text-brass-soft font-mono w-20">0</span><span className="text-paper-dim">Neutral — signals mixed or flat</span></div>
+              <div className="flex gap-2"><span className="text-gain font-mono w-20">−1 to −2</span><span className="text-paper-dim">Easing — input costs falling, CPI likely to soften</span></div>
+              <div className="flex gap-2"><span className="text-gain font-mono w-20">≤ −3</span><span className="text-paper-dim">Strongly Easing — broad disinflation in pipeline</span></div>
+            </div>
+            <p className="text-paper-dim/60 text-[10px]">Sources: FRED — NAPMPI · PPIFID · DCOILWTICO · PCOPPUSDM · MHHNGSP</p>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // SVG speedometer gauge.
 // Scale: z-score from -3 (low risk, green/left) to +3 (elevated risk, red/right).
 // Zones: green ≤ -1, brass -1..+1, red ≥ +1.
@@ -1247,6 +1449,8 @@ export default function DalioGauges({ gaugeKeys } = {}) {
   const [growthInflOpen, setGrowthInflOpen] = useState(false);
   const [incomeAffordOpen, setIncomeAffordOpen] = useState(false);
   const [reserveConfOpen, setReserveConfOpen] = useState(false);
+  const [pipelineData, setPipelineData] = useState(null);
+  const [pipelineOpen, setPipelineOpen] = useState(false);
   const [newYear, setNewYear] = useState("");
   const [newTonnes, setNewTonnes] = useState("");
   const [saving, setSaving] = useState(false);
@@ -1255,7 +1459,18 @@ export default function DalioGauges({ gaugeKeys } = {}) {
   useEffect(() => {
     fetchReadings();
     fetchWgc();
+    if (gaugeKeys?.includes("pipeline")) fetchPipeline();
   }, []);
+
+  async function fetchPipeline() {
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-pipeline-inflation`);
+      if (res.ok) {
+        const d = await res.json();
+        if (!d.error) setPipelineData(d);
+      }
+    } catch { /* supplementary — silent fail */ }
+  }
 
   async function fetchReadings() {
     const { data } = await supabase
@@ -1347,6 +1562,9 @@ export default function DalioGauges({ gaugeKeys } = {}) {
             />
           );
         })}
+        {gaugeKeys?.includes("pipeline") && (
+          <PipelineCard data={pipelineData} onOpen={() => setPipelineOpen(true)} />
+        )}
       </div>
       <DebtSustainabilityDrawer
         open={debtSustOpen}
@@ -1373,6 +1591,11 @@ export default function DalioGauges({ gaugeKeys } = {}) {
         open={reserveConfOpen}
         onClose={() => setReserveConfOpen(false)}
         latestGauge={latest?.gauge5?.value ?? null}
+      />
+      <PipelineDrawer
+        open={pipelineOpen}
+        onClose={() => setPipelineOpen(false)}
+        data={pipelineData}
       />
 
       <p className="text-[10px] text-paper-dim/60 mb-4">
