@@ -133,7 +133,8 @@ interface Indicator {
     | "m2_minus_gdp"
     | "gpr_website"
     | "gold_3m_avg"
-    | "cb_gold_imf";
+    | "cb_gold_imf"
+    | "level_with_3m";
   series?: string;
   series2?: string;
   statusFn: StatusFn;
@@ -447,7 +448,7 @@ const INDICATORS: Indicator[] = [
     name: "WTI Crude Oil", layer: 3, layer_name: "Business Cycle",
     description: "West Texas Intermediate spot price — energy cost signal; >20% spike in 30 days is a regime trigger",
     fred_series_id: "DCOILWTICO", unit: "$/bbl", data_source: "fred", sort_order: 290,
-    series: "DCOILWTICO", type: "level",
+    series: "DCOILWTICO", type: "level_with_3m",
     statusFn: v => v < 70 ? "healthy" : v < 90 ? "watch" : "danger",
   },
   {
@@ -475,7 +476,7 @@ const INDICATORS: Indicator[] = [
     name: "Copper Price", layer: 3, layer_name: "Business Cycle",
     description: "Global copper price (USD/metric ton, monthly) — Dr. Copper: leading indicator of industrial demand and global growth",
     fred_series_id: "PCOPPUSDM", unit: "$/mt", data_source: "fred", sort_order: 294,
-    series: "PCOPPUSDM", type: "level",
+    series: "PCOPPUSDM", type: "level_with_3m",
     statusFn: v => v > 9000 ? "healthy" : v > 7000 ? "watch" : "danger",
   },
 ];
@@ -510,6 +511,22 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const obs = await fetchFred(ind.series!, 2);
         if (obs.length < 2) return null;
         current = obs[0]; previous = obs[1];
+        break;
+      }
+      case "level_with_3m": {
+        // Fetch 2 obs for current/previous display, plus 4 monthly obs for 3M % change.
+        // Uses monthly aggregation for daily series (e.g. WTI); works as-is for monthly.
+        const [lvl, monthly] = await Promise.all([
+          fetchFred(ind.series!, 2),
+          fetchFredObsMonthly(ind.series!, 4),
+        ]);
+        if (lvl.length < 2) return null;
+        current = lvl[0]; previous = lvl[1];
+        if (monthly.length >= 4) {
+          // monthly is desc: [0] = most recent, [3] = 3 months ago
+          const pct = Math.round((monthly[0].value / monthly[3].value - 1) * 10000) / 100;
+          metadata = { change3m_pct: pct };
+        }
         break;
       }
       case "yoy_monthly": {

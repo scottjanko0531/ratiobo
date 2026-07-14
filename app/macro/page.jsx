@@ -298,12 +298,12 @@ const FWD_GROWTH_SIGNALS = [
   { label: "C&I Loans",         name: "C&I Loan Growth (YoY)",    w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
 ];
 const FWD_INFL_SIGNALS = [
-  { label: "Infl Expectations", name: "Consumer Inflation Expectations", w: 0.25, vote: v => v > 4    ? 1 : v >= 2.5 ? 0 : -1 },
-  { label: "10Y Breakeven",     name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > 2.5  ? 1 : v >= 1.5 ? 0 : -1 },
-  { label: "Copper",            name: "Copper Price",                    w: 0.20, vote: v => v > 9000 ? 1 : v >= 7000 ? 0 : -1 },
-  { label: "WTI Crude",         name: "WTI Crude Oil",                  w: 0.15, vote: v => v > 90   ? 1 : v >= 70  ? 0 : -1 },
-  { label: "PPI",               name: "PPI (YoY)",                      w: 0.10, vote: v => v > 3    ? 1 : v >= 0   ? 0 : -1 },
-  { label: "M2 Growth",         name: "M2 Growth (YoY)",                w: 0.10, vote: v => v > 8    ? 1 : v >= 3   ? 0 : -1 },
+  { label: "Infl Expectations", name: "Consumer Inflation Expectations", w: 0.25, vote: v => v > 4   ? 1 : v >= 2.5 ? 0 : -1 },
+  { label: "10Y Breakeven",     name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
+  { label: "Copper 3M",         name: "Copper Price",   w: 0.20, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
+  { label: "WTI 3M",            name: "WTI Crude Oil",  w: 0.15, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
+  { label: "PPI",               name: "PPI (YoY)",                      w: 0.10, vote: v => v > 3   ? 1 : v >= 0   ? 0 : -1 },
+  { label: "M2 Growth",         name: "M2 Growth (YoY)",                w: 0.10, vote: v => v > 8   ? 1 : v >= 3   ? 0 : -1 },
 ];
 
 function computeForwardSignal(indicators) {
@@ -311,10 +311,14 @@ function computeForwardSignal(indicators) {
     const ind = indicators.find(i => i.name === name);
     return ind?.current_value != null ? Number(ind.current_value) : null;
   };
+  const getPct3m = (name) => {
+    const ind = indicators.find(i => i.name === name);
+    return ind?.metadata?.change3m_pct != null ? Number(ind.metadata.change3m_pct) : null;
+  };
   const scoreGroup = (sigs) => {
     let weighted = 0, totalW = 0;
     const scored = sigs.map(s => {
-      const val = get(s.name);
+      const val = s.getPct3m ? getPct3m(s.name) : get(s.name);
       if (val == null) return { ...s, val: null, vote: null };
       const v = s.vote(val);
       weighted += v * s.w;
