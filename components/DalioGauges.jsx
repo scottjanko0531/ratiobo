@@ -1139,16 +1139,27 @@ function ScoreDot({ score }) {
 
 function PipeTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
-  const v = payload[0]?.value;
+  const composite = payload.find((p) => p.dataKey === "composite")?.value;
+  const compositeZ = payload.find((p) => p.dataKey === "compositeZ")?.value;
   return (
-    <div className="card px-3 py-2 text-xs min-w-[130px]">
+    <div className="card px-3 py-2 text-xs min-w-[150px]">
       <p className="font-semibold text-paper mb-1">{label}</p>
-      <div className="flex justify-between gap-4">
-        <span className="text-paper-dim">Composite</span>
-        <span className={`num font-semibold ${v >= 2 ? "text-loss" : v <= -2 ? "text-gain" : "text-brass-soft"}`}>
-          {v >= 0 ? "+" : ""}{v} / 5
-        </span>
-      </div>
+      {composite != null && (
+        <div className="flex justify-between gap-4">
+          <span className="text-paper-dim">Score</span>
+          <span className={`num font-semibold ${composite >= 2 ? "text-loss" : composite <= -2 ? "text-gain" : "text-brass-soft"}`}>
+            {composite >= 0 ? "+" : ""}{composite} / 5
+          </span>
+        </div>
+      )}
+      {compositeZ != null && (
+        <div className="flex justify-between gap-4">
+          <span className="text-paper-dim">Avg z</span>
+          <span className={`num font-semibold ${compositeZ >= 1.5 ? "text-loss" : compositeZ <= -1.5 ? "text-gain" : "text-brass-soft"}`}>
+            {compositeZ >= 0 ? "+" : ""}{compositeZ.toFixed(2)}σ
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -1267,7 +1278,7 @@ function PipelineDrawer({ open, onClose, data }) {
             <div className="card p-4">
               <p className="label text-[10px] mb-3">Composite Score · last 24 months</p>
               <ResponsiveContainer width="100%" height={200}>
-                <ComposedChart data={history} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                <ComposedChart data={history} margin={{ top: 4, right: 36, bottom: 0, left: 0 }}>
                   <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
                   <XAxis
                     dataKey="month"
@@ -1278,6 +1289,7 @@ function PipelineDrawer({ open, onClose, data }) {
                     interval={5}
                   />
                   <YAxis
+                    yAxisId="left"
                     domain={[-5, 5]}
                     ticks={[-4, -2, 0, 2, 4]}
                     tick={{ fill: "#A8ADB8", fontSize: 10 }}
@@ -1286,11 +1298,23 @@ function PipelineDrawer({ open, onClose, data }) {
                     tickFormatter={(v) => (v >= 0 ? `+${v}` : `${v}`)}
                     width={28}
                   />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    domain={[-3, 3]}
+                    ticks={[-2, -1, 0, 1, 2]}
+                    tick={{ fill: "#818CF8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => (v >= 0 ? `+${v}σ` : `${v}σ`)}
+                    width={36}
+                  />
                   <Tooltip content={<PipeTooltip />} />
-                  <ReferenceLine y={0}  stroke="#2A3240" strokeWidth={1} />
-                  <ReferenceLine y={2}  stroke="#ef4444" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
-                  <ReferenceLine y={-2} stroke="#22c55e" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
-                  <Bar dataKey="composite" name="Composite" maxBarSize={18} radius={[2, 2, 0, 0]}>
+                  <ReferenceLine yAxisId="left" y={0}  stroke="#2A3240" strokeWidth={1} />
+                  <ReferenceLine yAxisId="left" y={2}  stroke="#ef4444" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
+                  <ReferenceLine yAxisId="left" y={-2} stroke="#22c55e" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
+                  <ReferenceLine yAxisId="right" y={0} stroke="#818CF8" strokeDasharray="2 4" strokeWidth={1} strokeOpacity={0.3} />
+                  <Bar yAxisId="left" dataKey="composite" name="Composite" maxBarSize={18} radius={[2, 2, 0, 0]}>
                     {history.map((entry, i) => (
                       <Cell
                         key={i}
@@ -1299,12 +1323,22 @@ function PipelineDrawer({ open, onClose, data }) {
                       />
                     ))}
                   </Bar>
+                  <Line
+                    yAxisId="right"
+                    dataKey="compositeZ"
+                    name="Avg z"
+                    dot={false}
+                    stroke="#818CF8"
+                    strokeWidth={1.5}
+                    connectNulls
+                  />
                 </ComposedChart>
               </ResponsiveContainer>
-              <div className="flex items-center justify-center gap-5 mt-3 text-[10px] text-paper-dim">
+              <div className="flex items-center justify-center gap-5 mt-3 text-[10px] text-paper-dim flex-wrap">
                 <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-[#E0635C] opacity-75" /> Building (≥+2)</span>
                 <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-[#C9A227] opacity-75" /> Neutral</span>
                 <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-[#3FB984] opacity-75" /> Easing (≤−2)</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-4 h-0.5 bg-[#818CF8]" /> Avg z (right axis)</span>
               </div>
             </div>
           )}

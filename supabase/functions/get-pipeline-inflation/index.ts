@@ -39,23 +39,29 @@ function scoreChange(change: number | null, posT: number, negT: number): -1 | 0 
   return change >= posT ? 1 : change <= negT ? -1 : 0;
 }
 
-// Z-score of the most recent 3M % change vs the full historical distribution of 3M % changes.
-// Uses calendar date lookup (same logic as change3m) to handle gaps in monthly series.
-function computeZScore(obs: { date: string; value: number }[]): number | null {
+// Pre-compute distribution params for a series: mean and std of all 3M % changes (calendar-based).
+// Returns a lookup map of date → 3M % change as well, for reuse in the history loop.
+function buildZParams(obs: { date: string; value: number }[]): {
+  mean: number; std: number; changeByDate: Record<string, number>;
+} | null {
   const byDate = Object.fromEntries(obs.map((o) => [o.date, o.value]));
+  const changeByDate: Record<string, number> = {};
   const changes: number[] = [];
   for (const o of obs) {
     const d = new Date(o.date + "-01");
     const m3 = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 3, 1)).toISOString().slice(0, 7);
     const prev = byDate[m3];
-    if (prev != null && prev !== 0) changes.push((o.value / prev - 1) * 100);
+    if (prev != null && prev !== 0) {
+      const c = (o.value / prev - 1) * 100;
+      changeByDate[o.date] = c;
+      changes.push(c);
+    }
   }
   if (changes.length < 12) return null;
-  const current = changes[changes.length - 1];
   const mean = changes.reduce((s, v) => s + v, 0) / changes.length;
   const std = Math.sqrt(changes.reduce((s, v) => s + (v - mean) ** 2, 0) / changes.length);
   if (std < 0.001) return null;
-  return Math.round(((current - mean) / std) * 100) / 100;
+  return { mean, std, changeByDate };
 }
 
 const COMPONENTS = [
@@ -76,25 +82,39 @@ Deno.serve(async (req: Request) => {
     const maps = obsArrays.map((obs) => Object.fromEntries(obs.map((o) => [o.date, o.value])));
     const backbone = obsArrays[0]; // PPIACO as timeline backbone
 
-    type HistRow = { month: string; composite: number; [k: string]: number | string };
+    // Build per-series z-score params once — reused for both the history loop and the current snapshot
+    const zParamsArr = obsArrays.map(buildZParams);
+
+    type HistRow = { month: string; composite: number; compositeZ: number | null; [k: string]: number | string | null };
     const history: HistRow[] = [];
 
     for (let i = 3; i < backbone.length; i++) {
       const month = backbone[i].date;
       const d = new Date(month + "-01");
-      const d3 = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 3, 1));
-      const m3 = d3.toISOString().slice(0, 7);
+      const m3 = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 3, 1)).toISOString().slice(0, 7);
 
-      const row: HistRow = { month, composite: 0 };
+      const row: HistRow = { month, composite: 0, compositeZ: null };
       let sum = 0;
+      let zSum = 0;
+      let zCount = 0;
+
       COMPONENTS.forEach((comp, idx) => {
         const now = maps[idx][month] ?? null;
         const prev = maps[idx][m3] ?? null;
-        const s: number = scoreChange(pct(now, prev), comp.posT, comp.negT);
+        const change = pct(now, prev);
+        const s: number = scoreChange(change, comp.posT, comp.negT);
         row[comp.key] = s;
         sum += s;
+
+        const zp = zParamsArr[idx];
+        if (change != null && zp) {
+          zSum += (change - zp.mean) / zp.std;
+          zCount++;
+        }
       });
+
       row.composite = sum;
+      row.compositeZ = zCount > 0 ? Math.round((zSum / zCount) * 100) / 100 : null;
       history.push(row);
     }
 
@@ -110,7 +130,10 @@ Deno.serve(async (req: Request) => {
       const prev = maps[idx][m3] ?? null;
       const change = pct(now, prev);
       const score = scoreChange(change, comp.posT, comp.negT);
-      const zScore = computeZScore(obsArrays[idx]);
+      const zp = zParamsArr[idx];
+      const zScore = (change != null && zp)
+        ? Math.round(((change - zp.mean) / zp.std) * 100) / 100
+        : null;
       return {
         key: comp.key,
         name: comp.name,
@@ -125,6 +148,7 @@ Deno.serve(async (req: Request) => {
     });
 
     const composite = latest.composite as number;
+    const compositeZ = latest.compositeZ;
     const label =
       composite >= 3 ? "Building" :
       composite >= 1 ? "Mild Pressure" :
@@ -134,6 +158,7 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({
       asOf: month,
       composite,
+      compositeZ,
       label,
       components,
       history: history.slice(-24),
