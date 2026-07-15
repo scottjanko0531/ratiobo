@@ -509,7 +509,22 @@ function EconCalendar() {
       </div>
 
       {/* Upcoming events */}
-      <p className="label mb-2">Upcoming Releases <span className="font-normal text-paper-dim/60 ml-1">next 90 days</span></p>
+      <div className="flex items-center justify-between mb-2">
+        <p className="label">Upcoming Releases <span className="font-normal text-paper-dim/60 ml-1">next 90 days</span></p>
+        <a
+          href="https://xuutmtfrpaxrzhwwokpk.supabase.co/functions/v1/macro-calendar"
+          title="Subscribe in Google Calendar, Thunderbird, or any iCal client"
+          className="flex items-center gap-1 text-[10px] text-paper-dim hover:text-brass-soft transition-colors"
+        >
+          <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="1" y="3" width="14" height="12" rx="1.5" />
+            <line x1="1" y1="7" x2="15" y2="7" />
+            <line x1="5" y1="1" x2="5" y2="5" />
+            <line x1="11" y1="1" x2="11" y2="5" />
+          </svg>
+          Subscribe
+        </a>
+      </div>
       {events.length === 0
         ? <p className="text-xs text-paper-dim">No releases scheduled in window.</p>
         : (
