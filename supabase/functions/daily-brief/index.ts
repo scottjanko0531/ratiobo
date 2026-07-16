@@ -55,7 +55,7 @@ async function getMacro(sb: ReturnType<typeof createClient>) {
 // ── Fetch latest regime quadrant ───────────────────────────────────────────
 async function getRegime(sb: ReturnType<typeof createClient>) {
   const { data } = await sb
-    .from("dalio_regime_history")
+    .from("macro_regime_history")
     .select("structural_key,market_key,forward_key,forward_confidence,period_date")
     .order("period_date", { ascending: false })
     .limit(1)
@@ -65,41 +65,65 @@ async function getRegime(sb: ReturnType<typeof createClient>) {
 
 // ── Portfolio day-over-day ─────────────────────────────────────────────────
 async function getPortfolio(sb: ReturnType<typeof createClient>) {
-  // yesterday = most recent completed snapshot; day_before = the one before that
-  const { data: dates } = await sb
+  // Must use two separate queries to get distinct dates — a single .limit(2)
+  // returns 2 rows that share today's date (one per holding).
+  const { data: todayData } = await sb
     .from("portfolio_snapshots")
     .select("snapshot_date")
     .order("snapshot_date", { ascending: false })
-    .limit(2);
-  if (!dates || dates.length < 2) return null;
+    .limit(1)
+    .maybeSingle();
+  if (!todayData) return null;
+  const todayDate = todayData.snapshot_date;
 
-  const [today, yesterday] = [dates[0].snapshot_date, dates[1].snapshot_date];
-
-  const { data: snap } = await sb.rpc("portfolio_brief", { d_today: today, d_yesterday: yesterday });
-  if (snap) return { rows: snap as BriefRow[], today, yesterday };
-
-  // Fallback: manual join if RPC not available
-  const { data: todayRows } = await sb
+  const { data: yestData } = await sb
     .from("portfolio_snapshots")
-    .select("holding_id, market_value, net_gain")
-    .eq("snapshot_date", today);
-  const { data: yestRows } = await sb
-    .from("portfolio_snapshots")
-    .select("holding_id, market_value")
-    .eq("snapshot_date", yesterday);
-  const { data: holdings } = await sb
-    .from("holdings")
-    .select("id, symbol, name");
+    .select("snapshot_date")
+    .lt("snapshot_date", todayDate)
+    .order("snapshot_date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!yestData) return null;
+  const yesterdayDate = yestData.snapshot_date;
+
+  const [{ data: todayRows }, { data: yestRows }, { data: holdings }] = await Promise.all([
+    sb.from("portfolio_snapshots").select("holding_id,market_value,net_gain").eq("snapshot_date", todayDate),
+    sb.from("portfolio_snapshots").select("holding_id,market_value").eq("snapshot_date", yesterdayDate),
+    sb.from("holdings").select("id,symbol,name,asset_type"),
+  ]);
 
   if (!todayRows || !yestRows || !holdings) return null;
 
-  const yestMap = Object.fromEntries(yestRows.map((r: { holding_id: string; market_value: number }) => [r.holding_id, r.market_value]));
-  const holdMap = Object.fromEntries(holdings.map((h: { id: string; symbol: string; name: string }) => [h.id, h]));
+  const yestMap = Object.fromEntries(yestRows.map((r: { holding_id: string; market_value: number }) => [r.holding_id, Number(r.market_value)]));
+  const holdMap = Object.fromEntries(holdings.map((h: { id: string; symbol: string; name: string; asset_type: string }) => [h.id, h]));
 
+  // Full portfolio totals (all non-cash holdings with a value today)
+  const totalValue = todayRows.reduce((s: number, r: { holding_id: string; market_value: number; net_gain: number }) => {
+    const h = holdMap[r.holding_id];
+    if (!h || h.asset_type === "cash") return s;
+    return s + Number(r.market_value);
+  }, 0);
+  const totalGain = todayRows.reduce((s: number, r: { holding_id: string; market_value: number; net_gain: number }) => {
+    const h = holdMap[r.holding_id];
+    if (!h || h.asset_type === "cash") return s;
+    return s + Number(r.net_gain);
+  }, 0);
+
+  // Filtered rows for day-change and movers (price-driven moves only)
   const rows: BriefRow[] = todayRows
-    .filter((r: { holding_id: string }) => yestMap[r.holding_id] != null && holdMap[r.holding_id] != null)
+    .filter((r: { holding_id: string; market_value: number }) => {
+      const prev = yestMap[r.holding_id];
+      const h = holdMap[r.holding_id];
+      if (prev == null || h == null) return false;
+      if (h.asset_type === "cash") return false;
+      const curr = Number(r.market_value);
+      if (prev === 0 || curr === 0) return false;
+      const pct = Math.abs((curr - prev) / prev) * 100;
+      if (pct > 50) return false; // likely a transfer, not a price move
+      return true;
+    })
     .map((r: { holding_id: string; market_value: number; net_gain: number }) => {
-      const prev = Number(yestMap[r.holding_id]);
+      const prev = yestMap[r.holding_id];
       const curr = Number(r.market_value);
       const h = holdMap[r.holding_id];
       return {
@@ -108,11 +132,11 @@ async function getPortfolio(sb: ReturnType<typeof createClient>) {
         market_value: curr,
         net_gain: Number(r.net_gain),
         day_change: curr - prev,
-        day_pct: prev > 0 ? ((curr - prev) / prev) * 100 : 0,
+        day_pct: ((curr - prev) / prev) * 100,
       };
     });
 
-  return { rows, today, yesterday };
+  return { rows, totalValue, totalGain, today: todayDate, yesterday: yesterdayDate };
 }
 
 interface BriefRow {
@@ -124,11 +148,19 @@ interface BriefRow {
   day_pct: number;
 }
 
+interface PortfolioResult {
+  rows: BriefRow[];
+  totalValue: number;
+  totalGain: number;
+  today: string;
+  yesterday: string;
+}
+
 // ── Build HTML email ───────────────────────────────────────────────────────
 function buildEmail(params: {
   macro: { name: string; current_value: number | null; status: string | null; unit: string }[];
   regime: { structural_key: string; market_key: string; forward_key: string | null; forward_confidence: number | null; period_date: string } | null;
-  portfolio: { rows: BriefRow[]; today: string; yesterday: string } | null;
+  portfolio: PortfolioResult | null;
   date: string;
 }): { subject: string; html: string } {
   const { macro, regime, portfolio, date } = params;
@@ -156,9 +188,9 @@ function buildEmail(params: {
   const marketKey = regime?.market_key ?? null;
   const divergence = regimeKey && marketKey && regimeKey !== marketKey;
 
-  // Portfolio totals
-  const totalValue = portfolio?.rows.reduce((s, r) => s + r.market_value, 0) ?? 0;
-  const totalGain  = portfolio?.rows.reduce((s, r) => s + r.net_gain, 0) ?? 0;
+  // Portfolio totals (totalValue/totalGain cover all non-cash holdings; dayChange from filtered rows)
+  const totalValue = portfolio?.totalValue ?? 0;
+  const totalGain  = portfolio?.totalGain ?? 0;
   const dayChange  = portfolio?.rows.reduce((s, r) => s + r.day_change, 0) ?? 0;
   const dayPct     = totalValue > 0 ? (dayChange / (totalValue - dayChange)) * 100 : 0;
 
