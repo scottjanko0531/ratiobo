@@ -8,6 +8,7 @@ const CORS = {
 const BW_QUERIES = [
   "Bridgewater Associates connecting the dots",
   "Ray Dalio macro economic regime quadrant",
+  "All Weather portfolio Dalio asset allocation",
 ];
 
 const MACRO_QUERIES = [
