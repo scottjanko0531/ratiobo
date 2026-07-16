@@ -156,6 +156,91 @@ interface PortfolioResult {
   yesterday: string;
 }
 
+// ── Macro narrative (mirrors MacroSummary in macro/page.jsx) ──────────────
+function buildNarrative(params: {
+  gdp: number | null; gdp3yAvg: number | null; cpi: number | null; coreCpi: number | null;
+  ppi: number | null; breakeven: number | null; t10y2y: number | null; t10y3m: number | null;
+  hySpread: number | null; lei: number | null; sloos: number | null; inflExp: number | null;
+  unrate: number | null; debtGdp: number | null;
+  regimeLabel: string; fwdLabel: string | null; fwdConf: number | null;
+  fwdKey: string | null;
+}): string {
+  const { gdp, gdp3yAvg, cpi, coreCpi, ppi, breakeven, t10y2y, t10y3m,
+          hySpread, lei, sloos, inflExp, unrate, debtGdp,
+          regimeLabel, fwdLabel, fwdConf, fwdKey } = params;
+
+  const bkv = breakeven ?? 2.5;
+  const g3  = gdp3yAvg ?? 0;
+
+  const growthStr =
+    gdp == null ? "Growth data unavailable." :
+    gdp > 2.5   ? `Growth is strong — Real GDP at +${gdp.toFixed(1)}% YoY${g3 ? `, above the ${g3.toFixed(1)}% trend` : ""}.` :
+    gdp > 0.5   ? `Growth is modest — Real GDP at +${gdp.toFixed(1)}% YoY${gdp != null && g3 ? (gdp > g3 ? ", above trend" : ", below trend") : ""}.` :
+    gdp > 0     ? `Growth is stalling — Real GDP at +${gdp.toFixed(1)}% YoY.` :
+                  `Economy is contracting — Real GDP at ${gdp.toFixed(1)}% YoY.`;
+
+  const inflStr =
+    cpi == null ? "Inflation data unavailable." :
+    cpi > 5     ? `Inflation is elevated — CPI at ${cpi.toFixed(1)}%${coreCpi != null ? `, core at ${coreCpi.toFixed(1)}%` : ""}. Well above the ${bkv.toFixed(1)}% market breakeven.` :
+    cpi > 3     ? `Inflation is running hot — CPI at ${cpi.toFixed(1)}%${coreCpi != null ? `, core ${coreCpi.toFixed(1)}%` : ""}${cpi > bkv ? `, surprising markets above the ${bkv.toFixed(1)}% breakeven` : ""}.` :
+    cpi > 2     ? `Inflation is near target — CPI at ${cpi.toFixed(1)}%${coreCpi != null ? `, core ${coreCpi.toFixed(1)}%` : ""}${cpi > bkv ? `, modestly above the ${bkv.toFixed(1)}% breakeven` : ""}.` :
+    cpi > 0     ? `Inflation is contained — CPI at ${cpi.toFixed(1)}%, below the ${bkv.toFixed(1)}% market expectation.` :
+                  `Deflationary pressure — CPI at ${cpi.toFixed(1)}%.`;
+
+  const ppiStr = ppi != null
+    ? ` PPI is ${ppi > 3 ? "elevated" : ppi > 0 ? "positive" : "negative"} at ${ppi > 0 ? "+" : ""}${ppi.toFixed(1)}% YoY, ${ppi > (cpi ?? 0) ? "running ahead of consumer prices — upstream pressure remains" : "running below CPI — pipeline easing"}.`
+    : "";
+
+  const yieldCurveStr =
+    t10y2y == null ? null :
+    t10y2y > 1    ? `Yield curve is steep (+${t10y2y.toFixed(2)}%), signaling growth optimism.` :
+    t10y2y > 0    ? `Yield curve is normalizing (+${t10y2y.toFixed(2)}%), cautiously positive.` :
+    t10y2y > -0.5 ? `Yield curve is flat (${t10y2y.toFixed(2)}%), near inversion.` :
+                    `Yield curve is inverted (${t10y2y.toFixed(2)}%), a historical recession signal.`;
+
+  const creditStr =
+    hySpread == null ? null :
+    hySpread < 3.5  ? ` HY credit spreads are tight at ${hySpread.toFixed(1)}% — markets pricing low default risk.` :
+    hySpread < 6    ? ` HY credit spreads at ${hySpread.toFixed(1)}% — contained but worth watching.` :
+                      ` HY credit spreads are wide at ${hySpread.toFixed(1)}% — elevated distress risk.`;
+
+  const leadStr =
+    lei == null ? null :
+    lei > 0.5   ? `LEI is positive at +${lei.toFixed(1)}%, consistent with expansion.` :
+    lei > -0.3  ? `LEI is flat at ${lei.toFixed(1)}% — neither expanding nor contracting.` :
+                  `LEI is negative at ${lei.toFixed(1)}% — leading indicators point to slowdown.`;
+
+  const gDir = fwdKey?.startsWith("rg") ? "building" : "fading";
+  const iDir = fwdKey?.endsWith("ri")   ? "rising"   : "easing";
+  const fwdStr = fwdLabel && fwdConf != null
+    ? `Forward signals (${fwdConf}% confidence) point toward ${fwdLabel} — growth momentum is ${gDir}, inflation pressure is ${iDir}.`
+    : null;
+
+  const debtStr = debtGdp != null
+    ? `Total debt at ${debtGdp.toFixed(0)}% of GDP — ${debtGdp > 120 ? "structurally elevated, limiting policy flexibility" : debtGdp > 90 ? "high but manageable" : "within historical norms"}.`
+    : null;
+
+  const watches: string[] = [];
+  if (sloos != null && sloos > 40) watches.push("Bank lending standards are tightening sharply");
+  if (t10y3m != null && t10y3m < 0) watches.push(`3m/10y curve inverted at ${t10y3m.toFixed(2)}%`);
+  if (inflExp != null && inflExp > 4.5) watches.push(`Consumer inflation expectations elevated at ${inflExp.toFixed(1)}%`);
+  if (unrate != null && unrate > 5.5) watches.push(`Unemployment rising at ${unrate.toFixed(1)}%`);
+  if (hySpread != null && hySpread > 6) watches.push("Credit spreads signaling stress");
+
+  const row = (label: string, text: string | null) =>
+    text ? `<p style="margin:0 0 6px;font-size:12px;line-height:1.6;color:#9ca3af;"><span style="color:#f1f5f9;font-weight:600;">${label} — </span>${text}</p>` : "";
+
+  return `
+    ${row("Growth", growthStr)}
+    ${row("Inflation", inflStr + ppiStr)}
+    ${yieldCurveStr ? row("Credit", yieldCurveStr + (creditStr ?? "")) : ""}
+    ${leadStr ? row("Leading", leadStr) : ""}
+    ${fwdStr ? row("Outlook", fwdStr) : ""}
+    ${debtStr ? row("Debt", debtStr) : ""}
+    ${watches.length > 0 ? `<p style="margin:8px 0 0;font-size:12px;color:#C9A227;"><span style="font-weight:600;">⚑ Watch: </span>${watches.join("; ")}.</p>` : ""}
+  `.trim();
+}
+
 // ── Build HTML email ───────────────────────────────────────────────────────
 function buildEmail(params: {
   macro: { name: string; current_value: number | null; status: string | null; unit: string }[];
@@ -167,11 +252,13 @@ function buildEmail(params: {
   const get = (name: string) => { const i = macro.find(x => x.name === name); return i?.current_value != null ? Number(i.current_value) : null; };
 
   const gdp      = get("Real GDP Growth");
+  const gdp3yAvg = get("GDP Growth (3Y Avg)");
   const cpi      = get("CPI (YoY)");
   const coreCpi  = get("Core CPI (YoY)");
   const ppi      = get("PPI (YoY)");
-  const breakeven = get("10Y Breakeven Inflation") ?? 2.5;
+  const breakeven = get("10Y Breakeven Inflation");
   const t10y2y   = get("2yr/10yr Yield Spread");
+  const t10y3m   = get("3mo/10yr Yield Spread");
   const hySpread = get("HY Credit Spread (OAS)");
   const lei      = get("Conference Board LEI");
   const inflExp  = get("Consumer Inflation Expectations");
@@ -204,14 +291,16 @@ function buildEmail(params: {
   const gainers = movers.filter(r => r.day_change > 0).slice(0, 4);
   const losers  = movers.filter(r => r.day_change < 0).slice(0, 4);
 
-  // Watches
+  // Narrative prose
+  const narrative = buildNarrative({
+    gdp, gdp3yAvg, cpi, coreCpi, ppi, breakeven, t10y2y, t10y3m,
+    hySpread, lei, sloos, inflExp, unrate, debtGdp,
+    regimeLabel, fwdLabel, fwdConf, fwdKey: regime?.forward_key ?? null,
+  });
+
+  // Watches (for subject line + divergence flag only)
   const watches: string[] = [];
-  if (sloos != null && sloos > 40) watches.push(`Bank lending standards tight (SLOOS ${sloos.toFixed(0)})`);
-  if (t10y2y != null && t10y2y < 0) watches.push(`Yield curve inverted (2/10: ${t10y2y.toFixed(2)}%)`);
-  if (inflExp != null && inflExp > 4.5) watches.push(`Consumer inflation expectations elevated (${inflExp.toFixed(1)}%)`);
-  if (unrate != null && unrate > 5.5) watches.push(`Unemployment rising (${unrate.toFixed(1)}%)`);
-  if (hySpread != null && hySpread > 6) watches.push(`HY spreads wide (${hySpread.toFixed(1)}%)`);
-  if (divergence) watches.push(`Structural/market regime divergence: ${REGIME_LABELS[regimeKey!]} vs ${REGIME_LABELS[marketKey!]}`);
+  if (divergence) watches.push(`Regime divergence: ${REGIME_LABELS[regimeKey!]} vs ${REGIME_LABELS[marketKey!]}`);
 
   const subject = `RatioBo Brief · ${regimeLabel} · Portfolio ${dayChange >= 0 ? "+" : ""}${fmt$(dayChange)} · ${date}`;
 
@@ -297,8 +386,16 @@ function buildEmail(params: {
 
         ${watches.length > 0 ? `
         <div style="border-top:1px solid #2a3240;padding-top:10px;margin-top:2px;">
-          <p style="margin:0;font-size:11px;color:#C9A227;">⚑ Watch: ${watches.join(" · ")}</p>
+          <p style="margin:0;font-size:11px;color:#C9A227;">⚑ ${watches.join(" · ")}</p>
         </div>` : ""}
+      </td></tr>
+    </table>
+
+    <!-- Macro Narrative -->
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#1a1f2e;border-radius:8px;border:1px solid #2a3240;padding:0;margin-bottom:16px;">
+      <tr><td style="padding:16px 20px;">
+        <p style="margin:0 0 12px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#6b7280;">Daily Macro Summary</p>
+        ${narrative}
       </td></tr>
     </table>
 
