@@ -65,9 +65,8 @@ async function fetchYahooTicker(ticker: string, range: string): Promise<{ date: 
     .sort((a, b) => b.date.localeCompare(a.date));
 }
 
-const fetchYahooGold    = (range: string) => fetchYahooTicker("GC=F", range);
-const fetchYahooSilver  = (range: string) => fetchYahooTicker("SI=F", range);
-const fetchYahooUranium = (range: string) => fetchYahooTicker("UX=F", range);
+const fetchYahooGold   = (range: string) => fetchYahooTicker("GC=F", range);
+const fetchYahooSilver = (range: string) => fetchYahooTicker("SI=F", range);
 
 function findYearAgo(
   obs: { date: string; value: number }[],
@@ -139,7 +138,6 @@ interface Indicator {
     | "gpr_website"
     | "gold_3m_avg"
     | "silver_3m_avg"
-    | "uranium_3m_avg"
     | "cb_gold_imf"
     | "level_with_3m";
   series?: string;
@@ -240,9 +238,9 @@ const INDICATORS: Indicator[] = [
   {
     name: "Uranium Price",
     layer: 3, layer_name: "Business Cycle",
-    description: "CME uranium futures (UX=F) 90-day rolling average. Nuclear fuel demand signal; rising uranium reflects energy security buildout and AI data center power demand.",
-    fred_series_id: null, unit: "$/lb", data_source: "yahoo", sort_order: 92,
-    type: "uranium_3m_avg",
+    description: "World Bank uranium spot price (PURANUSDM, $/lb, monthly). Nuclear fuel demand signal; rising uranium reflects energy security buildout and AI data center power demand.",
+    fred_series_id: "PURANUSDM", unit: "$/lb", data_source: "fred", sort_order: 92,
+    series: "PURANUSDM", type: "level_with_3m",
     statusFn: v => v < 60 ? "healthy" : v < 100 ? "watch" : "danger",
   },
   // ── LAYER 2: Short-Term Debt Cycle ──
@@ -708,16 +706,6 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
       case "silver_3m_avg": {
         const obs = await fetchYahooSilver("2y");
         if (obs.length < 100) throw new Error(`silver_3m_avg: only ${obs.length} obs`);
-        const half = Math.min(90, Math.floor(obs.length / 2));
-        const avgFn = (arr: { value: number }[]) => arr.reduce((s, o) => s + o.value, 0) / arr.length;
-        current  = avgFn(obs.slice(0, half));
-        previous = avgFn(obs.slice(half, half * 2));
-        metadata = { spot_price: Math.round(obs[0].value * 100) / 100 };
-        break;
-      }
-      case "uranium_3m_avg": {
-        const obs = await fetchYahooUranium("2y");
-        if (obs.length < 60) throw new Error(`uranium_3m_avg: only ${obs.length} obs`);
         const half = Math.min(90, Math.floor(obs.length / 2));
         const avgFn = (arr: { value: number }[]) => arr.reduce((s, o) => s + o.value, 0) / arr.length;
         current  = avgFn(obs.slice(0, half));
