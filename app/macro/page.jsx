@@ -361,6 +361,147 @@ function computeForwardSignal(indicators) {
   return { growth, infl, gDir, iDir, forwardKey, confidence };
 }
 
+// ── Daily Macro Summary ───────────────────────────────────────────────────────
+
+function MacroSummary({ indicators, latestQuadrant }) {
+  const get  = (name) => { const i = indicators.find(x => x.name === name); return i?.current_value != null ? Number(i.current_value) : null; };
+  const stat = (name) => indicators.find(x => x.name === name)?.status ?? null;
+
+  const gdp        = get("Real GDP Growth");
+  const cpi        = get("CPI (YoY)");
+  const coreCpi    = get("Core CPI (YoY)");
+  const ppi        = get("PPI (YoY)");
+  const breakeven  = get("10Y Breakeven Inflation");
+  const gdp3yAvg   = get("GDP Growth (3Y Avg)") ?? 0;
+  const unrate     = get("Unemployment Rate");
+  const t10y2y     = get("2yr/10yr Yield Spread");
+  const t10y3m     = get("3mo/10yr Yield Spread");
+  const hySpread   = get("HY Credit Spread (OAS)");
+  const lei        = get("Conference Board LEI");
+  const sloos      = get("Sr Loan Officer Survey");
+  const debtGdp    = get("Total Debt / GDP");
+  const inflExp    = get("Consumer Inflation Expectations");
+  const breakevenVal = breakeven ?? 2.5;
+
+  const regimeKey = latestQuadrant
+    ? (QUADRANT_TO_REGIME[latestQuadrant] ?? null)
+    : (gdp != null && cpi != null
+        ? detectRegimeKey(gdp, cpi, { breakeven: breakevenVal, gdp3yAvg })
+        : null);
+  const regime = regimeKey ? REGIME_META[regimeKey] : null;
+  const fwd = computeForwardSignal(indicators);
+  const today = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+  // ── Growth narrative ──
+  const growthAboveTrend = gdp != null && gdp > gdp3yAvg;
+  const growthStr =
+    gdp == null ? "Growth data unavailable." :
+    gdp > 2.5   ? `Growth is strong — Real GDP at +${gdp.toFixed(1)}% YoY${gdp3yAvg ? `, above the ${gdp3yAvg.toFixed(1)}% trend` : ""}.` :
+    gdp > 0.5   ? `Growth is modest — Real GDP at +${gdp.toFixed(1)}% YoY${growthAboveTrend ? ", above trend" : ", below trend"}.` :
+    gdp > 0     ? `Growth is stalling — Real GDP at +${gdp.toFixed(1)}% YoY.` :
+                  `Economy is contracting — Real GDP at ${gdp.toFixed(1)}% YoY.`;
+
+  // ── Inflation narrative ──
+  const inflAboveExp = cpi != null && cpi > breakevenVal;
+  const inflStr =
+    cpi == null ? "Inflation data unavailable." :
+    cpi > 5     ? `Inflation is elevated — CPI at ${cpi.toFixed(1)}%${coreCpi != null ? `, core at ${coreCpi.toFixed(1)}%` : ""}. Well above the ${breakevenVal.toFixed(1)}% market breakeven.` :
+    cpi > 3     ? `Inflation is running hot — CPI at ${cpi.toFixed(1)}%${coreCpi != null ? `, core ${coreCpi.toFixed(1)}%` : ""}${inflAboveExp ? `, surprising markets above the ${breakevenVal.toFixed(1)}% breakeven` : ""}.` :
+    cpi > 2     ? `Inflation is near target — CPI at ${cpi.toFixed(1)}%${coreCpi != null ? `, core ${coreCpi.toFixed(1)}%` : ""}${inflAboveExp ? `, modestly above the ${breakevenVal.toFixed(1)}% breakeven` : ""}.` :
+    cpi > 0     ? `Inflation is contained — CPI at ${cpi.toFixed(1)}%, below the ${breakevenVal.toFixed(1)}% market expectation.` :
+                  `Deflationary pressure — CPI at ${cpi.toFixed(1)}%.`;
+
+  // ── Pipeline inflation sentence ──
+  const ppiStr = ppi != null
+    ? `PPI is ${ppi > 3 ? "elevated" : ppi > 0 ? "positive" : "negative"} at ${ppi > 0 ? "+" : ""}${ppi.toFixed(1)}% YoY, ${ppi > cpi ? "running ahead of consumer prices — upstream pressure remains" : "running below CPI — pipeline easing"}.`
+    : null;
+
+  // ── Credit / financial conditions ──
+  const yieldCurveStr =
+    t10y2y == null ? null :
+    t10y2y > 1    ? `Yield curve is steep (+${t10y2y.toFixed(2)}%), signaling growth optimism.` :
+    t10y2y > 0    ? `Yield curve is normalizing (+${t10y2y.toFixed(2)}%), cautiously positive.` :
+    t10y2y > -0.5 ? `Yield curve is flat (${t10y2y.toFixed(2)}%), near inversion.` :
+                    `Yield curve is inverted (${t10y2y.toFixed(2)}%), a historical recession signal.`;
+
+  const creditStr =
+    hySpread == null ? null :
+    hySpread < 3.5  ? `HY credit spreads are tight at ${hySpread.toFixed(1)}% — markets pricing low default risk.` :
+    hySpread < 6    ? `HY credit spreads at ${hySpread.toFixed(1)}% — contained but worth watching.` :
+                      `HY credit spreads are wide at ${hySpread.toFixed(1)}% — elevated distress risk.`;
+
+  // ── Leading indicators ──
+  const leadStr =
+    lei == null ? null :
+    lei > 0.5   ? `LEI is positive at +${lei.toFixed(1)}%, consistent with expansion.` :
+    lei > -0.3  ? `LEI is flat at ${lei.toFixed(1)}% — neither expanding nor contracting.` :
+                  `LEI is negative at ${lei.toFixed(1)}% — leading indicators point to slowdown.`;
+
+  // ── Forward signal sentence ──
+  const fwdStr = fwd.forwardKey && fwd.confidence != null
+    ? `Forward signals (${fwd.confidence}% confidence) point toward ${REGIME_LABELS[fwd.forwardKey] ?? fwd.forwardKey} — growth momentum is ${fwd.gDir === "up" ? "building" : "fading"}, inflation pressure is ${fwd.iDir === "up" ? "rising" : "easing"}.`
+    : null;
+
+  // ── Debt sentence ──
+  const debtStr = debtGdp != null
+    ? `Total debt at ${debtGdp.toFixed(0)}% of GDP — ${debtGdp > 120 ? "structurally elevated, limiting policy flexibility" : debtGdp > 90 ? "high but manageable" : "within historical norms"}.`
+    : null;
+
+  // ── Key watch items ──
+  const watches = [];
+  if (sloos != null && sloos > 40) watches.push("Bank lending standards are tightening sharply");
+  if (t10y3m != null && t10y3m < 0) watches.push(`3m/10y curve inverted at ${t10y3m.toFixed(2)}%`);
+  if (inflExp != null && inflExp > 4.5) watches.push(`Consumer inflation expectations elevated at ${inflExp.toFixed(1)}%`);
+  if (unrate != null && unrate > 5.5) watches.push(`Unemployment rising at ${unrate.toFixed(1)}%`);
+  if (hySpread != null && hySpread > 6) watches.push("Credit spreads signaling stress");
+  const watchStr = watches.length > 0 ? `Watch: ${watches.join("; ")}.` : null;
+
+  if (!regime) return null;
+
+  const regimeBg = {
+    rg_fi: "bg-gain/5   border-gain/20",
+    rg_ri: "bg-brass-soft/5 border-brass-soft/20",
+    fg_ri: "bg-loss/5   border-loss/20",
+    fg_fi: "bg-paper-dim/5 border-paper-dim/20",
+  }[regimeKey] ?? "bg-ink-soft border-ink-line";
+
+  const regimeTextColor = {
+    rg_fi: "text-gain",
+    rg_ri: "text-brass-soft",
+    fg_ri: "text-loss",
+    fg_fi: "text-paper-dim",
+  }[regimeKey] ?? "text-paper";
+
+  return (
+    <div className={`card p-5 mb-6 border ${regimeBg}`}>
+      <div className="flex items-start justify-between gap-4 mb-3">
+        <div>
+          <p className="label mb-0.5">Daily Macro Summary</p>
+          <p className="text-[10px] text-paper-dim/60">{today}</p>
+        </div>
+        <div className="text-right shrink-0">
+          <p className={`text-sm font-semibold ${regimeTextColor}`}>{regime.label}</p>
+          {fwd.forwardKey && fwd.forwardKey !== regimeKey && (
+            <p className="text-[10px] text-paper-dim mt-0.5">
+              → <span className={REGIME_META[fwd.forwardKey]?.color ?? "text-paper"}>{REGIME_LABELS[fwd.forwardKey]}</span>
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-1.5 text-[11px] leading-relaxed text-paper-dim">
+        <p><span className="text-paper font-medium">Growth — </span>{growthStr}</p>
+        <p><span className="text-paper font-medium">Inflation — </span>{inflStr}{ppiStr ? ` ${ppiStr}` : ""}</p>
+        {yieldCurveStr && <p><span className="text-paper font-medium">Credit — </span>{yieldCurveStr}{creditStr ? ` ${creditStr}` : ""}</p>}
+        {leadStr && <p><span className="text-paper font-medium">Leading — </span>{leadStr}</p>}
+        {fwdStr && <p><span className="text-paper font-medium">Outlook — </span>{fwdStr}</p>}
+        {debtStr && <p><span className="text-paper font-medium">Debt — </span>{debtStr}</p>}
+        {watchStr && <p className="text-brass-soft/80"><span className="font-medium">⚑ </span>{watchStr}</p>}
+      </div>
+    </div>
+  );
+}
+
 const REGIME_COLORS = {
   rg_fi: "#4ade80",
   rg_ri: "#C9A227",
@@ -2934,6 +3075,7 @@ export default function MacroDashboard() {
         <p className="text-paper-dim text-sm py-12 text-center">Loading…</p>
       ) : (
         <>
+          <MacroSummary indicators={indicators} latestQuadrant={latestQuadrant} />
           <QuadrantCard indicators={indicators} holdings={portfolioHoldings} assetData={assetData} latestQuadrant={latestQuadrant} />
 
           {regimeHistory.length > 0 && (
