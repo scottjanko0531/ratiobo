@@ -7,6 +7,7 @@ import {
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import NotificationBanner from "../../components/NotificationBanner";
+import TickerBanner from "../../components/TickerBanner";
 
 const usd = (n) =>
   n == null
@@ -202,7 +203,9 @@ export default function Dashboard() {
     .sort((a, b) => b.value - a.value);
 
   return (
-    <Shell>
+    <>
+      <TickerBanner />
+      <Shell>
       <div className="flex items-baseline justify-between mb-6 flex-wrap gap-2">
         <h1 className="text-xl font-semibold tracking-tight">Portfolio</h1>
         {lastSync && (
@@ -511,5 +514,6 @@ export default function Dashboard() {
         </table>
       </div>
     </Shell>
+    </>
   );
 }
