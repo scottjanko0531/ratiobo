@@ -58,6 +58,7 @@ function formatValue(v, unit) {
   if (unit === "$/gal")   return "$" + n.toFixed(2) + "/gal";
   if (unit === "$/mt")    return "$" + Math.round(n).toLocaleString("en-US") + "/mt";
   if (unit === "$/oz")    return "$" + Math.round(n).toLocaleString("en-US") + "/oz";
+  if (unit === "$/lb")    return "$" + n.toFixed(2) + "/lb";
   if (unit === "% YoY")  return n.toFixed(2) + "% YoY";
   return n.toFixed(2);
 }
@@ -232,8 +233,17 @@ function IndicatorCard({ ind, onSave, onClick }) {
 // Pure: compute suggested % per market asset using the chosen allocation method.
 // Default: returns weights only for signal-favored keys (regime threshold ≥10%).
 // RP modes: returns weights for ALL 8 market assets — same universe as the simulator.
+// Bridgewater-implied All Weather modification (structural, not regime-dependent).
+// Source: Bridgewater 2025-2026 research — reduce long nominal bonds, add TIPS/inflation-linked,
+// increase gold + commodities, diversify away from US-only equity book.
+const BW_ALLOC = { eq: 20, intl: 8, em: 5, nb: 20, tip: 20, com: 12, gld: 12, cash: 3 };
+
 function computeSuggestedPcts(regimeKey, method, assetData) {
   const dw = REGIME_DEFAULT_WEIGHTS[regimeKey] ?? {};
+
+  if (method === "bw") {
+    return { ...BW_ALLOC };
+  }
 
   if (method === "default" || !assetData) {
     const sk = getSignalKeys(regimeKey);
@@ -498,6 +508,124 @@ function MacroSummary({ indicators, latestQuadrant }) {
         {debtStr && <p><span className="text-paper font-medium">Debt — </span>{debtStr}</p>}
         {watchStr && <p className="text-brass-soft/80"><span className="font-medium">⚑ </span>{watchStr}</p>}
       </div>
+    </div>
+  );
+}
+
+// ── Bridgewater Structural Thesis ─────────────────────────────────────────────
+// Content derived from Bridgewater 2025–2026 published research.
+// Update quarterly or when new Bridgewater research materially shifts the thesis.
+
+const BW_FORCES = [
+  {
+    title: "Modern Mercantilism",
+    text: "The globalization era is over — tariffs, industrial policy, and national self-interest replace open trade. US capital exceptionalism is at risk; geographic diversification is no longer optional.",
+  },
+  {
+    title: "AI Transformation",
+    text: "AI capex \"significantly supports US growth\" but is inflationary near-term — straining electricity grids and driving a resource grab in copper, silver, uranium, and energy. Productivity payoff is real but too speculative to front-run.",
+  },
+  {
+    title: "Portfolio Concentration Risk",
+    text: "Most portfolios reflect winners of the past paradigm: US-heavy, equity-heavy, illiquid, with little inflation protection. Bridgewater's loudest message: today's typical allocation is \"not resilient.\"",
+  },
+];
+
+const BW_CALLS = [
+  { label: "Inflation floor", text: "2% is a floor, not a ceiling — structurally higher, with an upside-skewed cone of outcomes. Drivers: ~7% US deficits in mid-cycle, threats to Fed independence, deglobalization." },
+  { label: "Stock/bond correlation", text: "Negative S/B correlation was a statistical artifact of the low-inflation era. Higher inflation volatility flips it positive — exactly what destroyed 60/40 in 2022." },
+  { label: "Dollar de-rating", text: "Gold above $4,000/oz (+50% YTD at publication) and commodity strength signal dollar devaluation and mercantilist resource competition, not just risk-off." },
+  { label: "Inflation hedges are cheap", text: "TIPS and real assets offer inflation protection at relatively low cost right now — the argument for rebalancing sooner rather than later." },
+];
+
+const BW_TILTS = [
+  { asset: "US Equities",        textbook: "~30%", direction: "↓ Trim",    note: "Diversify globally; end of US capital exceptionalism risk" },
+  { asset: "Nominal Bonds",      textbook: "~55%", direction: "↓↓ Reduce", note: "Most punished when inflation forces tightening; hedge fails" },
+  { asset: "TIPS / Infl-Linked", textbook: "0%",   direction: "↑ Add",     note: "Core thesis; inflation protection currently relatively cheap" },
+  { asset: "Gold",               textbook: "7.5%", direction: "↑ Increase",note: "Dollar de-rating + mercantilism; de-dollarization signal" },
+  { asset: "Commodities",        textbook: "7.5%", direction: "↑ Increase",note: "Energy + AI metals (copper, silver, uranium) resource grab" },
+  { asset: "International / EM", textbook: "0%",   direction: "↑ Add",     note: "Key missing ingredient; Asia diversification specifically cited" },
+];
+
+function StructuralRegimeCard() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="card p-5 mb-6 border border-amber-800/30 bg-amber-950/10">
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <p className="label mb-0.5 text-amber-400/80">Bridgewater Structural Thesis</p>
+          <p className="text-[10px] text-paper-dim/60">Derived from 2025–2026 published research · Updated Jul 2026</p>
+        </div>
+        <button
+          onClick={() => setOpen(v => !v)}
+          className="text-[10px] text-paper-dim hover:text-amber-400 transition-colors shrink-0 mt-0.5"
+        >
+          {open ? "Collapse ▲" : "Expand ▼"}
+        </button>
+      </div>
+
+      {/* Three forces — always visible */}
+      <div className="space-y-2 mb-4">
+        {BW_FORCES.map(f => (
+          <div key={f.title} className="flex gap-2.5">
+            <span className="shrink-0 mt-0.5 w-1.5 h-1.5 rounded-full bg-amber-500/60 mt-1.5" />
+            <p className="text-[11px] leading-relaxed text-paper-dim">
+              <span className="text-amber-300/80 font-semibold">{f.title} — </span>{f.text}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      {/* Expandable detail */}
+      {open && (
+        <>
+          {/* Key calls */}
+          <div className="mb-4 pt-3 border-t border-amber-800/20">
+            <p className="label text-[10px] text-amber-400/70 mb-2">Key Market Calls</p>
+            <div className="space-y-1.5">
+              {BW_CALLS.map(c => (
+                <p key={c.label} className="text-[11px] leading-relaxed text-paper-dim">
+                  <span className="text-paper font-medium">{c.label} — </span>{c.text}
+                </p>
+              ))}
+            </div>
+          </div>
+
+          {/* Allocation tilt table */}
+          <div className="pt-3 border-t border-amber-800/20">
+            <p className="label text-[10px] text-amber-400/70 mb-2">Implied Allocation Tilts vs. Textbook All Weather</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="border-b border-ink-line/40">
+                    <th className="text-left text-paper-dim font-normal pb-1.5 pr-4">Asset</th>
+                    <th className="text-right text-paper-dim font-normal pb-1.5 pr-4">Textbook</th>
+                    <th className="text-left text-paper-dim font-normal pb-1.5 pr-4">Direction</th>
+                    <th className="text-left text-paper-dim font-normal pb-1.5">Rationale</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {BW_TILTS.map(t => {
+                    const isUp = t.direction.startsWith("↑");
+                    const isDown = t.direction.startsWith("↓");
+                    return (
+                      <tr key={t.asset} className="border-b border-ink-line/20">
+                        <td className="py-1.5 pr-4 text-paper whitespace-nowrap">{t.asset}</td>
+                        <td className="py-1.5 pr-4 text-right num text-paper-dim">{t.textbook}</td>
+                        <td className={`py-1.5 pr-4 font-medium whitespace-nowrap ${isUp ? "text-gain" : isDown ? "text-loss" : "text-paper-dim"}`}>{t.direction}</td>
+                        <td className="py-1.5 text-paper-dim/70 leading-snug">{t.note}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[9px] text-paper-dim/40 mt-2">
+              BW Modified allocation in the positioning panel uses: EQ 20% · INTL 8% · EM 5% · Nom Bonds 20% · TIPS 20% · Commodities 12% · Gold 12% · Cash 3%
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -975,12 +1103,13 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
   const [allocMethod, setAllocMethod] = useState("default");
 
   const signalKeys = regimeKey ? getSignalKeys(regimeKey) : [];
-  // RP methods show all 8 market assets (same universe as simulator);
-  // Default shows only regime signal-favored keys (threshold ≥10%)
+  // BW Modified and RP methods show all 8 market assets; Default shows regime-favored only
   const displayKeys = regimeKey
-    ? (allocMethod === "default" || !assetData
+    ? (allocMethod === "default" || (!assetData && allocMethod !== "bw")
       ? signalKeys
-      : assetData.assets.map((a) => a.key))
+      : allocMethod === "bw"
+        ? Object.keys(BW_ALLOC)
+        : assetData.assets.map((a) => a.key))
     : [];
   const favoredSet = new Set(displayKeys);
   const suggestedPcts = regimeKey
@@ -1340,14 +1469,17 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                   { k: "equal",   l: "Equal Wt" },
                   { k: "naive",   l: "Naive RP" },
                   { k: "true",    l: "Regime RP" },
+                  { k: "bw",      l: "BW Modified" },
                 ].map((m) => (
                   <button
                     key={m.k}
                     onClick={() => setAllocMethod(m.k)}
-                    disabled={m.k !== "default" && !assetData}
+                    disabled={m.k !== "default" && m.k !== "bw" && !assetData}
                     className={`px-2 py-0.5 text-[10px] rounded transition-colors disabled:opacity-30 ${
                       allocMethod === m.k
-                        ? "bg-brass/20 text-brass-soft border border-brass/40"
+                        ? m.k === "bw"
+                          ? "bg-amber-900/30 text-amber-400 border border-amber-700/40"
+                          : "bg-brass/20 text-brass-soft border border-brass/40"
                         : "text-paper-dim hover:text-paper"
                     }`}
                   >
@@ -3156,6 +3288,7 @@ export default function MacroDashboard() {
       ) : (
         <>
           <MacroSummary indicators={indicators} latestQuadrant={latestQuadrant} />
+          <StructuralRegimeCard />
           <QuadrantCard indicators={indicators} holdings={portfolioHoldings} assetData={assetData} latestQuadrant={latestQuadrant} />
 
           {regimeHistory.length > 0 && (
