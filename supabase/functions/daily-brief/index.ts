@@ -5,7 +5,7 @@ const RESEND_KEY = Deno.env.get("RESEND_API_KEY")!;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const TO_EMAIL = Deno.env.get("BRIEF_TO_EMAIL") ?? "scott@janko.group";
-const FROM_EMAIL = Deno.env.get("BRIEF_FROM_EMAIL") ?? "brief@janko.group";
+const FROM_EMAIL = "brief@janko.group";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
