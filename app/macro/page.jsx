@@ -502,6 +502,84 @@ function MacroSummary({ indicators, latestQuadrant }) {
   );
 }
 
+function MacroNews() {
+  const [items, setItems] = useState(null);
+  const [filter, setFilter] = useState("all");
+
+  useEffect(() => {
+    fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-news-feed`)
+      .then(r => r.json())
+      .then(data => setItems(Array.isArray(data) ? data : []))
+      .catch(() => setItems([]));
+  }, []);
+
+  function tsAgo(unix) {
+    if (!unix) return "";
+    const diff = Date.now() - unix * 1000;
+    const h = Math.floor(diff / 3_600_000);
+    const m = Math.floor((diff % 3_600_000) / 60_000);
+    if (h > 23) return `${Math.floor(h / 24)}d ago`;
+    if (h > 0) return `${h}h ago`;
+    return `${m}m ago`;
+  }
+
+  const filtered = items == null ? [] : filter === "all" ? items : items.filter(i => i.source === filter);
+
+  return (
+    <div className="card p-5 mb-6">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <p className="label">Economic News</p>
+        <div className="flex gap-1">
+          {[["all", "All"], ["finnhub", "Finnhub"], ["dailyshot", "Daily Shot"]].map(([val, lbl]) => (
+            <button key={val} onClick={() => setFilter(val)}
+              className={`text-[10px] px-2.5 py-1 rounded-full border transition-colors ${
+                filter === val
+                  ? "bg-brass/15 border-brass/30 text-brass-soft"
+                  : "border-ink-line text-paper-dim hover:border-brass/20 hover:text-paper"
+              }`}>
+              {lbl}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {items === null ? (
+        <p className="text-paper-dim text-sm py-4 text-center">Loading…</p>
+      ) : filtered.length === 0 ? (
+        <p className="text-paper-dim text-sm py-4 text-center">No items.</p>
+      ) : (
+        <div className="divide-y divide-ink-line/50">
+          {filtered.slice(0, 15).map(item => (
+            <a key={item.id} href={item.url} target="_blank" rel="noopener noreferrer"
+              className="flex items-start gap-3 py-3 group hover:bg-ink-soft/40 -mx-2 px-2 rounded transition-colors">
+              <div className="flex-1 min-w-0">
+                <p className="text-[13px] leading-snug text-paper group-hover:text-white transition-colors line-clamp-2">
+                  {item.headline}
+                </p>
+                {item.summary && (
+                  <p className="text-[11px] text-paper-dim/60 mt-1 line-clamp-2 leading-relaxed">
+                    {item.summary}
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-col items-end gap-1 shrink-0">
+                <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold tracking-wide ${
+                  item.source === "dailyshot"
+                    ? "bg-sky-900/40 text-sky-400"
+                    : "bg-emerald-900/30 text-emerald-400"
+                }`}>
+                  {item.source === "dailyshot" ? "Daily Shot" : "Finnhub"}
+                </span>
+                <span className="text-[10px] text-paper-dim/40">{tsAgo(item.publishedAt)}</span>
+              </div>
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const REGIME_COLORS = {
   rg_fi: "#4ade80",
   rg_ri: "#C9A227",
@@ -3161,6 +3239,8 @@ export default function MacroDashboard() {
               <ThreeForcesChart />
             </div>
           </div>
+
+          <MacroNews />
         </>
       )}
       <DebtGdpDrawer
