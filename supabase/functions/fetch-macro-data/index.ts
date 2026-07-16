@@ -47,15 +47,16 @@ async function fetchFredObsMonthly(seriesId: string, limit: number): Promise<{ d
     .filter((o) => !isNaN(o.value));
 }
 
-async function fetchYahooGold(range: string): Promise<{ date: string; value: number }[]> {
+async function fetchYahooTicker(ticker: string, range: string): Promise<{ date: string; value: number }[]> {
+  const encoded = encodeURIComponent(ticker);
   const res = await fetch(
-    `https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1d&range=${range}`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=${range}`,
     { headers: { "User-Agent": "Mozilla/5.0 (compatible; macro-dashboard/1.0)" } }
   );
-  if (!res.ok) throw new Error(`Yahoo GC=F: HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`Yahoo ${ticker}: HTTP ${res.status}`);
   const j = await res.json();
   const result = j?.chart?.result?.[0];
-  if (!result) throw new Error("Yahoo GC=F: no result in response");
+  if (!result) throw new Error(`Yahoo ${ticker}: no result in response`);
   const timestamps: number[] = result.timestamp ?? [];
   const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
   return timestamps
@@ -63,6 +64,10 @@ async function fetchYahooGold(range: string): Promise<{ date: string; value: num
     .filter((o) => !isNaN(o.value))
     .sort((a, b) => b.date.localeCompare(a.date));
 }
+
+const fetchYahooGold    = (range: string) => fetchYahooTicker("GC=F", range);
+const fetchYahooSilver  = (range: string) => fetchYahooTicker("SI=F", range);
+const fetchYahooUranium = (range: string) => fetchYahooTicker("UX=F", range);
 
 function findYearAgo(
   obs: { date: string; value: number }[],
@@ -133,6 +138,8 @@ interface Indicator {
     | "m2_minus_gdp"
     | "gpr_website"
     | "gold_3m_avg"
+    | "silver_3m_avg"
+    | "uranium_3m_avg"
     | "cb_gold_imf"
     | "level_with_3m";
   series?: string;
@@ -221,6 +228,22 @@ const INDICATORS: Indicator[] = [
     fred_series_id: null, unit: "% YoY", data_source: "yahoo", sort_order: 97,
     type: "cb_gold_imf",
     statusFn: v => v < 5 ? "healthy" : v < 25 ? "watch" : "danger",
+  },
+  {
+    name: "Silver Price",
+    layer: 3, layer_name: "Business Cycle",
+    description: "COMEX silver futures (SI=F) 90-day rolling average. Industrial and monetary metal; tracks AI/energy infrastructure demand alongside gold. Bridgewater cites silver as part of the AI-era resource grab.",
+    fred_series_id: null, unit: "$/oz", data_source: "yahoo", sort_order: 91,
+    type: "silver_3m_avg",
+    statusFn: v => v < 25 ? "healthy" : v < 40 ? "watch" : "danger",
+  },
+  {
+    name: "Uranium Price",
+    layer: 3, layer_name: "Business Cycle",
+    description: "CME uranium futures (UX=F) 90-day rolling average. Nuclear fuel demand signal; rising uranium reflects energy security buildout and AI data center power demand.",
+    fred_series_id: null, unit: "$/lb", data_source: "yahoo", sort_order: 92,
+    type: "uranium_3m_avg",
+    statusFn: v => v < 60 ? "healthy" : v < 100 ? "watch" : "danger",
   },
   // ── LAYER 2: Short-Term Debt Cycle ──
   {
@@ -682,6 +705,26 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         pendingGoldObs = [...obs].reverse();
         break;
       }
+      case "silver_3m_avg": {
+        const obs = await fetchYahooSilver("2y");
+        if (obs.length < 100) throw new Error(`silver_3m_avg: only ${obs.length} obs`);
+        const half = Math.min(90, Math.floor(obs.length / 2));
+        const avgFn = (arr: { value: number }[]) => arr.reduce((s, o) => s + o.value, 0) / arr.length;
+        current  = avgFn(obs.slice(0, half));
+        previous = avgFn(obs.slice(half, half * 2));
+        metadata = { spot_price: Math.round(obs[0].value * 100) / 100 };
+        break;
+      }
+      case "uranium_3m_avg": {
+        const obs = await fetchYahooUranium("2y");
+        if (obs.length < 60) throw new Error(`uranium_3m_avg: only ${obs.length} obs`);
+        const half = Math.min(90, Math.floor(obs.length / 2));
+        const avgFn = (arr: { value: number }[]) => arr.reduce((s, o) => s + o.value, 0) / arr.length;
+        current  = avgFn(obs.slice(0, half));
+        previous = avgFn(obs.slice(half, half * 2));
+        metadata = { spot_price: Math.round(obs[0].value * 100) / 100 };
+        break;
+      }
       case "cb_gold_imf": {
         let imfOk = false;
         try {
@@ -857,12 +900,14 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     { name: "C&I Loan Growth (YoY)",  w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
   ];
   const I: Sig[] = [
-    { name: "Consumer Inflation Expectations", w: 0.25, vote: v => v > 4    ? 1 : v >= 2.5 ? 0 : -1 },
+    { name: "Consumer Inflation Expectations", w: 0.20, vote: v => v > 4    ? 1 : v >= 2.5 ? 0 : -1 },
     { name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > 2.5  ? 1 : v >= 1.5 ? 0 : -1 },
-    { name: "Copper Price",                    w: 0.20, vote: v => v > 9000 ? 1 : v >= 7000 ? 0 : -1 },
+    { name: "Copper Price",                    w: 0.15, vote: v => v > 9000 ? 1 : v >= 7000 ? 0 : -1 },
     { name: "WTI Crude Oil",                   w: 0.15, vote: v => v > 90   ? 1 : v >= 70  ? 0 : -1 },
-    { name: "PPI (YoY)",                       w: 0.10, vote: v => v > 3    ? 1 : v >= 0   ? 0 : -1 },
-    { name: "M2 Growth (YoY)",                 w: 0.10, vote: v => v > 8    ? 1 : v >= 3   ? 0 : -1 },
+    { name: "Silver Price",                    w: 0.10, vote: v => v > 35   ? 1 : v >= 25  ? 0 : -1 },
+    { name: "Uranium Price",                   w: 0.10, vote: v => v > 75   ? 1 : v >= 50  ? 0 : -1 },
+    { name: "PPI (YoY)",                       w: 0.05, vote: v => v > 3    ? 1 : v >= 0   ? 0 : -1 },
+    { name: "M2 Growth (YoY)",                 w: 0.05, vote: v => v > 8    ? 1 : v >= 3   ? 0 : -1 },
   ];
   type ScoreSig = { w: number; vote: number | null };
   const scoreGroup = (sigs: Sig[]): { signals: ScoreSig[]; score: number | null } => {
@@ -917,7 +962,7 @@ async function backfillForwardSignals(): Promise<void> {
             .filter(o => !isNaN(o.value)).reverse()
         );
 
-    const [t10y2y, t10y3m, baml, mich, t10yie, copper, wti, sloos, usslind, busloans, ppiaco, m2sl] = await Promise.all([
+    const [t10y2y, t10y3m, baml, mich, t10yie, copper, wti, sloos, usslind, busloans, ppiaco, m2sl, silver, uranium] = await Promise.all([
       fm("T10Y2Y",       "&frequency=m&aggregation_method=avg"),
       fm("T10Y3M",       "&frequency=m&aggregation_method=avg"),
       fm("BAMLH0A0HYM2", "&frequency=m&aggregation_method=avg"),
@@ -930,6 +975,8 @@ async function backfillForwardSignals(): Promise<void> {
       fm("BUSLOANS"),
       fm("PPIACO"),
       fm("M2SL"),
+      fm("SLVPRUSD"),
+      fm("PURANUSDM"),
     ]);
 
     const bm = (obs: { date: string; value: number }[]) => {
@@ -958,6 +1005,7 @@ async function backfillForwardSignals(): Promise<void> {
     const mkT10y2y = bm(t10y2y), mkT10y3m = bm(t10y3m), mkBaml = bm(baml);
     const mkMich = bm(mich), mkT10yie = bm(t10yie), mkCopper = bm(copper), mkWti = bm(wti);
     const mkUsslind = bm(usslind), mkBusYoY = yoy(busloans), mkPpiYoY = yoy(ppiaco), mkM2YoY = yoy(m2sl);
+    const mkSilver = bm(silver), mkUranium = bm(uranium);
 
     type MapSig = { map: Map<string, number>; w: number; vote: (v: number) => number };
     const GS: MapSig[] = [
@@ -969,12 +1017,14 @@ async function backfillForwardSignals(): Promise<void> {
       { map: mkBusYoY,  w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
     ];
     const IS: MapSig[] = [
-      { map: mkMich,   w: 0.25, vote: v => v > 4    ? 1 : v >= 2.5 ? 0 : -1 },
-      { map: mkT10yie, w: 0.20, vote: v => v > 2.5  ? 1 : v >= 1.5 ? 0 : -1 },
-      { map: mkCopper, w: 0.20, vote: v => v > 9000 ? 1 : v >= 7000 ? 0 : -1 },
-      { map: mkWti,    w: 0.15, vote: v => v > 90   ? 1 : v >= 70  ? 0 : -1 },
-      { map: mkPpiYoY, w: 0.10, vote: v => v > 3    ? 1 : v >= 0   ? 0 : -1 },
-      { map: mkM2YoY,  w: 0.10, vote: v => v > 8    ? 1 : v >= 3   ? 0 : -1 },
+      { map: mkMich,    w: 0.20, vote: v => v > 4    ? 1 : v >= 2.5 ? 0 : -1 },
+      { map: mkT10yie,  w: 0.20, vote: v => v > 2.5  ? 1 : v >= 1.5 ? 0 : -1 },
+      { map: mkCopper,  w: 0.15, vote: v => v > 9000 ? 1 : v >= 7000 ? 0 : -1 },
+      { map: mkWti,     w: 0.15, vote: v => v > 90   ? 1 : v >= 70  ? 0 : -1 },
+      { map: mkSilver,  w: 0.10, vote: v => v > 35   ? 1 : v >= 25  ? 0 : -1 },
+      { map: mkUranium, w: 0.10, vote: v => v > 75   ? 1 : v >= 50  ? 0 : -1 },
+      { map: mkPpiYoY,  w: 0.05, vote: v => v > 3    ? 1 : v >= 0   ? 0 : -1 },
+      { map: mkM2YoY,   w: 0.05, vote: v => v > 8    ? 1 : v >= 3   ? 0 : -1 },
     ];
     type ScoreSig = { w: number; vote: number | null };
     const sg = (sigs: MapSig[], mk: string): { signals: ScoreSig[]; score: number | null } => {
@@ -1312,6 +1362,71 @@ async function computeGauge4(): Promise<void> {
   } catch (e) { console.error("[gauge4]", e); }
 }
 
+async function computeGauge5(): Promise<void> {
+  try {
+    const r4 = (n: number) => Math.round(n * 10000) / 10000;
+    const mean  = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / arr.length;
+    const stdev = (arr: number[], mu: number) =>
+      Math.sqrt(arr.reduce((s, v) => s + (v - mu) ** 2, 0) / arr.length) || 1;
+
+    const [ppiacoObs, wtiObs, copperObs, silverObs, uraniumObs] = await Promise.all([
+      fetchFredObsMonthly("PPIACO",     300),
+      fetchFredObsMonthly("DCOILWTICO", 300),
+      fetchFredObsMonthly("PCOPPUSDM",  300),
+      fetchFredObsMonthly("SLVPRUSD",   300),
+      fetchFredObsMonthly("PURANUSDM",  300),
+    ]);
+
+    const toYoY = (obs: { date: string; value: number }[]): number[] => {
+      const byDate = new Map(obs.map(o => [o.date.slice(0, 7), o.value]));
+      return obs
+        .map(o => {
+          const d = new Date(o.date);
+          const yaKey = `${d.getUTCFullYear() - 1}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+          const ya = byDate.get(yaKey);
+          if (ya == null || ya === 0) return NaN;
+          return (o.value / ya - 1) * 100;
+        })
+        .filter((v): v is number => !isNaN(v));
+    };
+
+    const ppiYoY     = toYoY(ppiacoObs);
+    const wtiYoY     = toYoY(wtiObs);
+    const copperYoY  = toYoY(copperObs);
+    const silverYoY  = toYoY(silverObs);
+    const uraniumYoY = toYoY(uraniumObs);
+
+    if (ppiYoY.length < 24 || wtiYoY.length < 24 || copperYoY.length < 24) {
+      console.error("[gauge5] insufficient data"); return;
+    }
+
+    const zs = (series: number[]) => {
+      const mu = mean(series);
+      const sd = stdev(series, mu);
+      return r4((series[0] - mu) / sd);
+    };
+
+    const zPpi     = zs(ppiYoY);
+    const zWti     = zs(wtiYoY);
+    const zCopper  = zs(copperYoY);
+    const zSilver  = silverYoY.length  >= 12 ? zs(silverYoY)  : null;
+    const zUranium = uraniumYoY.length >= 12 ? zs(uraniumYoY) : null;
+
+    let wTotal = 0.30 + 0.25 + 0.20;
+    let g5 = 0.30 * zPpi + 0.25 * zWti + 0.20 * zCopper;
+    if (zSilver  != null) { g5 += 0.15 * zSilver;  wTotal += 0.15; }
+    if (zUranium != null) { g5 += 0.10 * zUranium; wTotal += 0.10; }
+    const gauge5 = r4(g5 / wTotal);
+
+    const currentYear = new Date().getFullYear();
+    const { error } = await supabase.from("dalio_gauge_readings").upsert(
+      { year: currentYear, z_ppi: zPpi, z_wti: zWti, z_copper: zCopper, z_silver: zSilver, z_uranium: zUranium, gauge5 },
+      { onConflict: "year" }
+    );
+    if (error) console.error("[gauge5] upsert:", error);
+  } catch (e) { console.error("[gauge5]", e); }
+}
+
 async function updateConsumerExpectations(): Promise<void> {
   try {
     const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -1487,6 +1602,7 @@ Deno.serve(async (req: Request) => {
     await computeGauge3();
     await updateIncomeSeries();
     await computeGauge4();
+    await computeGauge5();
     await updateConsumerExpectations();
     await generateNotifications();
   })());
