@@ -1124,11 +1124,13 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
 // ─── Pipeline Inflation ──────────────────────────────────────────────────────
 
 const PIPE_META = [
-  { key: "crude",  short: "PPI", name: "PPI All Commodities", unit: "index",   desc: "3-month % change · ±3% threshold" },
-  { key: "ppi",    short: "PPI", name: "PPI Final Demand",    unit: "index",   desc: "3-month % change · ±0.5% threshold" },
-  { key: "wti",    short: "Oil", name: "WTI Crude Oil",       unit: "$/bbl",   desc: "3-month % change · ±5% threshold" },
-  { key: "copper", short: "Cu",  name: "Copper",              unit: "$/mt",    desc: "3-month % change · ±5% threshold" },
-  { key: "natgas", short: "Gas", name: "Natural Gas",         unit: "$/MMBtu", desc: "3-month % change · ±10% threshold" },
+  { key: "crude",   short: "PPI", name: "PPI All Commodities", unit: "index",   desc: "3-month % change · ±3% threshold" },
+  { key: "ppi",     short: "PPI", name: "PPI Final Demand",    unit: "index",   desc: "3-month % change · ±0.5% threshold" },
+  { key: "wti",     short: "Oil", name: "WTI Crude Oil",       unit: "$/bbl",   desc: "3-month % change · ±5% threshold" },
+  { key: "copper",  short: "Cu",  name: "Copper",              unit: "$/mt",    desc: "3-month % change · ±5% threshold" },
+  { key: "natgas",  short: "Gas", name: "Natural Gas",         unit: "$/MMBtu", desc: "3-month % change · ±10% threshold" },
+  { key: "silver",  short: "Ag",  name: "Silver",              unit: "$/oz",    desc: "3-month % change · ±5% threshold" },
+  { key: "uranium", short: "U",   name: "Uranium",             unit: "$/lb",    desc: "3-month % change · ±5% threshold" },
 ];
 
 function ScoreDot({ score }) {
@@ -1190,7 +1192,7 @@ function PipelineCard({ data, onOpen }) {
       </div>
       <p className={`num text-xl font-bold leading-none ${color}`}>{composite >= 0 ? "+" : ""}{composite}</p>
       <p className={`text-xs font-semibold mt-1 ${color}`}>{label}</p>
-      <p className="text-[10px] text-paper-dim mt-1">of 5 signals</p>
+      <p className="text-[10px] text-paper-dim mt-1">of 7 signals</p>
       <p className="text-[9px] text-paper-dim/60 mt-0.5">1–3 month CPI lead</p>
     </div>
   );
@@ -1290,8 +1292,8 @@ function PipelineDrawer({ open, onClose, data }) {
                   />
                   <YAxis
                     yAxisId="left"
-                    domain={[-5, 5]}
-                    ticks={[-4, -2, 0, 2, 4]}
+                    domain={[-7, 7]}
+                    ticks={[-6, -3, 0, 3, 6]}
                     tick={{ fill: "#A8ADB8", fontSize: 10 }}
                     tickLine={false}
                     axisLine={false}
@@ -1311,8 +1313,8 @@ function PipelineDrawer({ open, onClose, data }) {
                   />
                   <Tooltip content={<PipeTooltip />} />
                   <ReferenceLine yAxisId="left" y={0}  stroke="#2A3240" strokeWidth={1} />
-                  <ReferenceLine yAxisId="left" y={2}  stroke="#ef4444" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
-                  <ReferenceLine yAxisId="left" y={-2} stroke="#22c55e" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
+                  <ReferenceLine yAxisId="left" y={3}  stroke="#ef4444" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
+                  <ReferenceLine yAxisId="left" y={-3} stroke="#22c55e" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
                   <ReferenceLine yAxisId="right" y={0} stroke="#818CF8" strokeDasharray="2 4" strokeWidth={1} strokeOpacity={0.3} />
                   <Bar yAxisId="left" dataKey="composite" name="Composite" maxBarSize={18} radius={[2, 2, 0, 0]}>
                     {history.map((entry, i) => (
@@ -1346,7 +1348,7 @@ function PipelineDrawer({ open, onClose, data }) {
           {/* Methodology */}
           <div className="card p-4 space-y-3 text-[11px] leading-relaxed">
             <p className="text-paper font-semibold">How it's scored</p>
-            <p className="text-paper-dim">Each signal is scored −1 (easing), 0 (neutral), or +1 (building). Scores sum to a composite −5 to +5. This measures where cost pressures are heading, not where CPI is today — a leading indicator, not coincident.</p>
+            <p className="text-paper-dim">Each signal is scored −1 (easing), 0 (neutral), or +1 (building). Scores sum to a composite −7 to +7. This measures where cost pressures are heading, not where CPI is today — a leading indicator, not coincident.</p>
             <div className="space-y-1 text-[10px]">
               <div className="flex gap-2"><span className="text-loss font-mono w-20">≥ +3</span><span className="text-paper-dim">Building — broad upstream pressure, CPI likely to rise</span></div>
               <div className="flex gap-2"><span className="text-loss font-mono w-20">+1 to +2</span><span className="text-paper-dim">Mild Pressure — some signals building, watch trend</span></div>
@@ -1354,7 +1356,7 @@ function PipelineDrawer({ open, onClose, data }) {
               <div className="flex gap-2"><span className="text-gain font-mono w-20">−1 to −2</span><span className="text-paper-dim">Easing — input costs falling, CPI likely to soften</span></div>
               <div className="flex gap-2"><span className="text-gain font-mono w-20">≤ −3</span><span className="text-paper-dim">Strongly Easing — broad disinflation in pipeline</span></div>
             </div>
-            <p className="text-paper-dim/60 text-[10px]">Sources: FRED — PPIACO · PPIFID · DCOILWTICO · PCOPPUSDM · MHHNGSP</p>
+            <p className="text-paper-dim/60 text-[10px]">Sources: FRED — PPIACO · PPIFID · DCOILWTICO · PCOPPUSDM · MHHNGSP · SLVPRUSD · PURANUSDM</p>
           </div>
         </div>
       </div>

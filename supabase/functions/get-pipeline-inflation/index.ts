@@ -65,11 +65,13 @@ function buildZParams(obs: { date: string; value: number }[]): {
 }
 
 const COMPONENTS = [
-  { key: "crude",  series: "PPIACO",     name: "PPI All Commodities", unit: "index",   posT: 3,   negT: -3,   daily: false },
-  { key: "ppi",    series: "PPIFID",     name: "PPI Final Demand",    unit: "index",   posT: 0.5, negT: -0.5, daily: false },
-  { key: "wti",    series: "DCOILWTICO", name: "WTI Crude Oil",       unit: "$/bbl",   posT: 5,   negT: -5,   daily: true  },
-  { key: "copper", series: "PCOPPUSDM",  name: "Copper",              unit: "$/mt",    posT: 5,   negT: -5,   daily: false },
-  { key: "natgas", series: "MHHNGSP",    name: "Natural Gas",         unit: "$/MMBtu", posT: 10,  negT: -10,  daily: true  },
+  { key: "crude",   series: "PPIACO",     name: "PPI All Commodities", unit: "index",   posT: 3,   negT: -3,   daily: false },
+  { key: "ppi",     series: "PPIFID",     name: "PPI Final Demand",    unit: "index",   posT: 0.5, negT: -0.5, daily: false },
+  { key: "wti",     series: "DCOILWTICO", name: "WTI Crude Oil",       unit: "$/bbl",   posT: 5,   negT: -5,   daily: true  },
+  { key: "copper",  series: "PCOPPUSDM",  name: "Copper",              unit: "$/mt",    posT: 5,   negT: -5,   daily: false },
+  { key: "natgas",  series: "MHHNGSP",    name: "Natural Gas",         unit: "$/MMBtu", posT: 10,  negT: -10,  daily: true  },
+  { key: "silver",  series: "SLVPRUSD",   name: "Silver",              unit: "$/oz",    posT: 5,   negT: -5,   daily: false },
+  { key: "uranium", series: "PURANUSDM",  name: "Uranium",             unit: "$/lb",    posT: 5,   negT: -5,   daily: false },
 ] as const;
 
 Deno.serve(async (req: Request) => {
