@@ -950,7 +950,7 @@ async function backfillForwardSignals(): Promise<void> {
             .filter(o => !isNaN(o.value)).reverse()
         );
 
-    const [t10y2y, t10y3m, baml, mich, t10yie, copper, wti, sloos, usslind, busloans, ppiaco, m2sl, silver, uranium] = await Promise.all([
+    const [t10y2y, t10y3m, baml, mich, t10yie, copper, wti, sloos, usslind, busloans, ppiaco, m2sl, uranium] = await Promise.all([
       fm("T10Y2Y",       "&frequency=m&aggregation_method=avg"),
       fm("T10Y3M",       "&frequency=m&aggregation_method=avg"),
       fm("BAMLH0A0HYM2", "&frequency=m&aggregation_method=avg"),
@@ -963,9 +963,22 @@ async function backfillForwardSignals(): Promise<void> {
       fm("BUSLOANS"),
       fm("PPIACO"),
       fm("M2SL"),
-      fm("SLVPRUSD"),
       fm("PURANUSDM"),
     ]);
+    // Silver: no reliable FRED monthly series; fetch Yahoo SI=F and convert to monthly
+    let silver: { date: string; value: number }[] = [];
+    try {
+      const raw = await fetchYahooTicker("SI=F", "10y");
+      const byMonth = new Map<string, number[]>();
+      for (const o of raw) {
+        const m = o.date.slice(0, 7);
+        if (!byMonth.has(m)) byMonth.set(m, []);
+        byMonth.get(m)!.push(o.value);
+      }
+      silver = [...byMonth.entries()]
+        .map(([date, vals]) => ({ date: date + "-01", value: vals.reduce((s, v) => s + v, 0) / vals.length }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+    } catch { /* silver signals will be null in backfill */ }
 
     const bm = (obs: { date: string; value: number }[]) => {
       const m = new Map<string, number>();
@@ -1357,13 +1370,26 @@ async function computeGauge5(): Promise<void> {
     const stdev = (arr: number[], mu: number) =>
       Math.sqrt(arr.reduce((s, v) => s + (v - mu) ** 2, 0) / arr.length) || 1;
 
-    const [ppiacoObs, wtiObs, copperObs, silverObs, uraniumObs] = await Promise.all([
+    const [ppiacoObs, wtiObs, copperObs, uraniumObs] = await Promise.all([
       fetchFredObsMonthly("PPIACO",     300),
       fetchFredObsMonthly("DCOILWTICO", 300),
       fetchFredObsMonthly("PCOPPUSDM",  300),
-      fetchFredObsMonthly("SLVPRUSD",   300),
       fetchFredObsMonthly("PURANUSDM",  300),
     ]);
+    // Silver has no reliable FRED monthly series; use Yahoo SI=F converted to monthly
+    let silverObs: { date: string; value: number }[] = [];
+    try {
+      const raw = await fetchYahooTicker("SI=F", "10y");
+      const byMonth = new Map<string, number[]>();
+      for (const o of raw) {
+        const m = o.date.slice(0, 7);
+        if (!byMonth.has(m)) byMonth.set(m, []);
+        byMonth.get(m)!.push(o.value);
+      }
+      silverObs = [...byMonth.entries()]
+        .map(([date, vals]) => ({ date: date + "-01", value: vals.reduce((s, v) => s + v, 0) / vals.length }))
+        .sort((a, b) => b.date.localeCompare(a.date));
+    } catch { /* zSilver will be null, weight redistributed */ }
 
     const toYoY = (obs: { date: string; value: number }[]): number[] => {
       const byDate = new Map(obs.map(o => [o.date.slice(0, 7), o.value]));

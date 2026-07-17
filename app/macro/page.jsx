@@ -374,7 +374,8 @@ function computeForwardSignal(indicators) {
 // ── Daily Macro Summary ───────────────────────────────────────────────────────
 
 function MacroSummary({ indicators, latestQuadrant }) {
-  const get  = (name) => { const i = indicators.find(x => x.name === name); return i?.current_value != null ? Number(i.current_value) : null; };
+  const get     = (name) => { const i = indicators.find(x => x.name === name); return i?.current_value  != null ? Number(i.current_value)  : null; };
+  const getPrev = (name) => { const i = indicators.find(x => x.name === name); return i?.previous_value != null ? Number(i.previous_value) : null; };
   const stat = (name) => indicators.find(x => x.name === name)?.status ?? null;
 
   const gdp        = get("Real GDP Growth");
@@ -402,23 +403,34 @@ function MacroSummary({ indicators, latestQuadrant }) {
   const fwd = computeForwardSignal(indicators);
   const today = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 
+  // ── Momentum helpers ──
+  const prevGdp = getPrev("Real GDP Growth");
+  const prevCpi = getPrev("CPI (YoY)");
+  const prevPpi = getPrev("PPI (YoY)");
+  const prevLei = getPrev("Conference Board LEI");
+  const prevBe  = getPrev("10Y Breakeven Inflation");
+  const trendTag = (curr, prev, up = "↑", dn = "↓") =>
+    prev == null ? "" : curr > prev + 0.05 ? ` ${up}` : curr < prev - 0.05 ? ` ${dn}` : "";
+
   // ── Growth narrative ──
   const growthAboveTrend = gdp != null && gdp > gdp3yAvg;
+  const gdpTrend = prevGdp != null && gdp != null ? (gdp > prevGdp + 0.05 ? " and accelerating" : gdp < prevGdp - 0.05 ? " but decelerating" : "") : "";
   const growthStr =
     gdp == null ? "Growth data unavailable." :
-    gdp > 2.5   ? `Growth is strong — Real GDP at +${gdp.toFixed(1)}% YoY${gdp3yAvg ? `, above the ${gdp3yAvg.toFixed(1)}% trend` : ""}.` :
-    gdp > 0.5   ? `Growth is modest — Real GDP at +${gdp.toFixed(1)}% YoY${growthAboveTrend ? ", above trend" : ", below trend"}.` :
-    gdp > 0     ? `Growth is stalling — Real GDP at +${gdp.toFixed(1)}% YoY.` :
-                  `Economy is contracting — Real GDP at ${gdp.toFixed(1)}% YoY.`;
+    gdp > 2.5   ? `Growth is strong — Real GDP at +${gdp.toFixed(1)}%${gdpTrend}${gdp3yAvg ? `, above the ${gdp3yAvg.toFixed(1)}% trend` : ""}.` :
+    gdp > 0.5   ? `Growth is modest — Real GDP at +${gdp.toFixed(1)}%${gdpTrend}${growthAboveTrend ? ", above trend" : ", below trend"}.` :
+    gdp > 0     ? `Growth is stalling — Real GDP at +${gdp.toFixed(1)}%${gdpTrend}.` :
+                  `Economy is contracting — Real GDP at ${gdp.toFixed(1)}%${gdpTrend}.`;
 
   // ── Inflation narrative ──
   const inflAboveExp = cpi != null && cpi > breakevenVal;
+  const cpiTrend = prevCpi != null && cpi != null ? (cpi > prevCpi + 0.05 ? ", rising" : cpi < prevCpi - 0.05 ? ", easing" : "") : "";
   const inflStr =
     cpi == null ? "Inflation data unavailable." :
-    cpi > 5     ? `Inflation is elevated — CPI at ${cpi.toFixed(1)}%${coreCpi != null ? `, core at ${coreCpi.toFixed(1)}%` : ""}. Well above the ${breakevenVal.toFixed(1)}% market breakeven.` :
-    cpi > 3     ? `Inflation is running hot — CPI at ${cpi.toFixed(1)}%${coreCpi != null ? `, core ${coreCpi.toFixed(1)}%` : ""}${inflAboveExp ? `, surprising markets above the ${breakevenVal.toFixed(1)}% breakeven` : ""}.` :
-    cpi > 2     ? `Inflation is near target — CPI at ${cpi.toFixed(1)}%${coreCpi != null ? `, core ${coreCpi.toFixed(1)}%` : ""}${inflAboveExp ? `, modestly above the ${breakevenVal.toFixed(1)}% breakeven` : ""}.` :
-    cpi > 0     ? `Inflation is contained — CPI at ${cpi.toFixed(1)}%, below the ${breakevenVal.toFixed(1)}% market expectation.` :
+    cpi > 5     ? `Inflation is elevated — CPI at ${cpi.toFixed(1)}%${cpiTrend}${coreCpi != null ? `, core at ${coreCpi.toFixed(1)}%` : ""}. Well above the ${breakevenVal.toFixed(1)}% market breakeven.` :
+    cpi > 3     ? `Inflation is running hot — CPI at ${cpi.toFixed(1)}%${cpiTrend}${coreCpi != null ? `, core ${coreCpi.toFixed(1)}%` : ""}${inflAboveExp ? `, surprising markets above the ${breakevenVal.toFixed(1)}% breakeven` : ""}.` :
+    cpi > 2     ? `Inflation is near target — CPI at ${cpi.toFixed(1)}%${cpiTrend}${coreCpi != null ? `, core ${coreCpi.toFixed(1)}%` : ""}${inflAboveExp ? `, modestly above the ${breakevenVal.toFixed(1)}% breakeven` : ""}.` :
+    cpi > 0     ? `Inflation is contained — CPI at ${cpi.toFixed(1)}%${cpiTrend}, below the ${breakevenVal.toFixed(1)}% market expectation.` :
                   `Deflationary pressure — CPI at ${cpi.toFixed(1)}%.`;
 
   // ── Pipeline inflation sentence ──
@@ -498,6 +510,80 @@ function MacroSummary({ indicators, latestQuadrant }) {
           )}
         </div>
       </div>
+
+      {/* ── Momentum Signals panel ── */}
+      {(() => {
+        const growthRegime = regimeKey?.startsWith("rg");
+        const inflRegime   = regimeKey?.endsWith("ri");
+        const SIGNALS = [
+          { short: "GDP",    current: gdp,       prev: prevGdp, dim: "growth",    fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+          { short: "CPI",    current: cpi,       prev: prevCpi, dim: "inflation", fmt: v => `${v.toFixed(1)}%` },
+          { short: "PPI",    current: ppi,       prev: prevPpi, dim: "inflation", fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+          { short: "10Y BE", current: breakeven, prev: prevBe,  dim: "inflation", fmt: v => `${v.toFixed(2)}%` },
+          { short: "LEI",    current: lei,       prev: prevLei, dim: "growth",    fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+        ].filter(s => s.current != null && s.prev != null).map(s => {
+          const delta = s.current - s.prev;
+          const dir   = Math.abs(delta) < 0.05 ? "flat" : delta > 0 ? "up" : "down";
+          const aligns =
+            dir === "flat" ? null :
+            s.dim === "growth"    ? (dir === "up" ? !!growthRegime : !growthRegime) :
+            s.dim === "inflation" ? (dir === "up" ? !!inflRegime   : !inflRegime)   : null;
+          return { ...s, delta, dir, aligns };
+        });
+
+        if (SIGNALS.length === 0) return null;
+
+        const supporting = SIGNALS.filter(s => s.aligns === true).length;
+        const warning    = SIGNALS.filter(s => s.aligns === false).length;
+        const scored     = SIGNALS.filter(s => s.aligns !== null).length;
+
+        // Implied directional regime from momentum
+        const growthUp  = SIGNALS.filter(s => s.dim === "growth"    && s.dir === "up").length;
+        const growthDn  = SIGNALS.filter(s => s.dim === "growth"    && s.dir === "down").length;
+        const inflUp    = SIGNALS.filter(s => s.dim === "inflation"  && s.dir === "up").length;
+        const inflDn    = SIGNALS.filter(s => s.dim === "inflation"  && s.dir === "down").length;
+        const momentumRegimeKey =
+          growthUp >= growthDn && inflUp >= inflDn   ? "rg_ri" :
+          growthUp >= growthDn && inflDn > inflUp    ? "rg_fi" :
+          growthDn > growthUp  && inflUp >= inflDn   ? "fg_ri" : "fg_fi";
+        const momentumRegimeLabel = REGIME_LABELS[momentumRegimeKey];
+        const momentumDiverges = momentumRegimeKey !== regimeKey;
+
+        return (
+          <div className="mb-4 border-t border-ink-line/50 pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-paper-dim/50">Momentum Signals</p>
+              <p className={`text-[10px] font-medium ${warning > supporting ? "text-brass-soft" : "text-paper-dim/60"}`}>
+                {supporting}/{scored} supporting {regime?.label}
+              </p>
+            </div>
+            <div className="grid grid-cols-5 gap-1.5 mb-2">
+              {SIGNALS.map(s => (
+                <div key={s.short} className="text-center">
+                  <p className="text-[9px] text-paper-dim/50 uppercase tracking-wide mb-0.5">{s.short}</p>
+                  <p className="num text-xs font-semibold text-paper">{s.fmt(s.current)}</p>
+                  <div className="flex items-center justify-center gap-0.5 mt-0.5">
+                    <span className={`text-[10px] font-bold ${s.dir === "up" ? "text-gain" : s.dir === "down" ? "text-loss" : "text-paper-dim/30"}`}>
+                      {s.dir === "up" ? "↑" : s.dir === "down" ? "↓" : "→"}
+                    </span>
+                    <span className="num text-[9px] text-paper-dim/50">{s.fmt(s.prev)}</span>
+                  </div>
+                  {s.aligns !== null && (
+                    <p className={`text-[9px] mt-0.5 ${s.aligns ? "text-gain/60" : "text-loss/60"}`}>
+                      {s.aligns ? "✓" : "⚑"}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+            {momentumDiverges && (
+              <p className="text-[10px] text-brass-soft/80">
+                ⚑ Momentum points toward <span className="font-semibold">{momentumRegimeLabel}</span> — watch for structural regime shift
+              </p>
+            )}
+          </div>
+        );
+      })()}
 
       <div className="space-y-1.5 text-[11px] leading-relaxed text-paper-dim">
         <p><span className="text-paper font-medium">Growth — </span>{growthStr}</p>
