@@ -1356,7 +1356,7 @@ function PipelineDrawer({ open, onClose, data }) {
               <div className="flex gap-2"><span className="text-gain font-mono w-20">−1 to −2</span><span className="text-paper-dim">Easing — input costs falling, CPI likely to soften</span></div>
               <div className="flex gap-2"><span className="text-gain font-mono w-20">≤ −3</span><span className="text-paper-dim">Strongly Easing — broad disinflation in pipeline</span></div>
             </div>
-            <p className="text-paper-dim/60 text-[10px]">Sources: FRED — PPIACO · PPIFID · DCOILWTICO · PCOPPUSDM · MHHNGSP · SLVPRUSD · PURANUSDM</p>
+            <p className="text-paper-dim/60 text-[10px]">Sources: FRED — PPIACO · PPIFID · DCOILWTICO · PCOPPUSDM · MHHNGSP · PURANUSDM · Yahoo Finance — SI=F (Silver)</p>
           </div>
         </div>
       </div>
