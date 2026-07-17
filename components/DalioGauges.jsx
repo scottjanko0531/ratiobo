@@ -1150,7 +1150,7 @@ function PipeTooltip({ active, payload, label }) {
         <div className="flex justify-between gap-4">
           <span className="text-paper-dim">Score</span>
           <span className={`num font-semibold ${composite >= 2 ? "text-loss" : composite <= -2 ? "text-gain" : "text-brass-soft"}`}>
-            {composite >= 0 ? "+" : ""}{composite} / 7
+            {composite >= 0 ? "+" : ""}{composite} / 6
           </span>
         </div>
       )}
@@ -1223,7 +1223,7 @@ function PipelineDrawer({ open, onClose, data }) {
           <div className="flex items-start gap-4 shrink-0">
             {composite != null && (
               <div className="text-right">
-                <p className={`num text-xl font-bold leading-none ${color}`}>{composite >= 0 ? "+" : ""}{composite} / 7</p>
+                <p className={`num text-xl font-bold leading-none ${color}`}>{composite >= 0 ? "+" : ""}{composite} / 6</p>
                 <p className={`text-xs font-semibold mt-0.5 ${color}`}>{label}</p>
               </div>
             )}
@@ -1246,7 +1246,10 @@ function PipelineDrawer({ open, onClose, data }) {
                       <div className="flex items-start gap-2.5 min-w-0">
                         <div className="mt-0.5"><ScoreDot score={c.score} /></div>
                         <div>
-                          <p className="text-xs text-paper leading-snug">{meta?.name}</p>
+                          <p className="text-xs text-paper leading-snug">
+                            {meta?.name}
+                            {c.weight < 1 && <span className="ml-1 text-[9px] text-paper-dim/50 font-mono">×½</span>}
+                          </p>
                           <p className="text-[10px] text-paper-dim/70 leading-snug">{meta?.desc}</p>
                         </div>
                       </div>
@@ -1292,7 +1295,7 @@ function PipelineDrawer({ open, onClose, data }) {
                   />
                   <YAxis
                     yAxisId="left"
-                    domain={[-7, 7]}
+                    domain={[-6, 6]}
                     ticks={[-6, -3, 0, 3, 6]}
                     tick={{ fill: "#A8ADB8", fontSize: 10 }}
                     tickLine={false}
@@ -1348,7 +1351,7 @@ function PipelineDrawer({ open, onClose, data }) {
           {/* Methodology */}
           <div className="card p-4 space-y-3 text-[11px] leading-relaxed">
             <p className="text-paper font-semibold">How it's scored</p>
-            <p className="text-paper-dim">Each signal is scored −1 (easing), 0 (neutral), or +1 (building). Scores sum to a composite −7 to +7. This measures where cost pressures are heading, not where CPI is today — a leading indicator, not coincident.</p>
+            <p className="text-paper-dim">Each signal is scored −1 (easing), 0 (neutral), or +1 (building). Core signals (PPI, WTI, Copper, Natural Gas) count fully; Silver and Uranium count half (×0.5) due to weaker CPI transmission. Composite ranges −6 to +6. This measures where cost pressures are heading, not where CPI is today — a leading indicator, not coincident.</p>
             <div className="space-y-1 text-[10px]">
               <div className="flex gap-2"><span className="text-loss font-mono w-20">≥ +4</span><span className="text-paper-dim">Building — broad upstream pressure, CPI likely to rise</span></div>
               <div className="flex gap-2"><span className="text-loss font-mono w-20">+2 to +3</span><span className="text-paper-dim">Mild Pressure — some signals building, watch trend</span></div>

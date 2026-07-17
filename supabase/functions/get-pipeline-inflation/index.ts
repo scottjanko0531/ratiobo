@@ -88,14 +88,14 @@ function buildZParams(obs: { date: string; value: number }[]): {
 }
 
 const COMPONENTS = [
-  { key: "crude",   series: "PPIACO",     name: "PPI All Commodities", unit: "index",   posT: 3,   negT: -3,   daily: false },
-  { key: "ppi",     series: "PPIFID",     name: "PPI Final Demand",    unit: "index",   posT: 0.5, negT: -0.5, daily: false },
-  { key: "wti",     series: "DCOILWTICO", name: "WTI Crude Oil",       unit: "$/bbl",   posT: 5,   negT: -5,   daily: true  },
-  { key: "copper",  series: "PCOPPUSDM",  name: "Copper",              unit: "$/mt",    posT: 5,   negT: -5,   daily: false },
-  { key: "natgas",  series: "MHHNGSP",    name: "Natural Gas",         unit: "$/MMBtu", posT: 10,  negT: -10,  daily: true  },
-  { key: "silver",  series: "SI=F",         name: "Silver",              unit: "$/oz",    posT: 5,   negT: -5,   daily: "yahoo" as const },
-  { key: "uranium", series: "PURANUSDM",  name: "Uranium",             unit: "$/lb",    posT: 5,   negT: -5,   daily: false },
-] as const;
+  { key: "crude",   series: "PPIACO",     name: "PPI All Commodities", unit: "index",   posT: 3,   negT: -3,   daily: false,           weight: 1   },
+  { key: "ppi",     series: "PPIFID",     name: "PPI Final Demand",    unit: "index",   posT: 0.5, negT: -0.5, daily: false,           weight: 1   },
+  { key: "wti",     series: "DCOILWTICO", name: "WTI Crude Oil",       unit: "$/bbl",   posT: 5,   negT: -5,   daily: true,            weight: 1   },
+  { key: "copper",  series: "PCOPPUSDM",  name: "Copper",              unit: "$/mt",    posT: 5,   negT: -5,   daily: false,           weight: 1   },
+  { key: "natgas",  series: "MHHNGSP",    name: "Natural Gas",         unit: "$/MMBtu", posT: 10,  negT: -10,  daily: true,            weight: 1   },
+  { key: "silver",  series: "SI=F",       name: "Silver",              unit: "$/oz",    posT: 5,   negT: -5,   daily: "yahoo" as const, weight: 0.5 },
+  { key: "uranium", series: "PURANUSDM",  name: "Uranium",             unit: "$/lb",    posT: 5,   negT: -5,   daily: false,           weight: 0.5 },
+];
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -134,7 +134,7 @@ Deno.serve(async (req: Request) => {
         const change = pct(now, prev);
         const s: number = scoreChange(change, comp.posT, comp.negT);
         row[comp.key] = s;
-        sum += s;
+        sum += s * comp.weight;
 
         const zp = zParamsArr[idx];
         if (change != null && zp) {
@@ -143,7 +143,7 @@ Deno.serve(async (req: Request) => {
         }
       });
 
-      row.composite = sum;
+      row.composite = Math.round(sum * 10) / 10;
       row.compositeZ = zCount > 0 ? Math.round((zSum / zCount) * 100) / 100 : null;
       history.push(row);
     }
@@ -168,6 +168,7 @@ Deno.serve(async (req: Request) => {
         key: comp.key,
         name: comp.name,
         unit: comp.unit,
+        weight: comp.weight,
         current: now != null ? Math.round(now * 100) / 100 : null,
         change3m: change,
         score,
