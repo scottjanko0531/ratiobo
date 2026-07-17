@@ -1186,7 +1186,7 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
   const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
   const fwd = computeForwardSignal(indicators);
 
-  const [allocMethod, setAllocMethod] = useState("default");
+  const [allocMethod, setAllocMethod] = useState("bw");
 
   const signalKeys = regimeKey ? getSignalKeys(regimeKey) : [];
   // BW Modified and RP methods show all 8 market assets; Default shows regime-favored only
