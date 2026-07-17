@@ -1150,7 +1150,7 @@ function PipeTooltip({ active, payload, label }) {
         <div className="flex justify-between gap-4">
           <span className="text-paper-dim">Score</span>
           <span className={`num font-semibold ${composite >= 2 ? "text-loss" : composite <= -2 ? "text-gain" : "text-brass-soft"}`}>
-            {composite >= 0 ? "+" : ""}{composite} / 5
+            {composite >= 0 ? "+" : ""}{composite} / 7
           </span>
         </div>
       )}
@@ -1223,7 +1223,7 @@ function PipelineDrawer({ open, onClose, data }) {
           <div className="flex items-start gap-4 shrink-0">
             {composite != null && (
               <div className="text-right">
-                <p className={`num text-xl font-bold leading-none ${color}`}>{composite >= 0 ? "+" : ""}{composite} / 5</p>
+                <p className={`num text-xl font-bold leading-none ${color}`}>{composite >= 0 ? "+" : ""}{composite} / 7</p>
                 <p className={`text-xs font-semibold mt-0.5 ${color}`}>{label}</p>
               </div>
             )}
@@ -1313,14 +1313,14 @@ function PipelineDrawer({ open, onClose, data }) {
                   />
                   <Tooltip content={<PipeTooltip />} />
                   <ReferenceLine yAxisId="left" y={0}  stroke="#2A3240" strokeWidth={1} />
-                  <ReferenceLine yAxisId="left" y={3}  stroke="#ef4444" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
-                  <ReferenceLine yAxisId="left" y={-3} stroke="#22c55e" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
+                  <ReferenceLine yAxisId="left" y={4}  stroke="#ef4444" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
+                  <ReferenceLine yAxisId="left" y={-4} stroke="#22c55e" strokeDasharray="4 2" strokeWidth={1} strokeOpacity={0.4} />
                   <ReferenceLine yAxisId="right" y={0} stroke="#818CF8" strokeDasharray="2 4" strokeWidth={1} strokeOpacity={0.3} />
                   <Bar yAxisId="left" dataKey="composite" name="Composite" maxBarSize={18} radius={[2, 2, 0, 0]}>
                     {history.map((entry, i) => (
                       <Cell
                         key={i}
-                        fill={entry.composite >= 2 ? "#E0635C" : entry.composite <= -2 ? "#3FB984" : "#C9A227"}
+                        fill={entry.composite >= 4 ? "#E0635C" : entry.composite <= -4 ? "#3FB984" : "#C9A227"}
                         fillOpacity={0.75}
                       />
                     ))}
@@ -1337,9 +1337,9 @@ function PipelineDrawer({ open, onClose, data }) {
                 </ComposedChart>
               </ResponsiveContainer>
               <div className="flex items-center justify-center gap-5 mt-3 text-[10px] text-paper-dim flex-wrap">
-                <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-[#E0635C] opacity-75" /> Building (≥+2)</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-[#E0635C] opacity-75" /> Building (≥+4)</span>
                 <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-[#C9A227] opacity-75" /> Neutral</span>
-                <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-[#3FB984] opacity-75" /> Easing (≤−2)</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-[#3FB984] opacity-75" /> Easing (≤−4)</span>
                 <span className="flex items-center gap-1.5"><span className="inline-block w-4 h-0.5 bg-[#818CF8]" /> Avg z (right axis)</span>
               </div>
             </div>
@@ -1350,11 +1350,11 @@ function PipelineDrawer({ open, onClose, data }) {
             <p className="text-paper font-semibold">How it's scored</p>
             <p className="text-paper-dim">Each signal is scored −1 (easing), 0 (neutral), or +1 (building). Scores sum to a composite −7 to +7. This measures where cost pressures are heading, not where CPI is today — a leading indicator, not coincident.</p>
             <div className="space-y-1 text-[10px]">
-              <div className="flex gap-2"><span className="text-loss font-mono w-20">≥ +3</span><span className="text-paper-dim">Building — broad upstream pressure, CPI likely to rise</span></div>
-              <div className="flex gap-2"><span className="text-loss font-mono w-20">+1 to +2</span><span className="text-paper-dim">Mild Pressure — some signals building, watch trend</span></div>
-              <div className="flex gap-2"><span className="text-brass-soft font-mono w-20">0</span><span className="text-paper-dim">Neutral — signals mixed or flat</span></div>
-              <div className="flex gap-2"><span className="text-gain font-mono w-20">−1 to −2</span><span className="text-paper-dim">Easing — input costs falling, CPI likely to soften</span></div>
-              <div className="flex gap-2"><span className="text-gain font-mono w-20">≤ −3</span><span className="text-paper-dim">Strongly Easing — broad disinflation in pipeline</span></div>
+              <div className="flex gap-2"><span className="text-loss font-mono w-20">≥ +4</span><span className="text-paper-dim">Building — broad upstream pressure, CPI likely to rise</span></div>
+              <div className="flex gap-2"><span className="text-loss font-mono w-20">+2 to +3</span><span className="text-paper-dim">Mild Pressure — some signals building, watch trend</span></div>
+              <div className="flex gap-2"><span className="text-brass-soft font-mono w-20">−1 to +1</span><span className="text-paper-dim">Neutral — signals mixed or flat</span></div>
+              <div className="flex gap-2"><span className="text-gain font-mono w-20">−3 to −2</span><span className="text-paper-dim">Easing — input costs falling, CPI likely to soften</span></div>
+              <div className="flex gap-2"><span className="text-gain font-mono w-20">≤ −4</span><span className="text-paper-dim">Strongly Easing — broad disinflation in pipeline</span></div>
             </div>
             <p className="text-paper-dim/60 text-[10px]">Sources: FRED — PPIACO · PPIFID · DCOILWTICO · PCOPPUSDM · MHHNGSP · PURANUSDM · Yahoo Finance — SI=F (Silver)</p>
           </div>

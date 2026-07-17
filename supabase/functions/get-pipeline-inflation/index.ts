@@ -7,6 +7,29 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+async function fetchYahooMonthly(ticker: string): Promise<{ date: string; value: number }[]> {
+  const encoded = encodeURIComponent(ticker);
+  const res = await fetch(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1mo&range=10y`,
+    { headers: { "User-Agent": "Mozilla/5.0 (compatible; macro-dashboard/1.0)" } }
+  );
+  if (!res.ok) return [];
+  const j = await res.json();
+  const result = j?.chart?.result?.[0];
+  if (!result) return [];
+  const timestamps: number[] = result.timestamp ?? [];
+  const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
+  return timestamps
+    .map((ts, i) => {
+      const d = new Date(ts * 1000);
+      const month = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      const val = closes[i];
+      return val != null && !isNaN(val) ? { date: month, value: val } : null;
+    })
+    .filter((o): o is { date: string; value: number } => o !== null)
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
 async function fetchMonthly(series: string, limit = 87): Promise<{ date: string; value: number }[]> {
   const url = `${FRED}?series_id=${series}&api_key=${KEY}&sort_order=desc&limit=${limit}&file_type=json`;
   const res = await fetch(url);
@@ -70,7 +93,7 @@ const COMPONENTS = [
   { key: "wti",     series: "DCOILWTICO", name: "WTI Crude Oil",       unit: "$/bbl",   posT: 5,   negT: -5,   daily: true  },
   { key: "copper",  series: "PCOPPUSDM",  name: "Copper",              unit: "$/mt",    posT: 5,   negT: -5,   daily: false },
   { key: "natgas",  series: "MHHNGSP",    name: "Natural Gas",         unit: "$/MMBtu", posT: 10,  negT: -10,  daily: true  },
-  { key: "silver",  series: "SLVPRUSD",   name: "Silver",              unit: "$/oz",    posT: 5,   negT: -5,   daily: false },
+  { key: "silver",  series: "SI=F",         name: "Silver",              unit: "$/oz",    posT: 5,   negT: -5,   daily: "yahoo" as const },
   { key: "uranium", series: "PURANUSDM",  name: "Uranium",             unit: "$/lb",    posT: 5,   negT: -5,   daily: false },
 ] as const;
 
@@ -79,7 +102,12 @@ Deno.serve(async (req: Request) => {
 
   try {
     const obsArrays = await Promise.all(
-      COMPONENTS.map((c) => c.daily ? fetchAsMonthly(c.series) : fetchMonthly(c.series))
+      COMPONENTS.map(async (c) => {
+        try {
+          if (c.daily === "yahoo") return await fetchYahooMonthly(c.series);
+          return c.daily ? await fetchAsMonthly(c.series) : await fetchMonthly(c.series);
+        } catch { return []; }
+      })
     );
     const maps = obsArrays.map((obs) => Object.fromEntries(obs.map((o) => [o.date, o.value])));
     const backbone = obsArrays[0]; // PPIACO as timeline backbone
@@ -152,10 +180,10 @@ Deno.serve(async (req: Request) => {
     const composite = latest.composite as number;
     const compositeZ = latest.compositeZ;
     const label =
-      composite >= 3 ? "Building" :
-      composite >= 1 ? "Mild Pressure" :
-      composite <= -3 ? "Strongly Easing" :
-      composite <= -1 ? "Easing" : "Neutral";
+      composite >= 4 ? "Building" :
+      composite >= 2 ? "Mild Pressure" :
+      composite <= -4 ? "Strongly Easing" :
+      composite <= -2 ? "Easing" : "Neutral";
 
     return new Response(JSON.stringify({
       asOf: month,
