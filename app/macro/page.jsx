@@ -14,6 +14,7 @@ import {
   REGIME_META,
   REGIME_RETURNS,
   SUGGESTED_FUNDS,
+  BW_ALLOC,
   detectRegimeKey,
   resolveSimulatorKey,
   getSignalKeys,
@@ -236,7 +237,6 @@ function IndicatorCard({ ind, onSave, onClick }) {
 // Bridgewater-implied All Weather modification (structural, not regime-dependent).
 // Source: Bridgewater 2025-2026 research — reduce long nominal bonds, add TIPS/inflation-linked,
 // increase gold + commodities, diversify away from US-only equity book.
-const BW_ALLOC = { eq: 20, intl: 8, em: 5, nb: 20, tip: 20, com: 12, gld: 12, cash: 3 };
 
 function computeSuggestedPcts(regimeKey, method, assetData) {
   const dw = REGIME_DEFAULT_WEIGHTS[regimeKey] ?? {};

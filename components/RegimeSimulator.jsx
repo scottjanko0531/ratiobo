@@ -16,7 +16,7 @@ import {
   saveAltAssumption,
 } from "../lib/altAssets";
 import AltConfigPanel from "./AltConfigPanel";
-import { REGIME_DEFAULT_WEIGHTS, getSignalKeys, holdingsToWeights } from "../lib/simulatorKeys";
+import { BW_ALLOC, REGIME_DEFAULT_WEIGHTS, getSignalKeys, holdingsToWeights } from "../lib/simulatorKeys";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -451,6 +451,13 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
     }));
   }
 
+  function applyBWModified() {
+    setWeights((prev) => ({
+      ...prev,
+      ...BW_ALLOC,
+    }));
+  }
+
   // ── The alt being edited (null-safe) ─────────────────────────────────────
   const editingAlt = editingAltKey
     ? altAssets.find((a) => a.key === editingAltKey) ?? null
@@ -623,6 +630,9 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
 
             {/* RP preset buttons */}
             <div className="mt-4 grid grid-cols-2 gap-2">
+              <button onClick={applyBWModified} className="btn-ghost py-2 text-xs col-span-2 border border-brass-soft/30 text-brass-soft">
+                BW Modified (structural base)
+              </button>
               <button onClick={applyNaive} className="btn-ghost py-2 text-xs">
                 Naive risk parity
               </button>
@@ -634,11 +644,13 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
               </button>
             </div>
             <p className="mt-3 text-[10px] text-paper-dim leading-relaxed">
+              <span className="text-brass-soft/80 font-medium">BW Modified</span> — Bridgewater's
+              2025–2026 structural base: balanced across regimes, with real asset exposure (12% gold,
+              12% commodities, 20% TIPS) regardless of the cyclical quadrant.{" "}
               <span className="text-paper-dim/80 font-medium">Naive</span> — weights ∝ 1/vol,
               ignoring correlation.{" "}
-              <span className="text-paper-dim/80 font-medium">Regime RP</span> — runs the
-              risk-parity solver only on regime-favored assets, so asset selection is regime-driven
-              and sizing is risk-balanced. Cash and alternatives are excluded from all presets.
+              <span className="text-paper-dim/80 font-medium">Regime RP</span> — risk-parity solver
+              scoped to regime-favored assets. Cash and alternatives are excluded from all presets.
             </p>
           </div>
 
