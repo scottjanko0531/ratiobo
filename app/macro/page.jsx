@@ -3269,7 +3269,7 @@ function RegimeAnalysisCard() {
   if (loading) {
     return (
       <div className="card p-5 mb-6">
-        <p className="label mb-3">Regime vs. Market Analysis</p>
+        <p className="label mb-3">Clio: Current Regime vs. Market Analysis</p>
         <p className="text-paper-dim text-sm">Generating analysis…</p>
       </div>
     );
@@ -3280,7 +3280,7 @@ function RegimeAnalysisCard() {
   return (
     <div className={`card p-5 mb-6 border ${alignedBorder}`}>
       <div className="flex items-start justify-between gap-4 mb-4">
-        <p className="label">Regime vs. Market Analysis</p>
+        <p className="label">Clio: Current Regime vs. Market Analysis</p>
         <div className="flex items-center gap-3 shrink-0">
           <span className={`text-[11px] font-semibold ${alignedColor}`}>{alignedLabel}</span>
           <button
