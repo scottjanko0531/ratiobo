@@ -605,6 +605,22 @@ Deno.serve(async (req: Request) => {
       marketSnapshot,
     });
 
+    // Persist analysis to DB so the dashboard can read it without re-calling Claude
+    if (analysis) {
+      const today = new Date().toISOString().slice(0, 10);
+      const regimeKey = regime?.structural_key ?? null;
+      const marketKey = regime?.market_key ?? null;
+      await sb.from("dalio_regime_analysis").upsert({
+        analysis_date: today,
+        analysis,
+        alignment: (regimeKey && marketKey && regimeKey !== marketKey) ? "divergent" : "aligned",
+        structural_regime: regimeKey ? (REGIME_LABELS[regimeKey] ?? regimeKey) : null,
+        market_regime: marketKey ? (REGIME_LABELS[marketKey] ?? marketKey) : null,
+        market_snapshot: marketSnapshot,
+        generated_at: new Date().toISOString(),
+      }, { onConflict: "analysis_date" });
+    }
+
     const { subject, html } = buildEmail({ macro, regime, portfolio, marketSnapshot, analysis, date });
 
     const res = await fetch("https://api.resend.com/emails", {

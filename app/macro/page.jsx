@@ -3149,6 +3149,95 @@ function CbGoldDrawer({ open, onClose, ind }) {
   );
 }
 
+// ── Regime vs. Market Analysis ────────────────────────────────────────────────
+function RegimeAnalysisCard() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function load(refresh = false) {
+    if (refresh) setRefreshing(true); else setLoading(true);
+    try {
+      const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-regime-analysis${refresh ? "?refresh=true" : ""}`;
+      const res = await fetch(url);
+      const j = await res.json();
+      if (!j.error) setData(j);
+    } catch { /* silent */ }
+    setLoading(false);
+    setRefreshing(false);
+  }
+
+  useEffect(() => { load(); }, []);
+
+  const alignedColor = data?.alignment === "divergent" ? "text-brass-soft" : "text-gain";
+  const alignedBorder = data?.alignment === "divergent" ? "border-brass/20" : "border-gain/20";
+  const alignedLabel = data?.alignment === "divergent"
+    ? `⚑ Divergence · ${data.structural_regime} vs ${data.market_regime}`
+    : `✓ Aligned · ${data?.structural_regime ?? ""}`;
+
+  const snapshot = data?.market_snapshot ?? [];
+  const generatedAt = data?.generated_at
+    ? new Date(data.generated_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : null;
+
+  if (loading) {
+    return (
+      <div className="card p-5 mb-6">
+        <p className="label mb-3">Regime vs. Market Analysis</p>
+        <p className="text-paper-dim text-sm">Generating analysis…</p>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  return (
+    <div className={`card p-5 mb-6 border ${alignedBorder}`}>
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <p className="label">Regime vs. Market Analysis</p>
+        <div className="flex items-center gap-3 shrink-0">
+          <span className={`text-[11px] font-semibold ${alignedColor}`}>{alignedLabel}</span>
+          <button
+            onClick={() => load(true)}
+            disabled={refreshing}
+            className="text-[10px] text-paper-dim/50 hover:text-paper-dim transition-colors disabled:opacity-40"
+          >
+            {refreshing ? "Refreshing…" : "↻ Refresh"}
+          </button>
+        </div>
+      </div>
+
+      {/* Analysis prose */}
+      <div className="space-y-3 mb-5">
+        {data.analysis.split(/\n\n+/).map((p, i) => (
+          <p key={i} className="text-sm text-paper-dim leading-relaxed">{p.trim()}</p>
+        ))}
+      </div>
+
+      {/* Market snapshot */}
+      {snapshot.length > 0 && (
+        <div className="border-t border-ink-line pt-4">
+          <p className="label text-[10px] mb-2">Yesterday's Market</p>
+          <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+            {snapshot.map((m) => (
+              <div key={m.name} className="text-center">
+                <p className="text-[10px] text-paper-dim/60 leading-none mb-0.5">{m.name}</p>
+                <p className={`num text-xs font-semibold ${m.changePct >= 0 ? "text-gain" : "text-loss"}`}>
+                  {m.changePct >= 0 ? "+" : ""}{m.changePct.toFixed(1)}%
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {generatedAt && (
+        <p className="text-[10px] text-paper-dim/40 mt-3">Analysis by Claude · {generatedAt}</p>
+      )}
+    </div>
+  );
+}
+
 export default function MacroDashboard() {
   const [indicators, setIndicators] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -3290,6 +3379,7 @@ export default function MacroDashboard() {
           <MacroSummary indicators={indicators} latestQuadrant={latestQuadrant} />
           <StructuralRegimeCard />
           <QuadrantCard indicators={indicators} holdings={portfolioHoldings} assetData={assetData} latestQuadrant={latestQuadrant} />
+          <RegimeAnalysisCard />
 
           {regimeHistory.length > 0 && (
             <div className="card p-5 mb-6">
