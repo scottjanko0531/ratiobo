@@ -93,7 +93,11 @@ async function generateAnalysis(params: {
       !gdpUp && inflUp  ? "Stagflation" : "Deflationary Bust";
     const momentumDiverges = momentumRegime !== regimeLabel;
 
-    const prompt = `You are a macro analyst at RatioBo using the Dalio/Bridgewater four-quadrant framework. Write direct, sharp analysis — no hedging, no fluff, no headers, no bullet points. Plain prose, 3–4 paragraphs, under 280 words.
+    const prompt = `You are a macro analyst at RatioBo using the Dalio/Bridgewater four-quadrant framework. Write direct, sharp analysis — no hedging, no fluff, no headers, no bullet points. Plain prose, 3–4 paragraphs, under 300 words.
+
+PORTFOLIO FRAMEWORK — BW Modified (structural base, always held):
+  US Equities 20% · International 8% · EM 5% · Nominal Bonds 20% · TIPS 20% · Commodities 12% · Gold 12% · Cash 3%
+  Rationale: Bridgewater's 2025–2026 thesis holds that the old paradigm (US-heavy, equity-heavy, long nominal bonds) is broken. Modern mercantilism, AI-driven commodity demand, and CB gold accumulation create structural bids for real assets regardless of the cyclical quadrant. BW Modified is the resilient base. Regime-specific tilts are overlays on top of it, only when the signal is unambiguous.
 
 You have three signals that may conflict. Reconcile all three explicitly.
 
@@ -115,7 +119,7 @@ SIGNAL 3 — Market pricing (yesterday's action, forward-looking):
   Forward signal: ${fwdLabel ?? "none"}${fwdConf != null ? ` (${fwdConf}% confidence)` : ""}
   ${mktLines}
 
-Assess in 3–4 paragraphs: (1) What is the hard data momentum actually telling us — is the structural regime transitioning? (2) Is yesterday's market action consistent with the momentum signal, or is it pricing a different scenario entirely? (3) What is the most likely explanation for any divergence between signals, and what does that mean for an investor positioned for ${regimeLabel}?`;
+Assess in 3–4 paragraphs: (1) What is the hard data momentum telling us — is the structural regime transitioning, and how confident should we be? (2) Is yesterday's market action consistent with that momentum signal, or pricing a different scenario? (3) Given all three signals and the BW Modified structural base, what is the right posture — hold the base, tilt toward the confirmed regime, or reduce regime-specific exposure and wait for confirmation?`;
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
