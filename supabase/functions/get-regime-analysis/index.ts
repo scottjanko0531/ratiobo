@@ -55,30 +55,67 @@ async function generateAnalysis(params: {
   regimeLabel: string; marketLabel: string | null; fwdLabel: string | null;
   fwdConf: number | null; divergence: boolean;
   gdp: number | null; cpi: number | null; ppi: number | null; t10y2y: number | null;
+  lei: number | null; breakeven: number | null;
+  prevGdp: number | null; prevCpi: number | null; prevPpi: number | null;
+  prevLei: number | null; prevBe: number | null;
   marketSnapshot: MarketTick[];
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY) return null;
   try {
-    const { regimeLabel, marketLabel, fwdLabel, fwdConf, divergence, gdp, cpi, ppi, t10y2y, marketSnapshot } = params;
+    const {
+      regimeLabel, marketLabel, fwdLabel, fwdConf, divergence,
+      gdp, cpi, ppi, t10y2y, lei, breakeven,
+      prevGdp, prevCpi, prevPpi, prevLei, prevBe,
+      marketSnapshot,
+    } = params;
+
     const mktLines = marketSnapshot
       .map(m => `${m.name}: ${m.changePct >= 0 ? "+" : ""}${m.changePct.toFixed(1)}%`)
       .join(" | ");
     const n = (v: number | null, d = 1, plus = false) =>
       v != null ? `${plus && v >= 0 ? "+" : ""}${v.toFixed(d)}%` : "n/a";
+    const delta = (curr: number | null, prev: number | null) => {
+      if (curr == null || prev == null) return "";
+      const d = curr - prev;
+      return ` (${d >= 0 ? "+" : ""}${d.toFixed(2)} vs prior)`;
+    };
+    const arrow = (curr: number | null, prev: number | null, threshold = 0.05) => {
+      if (curr == null || prev == null) return "→";
+      return curr > prev + threshold ? "↑" : curr < prev - threshold ? "↓" : "→";
+    };
 
-    const prompt = `You are a macro analyst at RatioBo using the Dalio/Bridgewater four-quadrant framework. Write direct, sharp analysis — no hedging, no fluff, no headers, no bullet points. Plain prose, 3–4 paragraphs, under 230 words.
+    // Derive momentum-implied regime from deltas
+    const gdpUp  = gdp != null && prevGdp != null && gdp > prevGdp + 0.05;
+    const inflUp = cpi != null && prevCpi != null && cpi > prevCpi + 0.05;
+    const momentumRegime =
+       gdpUp && inflUp  ? "Reflation" :
+       gdpUp && !inflUp ? "Disinflationary Boom" :
+      !gdpUp && inflUp  ? "Stagflation" : "Deflationary Bust";
+    const momentumDiverges = momentumRegime !== regimeLabel;
 
-Framework reading:
-  Structural regime: ${regimeLabel}
+    const prompt = `You are a macro analyst at RatioBo using the Dalio/Bridgewater four-quadrant framework. Write direct, sharp analysis — no hedging, no fluff, no headers, no bullet points. Plain prose, 3–4 paragraphs, under 280 words.
+
+You have three signals that may conflict. Reconcile all three explicitly.
+
+SIGNAL 1 — Structural regime (level-based, 3Y trailing averages):
+  ${regimeLabel}
+
+SIGNAL 2 — Structural momentum (direction of hard data, 15–60 day lag):
+  GDP:      ${n(gdp, 2, true)}${delta(gdp, prevGdp)} ${arrow(gdp, prevGdp)}
+  CPI:      ${n(cpi, 2)}${delta(cpi, prevCpi)} ${arrow(cpi, prevCpi)}
+  PPI:      ${n(ppi, 2, true)}${delta(ppi, prevPpi)} ${arrow(ppi, prevPpi)}
+  10Y BE:   ${n(breakeven, 2)}${delta(breakeven, prevBe)} ${arrow(breakeven, prevBe, 0.02)}
+  LEI:      ${n(lei, 2, true)}${delta(lei, prevLei)} ${arrow(lei, prevLei)}
+  2/10 spread: ${n(t10y2y, 2, true)}
+  Momentum-implied regime: ${momentumRegime}${momentumDiverges ? ` ⚑ diverges from structural ${regimeLabel}` : " ✓ aligns"}
+
+SIGNAL 3 — Market pricing (yesterday's action, forward-looking):
   Market-implied regime: ${marketLabel ?? "unknown"}
+  ${divergence ? `⚑ Market diverges from structural regime` : "✓ Market aligns with structural regime"}
   Forward signal: ${fwdLabel ?? "none"}${fwdConf != null ? ` (${fwdConf}% confidence)` : ""}
-  ${divergence ? `⚑ Divergence: structural (${regimeLabel}) vs market-implied (${marketLabel})` : `Regimes aligned: ${regimeLabel}`}
+  ${mktLines}
 
-Macro data: GDP ${n(gdp, 1, true)} | CPI ${n(cpi)} | PPI ${n(ppi, 1, true)} | 2/10 spread ${n(t10y2y, 2, true)}
-
-Yesterday's market: ${mktLines}
-
-Assess in 3–4 paragraphs: Is yesterday's market action consistent with ${regimeLabel}, or does it signal regime stress? What might the market be pricing that this structural framework doesn't yet reflect? What does this mean for an investor positioned for ${regimeLabel}?`;
+Assess in 3–4 paragraphs: (1) What is the hard data momentum actually telling us — is the structural regime transitioning? (2) Is yesterday's market action consistent with the momentum signal, or is it pricing a different scenario entirely? (3) What is the most likely explanation for any divergence between signals, and what does that mean for an investor positioned for ${regimeLabel}?`;
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -89,7 +126,7 @@ Assess in 3–4 paragraphs: Is yesterday's market action consistent with ${regim
       },
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 500,
+        max_tokens: 600,
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -129,13 +166,17 @@ Deno.serve(async (req: Request) => {
         .order("period_date", { ascending: false })
         .limit(1)
         .maybeSingle(),
-      sb.from("macro_indicators").select("name,current_value"),
+      sb.from("macro_indicators").select("name,current_value,previous_value"),
       getMarketSnapshot(),
     ]);
 
     const get = (name: string) => {
       const i = (macroRows ?? []).find((x: { name: string; current_value: number | null }) => x.name === name);
       return i?.current_value != null ? Number(i.current_value) : null;
+    };
+    const getPrev = (name: string) => {
+      const i = (macroRows ?? []).find((x: { name: string; previous_value: number | null }) => x.name === name);
+      return i?.previous_value != null ? Number(i.previous_value) : null;
     };
 
     const structuralKey = regimeRow?.structural_key ?? null;
@@ -150,10 +191,17 @@ Deno.serve(async (req: Request) => {
       regimeLabel, marketLabel, fwdLabel,
       fwdConf: regimeRow?.forward_confidence ?? null,
       divergence,
-      gdp: get("Real GDP Growth"),
-      cpi: get("CPI (YoY)"),
-      ppi: get("PPI (YoY)"),
-      t10y2y: get("2yr/10yr Yield Spread"),
+      gdp:       get("Real GDP Growth"),
+      cpi:       get("CPI (YoY)"),
+      ppi:       get("PPI (YoY)"),
+      t10y2y:    get("2yr/10yr Yield Spread"),
+      lei:       get("Conference Board LEI"),
+      breakeven: get("10Y Breakeven Inflation"),
+      prevGdp:   getPrev("Real GDP Growth"),
+      prevCpi:   getPrev("CPI (YoY)"),
+      prevPpi:   getPrev("PPI (YoY)"),
+      prevLei:   getPrev("Conference Board LEI"),
+      prevBe:    getPrev("10Y Breakeven Inflation"),
       marketSnapshot,
     });
 
