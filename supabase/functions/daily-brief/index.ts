@@ -6,6 +6,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const TO_EMAIL = Deno.env.get("BRIEF_TO_EMAIL") ?? "scott@janko.group";
 const FROM_EMAIL = "brief@janko.group";
+const ANTHROPIC_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -156,6 +157,91 @@ interface PortfolioResult {
   yesterday: string;
 }
 
+// ── Market snapshot (previous close via Yahoo Finance) ─────────────────────
+interface MarketTick { name: string; price: number; changePct: number; }
+
+async function getMarketSnapshot(): Promise<MarketTick[]> {
+  const tickers = [
+    { key: "SPY",     name: "S&P 500"         },
+    { key: "QQQ",     name: "Nasdaq 100"       },
+    { key: "IWM",     name: "Russell 2000"     },
+    { key: "GLD",     name: "Gold"             },
+    { key: "CL%3DF",  name: "WTI Oil"          },
+    { key: "TLT",     name: "20Y Treasuries"   },
+    { key: "%5EVIX",  name: "VIX"              },
+  ];
+  const results = await Promise.all(tickers.map(async ({ key, name }) => {
+    try {
+      const res = await fetch(
+        `https://query1.finance.yahoo.com/v8/finance/chart/${key}?interval=1d&range=5d`,
+        { headers: { "User-Agent": "Mozilla/5.0 (compatible; macro-dashboard/1.0)" } }
+      );
+      if (!res.ok) return null;
+      const j = await res.json();
+      const r = j?.chart?.result?.[0];
+      const closes: (number | null)[] = r?.indicators?.quote?.[0]?.close ?? [];
+      const valid = closes.filter((v): v is number => v != null);
+      if (valid.length < 2) return null;
+      const price = valid[valid.length - 1];
+      const prev  = valid[valid.length - 2];
+      return { name, price, changePct: ((price - prev) / prev) * 100 } satisfies MarketTick;
+    } catch { return null; }
+  }));
+  return results.filter((r): r is MarketTick => r !== null);
+}
+
+// ── Claude regime vs. market analysis ─────────────────────────────────────
+async function generateRegimeAnalysis(params: {
+  regimeLabel: string;
+  marketLabel: string | null;
+  fwdLabel: string | null;
+  fwdConf: number | null;
+  divergence: boolean;
+  gdp: number | null; cpi: number | null; ppi: number | null; t10y2y: number | null;
+  marketSnapshot: MarketTick[];
+}): Promise<string | null> {
+  if (!ANTHROPIC_KEY) return null;
+  try {
+    const { regimeLabel, marketLabel, fwdLabel, fwdConf, divergence, gdp, cpi, ppi, t10y2y, marketSnapshot } = params;
+    const mktLines = marketSnapshot
+      .map(m => `${m.name}: ${m.changePct >= 0 ? "+" : ""}${m.changePct.toFixed(1)}%`)
+      .join(" | ");
+    const n = (v: number | null, digits = 1, plus = false) =>
+      v != null ? `${plus && v >= 0 ? "+" : ""}${v.toFixed(digits)}%` : "n/a";
+
+    const prompt = `You are a macro analyst at RatioBo using the Dalio/Bridgewater four-quadrant framework. Write direct, sharp analysis — no hedging, no fluff, no headers, no bullet points. Plain prose, 3–4 paragraphs, under 230 words.
+
+Framework reading:
+  Structural regime: ${regimeLabel}
+  Market-implied regime: ${marketLabel ?? "unknown"}
+  Forward signal: ${fwdLabel ?? "none"}${fwdConf != null ? ` (${fwdConf}% confidence)` : ""}
+  ${divergence ? `⚑ Divergence: structural (${regimeLabel}) vs market-implied (${marketLabel})` : `Regimes aligned: ${regimeLabel}`}
+
+Macro data: GDP ${n(gdp, 1, true)} | CPI ${n(cpi)} | PPI ${n(ppi, 1, true)} | 2/10 spread ${n(t10y2y, 2, true)}
+
+Yesterday's market: ${mktLines}
+
+Assess in 3–4 paragraphs: Is yesterday's market action consistent with ${regimeLabel}, or does it signal regime stress? What might the market be pricing that this structural framework doesn't yet reflect? What does this mean for an investor positioned for ${regimeLabel}?`;
+
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": ANTHROPIC_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 500,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return (j.content?.[0]?.text as string | undefined) ?? null;
+  } catch { return null; }
+}
+
 // ── Macro narrative (mirrors MacroSummary in macro/page.jsx) ──────────────
 function buildNarrative(params: {
   gdp: number | null; gdp3yAvg: number | null; cpi: number | null; coreCpi: number | null;
@@ -246,9 +332,11 @@ function buildEmail(params: {
   macro: { name: string; current_value: number | null; status: string | null; unit: string }[];
   regime: { structural_key: string; market_key: string; forward_key: string | null; forward_confidence: number | null; period_date: string } | null;
   portfolio: PortfolioResult | null;
+  marketSnapshot: MarketTick[];
+  analysis: string | null;
   date: string;
 }): { subject: string; html: string } {
-  const { macro, regime, portfolio, date } = params;
+  const { macro, regime, portfolio, marketSnapshot, analysis, date } = params;
   const get = (name: string) => { const i = macro.find(x => x.name === name); return i?.current_value != null ? Number(i.current_value) : null; };
 
   const gdp      = get("Real GDP Growth");
@@ -273,6 +361,7 @@ function buildEmail(params: {
   const fwdLabel = regime?.forward_key ? (REGIME_LABELS[regime.forward_key] ?? regime.forward_key) : null;
   const fwdConf = regime?.forward_confidence ?? null;
   const marketKey = regime?.market_key ?? null;
+  const marketLabel = marketKey ? (REGIME_LABELS[marketKey] ?? marketKey) : null;
   const divergence = regimeKey && marketKey && regimeKey !== marketKey;
 
   // Portfolio totals (totalValue/totalGain cover all non-cash holdings; dayChange from filtered rows)
@@ -399,6 +488,41 @@ function buildEmail(params: {
       </td></tr>
     </table>
 
+    <!-- Market Snapshot -->
+    ${marketSnapshot.length > 0 ? `
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#1a1f2e;border-radius:8px;border:1px solid #2a3240;padding:0;margin-bottom:16px;">
+      <tr><td style="padding:16px 20px;">
+        <p style="margin:0 0 12px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#6b7280;">Yesterday's Market</p>
+        <table width="100%" cellpadding="0" cellspacing="0">
+          ${marketSnapshot.map(m => `
+          <tr>
+            <td style="padding:3px 0;font-size:12px;color:#9ca3af;">${m.name}</td>
+            <td style="padding:3px 0;text-align:right;font-family:monospace;font-size:12px;font-weight:600;color:${m.changePct >= 0 ? "#22c55e" : "#ef4444"};">${m.changePct >= 0 ? "+" : ""}${m.changePct.toFixed(1)}%</td>
+            <td style="padding:3px 0 3px 16px;text-align:right;font-family:monospace;font-size:11px;color:#6b7280;">${m.price.toFixed(m.name === "VIX" ? 1 : 2)}</td>
+          </tr>`).join("")}
+        </table>
+      </td></tr>
+    </table>` : ""}
+
+    <!-- Regime vs. Market Analysis -->
+    ${analysis ? `
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#1a1f2e;border-radius:8px;border:1px solid ${divergence ? "#C9A22744" : "#2a3240"};padding:0;margin-bottom:16px;">
+      <tr><td style="padding:16px 20px;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;">
+          <tr>
+            <td><p style="margin:0;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#6b7280;">Regime vs. Market</p></td>
+            <td style="text-align:right;vertical-align:middle;">
+              <span style="font-size:10px;font-weight:600;color:${divergence ? "#C9A227" : "#22c55e"};">
+                ${divergence ? `⚑ Divergence · ${regimeLabel} vs ${marketLabel}` : `✓ Aligned · ${regimeLabel}`}
+              </span>
+            </td>
+          </tr>
+        </table>
+        ${analysis.split(/\n\n+/).map(p => `<p style="margin:0 0 10px;font-size:12px;line-height:1.7;color:#9ca3af;">${p.trim()}</p>`).join("")}
+        <p style="margin:8px 0 0;font-size:10px;color:#374151;">Analysis by Claude · claude-haiku-4-5</p>
+      </td></tr>
+    </table>` : ""}
+
     <!-- Portfolio -->
     ${portfolio ? `
     <table width="100%" cellpadding="0" cellspacing="0" style="background:#1a1f2e;border-radius:8px;border:1px solid #2a3240;margin-bottom:16px;">
@@ -457,13 +581,31 @@ Deno.serve(async (req: Request) => {
     const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
     const date = new Date().toLocaleDateString("en-US", { weekday: "short", month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
-    const [macro, regime, portfolio] = await Promise.all([
+    const [macro, regime, portfolio, marketSnapshot] = await Promise.all([
       getMacro(sb),
       getRegime(sb),
       getPortfolio(sb),
+      getMarketSnapshot(),
     ]);
 
-    const { subject, html } = buildEmail({ macro, regime, portfolio, date });
+    const get = (name: string) => {
+      const i = macro.find(x => x.name === name);
+      return i?.current_value != null ? Number(i.current_value) : null;
+    };
+    const analysis = await generateRegimeAnalysis({
+      regimeLabel: regime?.structural_key ? (REGIME_LABELS[regime.structural_key] ?? regime.structural_key) : "Unknown",
+      marketLabel: regime?.market_key ? (REGIME_LABELS[regime.market_key] ?? regime.market_key) : null,
+      fwdLabel: regime?.forward_key ? (REGIME_LABELS[regime.forward_key] ?? regime.forward_key) : null,
+      fwdConf: regime?.forward_confidence ?? null,
+      divergence: !!(regime?.structural_key && regime?.market_key && regime.structural_key !== regime.market_key),
+      gdp: get("Real GDP Growth"),
+      cpi: get("CPI (YoY)"),
+      ppi: get("PPI (YoY)"),
+      t10y2y: get("2yr/10yr Yield Spread"),
+      marketSnapshot,
+    });
+
+    const { subject, html } = buildEmail({ macro, regime, portfolio, marketSnapshot, analysis, date });
 
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
