@@ -6,7 +6,7 @@ import {
 } from "recharts";
 import { supabase } from "../../lib/supabase";
 import { cashAmount, CASH_LEG_TYPES } from "../../lib/cash";
-import { SIMULATOR_KEYS, defaultSimulatorKey } from "../../lib/simulatorKeys";
+import { SIMULATOR_KEYS, defaultSimulatorKey, resolveSimulatorKey } from "../../lib/simulatorKeys";
 import Shell from "../../components/Shell";
 
 const usd = (n) =>
@@ -95,6 +95,8 @@ export default function HoldingsPage() {
   const [filterAccounts, setFilterAccounts] = useState([]);
   const [filterStatus, setFilterStatus] = useState("all"); // "all" | "active" | "inactive"
   const [activityCollapsed, setActivityCollapsed] = useState(false);
+
+  const [viewMode, setViewMode] = useState("category"); // "category" | "regime"
 
   // Collapsible asset-type groups
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
@@ -774,6 +776,29 @@ export default function HoldingsPage() {
       showSubGroups: filterStatus === "all" && g.buckets.active.length > 0 && g.buckets.inactive.length > 0,
     }));
   })();
+  // Regime view: group filteredHoldings by BW simulator bucket (SIMULATOR_KEYS order)
+  const regimeGroups = (() => {
+    const byKey = {};
+    for (const h of filteredHoldings) {
+      const key = resolveSimulatorKey(h) ?? "unassigned";
+      if (!byKey[key]) byKey[key] = [];
+      byKey[key].push(h);
+    }
+    const ordered = SIMULATOR_KEYS
+      .map(({ key, label }) => ({ key, label, items: byKey[key] ?? [] }))
+      .filter((g) => g.items.length > 0);
+    if (byKey["unassigned"]?.length) ordered.push({ key: "unassigned", label: "Unassigned", items: byKey["unassigned"] });
+    return ordered.map((g) => ({
+      ...g,
+      code: g.key,
+      activeItems: g.items.filter(isActiveHolding),
+      inactiveItems: g.items.filter((h) => !isActiveHolding(h)),
+      showSubGroups: filterStatus === "all" && g.items.some(isActiveHolding) && g.items.some((h) => !isActiveHolding(h)),
+    }));
+  })();
+
+  const activeGroups = viewMode === "regime" ? regimeGroups : holdingGroups;
+
   const filteredTxns = filterTxnTypes.length === 0
     ? transactions
     : transactions.filter((t) => filterTxnTypes.includes(t.txn_type));
@@ -820,14 +845,14 @@ export default function HoldingsPage() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => {
-              const allCodes = holdingGroups.map((g) => g.code);
+              const allCodes = activeGroups.map((g) => g.code);
               const allCollapsed = allCodes.every((c) => collapsedGroups.has(c));
               setCollapsedGroups(allCollapsed ? new Set() : new Set(allCodes));
             }}
-            title={holdingGroups.every((g) => collapsedGroups.has(g.code)) ? "Expand all" : "Collapse all"}
+            title={activeGroups.every((g) => collapsedGroups.has(g.code)) ? "Expand all" : "Collapse all"}
             className="p-1.5 rounded-lg border border-ink-line text-paper-dim hover:text-paper transition-colors"
           >
-            {holdingGroups.every((g) => collapsedGroups.has(g.code)) ? (
+            {activeGroups.every((g) => collapsedGroups.has(g.code)) ? (
               <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M2 5h12M2 8h8M2 11h5" />
                 <path d="M12 9l2 2-2 2" />
@@ -1139,6 +1164,22 @@ export default function HoldingsPage() {
             </div>
           )}
 
+          {/* View mode toggle */}
+          <div className="flex items-center gap-1 mb-3">
+            <button
+              onClick={() => setViewMode("category")}
+              className={`text-xs px-3 py-1.5 rounded-md transition-colors ${viewMode === "category" ? "bg-ink-soft text-paper border border-ink-line" : "text-paper-dim hover:text-paper"}`}
+            >
+              Category
+            </button>
+            <button
+              onClick={() => setViewMode("regime")}
+              className={`text-xs px-3 py-1.5 rounded-md transition-colors ${viewMode === "regime" ? "bg-ink-soft text-paper border border-ink-line" : "text-paper-dim hover:text-paper"}`}
+            >
+              Regime
+            </button>
+          </div>
+
           <div className="flex-1 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -1167,7 +1208,7 @@ export default function HoldingsPage() {
                     </td>
                   </tr>
                 )}
-                {holdingGroups.map(({ code, label, items, activeItems, inactiveItems, showSubGroups }) => {
+                {activeGroups.map(({ code, label, items, activeItems, inactiveItems, showSubGroups }) => {
                   const isCollapsed = collapsedGroups.has(code);
                   const groupValue = items.reduce((s, h) => s + Number(h.current_value ?? 0), 0);
                   const groupGain  = items.reduce((s, h) => {
