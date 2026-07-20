@@ -1599,29 +1599,43 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                 const allocPct = suggestedPcts[key] ?? 0;
                 const prevPct  = prevSuggestedPcts?.[key] ?? 0;
                 const portPct  = pct(byKey[key]?.total ?? 0);
+                const portVal  = byKey[key]?.total ?? 0;
                 const changed  = prevSuggestedPcts != null && allocPct !== prevPct;
+                const portValFmt = portVal >= 1_000_000
+                  ? `$${(portVal / 1_000_000).toFixed(1)}M`
+                  : portVal >= 1_000
+                    ? `$${Math.round(portVal / 1_000)}K`
+                    : portVal > 0 ? `$${Math.round(portVal)}` : null;
+                const markerLeft = Math.min(portPct, 96);
                 return (
                   <div key={key} className="flex items-center gap-3">
                     <span className="text-[11px] text-paper-dim w-[104px] shrink-0 truncate">{label}</span>
-                    <div className="flex-1 relative h-4 rounded overflow-hidden bg-ink-line/40">
-                      {/* Ghost bar — previous regime */}
-                      {prevSuggestedPcts && prevPct > 0 && (
+                    {/* Bar track — outer div has no overflow-hidden so marker label can bleed */}
+                    <div className="flex-1 relative h-4">
+                      {/* Clipped colored bars */}
+                      <div className="absolute inset-0 rounded overflow-hidden bg-ink-line/40">
+                        {prevSuggestedPcts && prevPct > 0 && (
+                          <div
+                            className="absolute left-0 top-0 h-full rounded transition-[width] duration-700 ease-out"
+                            style={{ width: `${prevPct}%`, background: color, opacity: 0.18 }}
+                          />
+                        )}
                         <div
-                          className="absolute left-0 top-0 h-full rounded transition-[width] duration-700 ease-out"
-                          style={{ width: `${prevPct}%`, background: color, opacity: 0.18 }}
+                          className="absolute left-0 top-0 h-full rounded transition-[width] duration-500 ease-out"
+                          style={{ width: `${allocPct}%`, background: color, opacity: allocPct > 0 ? 0.75 : 0 }}
                         />
-                      )}
-                      {/* Current regime bar */}
-                      <div
-                        className="absolute left-0 top-0 h-full rounded transition-[width] duration-500 ease-out"
-                        style={{ width: `${allocPct}%`, background: color, opacity: allocPct > 0 ? 0.75 : 0 }}
-                      />
-                      {/* Portfolio position marker */}
-                      {portPct > 0 && (
+                      </div>
+                      {/* Portfolio marker + label (outside clip context) */}
+                      {portPct > 0 && portValFmt && (
                         <div
-                          className="absolute top-0 h-full w-px bg-white/50"
-                          style={{ left: `${Math.min(portPct, 99)}%` }}
-                        />
+                          className="absolute top-0 h-full flex items-center"
+                          style={{ left: `${markerLeft}%` }}
+                        >
+                          <div className="w-px h-full bg-white/60" />
+                          <span className="ml-1 text-[9px] num text-paper/70 whitespace-nowrap leading-none">
+                            {portPct}% - {portValFmt}
+                          </span>
+                        </div>
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0 w-20 justify-end">
