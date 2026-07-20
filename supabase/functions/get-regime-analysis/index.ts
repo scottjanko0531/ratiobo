@@ -30,6 +30,7 @@ async function getMarketSnapshot(): Promise<MarketTick[]> {
     { key: "CL%3DF", name: "WTI Oil"       },
     { key: "TLT",    name: "20Y Treasuries"},
     { key: "%5EVIX", name: "VIX"           },
+    { key: "DX-Y.NYB", name: "DXY"        },
   ];
   const results = await Promise.all(tickers.map(async ({ key, name }) => {
     try {
