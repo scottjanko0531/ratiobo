@@ -1262,8 +1262,10 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
     }))
     .sort((a, b) => b.pct - a.pct);
 
-  const alignedPct = favoredBuckets.reduce((s, b) => s + b.pct, 0);
-  const outsidePct = outsideBuckets.reduce((s, b) => s + b.pct, 0);
+  const alignedRaw = favoredBuckets.reduce((s, b) => s + (byKey[b.key]?.total ?? 0), 0);
+  const alignedPct = grandTotal > 0 ? Math.round((alignedRaw / grandTotal) * 100) : 0;
+  const outsideRaw = outsideBuckets.reduce((s, b) => s + (byKey[b.key]?.total ?? 0), 0);
+  const outsidePct = grandTotal > 0 ? Math.round((outsideRaw / grandTotal) * 100) : 0;
   const hasPortfolio = holdings && holdings.length > 0;
 
   // Portfolio action rows: for each holding, compute add/sell delta vs. suggested allocation.
