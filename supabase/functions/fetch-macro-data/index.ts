@@ -500,6 +500,13 @@ const INDICATORS: Indicator[] = [
     series: "PCOPPUSDM", type: "level_with_3m",
     statusFn: v => v > 9000 ? "healthy" : v > 7000 ? "watch" : "danger",
   },
+  {
+    name: "DXY", layer: 3, layer_name: "Business Cycle",
+    description: "US Dollar Index (ICE) — strong dollar is headwind for EM, gold, and commodities (37% of BW Modified)",
+    fred_series_id: "DTWEXBGS", unit: "index", data_source: "fred", sort_order: 295,
+    series: "DTWEXBGS", type: "level",
+    statusFn: v => v > 104 ? "danger" : v > 100 ? "watch" : "healthy",
+  },
 ];
 
 interface ProcessedRow {
