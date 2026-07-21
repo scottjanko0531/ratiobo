@@ -3293,50 +3293,88 @@ function RegimeAnalysisCard() {
 
   if (!data) return null;
 
+  const newsHeadlines = data?.news_headlines ?? [];
+  const newsMusing = data?.news_musing ?? null;
+
   return (
-    <div className={`card p-5 mb-6 border ${alignedBorder}`}>
-      <div className="flex items-start justify-between gap-4 mb-4">
-        <p className="label">Clio Musings: Current Regime vs. Market Analysis</p>
-        <div className="flex items-center gap-3 shrink-0">
-          <span className={`text-[11px] font-semibold ${alignedColor}`}>{alignedLabel}</span>
-          <button
-            onClick={() => load(true)}
-            disabled={refreshing}
-            className="text-[10px] text-paper-dim/50 hover:text-paper-dim transition-colors disabled:opacity-40"
-          >
-            {refreshing ? "Refreshing…" : "↻ Refresh"}
-          </button>
-        </div>
-      </div>
-
-      {/* Analysis prose */}
-      <div className="space-y-3 mb-5">
-        {data.analysis.split(/\n\n+/).map((p, i) => (
-          <p key={i} className="text-sm text-paper-dim leading-relaxed">{p.trim()}</p>
-        ))}
-      </div>
-
-      {/* Market snapshot */}
-      {snapshot.length > 0 && (
-        <div className="border-t border-ink-line pt-4">
-          <p className="label text-[10px] mb-2">Yesterday's Market</p>
-          <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-            {snapshot.map((m) => (
-              <div key={m.name} className="text-center">
-                <p className="text-[10px] text-paper-dim/60 leading-none mb-0.5">{m.name}</p>
-                <p className={`num text-xs font-semibold ${m.changePct >= 0 ? "text-gain" : "text-loss"}`}>
-                  {m.changePct >= 0 ? "+" : ""}{m.changePct.toFixed(1)}%
-                </p>
-              </div>
-            ))}
+    <>
+      <div className={`card p-5 mb-6 border ${alignedBorder}`}>
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <p className="label">Clio Musings: Current Regime vs. Market Analysis</p>
+          <div className="flex items-center gap-3 shrink-0">
+            <span className={`text-[11px] font-semibold ${alignedColor}`}>{alignedLabel}</span>
+            <button
+              onClick={() => load(true)}
+              disabled={refreshing}
+              className="text-[10px] text-paper-dim/50 hover:text-paper-dim transition-colors disabled:opacity-40"
+            >
+              {refreshing ? "Refreshing…" : "↻ Refresh"}
+            </button>
           </div>
         </div>
-      )}
 
-      {generatedAt && (
-        <p className="text-[10px] text-paper-dim/40 mt-3">Analysis by Claude · {generatedAt}</p>
+        {/* Analysis prose */}
+        <div className="space-y-3 mb-5">
+          {data.analysis.split(/\n\n+/).map((p, i) => (
+            <p key={i} className="text-sm text-paper-dim leading-relaxed">{p.trim()}</p>
+          ))}
+        </div>
+
+        {/* Market snapshot */}
+        {snapshot.length > 0 && (
+          <div className="border-t border-ink-line pt-4">
+            <p className="label text-[10px] mb-2">Yesterday's Market</p>
+            <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+              {snapshot.map((m) => (
+                <div key={m.name} className="text-center">
+                  <p className="text-[10px] text-paper-dim/60 leading-none mb-0.5">{m.name}</p>
+                  <p className={`num text-xs font-semibold ${m.changePct >= 0 ? "text-gain" : "text-loss"}`}>
+                    {m.changePct >= 0 ? "+" : ""}{m.changePct.toFixed(1)}%
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {generatedAt && (
+          <p className="text-[10px] text-paper-dim/40 mt-3">Analysis by Claude · {generatedAt}</p>
+        )}
+      </div>
+
+      {/* Clio on the News */}
+      {(newsHeadlines.length > 0 || newsMusing) && (
+        <div className="card p-5 mb-6 border border-ink-line">
+          <p className="label mb-4">Clio Musings: What the News Is Saying</p>
+
+          {/* Headlines */}
+          {newsHeadlines.length > 0 && (
+            <div className="space-y-1.5 mb-4">
+              {newsHeadlines.map((h, i) => (
+                <div key={i} className="flex items-start gap-2">
+                  <span className="text-[10px] text-paper-dim/40 num mt-0.5 shrink-0">{i + 1}.</span>
+                  <div>
+                    <span className="text-[11px] text-paper-dim leading-snug">{h.headline}</span>
+                    {h.source && (
+                      <span className="text-[10px] text-paper-dim/40 ml-1.5">— {h.source}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* News musing prose */}
+          {newsMusing && (
+            <div className="border-t border-ink-line pt-4 space-y-3">
+              {newsMusing.split(/\n\n+/).map((p, i) => (
+                <p key={i} className="text-sm text-paper-dim leading-relaxed">{p.trim()}</p>
+              ))}
+            </div>
+          )}
+        </div>
       )}
-    </div>
+    </>
   );
 }
 

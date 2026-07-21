@@ -20,7 +20,78 @@ const REGIME_LABELS: Record<string, string> = {
 };
 
 interface MarketTick { name: string; price: number; changePct: number; }
+interface NewsItem { headline: string; source: string; publishedAt: number; }
 
+// ── News helpers (same RSS approach as get-macro-news) ────────────────────────
+function getText(block: string, tag: string): string {
+  const open = "<" + tag;
+  const close = "</" + tag + ">";
+  const start = block.indexOf(open);
+  if (start === -1) return "";
+  const gt = block.indexOf(">", start);
+  if (gt === -1) return "";
+  const end = block.indexOf(close, gt);
+  if (end === -1) return "";
+  return block.slice(gt + 1, end).trim();
+}
+function getSource(block: string): string {
+  const start = block.indexOf("<source");
+  if (start === -1) return "";
+  const gt = block.indexOf(">", start);
+  if (gt === -1) return "";
+  const end = block.indexOf("</source>", gt);
+  if (end === -1) return "";
+  return block.slice(gt + 1, end).trim();
+}
+function cleanTitle(title: string, source: string): string {
+  const suffix = " - " + source;
+  return source && title.endsWith(suffix) ? title.slice(0, -suffix.length).trim() : title;
+}
+
+async function fetchTopNews(limit = 5): Promise<NewsItem[]> {
+  const queries = [
+    "Federal Reserve inflation interest rates",
+    "GDP economic growth recession",
+    "CPI inflation consumer prices",
+    "gold oil commodities macro economy",
+    "Treasury bonds yield curve",
+  ];
+  try {
+    const results = await Promise.all(queries.map(async (q) => {
+      const url = "https://news.google.com/rss/search?q=" + encodeURIComponent(q) + "&hl=en-US&gl=US&ceid=US:en";
+      const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; RSS/2.0 reader)" } });
+      if (!res.ok) return [] as NewsItem[];
+      const xml = await res.text();
+      const items: NewsItem[] = [];
+      let pos = 0;
+      while (true) {
+        const s = xml.indexOf("<item>", pos);
+        if (s === -1) break;
+        const e = xml.indexOf("</item>", s);
+        if (e === -1) break;
+        const block = xml.slice(s + 6, e);
+        pos = e + 7;
+        const raw = getText(block, "title");
+        const pubDate = getText(block, "pubDate");
+        const source = getSource(block);
+        if (!raw) continue;
+        const ts = pubDate ? new Date(pubDate).getTime() : 0;
+        items.push({ headline: cleanTitle(raw, source), source, publishedAt: isNaN(ts) ? 0 : Math.floor(ts / 1000) });
+      }
+      return items;
+    }));
+    const seen = new Set<string>();
+    const all: NewsItem[] = [];
+    for (const items of results) {
+      for (const item of items) {
+        if (!seen.has(item.headline)) { seen.add(item.headline); all.push(item); }
+      }
+    }
+    return all.sort((a, b) => b.publishedAt - a.publishedAt).slice(0, limit);
+  } catch { return []; }
+}
+
+// ── Market snapshot ───────────────────────────────────────────────────────────
 async function getMarketSnapshot(): Promise<MarketTick[]> {
   const tickers = [
     { key: "SPY",    name: "S&P 500"       },
@@ -52,6 +123,7 @@ async function getMarketSnapshot(): Promise<MarketTick[]> {
   return results.filter((r): r is MarketTick => r !== null);
 }
 
+// ── Main regime analysis ──────────────────────────────────────────────────────
 async function generateAnalysis(params: {
   regimeLabel: string; marketLabel: string | null; fwdLabel: string | null;
   fwdConf: number | null; divergence: boolean;
@@ -85,7 +157,6 @@ async function generateAnalysis(params: {
       return curr > prev + threshold ? "↑" : curr < prev - threshold ? "↓" : "→";
     };
 
-    // Derive momentum-implied regime from deltas
     const gdpUp  = gdp != null && prevGdp != null && gdp > prevGdp + 0.05;
     const inflUp = cpi != null && prevCpi != null && cpi > prevCpi + 0.05;
     const momentumRegime =
@@ -141,6 +212,52 @@ Assess in 3–4 paragraphs: (1) What is the hard data momentum telling us — is
   } catch { return null; }
 }
 
+// ── News musing ───────────────────────────────────────────────────────────────
+async function generateNewsMusing(params: {
+  headlines: NewsItem[];
+  regimeLabel: string;
+  momentumRegime: string;
+  marketLabel: string | null;
+}): Promise<string | null> {
+  if (!ANTHROPIC_KEY || params.headlines.length === 0) return null;
+  try {
+    const { headlines, regimeLabel, momentumRegime, marketLabel } = params;
+    const newsLines = headlines
+      .map((h, i) => `${i + 1}. "${h.headline}"${h.source ? ` — ${h.source}` : ""}`)
+      .join("\n");
+
+    const prompt = `You are Clio, macro analyst at RatioBo. Write 2 sharp paragraphs (under 160 words total) — no headers, no bullets, plain prose.
+
+Current regime signals:
+  Structural: ${regimeLabel}
+  Momentum-implied: ${momentumRegime}
+  Market-implied: ${marketLabel ?? "unknown"}
+
+Top macro headlines (last 24–48 hours):
+${newsLines}
+
+Assess: (1) What macro narrative are these headlines collectively signaling — growth, inflation, credit stress, risk-on, or risk-off? (2) Does that narrative align with or diverge from the regime signals above, and what (if anything) should a BW Modified portfolio holder do differently in response?`;
+
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": ANTHROPIC_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 300,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return (j.content?.[0]?.text as string | undefined) ?? null;
+  } catch { return null; }
+}
+
+// ── Handler ───────────────────────────────────────────────────────────────────
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -150,7 +267,6 @@ Deno.serve(async (req: Request) => {
     const forceRefresh = url.searchParams.get("refresh") === "true";
     const today = new Date().toISOString().slice(0, 10);
 
-    // Return cached analysis if available and not forcing refresh
     if (!forceRefresh) {
       const { data: cached } = await sb
         .from("dalio_regime_analysis")
@@ -164,8 +280,7 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Generate fresh analysis
-    const [{ data: regimeRow }, { data: macroRows }, marketSnapshot] = await Promise.all([
+    const [{ data: regimeRow }, { data: macroRows }, marketSnapshot, topNews] = await Promise.all([
       sb.from("macro_regime_history")
         .select("structural_key,market_key,forward_key,forward_confidence")
         .order("period_date", { ascending: false })
@@ -173,6 +288,7 @@ Deno.serve(async (req: Request) => {
         .maybeSingle(),
       sb.from("macro_indicators").select("name,current_value,previous_value"),
       getMarketSnapshot(),
+      fetchTopNews(5),
     ]);
 
     const get = (name: string) => {
@@ -192,23 +308,38 @@ Deno.serve(async (req: Request) => {
     const fwdLabel = fwdKey ? (REGIME_LABELS[fwdKey] ?? fwdKey) : null;
     const divergence = !!(structuralKey && marketKey && structuralKey !== marketKey);
 
-    const analysis = await generateAnalysis({
-      regimeLabel, marketLabel, fwdLabel,
-      fwdConf: regimeRow?.forward_confidence ?? null,
-      divergence,
-      gdp:       get("Real GDP Growth"),
-      cpi:       get("CPI (YoY)"),
-      ppi:       get("PPI (YoY)"),
-      t10y2y:    get("2yr/10yr Yield Spread"),
-      lei:       get("Conference Board LEI"),
-      breakeven: get("10Y Breakeven Inflation"),
-      prevGdp:   getPrev("Real GDP Growth"),
-      prevCpi:   getPrev("CPI (YoY)"),
-      prevPpi:   getPrev("PPI (YoY)"),
-      prevLei:   getPrev("Conference Board LEI"),
-      prevBe:    getPrev("10Y Breakeven Inflation"),
-      marketSnapshot,
-    });
+    const gdp     = get("Real GDP Growth");
+    const prevGdp = getPrev("Real GDP Growth");
+    const cpi     = get("CPI (YoY)");
+    const prevCpi = getPrev("CPI (YoY)");
+
+    const gdpUp  = gdp != null && prevGdp != null && gdp > prevGdp + 0.05;
+    const inflUp = cpi != null && prevCpi != null && cpi > prevCpi + 0.05;
+    const momentumRegime =
+       gdpUp && inflUp  ? "Reflation" :
+       gdpUp && !inflUp ? "Disinflationary Boom" :
+      !gdpUp && inflUp  ? "Stagflation" : "Deflationary Bust";
+
+    const [analysis, newsMusing] = await Promise.all([
+      generateAnalysis({
+        regimeLabel, marketLabel, fwdLabel,
+        fwdConf: regimeRow?.forward_confidence ?? null,
+        divergence,
+        gdp,
+        cpi,
+        ppi:       get("PPI (YoY)"),
+        t10y2y:    get("2yr/10yr Yield Spread"),
+        lei:       get("Conference Board LEI"),
+        breakeven: get("10Y Breakeven Inflation"),
+        prevGdp,
+        prevCpi,
+        prevPpi:   getPrev("PPI (YoY)"),
+        prevLei:   getPrev("Conference Board LEI"),
+        prevBe:    getPrev("10Y Breakeven Inflation"),
+        marketSnapshot,
+      }),
+      generateNewsMusing({ headlines: topNews, regimeLabel, momentumRegime, marketLabel }),
+    ]);
 
     if (!analysis) {
       return new Response(JSON.stringify({ error: "Analysis generation failed" }), {
@@ -219,6 +350,8 @@ Deno.serve(async (req: Request) => {
     const row = {
       analysis_date: today,
       analysis,
+      news_musing: newsMusing ?? null,
+      news_headlines: topNews.length > 0 ? topNews : null,
       alignment: divergence ? "divergent" : "aligned",
       structural_regime: regimeLabel,
       market_regime: marketLabel,
