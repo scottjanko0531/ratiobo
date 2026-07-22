@@ -255,7 +255,7 @@ export default function PortfoliosPage() {
           className={`absolute inset-0 bg-ink/70 transition-opacity ${viewingPortfolio ? "opacity-100" : "opacity-0"}`}
           onClick={() => setViewingPortfolio(null)}
         />
-        <div className={`absolute right-0 top-0 h-full w-full max-w-[1120px] bg-ink-soft border-l border-ink-line overflow-y-auto transition-transform duration-300 ${viewingPortfolio ? "translate-x-0" : "translate-x-full"}`}>
+        <div className={`absolute right-0 top-0 h-full w-full max-w-[1400px] bg-ink-soft border-l border-ink-line overflow-y-auto transition-transform duration-300 ${viewingPortfolio ? "translate-x-0" : "translate-x-full"}`}>
           {viewingPortfolio && (() => {
             const pf = viewingPortfolio;
             const hs = holdingsFor(pf.id);
@@ -341,63 +341,75 @@ export default function PortfoliosPage() {
                       ...(byKey.unassigned?.length ? [{ key: "unassigned", label: "Unassigned", items: byKey.unassigned }] : []),
                     ];
 
+                    // Total gain per holding = cap gain + dividends + interest - fees
+                    const holdingTotalGain = (h) =>
+                      Number(h.net_gain ?? 0) + Number(h.total_dividends ?? 0) + Number(h.total_interest ?? 0) - Number(h.total_fees ?? 0);
+                    const holdingReturnPct = (h) => {
+                      const cb = Number(h.cost_basis ?? 0);
+                      return cb > 0 ? (holdingTotalGain(h) / cb) * 100 : null;
+                    };
+
                     return (
                       <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
+                        <table className="w-full text-xs">
                           <thead>
                             <tr className="border-b border-ink-line">
-                              <th className="label text-left font-medium py-2 pr-4">Symbol</th>
-                              <th className="label text-left font-medium py-2 pr-4">Account</th>
+                              <th className="label text-left font-medium py-2 pr-3">Symbol</th>
+                              <th className="label text-left font-medium py-2 pr-3">Account</th>
                               <th className="label text-right font-medium py-2 pr-2">Value</th>
                               <th className="label text-right font-medium py-2 pr-2">Cost Basis</th>
-                              <th className="label text-right font-medium py-2 pr-2">Net Gain</th>
+                              <th className="label text-right font-medium py-2 pr-2">Total Gain</th>
+                              <th className="label text-right font-medium py-2 pr-2">Return %</th>
                               <th className="label text-right font-medium py-2">Day Chg</th>
                             </tr>
                           </thead>
                           <tbody>
                             {groups.map(({ key, label, items }) => {
-                              const groupValue = items.reduce((sum, h) => sum + Number(h.current_value ?? 0), 0);
-                              const groupPct   = s.totalValue > 0 ? (groupValue / s.totalValue) * 100 : 0;
-                              const groupGain  = items.reduce((sum, h) => sum + Number(h.net_gain ?? 0), 0);
+                              const groupValue     = items.reduce((sum, h) => sum + Number(h.current_value ?? 0), 0);
+                              const groupCost      = items.reduce((sum, h) => sum + Number(h.cost_basis ?? 0), 0);
+                              const groupPct       = s.totalValue > 0 ? (groupValue / s.totalValue) * 100 : 0;
+                              const groupTotalGain = items.reduce((sum, h) => sum + holdingTotalGain(h), 0);
+                              const groupReturnPct = groupCost > 0 ? (groupTotalGain / groupCost) * 100 : null;
                               return [
                                 /* Group header row */
                                 <tr key={`g-${key}`} className="bg-ink/40 border-y border-ink-line">
-                                  <td colSpan={2} className="py-2 pr-4">
-                                    <div className="flex items-center gap-3">
+                                  <td colSpan={2} className="py-1.5 pr-3">
+                                    <div className="flex items-center gap-2.5">
                                       <span className="label text-[11px] font-semibold text-brass-soft">{label}</span>
-                                      {/* Allocation bar */}
-                                      <div className="flex-1 max-w-[120px] h-1.5 bg-ink-line rounded-full overflow-hidden">
-                                        <div
-                                          className="h-full bg-brass/60 rounded-full"
-                                          style={{ width: `${Math.min(groupPct, 100)}%` }}
-                                        />
+                                      <div className="flex-1 max-w-[100px] h-1.5 bg-ink-line rounded-full overflow-hidden">
+                                        <div className="h-full bg-brass/60 rounded-full" style={{ width: `${Math.min(groupPct, 100)}%` }} />
                                       </div>
                                       <span className="num text-[11px] font-semibold text-paper">{groupPct.toFixed(1)}%</span>
                                       <span className="label text-[10px] text-paper-dim">{items.length} holding{items.length !== 1 ? "s" : ""}</span>
                                     </div>
                                   </td>
-                                  <td className="num text-right py-2 pr-2 text-[11px] font-semibold">{usd(groupValue)}</td>
-                                  <td className="py-2 pr-2" />
-                                  <td className={`num text-right py-2 pr-2 text-[11px] font-semibold ${gainCls(groupGain)}`}>
-                                    {groupGain > 0 ? "+" : ""}{usd(groupGain)}
+                                  <td className="num text-right py-1.5 pr-2 text-[11px] font-semibold">{usd(groupValue)}</td>
+                                  <td className="num text-right py-1.5 pr-2 text-[11px] text-paper-dim">{usd(groupCost)}</td>
+                                  <td className={`num text-right py-1.5 pr-2 text-[11px] font-semibold ${gainCls(groupTotalGain)}`}>
+                                    {groupTotalGain > 0 ? "+" : ""}{usd(groupTotalGain)}
                                   </td>
-                                  <td className="py-2" />
+                                  <td className={`num text-right py-1.5 pr-2 text-[11px] font-semibold ${gainCls(groupReturnPct)}`}>
+                                    {fmtPct(groupReturnPct)}
+                                  </td>
+                                  <td className="py-1.5" />
                                 </tr>,
-                                /* Holding rows within group */
+                                /* Holding rows */
                                 ...items.map((h) => {
-                                  const dayChg = snapMap[h.id] != null ? Number(h.current_value ?? 0) - snapMap[h.id] : null;
-                                  const gain   = Number(h.net_gain ?? 0);
+                                  const dayChg   = snapMap[h.id] != null ? Number(h.current_value ?? 0) - snapMap[h.id] : null;
+                                  const tGain    = holdingTotalGain(h);
+                                  const retPct   = holdingReturnPct(h);
                                   return (
                                     <tr key={h.id} className="border-b border-ink-line/40 last:border-0 hover:bg-ink-soft/40 transition-colors">
-                                      <td className="py-2.5 pr-4 pl-3">
+                                      <td className="py-2 pr-3 pl-3">
                                         <span className="font-medium">{h.symbol}</span>
-                                        {h.name && <span className="block text-xs text-paper-dim leading-tight">{h.name}</span>}
+                                        {h.name && <span className="block text-[10px] text-paper-dim leading-tight">{h.name}</span>}
                                       </td>
-                                      <td className="py-2.5 pr-4 text-xs text-paper-dim pl-3">{h.account_id ? (accountMap[h.account_id] ?? "—") : "—"}</td>
-                                      <td className="num text-right py-2.5 pr-2">{usd(h.current_value)}</td>
-                                      <td className="num text-right py-2.5 pr-2 text-paper-dim">{usd(h.cost_basis)}</td>
-                                      <td className={`num text-right py-2.5 pr-2 ${gainCls(gain)}`}>{gain > 0 ? "+" : ""}{usd(gain)}</td>
-                                      <td className={`num text-right py-2.5 ${gainCls(dayChg)}`}>
+                                      <td className="py-2 pr-3 pl-3 text-paper-dim">{h.account_id ? (accountMap[h.account_id] ?? "—") : "—"}</td>
+                                      <td className="num text-right py-2 pr-2">{usd(h.current_value)}</td>
+                                      <td className="num text-right py-2 pr-2 text-paper-dim">{usd(h.cost_basis)}</td>
+                                      <td className={`num text-right py-2 pr-2 ${gainCls(tGain)}`}>{tGain > 0 ? "+" : ""}{usd(tGain)}</td>
+                                      <td className={`num text-right py-2 pr-2 ${gainCls(retPct)}`}>{fmtPct(retPct)}</td>
+                                      <td className={`num text-right py-2 ${gainCls(dayChg)}`}>
                                         {dayChg == null ? "—" : `${dayChg > 0 ? "+" : ""}${usd(dayChg)}`}
                                       </td>
                                     </tr>
@@ -408,13 +420,16 @@ export default function PortfoliosPage() {
                           </tbody>
                           <tfoot className="border-t-2 border-ink-line">
                             <tr>
-                              <td colSpan={2} className="py-2.5 label text-[10px]">Total ({hs.length} holdings)</td>
-                              <td className="num text-right py-2.5 pr-2 font-medium">{usd(s.totalValue)}</td>
-                              <td className="num text-right py-2.5 pr-2 text-paper-dim">{usd(s.costBasis)}</td>
-                              <td className={`num text-right py-2.5 pr-2 font-medium ${gainCls(s.totalGain)}`}>
+                              <td colSpan={2} className="py-2 label text-[10px]">Total ({hs.length} holdings)</td>
+                              <td className="num text-right py-2 pr-2 font-medium">{usd(s.totalValue)}</td>
+                              <td className="num text-right py-2 pr-2 text-paper-dim">{usd(s.costBasis)}</td>
+                              <td className={`num text-right py-2 pr-2 font-medium ${gainCls(s.totalGain)}`}>
                                 {s.totalGain > 0 ? "+" : ""}{usd(s.totalGain)}
                               </td>
-                              <td className={`num text-right py-2.5 font-medium ${gainCls(s.dayChg)}`}>
+                              <td className={`num text-right py-2 pr-2 font-medium ${gainCls(s.returnPct)}`}>
+                                {fmtPct(s.returnPct)}
+                              </td>
+                              <td className={`num text-right py-2 font-medium ${gainCls(s.dayChg)}`}>
                                 {s.dayChg == null ? "—" : `${s.dayChg > 0 ? "+" : ""}${usd(s.dayChg)}`}
                               </td>
                             </tr>
