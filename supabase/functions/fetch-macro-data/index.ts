@@ -885,7 +885,14 @@ async function backfillRegimeHistory(): Promise<void> {
 
 function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null; confidence: number | null } {
   const get = (name: string) => { const r = rows.find(r => r.name === name); return r?.current_value != null ? Number(r.current_value) : null; };
-  type Sig = { name: string; w: number; vote: (v: number) => number };
+  // Direction of change: % change from previous_value to current_value
+  const getDir = (name: string) => {
+    const r = rows.find(r => r.name === name);
+    if (r?.current_value == null || r?.previous_value == null) return null;
+    const curr = Number(r.current_value), prev = Number(r.previous_value);
+    return prev ? (curr - prev) / Math.abs(prev) * 100 : null;
+  };
+  type Sig = { name: string; w: number; vote: (v: number) => number; useDir?: boolean };
   const G: Sig[] = [
     { name: "2yr/10yr Yield Spread",  w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
     { name: "3mo/10yr Yield Spread",  w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
@@ -895,20 +902,21 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     { name: "C&I Loan Growth (YoY)",  w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
   ];
   const I: Sig[] = [
-    { name: "Consumer Inflation Expectations", w: 0.20, vote: v => v > 4    ? 1 : v >= 2.5 ? 0 : -1 },
+    // Direction signals: CPI/PPI trend captures disinflation momentum even when levels are elevated
+    { name: "CPI (YoY)",                       w: 0.20, useDir: true, vote: v => v < -5 ? -1 : v > 5  ? 1 : 0 },
+    { name: "PPI (YoY)",                       w: 0.10, useDir: true, vote: v => v < -5 ? -1 : v > 5  ? 1 : 0 },
     { name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > 2.5  ? 1 : v >= 1.5 ? 0 : -1 },
+    // Threshold raised: readings below 5.5% may reflect tariff shock, not structural demand inflation
+    { name: "Consumer Inflation Expectations", w: 0.15, vote: v => v > 5.5  ? 1 : v >= 2.5 ? 0 : -1 },
     { name: "Copper Price",                    w: 0.15, vote: v => v > 9000 ? 1 : v >= 7000 ? 0 : -1 },
-    { name: "WTI Crude Oil",                   w: 0.15, vote: v => v > 90   ? 1 : v >= 70  ? 0 : -1 },
-    { name: "Silver Price",                    w: 0.10, vote: v => v > 35   ? 1 : v >= 25  ? 0 : -1 },
-    { name: "Uranium Price",                   w: 0.10, vote: v => v > 75   ? 1 : v >= 50  ? 0 : -1 },
-    { name: "PPI (YoY)",                       w: 0.05, vote: v => v > 3    ? 1 : v >= 0   ? 0 : -1 },
-    { name: "M2 Growth (YoY)",                 w: 0.05, vote: v => v > 8    ? 1 : v >= 3   ? 0 : -1 },
+    { name: "WTI Crude Oil",                   w: 0.10, vote: v => v > 90   ? 1 : v >= 70  ? 0 : -1 },
+    { name: "M2 Growth (YoY)",                 w: 0.10, vote: v => v > 8    ? 1 : v >= 3   ? 0 : -1 },
   ];
   type ScoreSig = { w: number; vote: number | null };
   const scoreGroup = (sigs: Sig[]): { signals: ScoreSig[]; score: number | null } => {
     let weighted = 0, totalW = 0;
     const signals: ScoreSig[] = sigs.map(s => {
-      const val = get(s.name);
+      const val = s.useDir ? getDir(s.name) : get(s.name);
       if (val == null) return { w: s.w, vote: null };
       const v = s.vote(val);
       weighted += v * s.w; totalW += s.w;
@@ -1103,7 +1111,13 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       breakeven: bre != null ? r2(bre) : null,
       gdp_3y_avg: r2(gdp3y), cpi_3y_avg: r2(cpi3y),
       structural_key: detectRegimeKey(gdpYoy, cpiYoy, gdp3y, cpi3y),
-      market_key: detectRegimeKey(gdpYoy, cpiYoy, gdp3y, bre ?? cpi3y),
+      // Market regime: use breakeven vs 2.5% threshold — is market pricing sustained inflation?
+      // cpiYoy > breakeven means markets expect disinflation, not that inflation is surprising upside.
+      market_key: (() => {
+        const mktInflUp = (bre ?? 2.5) > 2.5;
+        const mktGrowthUp = gdpYoy > gdp3y;
+        return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
+      })(),
       forward_key: forwardKey,
       forward_confidence: confidence,
       updated_at: new Date().toISOString(),

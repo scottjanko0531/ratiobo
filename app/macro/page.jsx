@@ -308,12 +308,15 @@ const FWD_GROWTH_SIGNALS = [
   { label: "C&I Loans",         name: "C&I Loan Growth (YoY)",    w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
 ];
 const FWD_INFL_SIGNALS = [
-  { label: "Infl Expectations", name: "Consumer Inflation Expectations", w: 0.25, vote: v => v > 4   ? 1 : v >= 2.5 ? 0 : -1 },
+  // Direction-of-change signals capture disinflation momentum even when levels are still elevated
+  { label: "CPI Trend",         name: "CPI (YoY)",      w: 0.20, getDir: true,   vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
+  { label: "PPI Trend",         name: "PPI (YoY)",      w: 0.10, getDir: true,   vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
   { label: "10Y Breakeven",     name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
-  { label: "Copper 3M",         name: "Copper Price",   w: 0.20, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
-  { label: "WTI 3M",            name: "WTI Crude Oil",  w: 0.15, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
-  { label: "PPI",               name: "PPI (YoY)",                      w: 0.10, vote: v => v > 3   ? 1 : v >= 0   ? 0 : -1 },
-  { label: "M2 Growth",         name: "M2 Growth (YoY)",                w: 0.10, vote: v => v > 8   ? 1 : v >= 3   ? 0 : -1 },
+  // Threshold raised: readings below 5.5% may reflect one-time tariff shock, not structural inflation
+  { label: "Infl Expectations", name: "Consumer Inflation Expectations", w: 0.15, vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
+  { label: "Copper 3M",         name: "Copper Price",   w: 0.15, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
+  { label: "WTI 3M",            name: "WTI Crude Oil",  w: 0.10, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
+  { label: "M2 Growth",         name: "M2 Growth (YoY)",w: 0.10, vote: v => v > 8   ? 1 : v >= 3   ? 0 : -1 },
 ];
 
 function computeForwardSignal(indicators) {
@@ -325,10 +328,16 @@ function computeForwardSignal(indicators) {
     const ind = indicators.find(i => i.name === name);
     return ind?.metadata?.change3m_pct != null ? Number(ind.metadata.change3m_pct) : null;
   };
+  const getDir = (name) => {
+    const ind = indicators.find(i => i.name === name);
+    if (ind?.current_value == null || ind?.previous_value == null) return null;
+    const curr = Number(ind.current_value), prev = Number(ind.previous_value);
+    return prev ? (curr - prev) / Math.abs(prev) * 100 : null;
+  };
   const scoreGroup = (sigs) => {
     let weighted = 0, totalW = 0;
     const scored = sigs.map(s => {
-      const val = s.getPct3m ? getPct3m(s.name) : get(s.name);
+      const val = s.getDir ? getDir(s.name) : s.getPct3m ? getPct3m(s.name) : get(s.name);
       if (val == null) return { ...s, val: null, vote: null };
       const v = s.vote(val);
       weighted += v * s.w;
@@ -1175,13 +1184,18 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
 
   const regime = regimeKey ? REGIME_META[regimeKey] : null;
 
-  // Market-expectations regime: always computed fresh from actuals vs. T10YIE / GDP trend.
-  // Separate from regimeKey (which comes from the structural 3Y-trailing DB quadrant).
-  const marketRegimeKey = gdp?.current_value != null && cpi?.current_value != null
-    ? detectRegimeKey(Number(gdp.current_value), Number(cpi.current_value), {
-        breakeven: breakevenVal,
-        gdp3yAvg:  gdp3yAvgVal,
-      })
+  // Market-expectations regime: is the market pricing sustained inflation (breakeven > 2.5%)?
+  // CPI > breakeven means the market expects disinflation, NOT that inflation is surprising upside.
+  // We use breakeven vs 2.5% threshold — below that, markets price inflation "under control."
+  const marketRegimeKey = gdp?.current_value != null
+    ? (() => {
+        const growthUp = Number(gdp.current_value) > (gdp3yAvgVal ?? 0);
+        const inflUp   = breakevenVal > 2.5;
+        if (growthUp && !inflUp) return "rg_fi";
+        if (growthUp && inflUp)  return "rg_ri";
+        if (!growthUp && inflUp) return "fg_ri";
+        return "fg_fi";
+      })()
     : null;
   const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
   const fwd = computeForwardSignal(indicators);
@@ -1374,7 +1388,7 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                 </div>
                 <div className="px-3 py-2 border-l border-ink-line">
                   <p className="label text-[10px]">Market Expectations</p>
-                  <p className="text-[10px] text-paper-dim">Actuals vs. market-priced levels</p>
+                  <p className="text-[10px] text-paper-dim">Is market pricing sustained growth / inflation?</p>
                 </div>
               </div>
 
@@ -1426,13 +1440,13 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                   ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
                 </div>
                 <div className="px-3 py-3 border-l border-ink-line">
-                  <p className="text-[10px] text-paper-dim mb-1">CPI vs T10YIE — surprising markets?</p>
-                  {cpi?.current_value != null && breakeven?.current_value != null ? (
+                  <p className="text-[10px] text-paper-dim mb-1">T10YIE — market pricing inflation?</p>
+                  {breakeven?.current_value != null ? (
                     <>
-                      <p className={`font-medium ${Number(cpi.current_value) > breakevenVal ? "text-loss" : "text-gain"}`}>
-                        {Number(cpi.current_value) > breakevenVal ? "↑ Surprising up" : "↓ In check"}
+                      <p className={`font-medium ${breakevenVal > 2.5 ? "text-loss" : "text-gain"}`}>
+                        {breakevenVal > 2.5 ? "↑ Pricing inflation" : "↓ Below threshold"}
                       </p>
-                      <p className="num text-[11px] text-paper-dim mt-0.5">T10YIE {breakevenVal.toFixed(2)}%</p>
+                      <p className="num text-[11px] text-paper-dim mt-0.5">T10YIE {breakevenVal.toFixed(2)}% vs 2.5%</p>
                     </>
                   ) : <p className="text-paper-dim text-[11px]">—</p>}
                 </div>
