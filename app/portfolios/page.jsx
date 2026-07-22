@@ -29,6 +29,7 @@ export default function PortfoliosPage() {
   const [busy, setBusy]                       = useState(true);
 
   const [viewingPortfolio, setViewingPortfolio] = useState(null);
+  const [expandedBuckets, setExpandedBuckets]   = useState(new Set()); // empty = all collapsed
   const [editingPortfolio, setEditingPortfolio] = useState(null); // "new" | portfolio obj
   const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "" });
   const [formBusy, setFormBusy] = useState(false);
@@ -92,6 +93,8 @@ export default function PortfoliosPage() {
   }
 
   useEffect(() => { load(); }, []);
+  // Reset bucket expansion whenever a different portfolio is opened
+  useEffect(() => { setExpandedBuckets(new Set()); }, [viewingPortfolio?.id]);
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
   const holdingsFor = useCallback((pfId) => {
@@ -370,11 +373,27 @@ export default function PortfoliosPage() {
                               const groupPct       = s.totalValue > 0 ? (groupValue / s.totalValue) * 100 : 0;
                               const groupTotalGain = items.reduce((sum, h) => sum + holdingTotalGain(h), 0);
                               const groupReturnPct = groupCost > 0 ? (groupTotalGain / groupCost) * 100 : null;
+                              const isExpanded     = expandedBuckets.has(key);
+                              const toggle = () => setExpandedBuckets((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(key)) next.delete(key); else next.add(key);
+                                return next;
+                              });
                               return [
-                                /* Group header row */
-                                <tr key={`g-${key}`} className="bg-ink/40 border-y border-ink-line">
+                                /* Group header — clickable to expand/collapse */
+                                <tr
+                                  key={`g-${key}`}
+                                  className="bg-ink/40 border-y border-ink-line cursor-pointer select-none hover:bg-ink/60 transition-colors"
+                                  onClick={toggle}
+                                >
                                   <td colSpan={2} className="py-1.5 pr-3">
                                     <div className="flex items-center gap-2.5">
+                                      <svg
+                                        className={`w-3 h-3 text-paper-dim shrink-0 transition-transform duration-150 ${isExpanded ? "rotate-90" : ""}`}
+                                        viewBox="0 0 12 12" fill="none"
+                                      >
+                                        <path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                      </svg>
                                       <span className="label text-[11px] font-semibold text-brass-soft">{label}</span>
                                       <div className="flex-1 max-w-[100px] h-1.5 bg-ink-line rounded-full overflow-hidden">
                                         <div className="h-full bg-brass/60 rounded-full" style={{ width: `${Math.min(groupPct, 100)}%` }} />
@@ -393,14 +412,14 @@ export default function PortfoliosPage() {
                                   </td>
                                   <td className="py-1.5" />
                                 </tr>,
-                                /* Holding rows */
-                                ...items.map((h) => {
-                                  const dayChg   = snapMap[h.id] != null ? Number(h.current_value ?? 0) - snapMap[h.id] : null;
-                                  const tGain    = holdingTotalGain(h);
-                                  const retPct   = holdingReturnPct(h);
+                                /* Holding rows — only rendered when expanded */
+                                ...(isExpanded ? items.map((h) => {
+                                  const dayChg = snapMap[h.id] != null ? Number(h.current_value ?? 0) - snapMap[h.id] : null;
+                                  const tGain  = holdingTotalGain(h);
+                                  const retPct = holdingReturnPct(h);
                                   return (
                                     <tr key={h.id} className="border-b border-ink-line/40 last:border-0 hover:bg-ink-soft/40 transition-colors">
-                                      <td className="py-2 pr-3 pl-3">
+                                      <td className="py-2 pr-3 pl-5">
                                         <span className="font-medium">{h.symbol}</span>
                                         {h.name && <span className="block text-[10px] text-paper-dim leading-tight">{h.name}</span>}
                                       </td>
@@ -414,7 +433,7 @@ export default function PortfoliosPage() {
                                       </td>
                                     </tr>
                                   );
-                                }),
+                                }) : []),
                               ];
                             })}
                           </tbody>
