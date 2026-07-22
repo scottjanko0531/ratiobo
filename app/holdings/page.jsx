@@ -122,9 +122,13 @@ export default function HoldingsPage() {
 
   // Edit holding drawer
   const [editingHolding, setEditingHolding] = useState(null);
-  const [editForm, setEditForm] = useState({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", price_override: "", simulator_key: "", interest_rate: "", maturity_date: "" });
+  const [editForm, setEditForm] = useState({ symbol: "", name: "", asset_type: "", account_id: "", quantity: "", price_override: "", simulator_key: "", interest_rate: "", maturity_date: "", portfolioIds: [] });
   const [editError, setEditError] = useState("");
   const [editBusy, setEditBusy] = useState(false);
+
+  // Portfolios (for assignment in edit drawer)
+  const [portfolioList, setPortfolioList] = useState([]);
+  const [holdingPortfolioMap, setHoldingPortfolioMap] = useState({}); // holding_id -> [portfolio_id]
 
   // Detail / transactions drawer
   const [viewingHolding, setViewingHolding] = useState(null);
@@ -181,6 +185,8 @@ export default function HoldingsPage() {
       { data: monthSnap },
       { data: qtrSnap },
       { data: yearSnap },
+      { data: pfList },
+      { data: phRows },
     ] = await Promise.all([
       supabase.from("holdings_valued").select("*").order("asset_type").order("symbol"),
       supabase.from("accounts").select("id, name").order("name"),
@@ -192,6 +198,8 @@ export default function HoldingsPage() {
       supabase.rpc("snapshot_at", { snap_date: monthSnapDate }),
       supabase.rpc("snapshot_at", { snap_date: qtrSnapDate }),
       supabase.rpc("snapshot_at", { snap_date: yearSnapDate }),
+      supabase.from("portfolios").select("id, portfolio_name").order("portfolio_name"),
+      supabase.from("portfolio_holdings").select("portfolio_id, holding_id"),
     ]);
     if (hvErr) setError(hvErr.message);
     setHoldings(hv ?? []);
@@ -212,6 +220,13 @@ export default function HoldingsPage() {
       year:  snapToMap(yearSnap),
     });
     setAllTransactions(allTxns ?? []);
+    setPortfolioList(pfList ?? []);
+    const hpm = {};
+    for (const ph of phRows ?? []) {
+      if (!hpm[ph.holding_id]) hpm[ph.holding_id] = [];
+      hpm[ph.holding_id].push(ph.portfolio_id);
+    }
+    setHoldingPortfolioMap(hpm);
   }
 
   useEffect(() => { load(); }, []);
@@ -322,6 +337,7 @@ export default function HoldingsPage() {
       simulator_key: holding.simulator_key ?? "",
       interest_rate: holding.interest_rate != null ? String(holding.interest_rate) : "",
       maturity_date: holding.maturity_date ?? "",
+      portfolioIds: holdingPortfolioMap[holding.id] ?? [],
     });
     setEditError("");
     setMenuOpenId(null);
@@ -351,8 +367,16 @@ export default function HoldingsPage() {
       .from("holdings")
       .update(updates)
       .eq("id", editingHolding.id);
+    if (error) { setEditBusy(false); setEditError(error.message); return; }
+
+    // Sync portfolio assignments
+    await supabase.from("portfolio_holdings").delete().eq("holding_id", editingHolding.id);
+    if (editForm.portfolioIds.length > 0) {
+      await supabase.from("portfolio_holdings").insert(
+        editForm.portfolioIds.map((pid) => ({ portfolio_id: pid, holding_id: editingHolding.id }))
+      );
+    }
     setEditBusy(false);
-    if (error) { setEditError(error.message); return; }
     const prevViewing = editingHolding;
     setEditingHolding(null);
     await load();
@@ -1562,6 +1586,29 @@ export default function HoldingsPage() {
                   ))}
                 </select>
               </div>
+              {portfolioList.length > 0 && (
+                <div>
+                  <label className="label block mb-1.5">Portfolios</label>
+                  <div className="space-y-1.5 max-h-36 overflow-y-auto border border-ink-line rounded-lg p-2">
+                    {portfolioList.map((pf) => (
+                      <label key={pf.id} className="flex items-center gap-2 text-sm cursor-pointer hover:text-paper transition-colors">
+                        <input
+                          type="checkbox"
+                          className="accent-brass"
+                          checked={editForm.portfolioIds.includes(pf.id)}
+                          onChange={() => setEditForm((prev) => ({
+                            ...prev,
+                            portfolioIds: prev.portfolioIds.includes(pf.id)
+                              ? prev.portfolioIds.filter((id) => id !== pf.id)
+                              : [...prev.portfolioIds, pf.id],
+                          }))}
+                        />
+                        <span className="text-paper-dim">{pf.portfolio_name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
               {!isEditMarket && (
                 <div>
                   <label className="label block mb-1.5">Quantity</label>
