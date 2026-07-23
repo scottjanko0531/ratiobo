@@ -40,14 +40,39 @@ async function fetchDxyMonthly(): Promise<Map<string, number>> {
   return map;
 }
 
+async function fetchYahooLatest(ticker: string): Promise<number | null> {
+  try {
+    const encoded = encodeURIComponent(ticker);
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=5d`,
+      { headers: { "User-Agent": "Mozilla/5.0 (compatible; macro-dashboard/1.0)" } }
+    );
+    if (!res.ok) return null;
+    const j = await res.json();
+    const closes: (number | null)[] = j?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
+    const valid = closes.filter((v): v is number => v != null && !isNaN(v));
+    return valid.length ? valid[valid.length - 1] : null;
+  } catch {
+    return null;
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    const [dbcDaily, dxyByMonth] = await Promise.all([
+    const [dbcDaily, dxyByMonth, dxyLatest] = await Promise.all([
       fetchYahoo("DBC"),
       fetchDxyMonthly(),
+      fetchYahooLatest("DX-Y.NYB"),
     ]);
+
+    // Plug current month DXY if FRED hasn't published it yet
+    const now = new Date();
+    const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    if (dxyLatest != null && !dxyByMonth.has(currentMonth)) {
+      dxyByMonth.set(currentMonth, Math.round(dxyLatest * 100) / 100);
+    }
 
     // Convert DBC daily → monthly averages
     const dbcByMonth = new Map<string, number[]>();
