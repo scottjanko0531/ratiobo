@@ -48,6 +48,37 @@ function cleanTitle(title: string, source: string): string {
   return source && title.endsWith(suffix) ? title.slice(0, -suffix.length).trim() : title;
 }
 
+async function fetchMacroVoices(): Promise<NewsItem | null> {
+  const urls = [
+    "https://www.macrovoices.com/feed/podcast",
+    "https://www.macrovoices.com/feed",
+  ];
+  for (const feedUrl of urls) {
+    try {
+      const res = await fetch(feedUrl, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; RSS/2.0 reader)" },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) continue;
+      const xml = await res.text();
+      const s = xml.indexOf("<item>");
+      if (s === -1) continue;
+      const e = xml.indexOf("</item>", s);
+      if (e === -1) continue;
+      const block = xml.slice(s + 6, e);
+      const title = getText(block, "title");
+      if (!title) continue;
+      const pubDate = getText(block, "pubDate");
+      let sub = getText(block, "itunes:subtitle") || getText(block, "description") || "";
+      sub = sub.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").slice(0, 140).trim();
+      const headline = sub ? `${title} — ${sub}` : title;
+      const ts = pubDate ? new Date(pubDate).getTime() : 0;
+      return { headline, source: "MacroVoices", publishedAt: isNaN(ts) ? 0 : Math.floor(ts / 1000) };
+    } catch { continue; }
+  }
+  return null;
+}
+
 async function fetchTopNews(limit = 5): Promise<NewsItem[]> {
   const queries = [
     "Federal Reserve inflation interest rates",
@@ -222,11 +253,16 @@ async function generateNewsMusing(params: {
   if (!ANTHROPIC_KEY || params.headlines.length === 0) return null;
   try {
     const { headlines, regimeLabel, momentumRegime, marketLabel } = params;
+    const mvEpisode = headlines.find(h => h.source === "MacroVoices");
     const newsLines = headlines
       .map((h, i) => `${i + 1}. "${h.headline}"${h.source ? ` — ${h.source}` : ""}`)
       .join("\n");
 
-    const prompt = `You are Clio, macro analyst at RatioBo. Write 2 sharp paragraphs (under 160 words total) — no headers, no bullets, plain prose.
+    const mvInstruction = mvEpisode
+      ? `\nThe first item is the most recent MacroVoices podcast episode. Briefly note what it covers and how it informs the macro picture.`
+      : "";
+
+    const prompt = `You are Clio, macro analyst at RatioBo. Write 2 sharp paragraphs (under 180 words total) — no headers, no bullets, plain prose.
 
 Current regime signals:
   Structural: ${regimeLabel}
@@ -235,7 +271,7 @@ Current regime signals:
 
 Top macro headlines (last 24–48 hours):
 ${newsLines}
-
+${mvInstruction}
 Assess: (1) What macro narrative are these headlines collectively signaling — growth, inflation, credit stress, risk-on, or risk-off? (2) Does that narrative align with or diverge from the regime signals above, and what (if anything) should a BW Modified portfolio holder do differently in response?`;
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -280,7 +316,7 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const [{ data: regimeRow }, { data: macroRows }, marketSnapshot, topNews] = await Promise.all([
+    const [{ data: regimeRow }, { data: macroRows }, marketSnapshot, topNews, mvItem] = await Promise.all([
       sb.from("macro_regime_history")
         .select("structural_key,market_key,forward_key,forward_confidence")
         .order("period_date", { ascending: false })
@@ -289,7 +325,9 @@ Deno.serve(async (req: Request) => {
       sb.from("macro_indicators").select("name,current_value,previous_value"),
       getMarketSnapshot(),
       fetchTopNews(5),
+      fetchMacroVoices(),
     ]);
+    const headlines: NewsItem[] = mvItem ? [mvItem, ...topNews] : topNews;
 
     const get = (name: string) => {
       const i = (macroRows ?? []).find((x: { name: string; current_value: number | null }) => x.name === name);
@@ -338,7 +376,7 @@ Deno.serve(async (req: Request) => {
         prevBe:    getPrev("10Y Breakeven Inflation"),
         marketSnapshot,
       }),
-      generateNewsMusing({ headlines: topNews, regimeLabel, momentumRegime, marketLabel }),
+      generateNewsMusing({ headlines, regimeLabel, momentumRegime, marketLabel }),
     ]);
 
     if (!analysis) {
@@ -351,7 +389,7 @@ Deno.serve(async (req: Request) => {
       analysis_date: today,
       analysis,
       news_musing: newsMusing ?? null,
-      news_headlines: topNews.length > 0 ? topNews : null,
+      news_headlines: headlines.length > 0 ? headlines : null,
       alignment: divergence ? "divergent" : "aligned",
       structural_regime: regimeLabel,
       market_regime: marketLabel,
