@@ -892,7 +892,13 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     const curr = Number(r.current_value), prev = Number(r.previous_value);
     return prev ? (curr - prev) / Math.abs(prev) * 100 : null;
   };
-  type Sig = { name: string; w: number; vote: (v: number) => number; useDir?: boolean };
+  // 3-month % change stored in metadata by level_with_3m processor
+  const getPct3m = (name: string) => {
+    const r = rows.find(r => r.name === name);
+    const v = (r?.metadata as Record<string, unknown> | undefined)?.change3m_pct;
+    return v != null ? Number(v) : null;
+  };
+  type Sig = { name: string; w: number; vote: (v: number) => number; useDir?: boolean; usePct3m?: boolean };
   const G: Sig[] = [
     { name: "2yr/10yr Yield Spread",  w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
     { name: "3mo/10yr Yield Spread",  w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
@@ -903,20 +909,21 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
   ];
   const I: Sig[] = [
     // Direction signals: CPI/PPI trend captures disinflation momentum even when levels are elevated
-    { name: "CPI (YoY)",                       w: 0.20, useDir: true, vote: v => v < -5 ? -1 : v > 5  ? 1 : 0 },
-    { name: "PPI (YoY)",                       w: 0.10, useDir: true, vote: v => v < -5 ? -1 : v > 5  ? 1 : 0 },
-    { name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > 2.5  ? 1 : v >= 1.5 ? 0 : -1 },
+    { name: "CPI (YoY)",                       w: 0.20, useDir: true,  vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
+    { name: "PPI (YoY)",                       w: 0.10, useDir: true,  vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
+    { name: "10Y Breakeven Inflation",         w: 0.20,                vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
     // Threshold raised: readings below 5.5% may reflect tariff shock, not structural demand inflation
-    { name: "Consumer Inflation Expectations", w: 0.15, vote: v => v > 5.5  ? 1 : v >= 2.5 ? 0 : -1 },
-    { name: "Copper Price",                    w: 0.15, vote: v => v > 9000 ? 1 : v >= 7000 ? 0 : -1 },
-    { name: "WTI Crude Oil",                   w: 0.10, vote: v => v > 90   ? 1 : v >= 70  ? 0 : -1 },
-    { name: "M2 Growth (YoY)",                 w: 0.10, vote: v => v > 8    ? 1 : v >= 3   ? 0 : -1 },
+    { name: "Consumer Inflation Expectations", w: 0.15,                vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
+    // 3M momentum (not absolute level) matches the frontend's getPct3m approach
+    { name: "Copper Price",                    w: 0.15, usePct3m: true, vote: v => v > 5  ? 1 : v >= -5 ? 0 : -1 },
+    { name: "WTI Crude Oil",                   w: 0.10, usePct3m: true, vote: v => v > 5  ? 1 : v >= -5 ? 0 : -1 },
+    { name: "M2 Growth (YoY)",                 w: 0.10,                vote: v => v > 8   ? 1 : v >= 3  ? 0 : -1 },
   ];
   type ScoreSig = { w: number; vote: number | null };
   const scoreGroup = (sigs: Sig[]): { signals: ScoreSig[]; score: number | null } => {
     let weighted = 0, totalW = 0;
     const signals: ScoreSig[] = sigs.map(s => {
-      const val = s.useDir ? getDir(s.name) : get(s.name);
+      const val = s.useDir ? getDir(s.name) : s.usePct3m ? getPct3m(s.name) : get(s.name);
       if (val == null) return { w: s.w, vote: null };
       const v = s.vote(val);
       weighted += v * s.w; totalW += s.w;
