@@ -3407,20 +3407,35 @@ function DbcDrawer({ open, onClose, currentValue }) {
     return rows.filter(r => r.date >= cutoffStr);
   }, [rows, monthLimit]);
 
-  const latest = rows?.length ? rows[rows.length - 1] : null;
+  const latest   = rows?.length ? rows[rows.length - 1] : null;
+  const prevRow  = rows?.length > 1 ? rows[rows.length - 2] : null;
+  const spreadDir = (latest?.spread != null && prevRow?.spread != null)
+    ? (latest.spread > prevRow.spread ? "wide" : latest.spread < prevRow.spread ? "tight" : "flat")
+    : null;
 
-  const [dbcDomain, dxyDomain] = useMemo(() => {
-    if (!chartData.length) return [[0, 30], [80, 120]];
-    const dbcVals = chartData.map(r => r.dbc).filter(Boolean);
-    const dxyVals = chartData.map(r => r.dxy).filter(Boolean);
-    const pad = (vals, pct = 0.05) => {
-      const lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo;
-      return [Math.floor((lo - span * pct) * 10) / 10, Math.ceil((hi + span * pct) * 10) / 10];
+  // Shared left-axis domain for DBC index + DXY (both ~100 scale)
+  const [idxDomain, spreadDomain] = useMemo(() => {
+    if (!chartData.length) return [[60, 160], [-60, 60]];
+    const idxVals    = chartData.flatMap(r => [r.dbcIndex, r.dxy]).filter(v => v != null);
+    const spreadVals = chartData.map(r => r.spread).filter(v => v != null);
+    const pad = (vals, pct = 0.08) => {
+      const lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo || 1;
+      return [Math.floor(lo - span * pct), Math.ceil(hi + span * pct)];
     };
-    return [pad(dbcVals), pad(dxyVals)];
+    return [pad(idxVals), pad(spreadVals)];
   }, [chartData]);
 
-  const tableRows = useMemo(() => rows?.length ? [...rows].reverse().slice(0, 60) : [], [rows]);
+  // For table: rows newest-first, carry prior-month spread for direction arrow
+  const tableRows = useMemo(() => {
+    if (!rows?.length) return [];
+    return [...rows].reverse().slice(0, 60).map((r, i, arr) => {
+      const prior = arr[i + 1]; // older month (next in reversed array)
+      const dir = (r.spread != null && prior?.spread != null)
+        ? (r.spread > prior.spread ? "wide" : r.spread < prior.spread ? "tight" : "flat")
+        : null;
+      return { ...r, dir };
+    });
+  }, [rows]);
 
   return (
     <>
@@ -3429,13 +3444,13 @@ function DbcDrawer({ open, onClose, currentValue }) {
         onClick={onClose}
       />
       <div
-        className={`fixed right-0 top-0 h-full w-[600px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+        className={`fixed right-0 top-0 h-full w-[620px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
       >
         {/* Header */}
         <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
           <div>
             <h2 className="text-sm font-semibold text-paper">DBC Commodity Index</h2>
-            <p className="text-[10px] text-paper-dim mt-0.5">Invesco DB Commodity ETF · 14-commodity basket · Monthly avg vs DXY overlay</p>
+            <p className="text-[10px] text-paper-dim mt-0.5">DBC rebased to 100 at inception (Feb 2006) · DXY overlay · Spread = DBC Index − DXY</p>
           </div>
           <div className="flex items-start gap-4 shrink-0">
             {currentValue != null && (
@@ -3443,7 +3458,7 @@ function DbcDrawer({ open, onClose, currentValue }) {
                 <p className={`num text-xl font-bold leading-none ${Number(currentValue) > 21 ? "text-gain" : Number(currentValue) > 16 ? "text-brass-soft" : "text-loss"}`}>
                   ${Number(currentValue).toFixed(2)}
                 </p>
-                <p className="text-[10px] text-paper-dim mt-0.5">Current</p>
+                <p className="text-[10px] text-paper-dim mt-0.5">Price</p>
               </div>
             )}
             <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
@@ -3472,59 +3487,47 @@ function DbcDrawer({ open, onClose, currentValue }) {
 
           {/* Summary stats */}
           {latest && (
-            <div className="card p-4 grid grid-cols-2 gap-4">
-              <div className="space-y-3">
-                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest">DBC Commodity</p>
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  <div>
-                    <p className="num text-base text-paper">${latest.dbc?.toFixed(2) ?? "—"}</p>
-                    <p className="label text-[10px] mt-0.5">Price</p>
-                  </div>
-                  <div>
-                    <p className={`num text-base ${latest.dbcYoy == null ? "text-paper-dim" : latest.dbcYoy >= 0 ? "text-loss" : "text-gain"}`}>
-                      {latest.dbcYoy != null ? `${latest.dbcYoy >= 0 ? "+" : ""}${latest.dbcYoy.toFixed(1)}%` : "—"}
-                    </p>
-                    <p className="label text-[10px] mt-0.5">YoY</p>
-                  </div>
-                  <div>
-                    <p className={`num text-base ${currentValue == null || latest.dbc == null ? "text-paper-dim" : (Number(currentValue) / latest.dbc - 1) >= 0 ? "text-gain" : "text-loss"}`}>
-                      {currentValue != null && latest.dbc != null
-                        ? `${((Number(currentValue) / latest.dbc - 1) * 100 >= 0 ? "+" : "")}${((Number(currentValue) / latest.dbc - 1) * 100).toFixed(1)}%`
-                        : "—"}
-                    </p>
-                    <p className="label text-[10px] mt-0.5">vs Avg</p>
-                  </div>
-                </div>
+            <div className="card p-4 grid grid-cols-3 gap-3">
+              <div className="space-y-2 text-center">
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest">DBC Index</p>
+                <p className={`num text-lg font-bold ${latest.dbcIndex > 100 ? "text-gain" : latest.dbcIndex > 70 ? "text-brass-soft" : "text-loss"}`}>
+                  {latest.dbcIndex?.toFixed(1) ?? "—"}
+                </p>
+                <p className={`num text-xs ${latest.dbcYoy == null ? "text-paper-dim" : latest.dbcYoy >= 0 ? "text-loss" : "text-gain"}`}>
+                  {latest.dbcYoy != null ? `${latest.dbcYoy >= 0 ? "+" : ""}${latest.dbcYoy.toFixed(1)}% YoY` : "—"}
+                </p>
               </div>
-              <div className="space-y-3 border-l border-ink-line pl-4">
-                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest">DXY Dollar Index</p>
-                <div className="grid grid-cols-2 gap-2 text-center">
-                  <div>
-                    <p className={`num text-base ${latest.dxy == null ? "text-paper-dim" : latest.dxy > 104 ? "text-loss" : latest.dxy > 100 ? "text-brass-soft" : "text-gain"}`}>
-                      {latest.dxy?.toFixed(1) ?? "—"}
-                    </p>
-                    <p className="label text-[10px] mt-0.5">Level</p>
-                  </div>
-                  <div>
-                    <p className={`num text-base ${latest.dxyYoy == null ? "text-paper-dim" : latest.dxyYoy < 0 ? "text-gain" : "text-loss"}`}>
-                      {latest.dxyYoy != null ? `${latest.dxyYoy >= 0 ? "+" : ""}${latest.dxyYoy.toFixed(1)}%` : "—"}
-                    </p>
-                    <p className="label text-[10px] mt-0.5">YoY</p>
-                  </div>
-                </div>
+              <div className="space-y-2 text-center border-x border-ink-line">
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest">DXY</p>
+                <p className={`num text-lg font-bold ${latest.dxy == null ? "text-paper-dim" : latest.dxy > 104 ? "text-loss" : latest.dxy > 100 ? "text-brass-soft" : "text-gain"}`}>
+                  {latest.dxy?.toFixed(1) ?? "—"}
+                </p>
+                <p className={`num text-xs ${latest.dxyYoy == null ? "text-paper-dim" : latest.dxyYoy < 0 ? "text-gain" : "text-loss"}`}>
+                  {latest.dxyYoy != null ? `${latest.dxyYoy >= 0 ? "+" : ""}${latest.dxyYoy.toFixed(1)}% YoY` : "—"}
+                </p>
+              </div>
+              <div className="space-y-2 text-center">
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest">Spread</p>
+                <p className={`num text-lg font-bold ${latest.spread == null ? "text-paper-dim" : latest.spread > 0 ? "text-gain" : "text-loss"}`}>
+                  {latest.spread != null ? `${latest.spread >= 0 ? "+" : ""}${latest.spread.toFixed(1)}` : "—"}
+                </p>
+                <p className={`num text-xs ${spreadDir === "wide" ? "text-gain" : spreadDir === "tight" ? "text-loss" : "text-paper-dim"}`}>
+                  {spreadDir === "wide" ? "↑ Widening" : spreadDir === "tight" ? "↓ Tightening" : spreadDir === "flat" ? "→ Flat" : "—"}
+                </p>
               </div>
             </div>
           )}
 
-          {/* Dual-axis chart: DBC + DXY */}
+          {/* Main chart: DBC Index + DXY lines (left axis) + Spread bars (right axis) */}
           {rows === null ? (
             <div className="h-72 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
           ) : chartData.length === 0 ? (
             <div className="h-72 flex items-center justify-center text-paper-dim text-sm">No data</div>
           ) : (
             <div className="card p-4">
-              <p className="label text-[10px] mb-3">DBC Price (left) vs DXY (right) · {range} · monthly avg</p>
-              <ResponsiveContainer width="100%" height={280}>
+              <p className="label text-[10px] mb-1">DBC Index vs DXY · {range} · monthly avg</p>
+              <p className="text-[10px] text-paper-dim/60 mb-3">Spread bars (right axis) = DBC Index − DXY · Green = widening · Red = tightening</p>
+              <ResponsiveContainer width="100%" height={300}>
                 <ComposedChart data={chartData} margin={{ top: 4, right: 52, bottom: 0, left: 0 }}>
                   <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
                   <XAxis
@@ -3536,87 +3539,71 @@ function DbcDrawer({ open, onClose, currentValue }) {
                     interval={Math.max(0, Math.floor(chartData.length / 6))}
                   />
                   <YAxis
-                    yAxisId="dbc"
-                    domain={dbcDomain}
-                    tick={{ fill: "#4ade80", fontSize: 10 }}
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={v => `$${v.toFixed(0)}`}
-                    width={36}
-                  />
-                  <YAxis
-                    yAxisId="dxy"
-                    orientation="right"
-                    domain={dxyDomain}
-                    tick={{ fill: "#C9A227", fontSize: 10 }}
+                    yAxisId="idx"
+                    domain={idxDomain}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
                     tickLine={false}
                     axisLine={false}
                     tickFormatter={v => v.toFixed(0)}
                     width={36}
                   />
+                  <YAxis
+                    yAxisId="spread"
+                    orientation="right"
+                    domain={spreadDomain}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={v => v.toFixed(0)}
+                    width={40}
+                  />
                   <Tooltip
                     contentStyle={{ background: "#1A2030", border: "1px solid #2A3240", borderRadius: 8, fontSize: 11 }}
                     labelStyle={{ color: "#A8ADB8" }}
                     formatter={(v, name) => [
-                      name === "dbc" ? `$${Number(v).toFixed(2)}` : Number(v).toFixed(1),
-                      name === "dbc" ? "DBC" : "DXY",
+                      Number(v).toFixed(1),
+                      name === "dbcIndex" ? "DBC Index" : name === "dxy" ? "DXY" : "Spread",
                     ]}
                   />
-                  <ReferenceLine yAxisId="dxy" y={100} stroke="#4B5563" strokeDasharray="4 2" />
-                  <Line yAxisId="dbc" type="monotone" dataKey="dbc" stroke="#4ade80" strokeWidth={2} dot={false} name="dbc" />
-                  <Line yAxisId="dxy" type="monotone" dataKey="dxy" stroke="#C9A227" strokeWidth={1.5} dot={false} strokeDasharray="5 2" name="dxy" />
+                  <ReferenceLine yAxisId="idx" y={100} stroke="#4B5563" strokeDasharray="4 2" />
+                  <ReferenceLine yAxisId="spread" y={0} stroke="#4B5563" strokeDasharray="4 2" />
+                  {/* Spread bars behind the lines */}
+                  <Bar yAxisId="spread" dataKey="spread" radius={[1, 1, 0, 0]} maxBarSize={8}>
+                    {chartData.map((r, i) => {
+                      const prev = chartData[i - 1];
+                      const widening = prev?.spread != null && r.spread != null && r.spread > prev.spread;
+                      const tightening = prev?.spread != null && r.spread != null && r.spread < prev.spread;
+                      return (
+                        <Cell
+                          key={i}
+                          fill={r.spread == null ? "#2A3240" : widening ? "#4ade80" : tightening ? "#f87171" : "#4B5563"}
+                          fillOpacity={0.7}
+                        />
+                      );
+                    })}
+                  </Bar>
+                  <Line yAxisId="idx" type="monotone" dataKey="dbcIndex" stroke="#4ade80" strokeWidth={2} dot={false} name="dbcIndex" />
+                  <Line yAxisId="idx" type="monotone" dataKey="dxy" stroke="#C9A227" strokeWidth={1.5} dot={false} strokeDasharray="5 2" name="dxy" />
                 </ComposedChart>
               </ResponsiveContainer>
-              <div className="flex items-center gap-5 mt-2">
+              <div className="flex items-center gap-5 mt-2 flex-wrap">
                 <div className="flex items-center gap-1.5">
                   <span className="inline-block w-4 bg-gain" style={{ height: 2 }} />
-                  <span className="text-[10px] text-paper-dim">DBC (left axis)</span>
+                  <span className="text-[10px] text-paper-dim">DBC Index (base 100)</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="inline-block w-4 border-t border-dashed border-brass-soft" />
-                  <span className="text-[10px] text-paper-dim">DXY (right axis)</span>
+                  <span className="text-[10px] text-paper-dim">DXY (left axis)</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block w-3 h-3 rounded-sm bg-gain opacity-70" />
+                  <span className="text-[10px] text-paper-dim">Spread widening</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block w-3 h-3 rounded-sm bg-loss opacity-70" />
+                  <span className="text-[10px] text-paper-dim">Spread tightening</span>
                 </div>
               </div>
-              <p className="text-[10px] text-paper-dim/50 mt-1">Note: DBC and DXY are inversely correlated — strong dollar typically depresses commodity prices.</p>
-            </div>
-          )}
-
-          {/* YoY bar chart */}
-          {rows !== null && chartData.length > 12 && (
-            <div className="card p-4">
-              <p className="label text-[10px] mb-3">DBC YoY % Change · {range}</p>
-              <ResponsiveContainer width="100%" height={150}>
-                <ComposedChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
-                  <XAxis
-                    dataKey="date"
-                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={v => v.slice(0, 7)}
-                    interval={Math.max(0, Math.floor(chartData.length / 6))}
-                  />
-                  <YAxis
-                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={v => `${v}%`}
-                    width={44}
-                  />
-                  <Tooltip
-                    contentStyle={{ background: "#1A2030", border: "1px solid #2A3240", borderRadius: 8, fontSize: 11 }}
-                    labelStyle={{ color: "#A8ADB8" }}
-                    formatter={(v) => [`${v >= 0 ? "+" : ""}${Number(v).toFixed(1)}%`, "DBC YoY"]}
-                  />
-                  <ReferenceLine y={0} stroke="#4B5563" />
-                  <Bar dataKey="dbcYoy" radius={[1, 1, 0, 0]}>
-                    {chartData.map((r, i) => (
-                      <Cell key={i} fill={r.dbcYoy == null ? "#2A3240" : r.dbcYoy >= 0 ? "#f87171" : "#4ade80"} />
-                    ))}
-                  </Bar>
-                </ComposedChart>
-              </ResponsiveContainer>
-              <p className="text-[10px] text-paper-dim/50 mt-1">Red = commodity prices rising YoY (inflationary), Green = falling (disinflationary).</p>
             </div>
           )}
 
@@ -3624,32 +3611,38 @@ function DbcDrawer({ open, onClose, currentValue }) {
           {rows !== null && tableRows.length > 0 && (
             <div className="card overflow-hidden">
               <div className="px-4 py-3 border-b border-ink-line">
-                <p className="label text-[10px]">Monthly History (most recent 60)</p>
+                <p className="label text-[10px]">Monthly History (most recent 60) · Spread = DBC Index − DXY</p>
               </div>
-              <div className="overflow-y-auto max-h-64">
+              <div className="overflow-y-auto max-h-72">
                 <table className="w-full text-xs">
                   <thead className="sticky top-0 bg-ink-soft">
                     <tr className="border-b border-ink-line">
-                      <th className="px-4 py-2 text-left label text-[10px]">Date</th>
-                      <th className="px-4 py-2 text-right label text-[10px]">DBC</th>
-                      <th className="px-4 py-2 text-right label text-[10px]">DBC YoY</th>
-                      <th className="px-4 py-2 text-right label text-[10px]">DXY</th>
-                      <th className="px-4 py-2 text-right label text-[10px]">DXY YoY</th>
+                      <th className="px-3 py-2 text-left label text-[10px]">Date</th>
+                      <th className="px-3 py-2 text-right label text-[10px]">DBC Idx</th>
+                      <th className="px-3 py-2 text-right label text-[10px]">DBC YoY</th>
+                      <th className="px-3 py-2 text-right label text-[10px]">DXY</th>
+                      <th className="px-3 py-2 text-right label text-[10px]">Spread</th>
+                      <th className="px-3 py-2 text-center label text-[10px]">Dir</th>
                     </tr>
                   </thead>
                   <tbody>
                     {tableRows.map(r => (
                       <tr key={r.date} className="border-b border-ink-line/40 hover:bg-ink/30">
-                        <td className="px-4 py-1.5 text-paper-dim">{r.date.slice(0, 7)}</td>
-                        <td className="px-4 py-1.5 text-right num text-paper">${r.dbc?.toFixed(2) ?? "—"}</td>
-                        <td className={`px-4 py-1.5 text-right num ${r.dbcYoy == null ? "text-paper-dim" : r.dbcYoy >= 0 ? "text-loss" : "text-gain"}`}>
+                        <td className="px-3 py-1.5 text-paper-dim">{r.date.slice(0, 7)}</td>
+                        <td className={`px-3 py-1.5 text-right num ${r.dbcIndex > 100 ? "text-gain" : r.dbcIndex > 70 ? "text-brass-soft" : "text-loss"}`}>
+                          {r.dbcIndex?.toFixed(1) ?? "—"}
+                        </td>
+                        <td className={`px-3 py-1.5 text-right num ${r.dbcYoy == null ? "text-paper-dim" : r.dbcYoy >= 0 ? "text-loss" : "text-gain"}`}>
                           {r.dbcYoy != null ? `${r.dbcYoy >= 0 ? "+" : ""}${r.dbcYoy.toFixed(1)}%` : "—"}
                         </td>
-                        <td className={`px-4 py-1.5 text-right num ${r.dxy == null ? "text-paper-dim" : r.dxy > 104 ? "text-loss" : r.dxy > 100 ? "text-brass-soft" : "text-gain"}`}>
+                        <td className={`px-3 py-1.5 text-right num ${r.dxy == null ? "text-paper-dim" : r.dxy > 104 ? "text-loss" : r.dxy > 100 ? "text-brass-soft" : "text-gain"}`}>
                           {r.dxy?.toFixed(1) ?? "—"}
                         </td>
-                        <td className={`px-4 py-1.5 text-right num ${r.dxyYoy == null ? "text-paper-dim" : r.dxyYoy < 0 ? "text-gain" : "text-loss"}`}>
-                          {r.dxyYoy != null ? `${r.dxyYoy >= 0 ? "+" : ""}${r.dxyYoy.toFixed(1)}%` : "—"}
+                        <td className={`px-3 py-1.5 text-right num ${r.spread == null ? "text-paper-dim" : r.spread > 0 ? "text-gain" : "text-loss"}`}>
+                          {r.spread != null ? `${r.spread >= 0 ? "+" : ""}${r.spread.toFixed(1)}` : "—"}
+                        </td>
+                        <td className={`px-3 py-1.5 text-center text-base leading-none ${r.dir === "wide" ? "text-gain" : r.dir === "tight" ? "text-loss" : "text-paper-dim"}`}>
+                          {r.dir === "wide" ? "↑" : r.dir === "tight" ? "↓" : r.dir === "flat" ? "→" : "—"}
                         </td>
                       </tr>
                     ))}
@@ -3659,7 +3652,7 @@ function DbcDrawer({ open, onClose, currentValue }) {
             </div>
           )}
 
-          <p className="text-[10px] text-paper-dim/60">DBC: Yahoo Finance · DXY: FRED DTWEXBGS · Monthly averages · DBC inception 2006</p>
+          <p className="text-[10px] text-paper-dim/60">DBC: Yahoo Finance (rebased 100 = Feb 2006) · DXY: FRED DTWEXBGS · Monthly averages · Positive spread = commodities outperforming dollar on indexed basis</p>
         </div>
       </div>
     </>

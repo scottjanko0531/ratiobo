@@ -62,20 +62,27 @@ Deno.serve(async (req: Request) => {
       dbcMonthAvg.set(m, vals.reduce((a, b) => a + b, 0) / vals.length);
     }
 
-    // Build aligned monthly rows (only months where DBC exists)
+    const months = [...dbcMonthAvg.keys()].sort();
+
+    // Base = first month with data (DBC inception ~2006-02)
+    const baseDbc = dbcMonthAvg.get(months[0])!;
+
     type Row = {
       date: string;
       dbc: number;
       dbcYoy: number | null;
+      dbcIndex: number;       // DBC rebased to 100 at inception
       dxy: number | null;
       dxyYoy: number | null;
+      spread: number | null;  // dbcIndex - dxy (positive = commodities above dollar)
     };
 
-    const months = [...dbcMonthAvg.keys()].sort();
     const rows: Row[] = [];
 
     for (const m of months) {
       const dbc = Math.round(dbcMonthAvg.get(m)! * 100) / 100;
+      const dbcIndex = Math.round((dbc / baseDbc) * 10000) / 100; // 2 decimal places
+
       const [yr, mo] = m.split("-").map(Number);
       const yaKey = `${yr - 1}-${String(mo).padStart(2, "0")}`;
 
@@ -88,7 +95,9 @@ Deno.serve(async (req: Request) => {
         ? Math.round((dxy / dxyYa - 1) * 10000) / 100
         : null;
 
-      rows.push({ date: m + "-01", dbc, dbcYoy, dxy, dxyYoy });
+      const spread = dxy != null ? Math.round((dbcIndex - dxy) * 100) / 100 : null;
+
+      rows.push({ date: m + "-01", dbc, dbcYoy, dbcIndex, dxy, dxyYoy, spread });
     }
 
     return new Response(JSON.stringify(rows), {
