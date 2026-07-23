@@ -246,6 +246,14 @@ const INDICATORS: Indicator[] = [
   },
   // ── LAYER 2: Short-Term Debt Cycle ──
   {
+    name: "30Y Treasury Yield",
+    layer: 2, layer_name: "Short-Term Debt Cycle",
+    description: "30-year US Treasury yield — long-duration benchmark. Rising yield = tighter financial conditions, higher debt cost; falling = easing.",
+    fred_series_id: null, unit: "%", data_source: "yahoo", sort_order: 7,
+    series: "^TYX", type: "yahoo_price_with_3m",
+    statusFn: v => v > 5 ? "danger" : v > 4 ? "watch" : "healthy",
+  },
+  {
     name: "2yr/10yr Yield Spread",
     layer: 2, layer_name: "Short-Term Debt Cycle",
     description: "10Y minus 2Y Treasury yield — inversion signals recession 12–18 months forward",

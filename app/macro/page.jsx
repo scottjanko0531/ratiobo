@@ -3145,6 +3145,263 @@ function GoldPriceDrawer({ open, onClose, ind }) {
   );
 }
 
+const T30_RANGES = [
+  { label: "1Y",  months: 12 },
+  { label: "2Y",  months: 24 },
+  { label: "5Y",  months: 60 },
+  { label: "10Y", months: 120 },
+  { label: "All", months: 9999 },
+];
+
+function T30Drawer({ open, onClose, currentValue }) {
+  const [data, setData]   = useState(null); // { rows, latestDaily }
+  const [range, setRange] = useState("5Y");
+
+  useEffect(() => {
+    if (!open || data !== null) return;
+    fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-t30-history`)
+      .then(r => r.json())
+      .then(d => setData(d?.rows ? d : null))
+      .catch(() => setData({ rows: [], latestDaily: null }));
+  }, [open, data]);
+
+  const rows = data?.rows ?? null;
+  const latestDaily = data?.latestDaily ?? null;
+
+  const monthLimit = T30_RANGES.find(r => r.label === range)?.months ?? 60;
+
+  const chartData = useMemo(() => {
+    if (!rows?.length) return [];
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - monthLimit);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    return rows.filter(r => r.date >= cutoffStr);
+  }, [rows, monthLimit]);
+
+  const latest = rows?.length ? rows[rows.length - 1] : null;
+  const prev   = rows?.length > 1 ? rows[rows.length - 2] : null;
+
+  const yDomain = useMemo(() => {
+    if (!chartData.length) return [1, 7];
+    const vals = chartData.map(r => r.value);
+    const lo = Math.min(...vals), hi = Math.max(...vals), pad = (hi - lo) * 0.1 || 0.5;
+    return [Math.floor((lo - pad) * 4) / 4, Math.ceil((hi + pad) * 4) / 4];
+  }, [chartData]);
+
+  const tableRows = useMemo(() => rows?.length ? [...rows].reverse().slice(0, 60) : [], [rows]);
+
+  const yieldColor = (v) => v > 5 ? "#f87171" : v > 4 ? "#C9A227" : "#4ade80";
+  const ppColor    = (v) => v == null ? "#6B7280" : v > 0 ? "#f87171" : "#4ade80";
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed right-0 top-0 h-full w-[600px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">30-Year Treasury Yield</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">^TYX (CBOE) · Monthly avg · Prior-day close · YoY/MoM in percentage points</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            <div className="text-right">
+              {latestDaily && (
+                <>
+                  <p className={`num text-xl font-bold leading-none`} style={{ color: yieldColor(latestDaily.value) }}>
+                    {latestDaily.value.toFixed(3)}%
+                  </p>
+                  <p className="text-[10px] text-paper-dim mt-0.5">{latestDaily.date} close</p>
+                </>
+              )}
+              {!latestDaily && currentValue != null && (
+                <>
+                  <p className="num text-xl font-bold leading-none" style={{ color: yieldColor(Number(currentValue)) }}>
+                    {Number(currentValue).toFixed(3)}%
+                  </p>
+                  <p className="text-[10px] text-paper-dim mt-0.5">Current</p>
+                </>
+              )}
+            </div>
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          {/* Range */}
+          <div className="flex items-center gap-1">
+            {T30_RANGES.map(r => (
+              <button
+                key={r.label}
+                onClick={() => setRange(r.label)}
+                className={`px-3 py-1 rounded-lg text-xs transition-colors ${
+                  range === r.label
+                    ? "bg-ink text-brass-soft border border-brass/30"
+                    : "text-paper-dim hover:text-paper"
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Summary stats */}
+          {latest && (
+            <div className="card p-4 grid grid-cols-3 gap-3 text-center">
+              <div>
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest mb-2">Monthly Avg</p>
+                <p className="num text-lg font-bold" style={{ color: yieldColor(latest.value) }}>
+                  {latest.value.toFixed(3)}%
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">{latest.date.slice(0, 7)}</p>
+              </div>
+              <div className="border-x border-ink-line">
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest mb-2">YoY Change</p>
+                <p className="num text-lg font-bold" style={{ color: ppColor(latest.yoy) }}>
+                  {latest.yoy != null ? `${latest.yoy >= 0 ? "+" : ""}${latest.yoy.toFixed(2)}pp` : "—"}
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">{latest.yoy != null ? (latest.yoy > 0 ? "Rising" : "Falling") : ""}</p>
+              </div>
+              <div>
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest mb-2">MoM Change</p>
+                <p className="num text-lg font-bold" style={{ color: ppColor(latest.mom) }}>
+                  {latest.mom != null ? `${latest.mom >= 0 ? "+" : ""}${latest.mom.toFixed(2)}pp` : "—"}
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">{prev ? `vs ${prev.value.toFixed(3)}%` : ""}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Yield level chart */}
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : chartData.length === 0 ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">No data</div>
+          ) : (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Yield Level · {range} · monthly avg</p>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={v => v.slice(0, 7)}
+                    interval={Math.max(0, Math.floor(chartData.length / 6))}
+                  />
+                  <YAxis
+                    domain={yDomain}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={v => `${v.toFixed(1)}%`}
+                    width={44}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "#1A2030", border: "1px solid #2A3240", borderRadius: 8, fontSize: 11 }}
+                    labelStyle={{ color: "#A8ADB8" }}
+                    formatter={v => [`${Number(v).toFixed(3)}%`, "30Y Yield"]}
+                  />
+                  <ReferenceLine y={3} stroke="#4B5563" strokeDasharray="3 2" label={{ value: "3%", fill: "#6B7280", fontSize: 9, position: "right" }} />
+                  <ReferenceLine y={4} stroke="#C9A227" strokeDasharray="3 2" strokeOpacity={0.5} label={{ value: "4%", fill: "#C9A227", fontSize: 9, position: "right" }} />
+                  <ReferenceLine y={5} stroke="#f87171" strokeDasharray="3 2" strokeOpacity={0.5} label={{ value: "5%", fill: "#f87171", fontSize: 9, position: "right" }} />
+                  <Line type="monotone" dataKey="value" stroke="#5B8DB8" strokeWidth={2} dot={false} name="value" />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* MoM change bar chart */}
+          {rows !== null && chartData.length > 2 && (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-1">Month-over-Month Change (pp) · {range}</p>
+              <p className="text-[10px] text-paper-dim/60 mb-3">Red = yield rising (tightening), Green = yield falling (easing)</p>
+              <ResponsiveContainer width="100%" height={150}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={v => v.slice(0, 7)}
+                    interval={Math.max(0, Math.floor(chartData.length / 6))}
+                  />
+                  <YAxis
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={v => `${v > 0 ? "+" : ""}${v.toFixed(1)}pp`}
+                    width={52}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "#1A2030", border: "1px solid #2A3240", borderRadius: 8, fontSize: 11 }}
+                    labelStyle={{ color: "#A8ADB8" }}
+                    formatter={v => [`${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(3)}pp`, "MoM"]}
+                  />
+                  <ReferenceLine y={0} stroke="#4B5563" />
+                  <Bar dataKey="mom" radius={[1, 1, 0, 0]} maxBarSize={12}>
+                    {chartData.map((r, i) => (
+                      <Cell key={i} fill={r.mom == null ? "#2A3240" : r.mom > 0 ? "#f87171" : "#4ade80"} />
+                    ))}
+                  </Bar>
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* History table */}
+          {rows !== null && tableRows.length > 0 && (
+            <div className="card overflow-hidden">
+              <div className="px-4 py-3 border-b border-ink-line">
+                <p className="label text-[10px]">Monthly History (most recent 60) · pp = percentage points</p>
+              </div>
+              <div className="overflow-y-auto max-h-72">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-ink-soft">
+                    <tr className="border-b border-ink-line">
+                      <th className="px-4 py-2 text-left label text-[10px]">Date</th>
+                      <th className="px-4 py-2 text-right label text-[10px]">Yield</th>
+                      <th className="px-4 py-2 text-right label text-[10px]">YoY (pp)</th>
+                      <th className="px-4 py-2 text-right label text-[10px]">MoM (pp)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows.map(r => (
+                      <tr key={r.date} className="border-b border-ink-line/40 hover:bg-ink/30">
+                        <td className="px-4 py-1.5 text-paper-dim">{r.date.slice(0, 7)}</td>
+                        <td className="px-4 py-1.5 text-right num" style={{ color: yieldColor(r.value) }}>
+                          {r.value.toFixed(3)}%
+                        </td>
+                        <td className="px-4 py-1.5 text-right num" style={{ color: ppColor(r.yoy) }}>
+                          {r.yoy != null ? `${r.yoy >= 0 ? "+" : ""}${r.yoy.toFixed(3)}pp` : "—"}
+                        </td>
+                        <td className="px-4 py-1.5 text-right num" style={{ color: ppColor(r.mom) }}>
+                          {r.mom != null ? `${r.mom >= 0 ? "+" : ""}${r.mom.toFixed(3)}pp` : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60">Source: Yahoo Finance ^TYX (CBOE 30-Year Treasury Bond Yield Index) · Monthly averages from daily closes · Current month is a partial-period average</p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 const DXY_RANGES = [
   { label: "1Y",  months: 12 },
   { label: "2Y",  months: 24 },
@@ -3945,6 +4202,7 @@ export default function MacroDashboard() {
   const [goldPriceOpen, setGoldPriceOpen] = useState(false);
   const [cbGoldOpen, setCbGoldOpen] = useState(false);
   const [ppiDrawerOpen, setPpiDrawerOpen] = useState(false);
+  const [t30DrawerOpen, setT30DrawerOpen] = useState(false);
   const [dxyDrawerOpen, setDxyDrawerOpen] = useState(false);
   const [dbcDrawerOpen, setDbcDrawerOpen] = useState(false);
   const [regimeHistory, setRegimeHistory] = useState([]);
@@ -4139,6 +4397,7 @@ export default function MacroDashboard() {
                           : ind.name === "Gold Price (3M Avg)" ? () => setGoldPriceOpen(true)
                           : ind.name === "CB Gold Reserves (YoY)" ? () => setCbGoldOpen(true)
                           : ind.name === "PPI (YoY)" ? () => setPpiDrawerOpen(true)
+                          : ind.name === "30Y Treasury Yield" ? () => setT30DrawerOpen(true)
                           : ind.name === "DXY" ? () => setDxyDrawerOpen(true)
                           : ind.name === "DBC Commodity Index" ? () => setDbcDrawerOpen(true)
                           : undefined
@@ -4201,6 +4460,11 @@ export default function MacroDashboard() {
         open={ppiDrawerOpen}
         onClose={() => setPpiDrawerOpen(false)}
         currentValue={indicators?.find((i) => i.name === "PPI (YoY)")?.current_value}
+      />
+      <T30Drawer
+        open={t30DrawerOpen}
+        onClose={() => setT30DrawerOpen(false)}
+        currentValue={indicators?.find((i) => i.name === "30Y Treasury Yield")?.current_value}
       />
       <DxyDrawer
         open={dxyDrawerOpen}
