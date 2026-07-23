@@ -504,8 +504,8 @@ const INDICATORS: Indicator[] = [
   {
     name: "DXY", layer: 3, layer_name: "Business Cycle",
     description: "US Dollar Index (ICE) — strong dollar is headwind for EM, gold, and commodities (37% of BW Modified)",
-    fred_series_id: "DTWEXBGS", unit: "index", data_source: "fred", sort_order: 295,
-    series: "DTWEXBGS", type: "level",
+    fred_series_id: null, unit: "index", data_source: "yahoo", sort_order: 295,
+    series: "DX-Y.NYB", type: "yahoo_price_with_3m",
     statusFn: v => v > 104 ? "danger" : v > 100 ? "watch" : "healthy",
   },
   {
