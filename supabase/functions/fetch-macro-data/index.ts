@@ -139,7 +139,8 @@ interface Indicator {
     | "gold_3m_avg"
     | "silver_3m_avg"
     | "cb_gold_imf"
-    | "level_with_3m";
+    | "level_with_3m"
+    | "yahoo_price_with_3m";
   series?: string;
   series2?: string;
   statusFn: StatusFn;
@@ -507,6 +508,14 @@ const INDICATORS: Indicator[] = [
     series: "DTWEXBGS", type: "level",
     statusFn: v => v > 104 ? "danger" : v > 100 ? "watch" : "healthy",
   },
+  {
+    name: "DBC Commodity Index",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Invesco DB Commodity Index ETF — broad basket of 14 commodities (energy, metals, agriculture). Proxy for the TR/CC CRB Index. Rising DBC = inflationary commodity pressure.",
+    fred_series_id: null, unit: "$/shr", data_source: "yahoo", sort_order: 296,
+    series: "DBC", type: "yahoo_price_with_3m",
+    statusFn: v => v > 21 ? "healthy" : v > 16 ? "watch" : "danger",
+  },
 ];
 
 interface ProcessedRow {
@@ -751,6 +760,23 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
           if (obs.length < 260) throw new Error(`cb_gold fallback: only ${obs.length} obs`);
           current  = (obs[0].value   / obs[252].value - 1) * 100;
           previous = (obs[1].value / obs[253].value - 1) * 100;
+        }
+        break;
+      }
+      case "yahoo_price_with_3m": {
+        const obs = await fetchYahooTicker(ind.series!, "1y");
+        if (obs.length < 2) return null;
+        // obs sorted desc: obs[0] = most recent
+        current = obs[0].value;
+        previous = obs[1].value;
+        // 3M % change: find most recent obs at or before 3 months ago
+        const cutoff = new Date(obs[0].date);
+        cutoff.setMonth(cutoff.getMonth() - 3);
+        const cutoffStr = cutoff.toISOString().slice(0, 10);
+        const threeMAgo = obs.find(o => o.date <= cutoffStr);
+        if (threeMAgo) {
+          const pct = Math.round((current / threeMAgo.value - 1) * 10000) / 100;
+          metadata = { change3m_pct: pct };
         }
         break;
       }
