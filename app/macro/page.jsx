@@ -94,7 +94,7 @@ function PencilIcon() {
   );
 }
 
-function IndicatorCard({ ind, onSave, onClick }) {
+function IndicatorCard({ ind, onSave, onClick, note }) {
   const [editing, setEditing] = useState(false);
   const [editVal, setEditVal] = useState("");
   const [editStatus, setEditStatus] = useState("unknown");
@@ -188,7 +188,20 @@ function IndicatorCard({ ind, onSave, onClick }) {
       onClick={onClick}
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-medium leading-snug">{ind.name}</p>
+        <div className="flex items-start gap-1 min-w-0">
+          <p className="text-sm font-medium leading-snug">{ind.name}</p>
+          {note && (
+            <div className="relative group shrink-0 mt-0.5" onClick={e => e.stopPropagation()}>
+              <svg className="w-3.5 h-3.5 text-paper-dim/50 hover:text-brass-soft transition-colors cursor-default" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 3a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm-.25 3.75h.5a.75.75 0 0 1 .75.75v3a.25.25 0 0 0 .25.25h.25a.5.5 0 0 1 0 1h-2a.5.5 0 0 1 0-1h.25a.25.25 0 0 0 .25-.25v-3H7a.5.5 0 0 1 0-1h.75z"/>
+              </svg>
+              <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-56 bg-ink border border-ink-line rounded-lg px-3 py-2 text-[11px] text-paper-dim leading-relaxed shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150 z-50">
+                {note}
+                <span className="absolute left-1/2 -translate-x-1/2 top-full w-2 h-2 bg-ink border-r border-b border-ink-line rotate-45 -mt-1" />
+              </div>
+            </div>
+          )}
+        </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <StatusBadge status={ind.status} />
           {ind.is_manual && (
@@ -4114,6 +4127,11 @@ export default function MacroDashboard() {
                       key={ind.id}
                       ind={ind}
                       onSave={fetchIndicators}
+                      note={
+                        ind.name === "DBC Commodity Index"
+                          ? "A rising dollar = falling commodities = higher bond prices. A falling dollar = rising commodities = lower bond prices."
+                          : undefined
+                      }
                       onClick={
                           ind.name === "Total Debt / GDP" ? () => setDebtDrawerOpen(true)
                           : ind.name === "Core CPI (YoY)" ? () => setCpiDrawerOpen(true)
