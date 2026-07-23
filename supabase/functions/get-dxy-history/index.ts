@@ -1,61 +1,47 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-const FRED = "https://api.stlouisfed.org/fred/series/observations";
-const apiKey = Deno.env.get("FRED_API_KEY")!;
-
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-async function fetchMonthly(seriesId: string): Promise<{ date: string; value: number }[]> {
-  const url = `${FRED}?series_id=${seriesId}&api_key=${apiKey}&frequency=m&aggregation_method=avg&sort_order=desc&limit=600&file_type=json`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`FRED ${seriesId}: HTTP ${res.status}`);
+async function fetchYahooDaily(ticker: string): Promise<{ date: string; value: number }[]> {
+  const encoded = encodeURIComponent(ticker);
+  const res = await fetch(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=20y`,
+    { headers: { "User-Agent": "Mozilla/5.0 (compatible; macro-dashboard/1.0)" } }
+  );
+  if (!res.ok) throw new Error(`Yahoo ${ticker}: HTTP ${res.status}`);
   const j = await res.json();
-  return (j.observations as { date: string; value: string }[])
-    .filter((o) => o.value !== "." && o.value !== "")
-    .map((o) => ({ date: o.date, value: parseFloat(o.value) }))
-    .filter((o) => !isNaN(o.value))
-    .reverse(); // asc order
-}
-
-async function fetchYahooLatest(ticker: string): Promise<number | null> {
-  try {
-    const encoded = encodeURIComponent(ticker);
-    const res = await fetch(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=5d`,
-      { headers: { "User-Agent": "Mozilla/5.0 (compatible; macro-dashboard/1.0)" } }
-    );
-    if (!res.ok) return null;
-    const j = await res.json();
-    const closes: (number | null)[] = j?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
-    const valid = closes.filter((v): v is number => v != null && !isNaN(v));
-    return valid.length ? valid[valid.length - 1] : null;
-  } catch {
-    return null;
-  }
+  const result = j?.chart?.result?.[0];
+  if (!result) throw new Error(`Yahoo ${ticker}: no result`);
+  const timestamps: number[] = result.timestamp ?? [];
+  const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
+  return timestamps
+    .map((ts, i) => ({ date: new Date(ts * 1000).toISOString().slice(0, 10), value: closes[i] ?? NaN }))
+    .filter(o => !isNaN(o.value))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    const [obs, yahooLatest] = await Promise.all([
-      fetchMonthly("DTWEXBGS"),
-      fetchYahooLatest("DX-Y.NYB"),
-    ]);
+    const daily = await fetchYahooDaily("DX-Y.NYB");
 
-    const byDate = Object.fromEntries(obs.map((o) => [o.date, o.value]));
+    // Aggregate daily → monthly averages
+    const byMonth = new Map<string, number[]>();
+    for (const o of daily) {
+      const m = o.date.slice(0, 7);
+      if (!byMonth.has(m)) byMonth.set(m, []);
+      byMonth.get(m)!.push(o.value);
+    }
 
-    // Plug current month with Yahoo price if FRED hasn't published it yet
-    const now = new Date();
-    const currentMonthDate = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
-    const lastFredDate = obs.length ? obs[obs.length - 1].date : "";
-
-    if (yahooLatest != null && lastFredDate < currentMonthDate) {
-      obs.push({ date: currentMonthDate, value: Math.round(yahooLatest * 100) / 100 });
-      byDate[currentMonthDate] = Math.round(yahooLatest * 100) / 100;
+    const months = [...byMonth.keys()].sort();
+    const monthAvg = new Map<string, number>();
+    for (const m of months) {
+      const vals = byMonth.get(m)!;
+      monthAvg.set(m, vals.reduce((a, b) => a + b, 0) / vals.length);
     }
 
     type Row = {
@@ -63,27 +49,22 @@ Deno.serve(async (req: Request) => {
       value: number;
       yoy: number | null;
       mom: number | null;
-      estimated?: boolean;
     };
 
     const rows: Row[] = [];
-    for (let i = 0; i < obs.length; i++) {
-      const curr = obs[i];
-      const d = new Date(curr.date);
+    for (let i = 0; i < months.length; i++) {
+      const m = months[i];
+      const value = Math.round(monthAvg.get(m)! * 100) / 100;
 
-      const yaKey = `${d.getUTCFullYear() - 1}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-01`;
-      const yaVal = byDate[yaKey];
-      const yoy = yaVal != null
-        ? Math.round((curr.value / yaVal - 1) * 10000) / 100
-        : null;
+      const [yr, mo] = m.split("-").map(Number);
+      const yaKey = `${yr - 1}-${String(mo).padStart(2, "0")}`;
+      const yaVal = monthAvg.get(yaKey);
+      const yoy = yaVal != null ? Math.round((value / yaVal - 1) * 10000) / 100 : null;
 
-      const prev = i > 0 ? obs[i - 1].value : null;
-      const mom = prev != null && prev !== 0
-        ? Math.round((curr.value / prev - 1) * 10000) / 100
-        : null;
+      const prevVal = i > 0 ? monthAvg.get(months[i - 1])! : null;
+      const mom = prevVal != null ? Math.round((value / prevVal - 1) * 10000) / 100 : null;
 
-      const estimated = curr.date === currentMonthDate && lastFredDate < currentMonthDate;
-      rows.push({ date: curr.date, value: Math.round(curr.value * 100) / 100, yoy, mom, ...(estimated ? { estimated: true } : {}) });
+      rows.push({ date: m + "-01", value, yoy, mom });
     }
 
     return new Response(JSON.stringify(rows), {
