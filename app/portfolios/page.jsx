@@ -24,6 +24,7 @@ export default function PortfoliosPage() {
   const [holdings, setHoldings]               = useState([]);
   const [accountMap, setAccountMap]           = useState({});
   const [snapMap, setSnapMap]                 = useState({});
+  const [snapPriceMap, setSnapPriceMap]       = useState({}); // holding_id -> start-of-day price
   const [periodSnaps, setPeriodSnaps]         = useState({ month: {}, qtr: {}, year: {} });
   const [allTransactions, setAllTransactions] = useState([]);
   const [busy, setBusy]                       = useState(true);
@@ -62,7 +63,7 @@ export default function PortfoliosPage() {
       supabase.from("portfolio_holdings").select("portfolio_id, holding_id"),
       supabase.from("holdings_valued").select("*"),
       supabase.from("accounts").select("id, name"),
-      supabase.from("portfolio_snapshots").select("holding_id, market_value").eq("snapshot_date", today),
+      supabase.from("portfolio_snapshots").select("holding_id, market_value, price").eq("snapshot_date", today),
       supabase.from("transactions").select("holding_id, txn_type, txn_date, amount, is_reinvested"),
       supabase.rpc("snapshot_at", { snap_date: monthSnap }),
       supabase.rpc("snapshot_at", { snap_date: qtrSnap }),
@@ -83,9 +84,13 @@ export default function PortfoliosPage() {
     for (const a of acData ?? []) am[a.id] = a.name;
     setAccountMap(am);
 
-    const sm = {};
-    for (const s of snaps ?? []) sm[s.holding_id] = Number(s.market_value ?? 0);
+    const sm = {}, sp = {};
+    for (const s of snaps ?? []) {
+      sm[s.holding_id] = Number(s.market_value ?? 0);
+      if (s.price != null) sp[s.holding_id] = Number(s.price);
+    }
     setSnapMap(sm);
+    setSnapPriceMap(sp);
 
     setPeriodSnaps({ month: toMap(mo), qtr: toMap(qtr), year: toMap(yr) });
     setAllTransactions(txns ?? []);
@@ -363,7 +368,8 @@ export default function PortfoliosPage() {
                               <th className="label text-right font-medium py-2 pr-2">Cost Basis</th>
                               <th className="label text-right font-medium py-2 pr-2">Total Gain</th>
                               <th className="label text-right font-medium py-2 pr-2">Return %</th>
-                              <th className="label text-right font-medium py-2">Day Chg</th>
+                              <th className="label text-right font-medium py-2 pr-2">Day Chg</th>
+                              <th className="label text-right font-medium py-2">Day Chg %</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -376,6 +382,10 @@ export default function PortfoliosPage() {
                               const groupDayChgItems = items.filter(h => snapMap[h.id] != null);
                               const groupDayChg = groupDayChgItems.length > 0
                                 ? groupDayChgItems.reduce((sum, h) => sum + Number(h.current_value ?? 0) - snapMap[h.id], 0)
+                                : null;
+                              const groupPrevValue = groupDayChgItems.reduce((sum, h) => sum + snapMap[h.id], 0);
+                              const groupDayChgPct = groupDayChg != null && groupPrevValue > 0
+                                ? (groupDayChg / groupPrevValue) * 100
                                 : null;
                               const isExpanded     = expandedBuckets.has(key);
                               const toggle = () => setExpandedBuckets((prev) => {
@@ -414,13 +424,18 @@ export default function PortfoliosPage() {
                                   <td className={`num text-right py-1.5 pr-2 text-[11px] font-semibold ${gainCls(groupReturnPct)}`}>
                                     {fmtPct(groupReturnPct)}
                                   </td>
-                                  <td className={`num text-right py-1.5 text-[11px] font-semibold ${gainCls(groupDayChg)}`}>
+                                  <td className={`num text-right py-1.5 pr-2 text-[11px] font-semibold ${gainCls(groupDayChg)}`}>
                                     {groupDayChg == null ? "—" : `${groupDayChg > 0 ? "+" : ""}${usd(groupDayChg)}`}
+                                  </td>
+                                  <td className={`num text-right py-1.5 text-[11px] font-semibold ${gainCls(groupDayChgPct)}`}>
+                                    {groupDayChgPct == null ? "—" : `${groupDayChgPct > 0 ? "+" : ""}${groupDayChgPct.toFixed(2)}%`}
                                   </td>
                                 </tr>,
                                 /* Holding rows — only rendered when expanded */
                                 ...(isExpanded ? items.map((h) => {
-                                  const dayChg = snapMap[h.id] != null ? Number(h.current_value ?? 0) - snapMap[h.id] : null;
+                                  const dayChg    = snapMap[h.id] != null ? Number(h.current_value ?? 0) - snapMap[h.id] : null;
+                                  const snapPrice = snapPriceMap[h.id];
+                                  const dayChgPct = dayChg != null && snapMap[h.id] > 0 ? (dayChg / snapMap[h.id]) * 100 : null;
                                   const tGain  = holdingTotalGain(h);
                                   const retPct = holdingReturnPct(h);
                                   return (
@@ -434,8 +449,11 @@ export default function PortfoliosPage() {
                                       <td className="num text-right py-2 pr-2 text-paper-dim">{usd(h.cost_basis)}</td>
                                       <td className={`num text-right py-2 pr-2 ${gainCls(tGain)}`}>{tGain > 0 ? "+" : ""}{usd(tGain)}</td>
                                       <td className={`num text-right py-2 pr-2 ${gainCls(retPct)}`}>{fmtPct(retPct)}</td>
-                                      <td className={`num text-right py-2 ${gainCls(dayChg)}`}>
+                                      <td className={`num text-right py-2 pr-2 ${gainCls(dayChg)}`}>
                                         {dayChg == null ? "—" : `${dayChg > 0 ? "+" : ""}${usd(dayChg)}`}
+                                      </td>
+                                      <td className={`num text-right py-2 ${gainCls(dayChgPct)}`}>
+                                        {dayChgPct == null ? "—" : `${dayChgPct > 0 ? "+" : ""}${dayChgPct.toFixed(2)}%`}
                                       </td>
                                     </tr>
                                   );
@@ -454,8 +472,15 @@ export default function PortfoliosPage() {
                               <td className={`num text-right py-2 pr-2 font-medium ${gainCls(s.returnPct)}`}>
                                 {fmtPct(s.returnPct)}
                               </td>
-                              <td className={`num text-right py-2 font-medium ${gainCls(s.dayChg)}`}>
+                              <td className={`num text-right py-2 pr-2 font-medium ${gainCls(s.dayChg)}`}>
                                 {s.dayChg == null ? "—" : `${s.dayChg > 0 ? "+" : ""}${usd(s.dayChg)}`}
+                              </td>
+                              <td className={`num text-right py-2 font-medium ${gainCls(s.dayChg)}`}>
+                                {(() => {
+                                  const prevTotal = hs.reduce((sum, h) => snapMap[h.id] != null ? sum + snapMap[h.id] : sum, 0);
+                                  const pct = s.dayChg != null && prevTotal > 0 ? (s.dayChg / prevTotal) * 100 : null;
+                                  return pct == null ? "—" : `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`;
+                                })()}
                               </td>
                             </tr>
                           </tfoot>
