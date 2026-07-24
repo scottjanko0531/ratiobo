@@ -49,10 +49,15 @@ async function fetchFredObsMonthly(seriesId: string, limit: number): Promise<{ d
 
 async function fetchYahooTicker(ticker: string, range: string): Promise<{ date: string; value: number }[]> {
   const encoded = encodeURIComponent(ticker);
-  const res = await fetch(
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=${range}`,
-    { headers: { "User-Agent": "Mozilla/5.0 (compatible; macro-dashboard/1.0)" } }
-  );
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), 15000);
+  let res: Response;
+  try {
+    res = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=${range}`,
+      { headers: { "User-Agent": "Mozilla/5.0 (compatible; macro-dashboard/1.0)" }, signal: controller.signal }
+    );
+  } finally { clearTimeout(tid); }
   if (!res.ok) throw new Error(`Yahoo ${ticker}: HTTP ${res.status}`);
   const j = await res.json();
   const result = j?.chart?.result?.[0];
@@ -645,7 +650,10 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
       }
       case "treasurydirect": {
         const url = "https://www.treasurydirect.gov/TA_WS/securities/auctioned?type=Note&term=10-Year&pagenum=0&pagesize=8&format=json";
-        const res = await fetch(url);
+        const tdCtrl = new AbortController();
+        const tdTid = setTimeout(() => tdCtrl.abort(), 10000);
+        let res: Response;
+        try { res = await fetch(url, { signal: tdCtrl.signal }); } finally { clearTimeout(tdTid); }
         if (!res.ok) throw new Error(`TreasuryDirect: HTTP ${res.status}`);
         const auctions = await res.json() as { bidToCoverRatio?: string }[];
         const valid = auctions.filter(a => a.bidToCoverRatio && parseFloat(a.bidToCoverRatio!) > 0);
@@ -701,9 +709,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         break;
       }
       case "gpr_website": {
-        const res = await fetch("https://www.matteoiacoviello.com/gpr_files/data_gpr_export.xls", {
-          headers: { "User-Agent": "Mozilla/5.0 (compatible; macro-dashboard/1.0)" },
-        });
+        const gprCtrl = new AbortController();
+        const gprTid = setTimeout(() => gprCtrl.abort(), 20000);
+        let res: Response;
+        try {
+          res = await fetch("https://www.matteoiacoviello.com/gpr_files/data_gpr_export.xls", {
+            headers: { "User-Agent": "Mozilla/5.0 (compatible; macro-dashboard/1.0)" },
+            signal: gprCtrl.signal,
+          });
+        } finally { clearTimeout(gprTid); }
         if (!res.ok) throw new Error(`GPR website: HTTP ${res.status}`);
         const buf = await res.arrayBuffer();
         const XLSX = await import("npm:xlsx");
@@ -1666,6 +1680,7 @@ async function generateNotifications(): Promise<void> {
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (!apiKey) return new Response(JSON.stringify({ error: "FRED_API_KEY not set" }), { status: 500, headers: { ...CORS, "Content-Type": "application/json" } });
+  try {
   const fredIndicators = INDICATORS.filter(i => i.type !== "gpr_website");
   const externalIndicators = INDICATORS.filter(i => i.type === "gpr_website");
   const results = await Promise.allSettled(fredIndicators.map(processIndicator));
@@ -1721,5 +1736,9 @@ Deno.serve(async (req: Request) => {
     }),
     { headers: { ...CORS, "Content-Type": "application/json" } }
   );
+  } catch (e) {
+    console.error("[fetch-macro-data] unhandled:", e);
+    return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { ...CORS, "Content-Type": "application/json" } });
+  }
 });
 

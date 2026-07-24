@@ -368,6 +368,7 @@ export default function PortfoliosPage() {
                               <th className="label text-right font-medium py-2 pr-2">Cost Basis</th>
                               <th className="label text-right font-medium py-2 pr-2">Total Gain</th>
                               <th className="label text-right font-medium py-2 pr-2">Return %</th>
+                              <th className="label text-right font-medium py-2 pr-2">Exp. Income</th>
                               <th className="label text-right font-medium py-2 pr-2">Day Chg</th>
                               <th className="label text-right font-medium py-2">Day Chg %</th>
                             </tr>
@@ -387,6 +388,11 @@ export default function PortfoliosPage() {
                               const groupDayChgPct = groupDayChg != null && groupPrevValue > 0
                                 ? (groupDayChg / groupPrevValue) * 100
                                 : null;
+                              const groupExpIncome = items.reduce((sum, h) => {
+                                const y = h.dividend_yield ?? h.interest_rate;
+                                return y != null ? sum + Number(h.current_value ?? 0) * Number(y) / 100 : sum;
+                              }, 0);
+                              const groupHasYield = items.some(h => h.dividend_yield != null || h.interest_rate != null);
                               const isExpanded     = expandedBuckets.has(key);
                               const toggle = () => setExpandedBuckets((prev) => {
                                 const next = new Set(prev);
@@ -424,6 +430,9 @@ export default function PortfoliosPage() {
                                   <td className={`num text-right py-1.5 pr-2 text-[11px] font-semibold ${gainCls(groupReturnPct)}`}>
                                     {fmtPct(groupReturnPct)}
                                   </td>
+                                  <td className="num text-right py-1.5 pr-2 text-[11px] font-semibold text-brass-soft">
+                                    {groupHasYield ? usd(groupExpIncome) : "—"}
+                                  </td>
                                   <td className={`num text-right py-1.5 pr-2 text-[11px] font-semibold ${gainCls(groupDayChg)}`}>
                                     {groupDayChg == null ? "—" : `${groupDayChg > 0 ? "+" : ""}${usd(groupDayChg)}`}
                                   </td>
@@ -438,6 +447,8 @@ export default function PortfoliosPage() {
                                   const dayChgPct = dayChg != null && snapMap[h.id] > 0 ? (dayChg / snapMap[h.id]) * 100 : null;
                                   const tGain  = holdingTotalGain(h);
                                   const retPct = holdingReturnPct(h);
+                                  const hYield = h.dividend_yield ?? h.interest_rate;
+                                  const expIncome = hYield != null ? Number(h.current_value ?? 0) * Number(hYield) / 100 : null;
                                   return (
                                     <tr key={h.id} className="border-b border-ink-line/40 last:border-0 hover:bg-ink-soft/40 transition-colors">
                                       <td className="py-2 pr-3 pl-5">
@@ -449,6 +460,9 @@ export default function PortfoliosPage() {
                                       <td className="num text-right py-2 pr-2 text-paper-dim">{usd(h.cost_basis)}</td>
                                       <td className={`num text-right py-2 pr-2 ${gainCls(tGain)}`}>{tGain > 0 ? "+" : ""}{usd(tGain)}</td>
                                       <td className={`num text-right py-2 pr-2 ${gainCls(retPct)}`}>{fmtPct(retPct)}</td>
+                                      <td className="num text-right py-2 pr-2 text-brass-soft">
+                                        {expIncome != null ? usd(expIncome) : "—"}
+                                      </td>
                                       <td className={`num text-right py-2 pr-2 ${gainCls(dayChg)}`}>
                                         {dayChg == null ? "—" : `${dayChg > 0 ? "+" : ""}${usd(dayChg)}`}
                                       </td>
@@ -471,6 +485,15 @@ export default function PortfoliosPage() {
                               </td>
                               <td className={`num text-right py-2 pr-2 font-medium ${gainCls(s.returnPct)}`}>
                                 {fmtPct(s.returnPct)}
+                              </td>
+                              <td className="num text-right py-2 pr-2 font-medium text-brass-soft">
+                                {(() => {
+                                  const total = hs.reduce((sum, h) => {
+                                    const y = h.dividend_yield ?? h.interest_rate;
+                                    return y != null ? sum + Number(h.current_value ?? 0) * Number(y) / 100 : sum;
+                                  }, 0);
+                                  return hs.some(h => h.dividend_yield != null || h.interest_rate != null) ? usd(total) : "—";
+                                })()}
                               </td>
                               <td className={`num text-right py-2 pr-2 font-medium ${gainCls(s.dayChg)}`}>
                                 {s.dayChg == null ? "—" : `${s.dayChg > 0 ? "+" : ""}${usd(s.dayChg)}`}
