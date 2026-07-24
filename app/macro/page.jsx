@@ -239,6 +239,20 @@ function IndicatorCard({ ind, onSave, onClick, note }) {
           3M avg <span className="num text-paper">${Math.round(Number(ind.current_value)).toLocaleString("en-US")}/oz</span>
         </p>
       )}
+      {ind.metadata?.zscore != null && (
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[10px] num px-1.5 py-0.5 rounded-md border ${
+            Math.abs(Number(ind.metadata.zscore)) > 2
+              ? "bg-loss/10 border-loss/30 text-loss"
+              : Math.abs(Number(ind.metadata.zscore)) > 1
+              ? "bg-brass/10 border-brass/30 text-brass-soft"
+              : "bg-ink border-ink-line text-paper-dim"
+          }`}>
+            z {Number(ind.metadata.zscore) >= 0 ? "+" : ""}{Number(ind.metadata.zscore).toFixed(2)}σ
+          </span>
+          <span className="text-[10px] text-paper-dim/50">10yr</span>
+        </div>
+      )}
       <p className="text-paper-dim text-xs leading-snug line-clamp-2">{ind.description}</p>
     </div>
   );
@@ -3181,6 +3195,14 @@ function T30Drawer({ open, onClose, currentValue }) {
   const latest = rows?.length ? rows[rows.length - 1] : null;
   const prev   = rows?.length > 1 ? rows[rows.length - 2] : null;
 
+  const t30Zscore = useMemo(() => {
+    if (!rows?.length || !latest) return null;
+    const vals = rows.map(r => r.value);
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const std = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
+    return std > 0 ? Math.round((latest.value - mean) / std * 100) / 100 : null;
+  }, [rows, latest]);
+
   const yDomain = useMemo(() => {
     if (!chartData.length) return [1, 7];
     const vals = chartData.map(r => r.value);
@@ -3253,7 +3275,7 @@ function T30Drawer({ open, onClose, currentValue }) {
 
           {/* Summary stats */}
           {latest && (
-            <div className="card p-4 grid grid-cols-3 gap-3 text-center">
+            <div className="card p-4 grid grid-cols-4 gap-3 text-center">
               <div>
                 <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest mb-2">Monthly Avg</p>
                 <p className="num text-lg font-bold" style={{ color: yieldColor(latest.value) }}>
@@ -3261,19 +3283,26 @@ function T30Drawer({ open, onClose, currentValue }) {
                 </p>
                 <p className="text-[10px] text-paper-dim mt-0.5">{latest.date.slice(0, 7)}</p>
               </div>
-              <div className="border-x border-ink-line">
+              <div className="border-l border-ink-line">
                 <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest mb-2">YoY Change</p>
                 <p className="num text-lg font-bold" style={{ color: ppColor(latest.yoy) }}>
                   {latest.yoy != null ? `${latest.yoy >= 0 ? "+" : ""}${latest.yoy.toFixed(2)}pp` : "—"}
                 </p>
                 <p className="text-[10px] text-paper-dim mt-0.5">{latest.yoy != null ? (latest.yoy > 0 ? "Rising" : "Falling") : ""}</p>
               </div>
-              <div>
+              <div className="border-l border-ink-line">
                 <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest mb-2">MoM Change</p>
                 <p className="num text-lg font-bold" style={{ color: ppColor(latest.mom) }}>
                   {latest.mom != null ? `${latest.mom >= 0 ? "+" : ""}${latest.mom.toFixed(2)}pp` : "—"}
                 </p>
                 <p className="text-[10px] text-paper-dim mt-0.5">{prev ? `vs ${prev.value.toFixed(3)}%` : ""}</p>
+              </div>
+              <div className="border-l border-ink-line">
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest mb-2">Z-Score</p>
+                <p className="num text-lg font-bold" style={{ color: t30Zscore == null ? "#6B7280" : Math.abs(t30Zscore) > 2 ? "#f87171" : Math.abs(t30Zscore) > 1 ? "#C9A227" : "#4ade80" }}>
+                  {t30Zscore != null ? `${t30Zscore >= 0 ? "+" : ""}${t30Zscore.toFixed(2)}σ` : "—"}
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">vs full history</p>
               </div>
             </div>
           )}
@@ -3441,6 +3470,14 @@ function DxyDrawer({ open, onClose, currentValue }) {
     return rows.find((r) => r.date.startsWith(key)) ?? null;
   }, [rows]);
 
+  const dxyZscore = useMemo(() => {
+    if (!rows?.length || !latest) return null;
+    const vals = rows.map(r => r.value);
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const std = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
+    return std > 0 ? Math.round((latest.value - mean) / std * 100) / 100 : null;
+  }, [rows, latest]);
+
   const yDomain = useMemo(() => {
     if (!chartData.length) return [85, 120];
     const vals = chartData.map((r) => r.value);
@@ -3503,22 +3540,28 @@ function DxyDrawer({ open, onClose, currentValue }) {
 
           {/* Summary stats */}
           {latest && (
-            <div className="card p-4 grid grid-cols-3 gap-4 text-center">
+            <div className="card p-4 grid grid-cols-4 gap-3 text-center">
               <div>
                 <p className="num text-lg text-paper">{latest.value.toFixed(2)}</p>
-                <p className="label text-[10px] mt-0.5">Current Level</p>
+                <p className="label text-[10px] mt-0.5">Level</p>
               </div>
-              <div>
+              <div className="border-l border-ink-line">
                 <p className={`num text-lg ${latest.yoy == null ? "text-paper-dim" : latest.yoy < 0 ? "text-gain" : "text-loss"}`}>
                   {latest.yoy != null ? `${latest.yoy >= 0 ? "+" : ""}${latest.yoy.toFixed(1)}%` : "—"}
                 </p>
-                <p className="label text-[10px] mt-0.5">YoY Change</p>
+                <p className="label text-[10px] mt-0.5">YoY</p>
               </div>
-              <div>
+              <div className="border-l border-ink-line">
                 <p className={`num text-lg ${latest.mom == null ? "text-paper-dim" : latest.mom < 0 ? "text-gain" : "text-loss"}`}>
                   {latest.mom != null ? `${latest.mom >= 0 ? "+" : ""}${latest.mom.toFixed(2)}%` : "—"}
                 </p>
-                <p className="label text-[10px] mt-0.5">MoM Change</p>
+                <p className="label text-[10px] mt-0.5">MoM</p>
+              </div>
+              <div className="border-l border-ink-line">
+                <p className={`num text-lg ${dxyZscore == null ? "text-paper-dim" : Math.abs(dxyZscore) > 2 ? "text-loss" : Math.abs(dxyZscore) > 1 ? "text-brass-soft" : "text-gain"}`}>
+                  {dxyZscore != null ? `${dxyZscore >= 0 ? "+" : ""}${dxyZscore.toFixed(2)}σ` : "—"}
+                </p>
+                <p className="label text-[10px] mt-0.5">Z-Score</p>
               </div>
             </div>
           )}
@@ -3683,6 +3726,14 @@ function DbcDrawer({ open, onClose, currentValue }) {
     ? (latest.spread > prevRow.spread ? "wide" : latest.spread < prevRow.spread ? "tight" : "flat")
     : null;
 
+  const dbcZscore = useMemo(() => {
+    if (!rows?.length || !latest?.dbcIndex) return null;
+    const vals = rows.map(r => r.dbcIndex).filter(v => v != null);
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const std = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
+    return std > 0 ? Math.round((latest.dbcIndex - mean) / std * 100) / 100 : null;
+  }, [rows, latest]);
+
   // Shared left-axis domain for DBC index + DXY (both ~100 scale)
   const [idxDomain, spreadDomain] = useMemo(() => {
     if (!chartData.length) return [[60, 160], [-60, 60]];
@@ -3757,7 +3808,7 @@ function DbcDrawer({ open, onClose, currentValue }) {
 
           {/* Summary stats */}
           {latest && (
-            <div className="card p-4 grid grid-cols-3 gap-3">
+            <div className="card p-4 grid grid-cols-4 gap-3">
               <div className="space-y-2 text-center">
                 <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest">DBC Index</p>
                 <p className={`num text-lg font-bold ${latest.dbcIndex > 100 ? "text-gain" : latest.dbcIndex > 70 ? "text-brass-soft" : "text-loss"}`}>
@@ -3767,7 +3818,7 @@ function DbcDrawer({ open, onClose, currentValue }) {
                   {latest.dbcYoy != null ? `${latest.dbcYoy >= 0 ? "+" : ""}${latest.dbcYoy.toFixed(1)}% YoY` : "—"}
                 </p>
               </div>
-              <div className="space-y-2 text-center border-x border-ink-line">
+              <div className="space-y-2 text-center border-l border-ink-line">
                 <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest">DXY</p>
                 <p className={`num text-lg font-bold ${latest.dxy == null ? "text-paper-dim" : latest.dxy > 104 ? "text-loss" : latest.dxy > 100 ? "text-brass-soft" : "text-gain"}`}>
                   {latest.dxy?.toFixed(1) ?? "—"}
@@ -3776,7 +3827,7 @@ function DbcDrawer({ open, onClose, currentValue }) {
                   {latest.dxyYoy != null ? `${latest.dxyYoy >= 0 ? "+" : ""}${latest.dxyYoy.toFixed(1)}% YoY` : "—"}
                 </p>
               </div>
-              <div className="space-y-2 text-center">
+              <div className="space-y-2 text-center border-l border-ink-line">
                 <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest">Spread</p>
                 <p className={`num text-lg font-bold ${latest.spread == null ? "text-paper-dim" : latest.spread > 0 ? "text-gain" : "text-loss"}`}>
                   {latest.spread != null ? `${latest.spread >= 0 ? "+" : ""}${latest.spread.toFixed(1)}` : "—"}
@@ -3784,6 +3835,13 @@ function DbcDrawer({ open, onClose, currentValue }) {
                 <p className={`num text-xs ${spreadDir === "wide" ? "text-gain" : spreadDir === "tight" ? "text-loss" : "text-paper-dim"}`}>
                   {spreadDir === "wide" ? "↑ Widening" : spreadDir === "tight" ? "↓ Tightening" : spreadDir === "flat" ? "→ Flat" : "—"}
                 </p>
+              </div>
+              <div className="space-y-2 text-center border-l border-ink-line">
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest">Z-Score</p>
+                <p className={`num text-lg font-bold ${dbcZscore == null ? "text-paper-dim" : Math.abs(dbcZscore) > 2 ? "text-loss" : Math.abs(dbcZscore) > 1 ? "text-brass-soft" : "text-gain"}`}>
+                  {dbcZscore != null ? `${dbcZscore >= 0 ? "+" : ""}${dbcZscore.toFixed(2)}σ` : "—"}
+                </p>
+                <p className="num text-xs text-paper-dim">DBC Index</p>
               </div>
             </div>
           )}

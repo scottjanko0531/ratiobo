@@ -143,6 +143,7 @@ interface Indicator {
     | "yahoo_price_with_3m";
   series?: string;
   series2?: string;
+  zscore?: boolean;
   statusFn: StatusFn;
 }
 
@@ -250,7 +251,7 @@ const INDICATORS: Indicator[] = [
     layer: 2, layer_name: "Short-Term Debt Cycle",
     description: "30-year US Treasury yield — long-duration benchmark. Rising yield = tighter financial conditions, higher debt cost; falling = easing.",
     fred_series_id: null, unit: "%", data_source: "yahoo", sort_order: 7,
-    series: "^TYX", type: "yahoo_price_with_3m",
+    series: "^TYX", type: "yahoo_price_with_3m", zscore: true,
     statusFn: v => v > 5 ? "danger" : v > 4 ? "watch" : "healthy",
   },
   {
@@ -513,7 +514,7 @@ const INDICATORS: Indicator[] = [
     name: "DXY", layer: 3, layer_name: "Business Cycle",
     description: "US Dollar Index (ICE) — strong dollar is headwind for EM, gold, and commodities (37% of BW Modified)",
     fred_series_id: null, unit: "index", data_source: "yahoo", sort_order: 295,
-    series: "DX-Y.NYB", type: "yahoo_price_with_3m",
+    series: "DX-Y.NYB", type: "yahoo_price_with_3m", zscore: true,
     statusFn: v => v > 104 ? "danger" : v > 100 ? "watch" : "healthy",
   },
   {
@@ -521,7 +522,7 @@ const INDICATORS: Indicator[] = [
     layer: 3, layer_name: "Business Cycle",
     description: "Invesco DB Commodity Index ETF — broad basket of 14 commodities (energy, metals, agriculture). Proxy for the TR/CC CRB Index. Rising DBC = inflationary commodity pressure.",
     fred_series_id: null, unit: "$/shr", data_source: "yahoo", sort_order: 296,
-    series: "DBC", type: "yahoo_price_with_3m",
+    series: "DBC", type: "yahoo_price_with_3m", zscore: true,
     statusFn: v => v > 21 ? "healthy" : v > 16 ? "watch" : "danger",
   },
 ];
@@ -772,7 +773,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         break;
       }
       case "yahoo_price_with_3m": {
-        const obs = await fetchYahooTicker(ind.series!, "1y");
+        const obs = await fetchYahooTicker(ind.series!, ind.zscore ? "10y" : "1y");
         if (obs.length < 2) return null;
         // obs sorted desc: obs[0] = most recent
         current = obs[0].value;
@@ -785,6 +786,20 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         if (threeMAgo) {
           const pct = Math.round((current / threeMAgo.value - 1) * 10000) / 100;
           metadata = { change3m_pct: pct };
+        }
+        // Z-score: compute from 10y monthly averages
+        if (ind.zscore) {
+          const byMonth = new Map<string, number[]>();
+          for (const o of obs) {
+            const m = o.date.slice(0, 7);
+            if (!byMonth.has(m)) byMonth.set(m, []);
+            byMonth.get(m)!.push(o.value);
+          }
+          const monthlyVals = [...byMonth.values()].map(vs => vs.reduce((a, b) => a + b, 0) / vs.length);
+          const mean = monthlyVals.reduce((a, b) => a + b, 0) / monthlyVals.length;
+          const std = Math.sqrt(monthlyVals.reduce((s, v) => s + (v - mean) ** 2, 0) / monthlyVals.length);
+          const zscore = std > 0 ? Math.round((current - mean) / std * 100) / 100 : null;
+          metadata = { ...metadata, zscore };
         }
         break;
       }
