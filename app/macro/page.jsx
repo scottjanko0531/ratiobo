@@ -3159,6 +3159,227 @@ function GoldPriceDrawer({ open, onClose, ind }) {
   );
 }
 
+const LEI_RANGES = [
+  { label: "2Y",  months: 24 },
+  { label: "5Y",  months: 60 },
+  { label: "10Y", months: 120 },
+  { label: "20Y", months: 240 },
+  { label: "All", months: 9999 },
+];
+
+function LeiDrawer({ open, onClose, ind }) {
+  const [rows, setRows] = useState(null);
+  const [range, setRange] = useState("5Y");
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    supabase
+      .from("lei_history")
+      .select("period_date, level, mom_pct, published_at")
+      .order("period_date", { ascending: true })
+      .then(({ data }) => setRows(data ?? []))
+      .catch(() => setRows([]));
+  }, [open, rows]);
+
+  const monthLimit = LEI_RANGES.find(r => r.label === range)?.months ?? 60;
+
+  const chartData = useMemo(() => {
+    if (!rows?.length) return [];
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - monthLimit);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    return rows
+      .filter(r => r.period_date >= cutoffStr)
+      .map(r => ({ date: r.period_date, mom_pct: Number(r.mom_pct), level: r.level != null ? Number(r.level) : null }));
+  }, [rows, monthLimit]);
+
+  const latest = rows?.length ? rows[rows.length - 1] : null;
+
+  const streak = useMemo(() => {
+    if (!rows?.length) return null;
+    const recent = [...rows].reverse();
+    const firstVal = Number(recent[0].mom_pct);
+    const declining = firstVal < 0;
+    let count = 0;
+    for (const r of recent) {
+      if (declining ? Number(r.mom_pct) < 0 : Number(r.mom_pct) >= 0) count++;
+      else break;
+    }
+    return { count, direction: declining ? "decline" : "growth" };
+  }, [rows]);
+
+  const tableRows = useMemo(() => (rows?.length ? [...rows].reverse().slice(0, 60) : []), [rows]);
+
+  const momColor = (v) => v > 0 ? "#4ade80" : v >= -0.3 ? "#C9A227" : "#f87171";
+  const currentVal = ind?.current_value != null ? Number(ind.current_value) : null;
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed right-0 top-0 h-full w-[560px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">Conference Board LEI</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">Leading Economic Index · MoM % change · 3 consecutive declines = recession signal</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {currentVal != null && (
+              <div className="text-right">
+                <p className="num text-xl font-bold leading-none" style={{ color: momColor(currentVal) }}>
+                  {currentVal >= 0 ? "+" : ""}{currentVal.toFixed(2)}%
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">MoM (latest)</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          <div className="flex items-center gap-1">
+            {LEI_RANGES.map(r => (
+              <button
+                key={r.label}
+                onClick={() => setRange(r.label)}
+                className={`px-3 py-1 rounded-lg text-xs transition-colors ${
+                  range === r.label
+                    ? "bg-ink text-brass-soft border border-brass/30"
+                    : "text-paper-dim hover:text-paper"
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+
+          {latest && (
+            <div className="card p-4 grid grid-cols-4 gap-3 text-center">
+              <div>
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest mb-2">Latest MoM</p>
+                <p className="num text-lg font-bold" style={{ color: momColor(Number(latest.mom_pct)) }}>
+                  {Number(latest.mom_pct) >= 0 ? "+" : ""}{Number(latest.mom_pct).toFixed(2)}%
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">{latest.period_date.slice(0, 7)}</p>
+              </div>
+              <div className="border-l border-ink-line">
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest mb-2">LEI Level</p>
+                <p className="num text-lg font-bold text-paper">
+                  {latest.level != null ? Number(latest.level).toFixed(1) : "—"}
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">2016 = 100</p>
+              </div>
+              <div className="border-l border-ink-line">
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest mb-2">Streak</p>
+                <p className="num text-lg font-bold" style={{ color: streak?.direction === "decline" ? "#f87171" : "#4ade80" }}>
+                  {streak ? streak.count : "—"}
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">
+                  {streak ? `mo. ${streak.direction}` : ""}
+                </p>
+              </div>
+              <div className="border-l border-ink-line">
+                <p className="label text-[10px] text-paper-dim/60 uppercase tracking-widest mb-2">Published</p>
+                <p className="num text-lg font-bold text-paper" style={{ fontSize: "12px", paddingTop: "4px" }}>
+                  {latest.published_at ? latest.published_at.slice(0, 7) : "—"}
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">release date</p>
+              </div>
+            </div>
+          )}
+
+          {rows === null ? (
+            <div className="h-56 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : chartData.length === 0 ? (
+            <div className="h-56 flex items-center justify-center text-paper-dim text-sm">No data</div>
+          ) : (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">MoM % Change · {range}</p>
+              <ResponsiveContainer width="100%" height={220}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => v.slice(0, 7)}
+                    interval={Math.max(0, Math.floor(chartData.length / 6))}
+                  />
+                  <YAxis
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => `${v}%`}
+                    width={44}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "#1A2030", border: "1px solid #2A3240", borderRadius: 8, fontSize: 11 }}
+                    labelStyle={{ color: "#A8ADB8" }}
+                    formatter={(v) => [`${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(2)}%`, "MoM"]}
+                  />
+                  <ReferenceLine y={0} stroke="#4B5563" />
+                  <ReferenceLine y={-0.3} stroke="#C9A227" strokeDasharray="4 2" strokeOpacity={0.6} label={{ value: "−0.3% watch", fill: "#C9A227", fontSize: 9, position: "insideTopRight" }} />
+                  <Bar dataKey="mom_pct" name="MoM %" radius={[1, 1, 0, 0]}>
+                    {chartData.map((r, i) => (
+                      <Cell key={i} fill={r.mom_pct > 0 ? "#4ade80" : r.mom_pct >= -0.3 ? "#C9A227" : "#f87171"} />
+                    ))}
+                  </Bar>
+                </ComposedChart>
+              </ResponsiveContainer>
+              <p className="text-[10px] text-paper-dim/60 mt-2">Green = expansion, Yellow = mild contraction (0 to −0.3%), Red = contraction. 3 consecutive red bars = recession warning.</p>
+            </div>
+          )}
+
+          {rows !== null && tableRows.length > 0 && (
+            <div className="card overflow-hidden">
+              <div className="px-4 py-3 border-b border-ink-line">
+                <p className="label text-[10px]">Monthly History (most recent 60)</p>
+              </div>
+              <div className="overflow-y-auto max-h-64">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-ink-soft">
+                    <tr className="border-b border-ink-line">
+                      <th className="px-4 py-2 text-left label text-[10px]">Period</th>
+                      <th className="px-4 py-2 text-right label text-[10px]">MoM %</th>
+                      <th className="px-4 py-2 text-right label text-[10px]">Level</th>
+                      <th className="px-4 py-2 text-right label text-[10px]">Published</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows.map((r) => (
+                      <tr key={r.period_date} className="border-b border-ink-line/40 hover:bg-ink/30">
+                        <td className="px-4 py-1.5 text-paper-dim">{r.period_date.slice(0, 7)}</td>
+                        <td className="px-4 py-1.5 text-right num" style={{ color: momColor(Number(r.mom_pct)) }}>
+                          {Number(r.mom_pct) >= 0 ? "+" : ""}{Number(r.mom_pct).toFixed(2)}%
+                        </td>
+                        <td className="px-4 py-1.5 text-right num text-paper">
+                          {r.level != null ? Number(r.level).toFixed(1) : "—"}
+                        </td>
+                        <td className="px-4 py-1.5 text-right text-paper-dim">
+                          {r.published_at ? r.published_at.slice(0, 7) : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60">Source: Conference Board (current readings) · FRED USSLIND (1982–2020 history). Index level available only for CB-scraped readings.</p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 const T30_RANGES = [
   { label: "1Y",  months: 12 },
   { label: "2Y",  months: 24 },
@@ -4260,6 +4481,7 @@ export default function MacroDashboard() {
   const [goldPriceOpen, setGoldPriceOpen] = useState(false);
   const [cbGoldOpen, setCbGoldOpen] = useState(false);
   const [ppiDrawerOpen, setPpiDrawerOpen] = useState(false);
+  const [leiDrawerOpen, setLeiDrawerOpen] = useState(false);
   const [t30DrawerOpen, setT30DrawerOpen] = useState(false);
   const [dxyDrawerOpen, setDxyDrawerOpen] = useState(false);
   const [dbcDrawerOpen, setDbcDrawerOpen] = useState(false);
@@ -4455,6 +4677,7 @@ export default function MacroDashboard() {
                           : ind.name === "Gold Price (3M Avg)" ? () => setGoldPriceOpen(true)
                           : ind.name === "CB Gold Reserves (YoY)" ? () => setCbGoldOpen(true)
                           : ind.name === "PPI (YoY)" ? () => setPpiDrawerOpen(true)
+                          : ind.name === "Conference Board LEI" ? () => setLeiDrawerOpen(true)
                           : ind.name === "30Y Treasury Yield" ? () => setT30DrawerOpen(true)
                           : ind.name === "DXY" ? () => setDxyDrawerOpen(true)
                           : ind.name === "DBC Commodity Index" ? () => setDbcDrawerOpen(true)
@@ -4518,6 +4741,11 @@ export default function MacroDashboard() {
         open={ppiDrawerOpen}
         onClose={() => setPpiDrawerOpen(false)}
         currentValue={indicators?.find((i) => i.name === "PPI (YoY)")?.current_value}
+      />
+      <LeiDrawer
+        open={leiDrawerOpen}
+        onClose={() => setLeiDrawerOpen(false)}
+        ind={indicators?.find((i) => i.name === "Conference Board LEI")}
       />
       <T30Drawer
         open={t30DrawerOpen}
