@@ -373,6 +373,10 @@ export default function PortfoliosPage() {
                               const groupPct       = s.totalValue > 0 ? (groupValue / s.totalValue) * 100 : 0;
                               const groupTotalGain = items.reduce((sum, h) => sum + holdingTotalGain(h), 0);
                               const groupReturnPct = groupCost > 0 ? (groupTotalGain / groupCost) * 100 : null;
+                              const groupDayChgItems = items.filter(h => snapMap[h.id] != null);
+                              const groupDayChg = groupDayChgItems.length > 0
+                                ? groupDayChgItems.reduce((sum, h) => sum + Number(h.current_value ?? 0) - snapMap[h.id], 0)
+                                : null;
                               const isExpanded     = expandedBuckets.has(key);
                               const toggle = () => setExpandedBuckets((prev) => {
                                 const next = new Set(prev);
@@ -410,7 +414,9 @@ export default function PortfoliosPage() {
                                   <td className={`num text-right py-1.5 pr-2 text-[11px] font-semibold ${gainCls(groupReturnPct)}`}>
                                     {fmtPct(groupReturnPct)}
                                   </td>
-                                  <td className="py-1.5" />
+                                  <td className={`num text-right py-1.5 text-[11px] font-semibold ${gainCls(groupDayChg)}`}>
+                                    {groupDayChg == null ? "—" : `${groupDayChg > 0 ? "+" : ""}${usd(groupDayChg)}`}
+                                  </td>
                                 </tr>,
                                 /* Holding rows — only rendered when expanded */
                                 ...(isExpanded ? items.map((h) => {
