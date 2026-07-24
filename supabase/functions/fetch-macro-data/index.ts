@@ -140,7 +140,8 @@ interface Indicator {
     | "silver_3m_avg"
     | "cb_gold_imf"
     | "level_with_3m"
-    | "yahoo_price_with_3m";
+    | "yahoo_price_with_3m"
+    | "supabase_lei";
   series?: string;
   series2?: string;
   zscore?: boolean;
@@ -314,8 +315,8 @@ const INDICATORS: Indicator[] = [
     name: "Conference Board LEI",
     layer: 2, layer_name: "Short-Term Debt Cycle",
     description: "Leading Economic Index MoM % change — 3 consecutive declines signal recession",
-    fred_series_id: "USSLIND", unit: "%", data_source: "fred", sort_order: 15,
-    series: "USSLIND", type: "mom_pct",
+    fred_series_id: null, unit: "%", data_source: "supabase", sort_order: 15,
+    type: "supabase_lei",
     statusFn: v => v > 0 ? "healthy" : v >= -0.3 ? "watch" : "danger",
   },
   // ── LAYER 3: Business Cycle ──
@@ -770,6 +771,19 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
           current  = (obs[0].value   / obs[252].value - 1) * 100;
           previous = (obs[1].value / obs[253].value - 1) * 100;
         }
+        break;
+      }
+      case "supabase_lei": {
+        // Read latest 2 rows from lei_history (written by scrape-lei edge function)
+        const { data: leiRows, error: leiErr } = await supabase
+          .from("lei_history")
+          .select("period_date, level, mom_pct")
+          .order("period_date", { ascending: false })
+          .limit(2);
+        if (leiErr || !leiRows || leiRows.length < 2) return null;
+        current  = Number(leiRows[0].mom_pct);
+        previous = Number(leiRows[1].mom_pct);
+        metadata = { level: Number(leiRows[0].level), period: leiRows[0].period_date };
         break;
       }
       case "yahoo_price_with_3m": {
