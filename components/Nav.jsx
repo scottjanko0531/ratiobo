@@ -12,6 +12,7 @@ const links = [
   { href: "/portfolios", label: "Portfolios" },
   { href: "/macro", label: "Macro" },
   { href: "/simulator", label: "Simulator" },
+  { href: "/backtesting", label: "Backtesting" },
   { href: "/transactions", label: "Transactions" },
 ];
 
