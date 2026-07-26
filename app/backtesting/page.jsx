@@ -34,7 +34,7 @@ const WEIGHT_FMT = (v) => `${(v * 100).toFixed(0)}%`;
 const PORTFOLIO_WEIGHTS = {
   standard_gb: { VTI: 0.20, IJS: 0.20, GLD: 0.20, TLT: 0.20, SHY: 0.20 },
   hedged_gb:   { VTI: 0.20, IJS: 0.20, GLD: 0.20, TLT: 0.15, SHY: 0.15, DBMF: 0.10 },
-  bw_modified: { VTI: 0.30, TLT: 0.40, IEF: 0.15, GLD: 0.075, DBC: 0.075 },
+  bw_modified: { VTI: 0.20, VXUS: 0.08, VWO: 0.05, TLT: 0.20, SCHP: 0.20, DBC: 0.12, GLD: 0.12, SHY: 0.03 },
 };
 
 function StarBadge() {

@@ -219,8 +219,8 @@ Deno.serve(async (req: Request) => {
 
   try {
     // Fetch all tickers in parallel
-    const TICKERS = ["VTI","IJS","GLD","TLT","SHY","IEF","DBC","DBMF",
-                     "VTSMX","VISVX","GC=F","VUSTX","VFISX","VFITX","PCRIX"];
+    const TICKERS = ["VTI","IJS","GLD","TLT","SHY","DBC","DBMF","VXUS","VWO","SCHP",
+                     "VTSMX","VISVX","GC=F","VUSTX","VFISX","PCRIX","VGTSX","VEIEX","VIPSX"];
     const settled = await Promise.allSettled(TICKERS.map(t => fetchMonthly(t)));
     const rets: Record<string, Map<string, number>> = {};
     const errors: string[] = [];
@@ -229,18 +229,20 @@ Deno.serve(async (req: Request) => {
       if (r.status === "fulfilled") rets[TICKERS[i]] = r.value;
       else errors.push(`${TICKERS[i]}: ${r.reason}`);
     }
-    if (errors.length > 4) throw new Error(`Too many fetch failures: ${errors.join("; ")}`);
+    if (errors.length > 5) throw new Error(`Too many fetch failures: ${errors.join("; ")}`);
 
     // Build spliced series
     const g = (k: string) => rets[k] ?? new Map<string, number>();
     const asset: Record<string, Map<string, number>> = {
-      VTI:  splice(g("VTSMX"), g("VTI")),
-      IJS:  splice(g("VISVX"), g("IJS")),
-      GLD:  splice(g("GC=F"),  g("GLD")),
-      TLT:  splice(g("VUSTX"), g("TLT")),
-      SHY:  splice(g("VFISX"), g("SHY")),
-      IEF:  splice(g("VFITX"), g("IEF")),
-      DBC:  splice(g("PCRIX"), g("DBC")),
+      VTI:  splice(g("VTSMX"), g("VTI")),   // US equity
+      IJS:  splice(g("VISVX"), g("IJS")),   // US small-cap value
+      GLD:  splice(g("GC=F"),  g("GLD")),   // gold
+      TLT:  splice(g("VUSTX"), g("TLT")),   // long nominal bonds
+      SHY:  splice(g("VFISX"), g("SHY")),   // short-term bonds / cash
+      DBC:  splice(g("PCRIX"), g("DBC")),   // commodities
+      VXUS: splice(g("VGTSX"), g("VXUS")),  // international developed
+      VWO:  splice(g("VEIEX"), g("VWO")),   // emerging markets
+      SCHP: splice(g("VIPSX"), g("SCHP")),  // TIPS
     };
 
     // Build TSMOM proxy for DBMF
@@ -251,8 +253,8 @@ Deno.serve(async (req: Request) => {
     for (const [d, r] of tsmomRaw) if (d < dbmfStart) asset.DBMF.set(d, r);
     for (const [d, r] of dbmfActual) asset.DBMF.set(d, r);
 
-    // Common date universe (all 8 assets for hedged GB; adjust per portfolio below)
-    const allAssets8 = ["VTI","IJS","GLD","TLT","SHY","IEF","DBC","DBMF"];
+    // Common date universe across all portfolios (used for window display)
+    const allAssets8 = ["VTI","IJS","GLD","TLT","SHY","DBC","DBMF","VXUS","VWO","SCHP"];
     const commonDatesAll = (() => {
       const sets = allAssets8.map(a => new Set(asset[a].keys()));
       const base = new Set(asset["VTI"].keys());
@@ -274,7 +276,7 @@ Deno.serve(async (req: Request) => {
       { key: "hedged_gb",   name: "Hedged Golden Butterfly (+DBMF)",
         weights: { VTI:0.20, IJS:0.20, GLD:0.20, TLT:0.15, SHY:0.15, DBMF:0.10 } },
       { key: "bw_modified", name: "BW All Weather Modified",
-        weights: { VTI:0.30, TLT:0.40, IEF:0.15, GLD:0.075, DBC:0.075 } },
+        weights: { VTI:0.20, VXUS:0.08, VWO:0.05, TLT:0.20, SCHP:0.20, DBC:0.12, GLD:0.12, SHY:0.03 } },
     ];
 
     const portfolioResults = PORTFOLIOS.map(p => {
@@ -339,7 +341,7 @@ Deno.serve(async (req: Request) => {
       window_start:   windowStart,
       window_end:     windowEnd,
       computed_at:    new Date().toISOString(),
-      proxies:        "VTSMX→VTI, VISVX→IJS, GC=F→GLD, VUSTX→TLT, VFISX→SHY, VFITX→IEF, PCRIX→DBC; DBMF pre-2019 = 12M TSMOM factor (scaled to 11.2% vol, −0.85% fee)",
+      proxies:        "VTSMX→VTI, VISVX→IJS, GC=F→GLD, VUSTX→TLT, VFISX→SHY, PCRIX→DBC, VGTSX→VXUS, VEIEX→VWO, VIPSX→SCHP; DBMF pre-2019 = 12M TSMOM factor (scaled to 11.2% vol, −0.85% fee)",
       fetch_errors:   errors,
     };
 
