@@ -645,14 +645,7 @@ export default function PlanningPage() {
         </div>
       )}
 
-      {/* Debug panel — remove once MC is confirmed working */}
-      <div className="mb-4 px-3 py-2 rounded border border-ink-line text-[10px] font-mono text-paper-dim space-y-0.5">
-        <div>profile: {profile ? `age=${profile.age} lifeExp=${profile.life_expectancy} tax=${profile.taxable_assets} trad=${profile.traditional_assets} roth=${profile.roth_assets} streams=${JSON.stringify(profile.income_streams?.length ?? "null")}` : "null"}</div>
-        <div>mcResults: {mcResults ? `bands=${mcResults.bands?.length} p50_final=${mcResults.medianFinal?.toFixed(0)} success=${(mcResults.probabilityOfSuccess*100).toFixed(0)}%` : "null"}</div>
-        <div>mcError: {mcError || "none"}</div>
-      </div>
-
-      {mcError && (
+{mcError && (
         <div className="px-3 py-2 rounded-lg border border-loss/30 bg-loss/10 text-xs text-loss mb-4">
           Simulation error: {mcError}
         </div>
