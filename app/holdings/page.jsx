@@ -163,7 +163,10 @@ export default function HoldingsPage() {
     const yearStart = `${now.getFullYear()}-01-01`;
     const ds = (d) => d.toISOString().slice(0, 10);
     const subDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() - n); return r; };
-    const weekSnapDate  = ds(subDays(now, 7));
+    // Monday of current calendar week (Sunday=0, so shift: Mon=1→0, Sun=0→6)
+    const dowOffset = (now.getDay() + 6) % 7; // days since Monday
+    const weekStart = new Date(now); weekStart.setDate(now.getDate() - dowOffset);
+    const weekSnapDate  = ds(subDays(weekStart, 1)); // last Sunday = end of prior week
     const monthSnapDate = ds(subDays(new Date(now.getFullYear(), now.getMonth(), 1), 1));
     const qtrSnapDate   = ds(subDays(new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1), 1));
     const yearSnapDate  = `${now.getFullYear() - 1}-12-31`;
@@ -654,6 +657,9 @@ export default function HoldingsPage() {
     const ds = (d) => d.toISOString().slice(0, 10);
 
     const sub = (d, days) => { const r = new Date(d); r.setDate(r.getDate() - days); return r; };
+    // Monday of current calendar week
+    const dowOff = (today.getDay() + 6) % 7;
+    const weekStart   = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dowOff);
     const monthStart  = new Date(today.getFullYear(), today.getMonth(), 1);
     const qtrStart    = new Date(today.getFullYear(), Math.floor(today.getMonth() / 3) * 3, 1);
     const yearStart   = new Date(today.getFullYear(), 0, 1);
@@ -707,7 +713,7 @@ export default function HoldingsPage() {
     }
 
     const PERIODS = [
-      { key: "week",  from: ds(sub(today, 7)) },
+      { key: "week",  from: ds(weekStart) },
       { key: "month", from: ds(monthStart) },
       { key: "qtr",   from: ds(qtrStart) },
       { key: "year",  from: ds(yearStart) },
