@@ -166,12 +166,14 @@ function FanChart({ bands }) {
   const xScale = (age) => ((age - minAge) / ageRange) * cW;
   const yScale = (v) => cH - (v / maxVal) * cH;
 
+  const pt = (x, y) => `${(PL + x).toFixed(1)},${(PT + y).toFixed(1)}`;
+
   const pathFor = (key) =>
-    bands.map((b, i) => `${i === 0 ? "M" : "L"}${PL + xScale(b.age).toFixed(1)},${PT + yScale(b[key]).toFixed(1)}`).join(" ");
+    bands.map((b, i) => `${i === 0 ? "M" : "L"}${pt(xScale(b.age), yScale(b[key]))}`).join(" ");
 
   const bandPath = (k1, k2) => {
-    const fwd = bands.map(b => `${PL + xScale(b.age).toFixed(1)},${PT + yScale(b[k1]).toFixed(1)}`).join(" L ");
-    const rev = [...bands].reverse().map(b => `${PL + xScale(b.age).toFixed(1)},${PT + yScale(b[k2]).toFixed(1)}`).join(" L ");
+    const fwd = bands.map(b => pt(xScale(b.age), yScale(b[k1]))).join(" L ");
+    const rev = [...bands].reverse().map(b => pt(xScale(b.age), yScale(b[k2]))).join(" L ");
     return `M ${fwd} L ${rev} Z`;
   };
 
@@ -186,11 +188,6 @@ function FanChart({ bands }) {
       {yTicks.map(({ y }) => (
         <line key={y} x1={PL} y1={y} x2={W - PR} y2={y} stroke="#ffffff" strokeOpacity="0.06" strokeWidth="1" />
       ))}
-
-      {/* TEST: hardcoded path — red diagonal should be visible if path elements render */}
-      <path d="M 64 190 L 624 30" stroke="#ff0000" strokeWidth="4" fill="none" />
-      {/* TEST: hardcoded line for comparison */}
-      <line x1="64" y1="195" x2="624" y2="35" stroke="#00ff00" strokeWidth="4" />
 
       {/* 5–95 band */}
       <path d={bandPath("p5", "p95")} style={{ fill: "#C9A227", fillOpacity: 0.15 }} />
