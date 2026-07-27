@@ -187,12 +187,17 @@ function FanChart({ bands }) {
         <line key={y} x1={PL} y1={y} x2={W - PR} y2={y} stroke="#ffffff" strokeOpacity="0.06" strokeWidth="1" />
       ))}
 
+      {/* TEST: hardcoded path — red diagonal should be visible if path elements render */}
+      <path d="M 64 190 L 624 30" stroke="#ff0000" strokeWidth="4" fill="none" />
+      {/* TEST: hardcoded line for comparison */}
+      <line x1="64" y1="195" x2="624" y2="35" stroke="#00ff00" strokeWidth="4" />
+
       {/* 5–95 band */}
-      <path d={bandPath("p5", "p95")} fill="#C9A227" fillOpacity="0.12" />
+      <path d={bandPath("p5", "p95")} style={{ fill: "#C9A227", fillOpacity: 0.15 }} />
       {/* 25–75 band */}
-      <path d={bandPath("p25", "p75")} fill="#C9A227" fillOpacity="0.22" />
+      <path d={bandPath("p25", "p75")} style={{ fill: "#C9A227", fillOpacity: 0.28 }} />
       {/* Median */}
-      <path d={pathFor("p50")} fill="none" stroke="#C9A227" strokeWidth="2.5" strokeLinejoin="round" />
+      <path d={pathFor("p50")} style={{ fill: "none", stroke: "#C9A227", strokeWidth: 2.5 }} />
 
       {/* Y-axis labels */}
       {yTicks.map(({ v, y }) => (
