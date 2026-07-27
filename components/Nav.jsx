@@ -13,6 +13,7 @@ const links = [
   { href: "/macro", label: "Macro" },
   { href: "/simulator", label: "Simulator" },
   { href: "/backtesting", label: "Backtesting" },
+  { href: "/planning", label: "Planning" },
   { href: "/transactions", label: "Transactions" },
 ];
 

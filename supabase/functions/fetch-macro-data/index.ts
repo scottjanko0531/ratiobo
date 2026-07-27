@@ -1177,6 +1177,19 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const cpi3yRow = processedRows.find(r => r.name === "CPI Growth (3Y Avg)");
     if (!gdpRow || !cpiRow) return;
 
+    // Consumer Inflation Expectations is not in processedRows (it's written by updateConsumerExpectations
+    // which runs after this function). Read it from macro_indicators so computeEdgeFwdSignal uses the
+    // same value the frontend sees — keeping both numbers in sync.
+    const rowsForSignal = [...processedRows];
+    if (!rowsForSignal.find(r => r.name === "Consumer Inflation Expectations")) {
+      const { data: ceRow } = await supabase
+        .from("macro_indicators")
+        .select("name, layer, layer_name, description, fred_series_id, unit, data_source, sort_order, current_value, previous_value, change_value, status, last_fetched_at, updated_at, metadata")
+        .eq("name", "Consumer Inflation Expectations")
+        .single();
+      if (ceRow) rowsForSignal.push(ceRow as unknown as ProcessedRow);
+    }
+
     const gdpYoy = Number(gdpRow.current_value);
     const cpiYoy = Number(cpiRow.current_value);
     const bre    = breRow   ? Number(breRow.current_value)   : null;
@@ -1188,7 +1201,7 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const periodDate = `${now.getUTCFullYear()}-${String(q * 3 + 1).padStart(2, "0")}-01`;
     const r2 = (n: number) => Math.round(n * 100) / 100;
 
-    const { forwardKey, confidence } = computeEdgeFwdSignal(processedRows);
+    const { forwardKey, confidence } = computeEdgeFwdSignal(rowsForSignal);
     await supabase.from("macro_regime_history").upsert({
       period_date: periodDate,
       gdp_yoy: r2(gdpYoy), cpi_yoy: r2(cpiYoy),
