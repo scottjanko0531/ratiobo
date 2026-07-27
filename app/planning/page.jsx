@@ -80,7 +80,7 @@ function runMonteCarlo(profile, portfolioKey, nSims = 1000) {
           inflation_rate: infl = 0.03 } = profile;
 
   const total = (Number(tax) + Number(trad) + Number(roth)) || 0;
-  const years = (lifeExp || 95) - (age || 50);
+  const years = Math.max(1, (Number(lifeExp) || 95) - (Number(age) || 50));
   const { mu, sigma } = getPortfolioParams(portfolioKey);
   const drift = Math.log(1 + mu) - 0.5 * sigma * sigma;
 
@@ -154,14 +154,15 @@ function getCashFlow(profile) {
 
 // ── SVG Chart: Monte Carlo fan ────────────────────────────────────────────
 function FanChart({ bands }) {
-  if (!bands?.length) return null;
+  if (!bands?.length || bands.length < 2) return null;
   const W = 640, H = 220, PL = 64, PR = 16, PT = 12, PB = 28;
   const cW = W - PL - PR, cH = H - PT - PB;
 
-  const maxVal = Math.max(...bands.map(b => b.p95)) || 1;
+  const maxVal = Math.max(...bands.map(b => b.p95), 1);
   const minAge = bands[0].age, maxAge = bands[bands.length - 1].age;
+  const ageRange = maxAge - minAge || 1;
 
-  const xScale = (age) => ((age - minAge) / (maxAge - minAge)) * cW;
+  const xScale = (age) => ((age - minAge) / ageRange) * cW;
   const yScale = (v) => cH - (v / maxVal) * cH;
 
   const pathFor = (key) =>
@@ -547,10 +548,14 @@ export default function PlanningPage() {
   // Re-run Monte Carlo when profile changes
   useEffect(() => {
     if (!profile) return;
-    const mc = runMonteCarlo(profile, profile.chosen_portfolio || "bw_modified");
-    setMC(mc);
-    setCF(getCashFlow(profile));
-    setAIPlan(null); // clear stale AI plan
+    try {
+      const mc = runMonteCarlo(profile, profile.chosen_portfolio || "bw_modified");
+      setMC(mc);
+      setCF(getCashFlow(profile));
+      setAIPlan(null);
+    } catch (e) {
+      console.error("[MC]", e);
+    }
   }, [profile]);
 
   const saveProfile = async (payload) => {
