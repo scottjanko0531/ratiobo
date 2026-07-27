@@ -84,16 +84,17 @@ function runMonteCarlo(profile, portfolioKey, nSims = 1000) {
   const { mu, sigma } = getPortfolioParams(portfolioKey);
   const drift = Math.log(1 + mu) - 0.5 * sigma * sigma;
 
-  // Year 1 withdrawal rate
+  // Year 1 net cash flow (positive = surplus added to portfolio, negative = withdrawal)
   const y1Income = (streams ?? []).reduce((s, st) => {
     const sy = Number(st.startYear) || CUR_YEAR;
     const ey = st.endYear ? Number(st.endYear) : Infinity;
     return (CUR_YEAR + 1) >= sy && (CUR_YEAR + 1) <= ey ? s + (Number(st.amountMonthly) || 0) * 12 : s;
   }, 0);
   const y1Expenses = Number(monthlyExp) * 12;
-  const withdrawalRate = total > 0 ? Math.max(0, y1Expenses - y1Income) / total : 0;
+  const y1Net = y1Income - y1Expenses;
+  const withdrawalRate = total > 0 && y1Net < 0 ? Math.abs(y1Net) / total : 0;
 
-  // Build year-by-year withdrawal schedule
+  // Build year-by-year net cash flow schedule (+ = contribution, - = withdrawal)
   const schedule = [];
   for (let y = 1; y <= years; y++) {
     const calYear = CUR_YEAR + y;
@@ -104,22 +105,29 @@ function runMonteCarlo(profile, portfolioKey, nSims = 1000) {
       return calYear >= sy && calYear <= ey ? s + (Number(st.amountMonthly) || 0) * 12 : s;
     }, 0);
     const expenses = Number(monthlyExp) * 12 * inflFactor;
-    schedule.push(Math.max(0, expenses - income));
+    schedule.push(income - expenses);
   }
 
-  // Simulate
+  // Simulate — surplus years grow the portfolio; deficit years draw it down
   const paths = Array.from({ length: nSims }, () => [total]);
   for (let y = 0; y < years; y++) {
-    const withdrawal = schedule[y];
+    const net = schedule[y];
     for (let s = 0; s < nSims; s++) {
       const prev = paths[s][y];
-      if (prev <= 0) { paths[s].push(0); continue; }
       const ret = Math.exp(drift + sigma * normalRandom()) - 1;
-      paths[s].push(Math.max(0, prev * (1 + ret) - withdrawal));
+      // Only clamp to 0 when drawing down — surplus can always be invested
+      const next = prev * (1 + ret) + net;
+      paths[s].push(net < 0 ? Math.max(0, next) : Math.max(0, next));
     }
   }
 
-  const survivors = paths.filter(p => p[p.length - 1] > 0).length;
+  // Failure = portfolio hits $0 during a withdrawal year
+  const survivors = paths.filter((p, pi) => {
+    for (let y = 0; y < years; y++) {
+      if (schedule[y] < 0 && p[y + 1] <= 0) return false;
+    }
+    return true;
+  }).length;
 
   // Percentile bands
   const bands = [];
