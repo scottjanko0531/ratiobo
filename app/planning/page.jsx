@@ -184,37 +184,37 @@ function FanChart({ bands }) {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H }}>
       {/* Grid lines */}
       {yTicks.map(({ y }) => (
-        <line key={y} x1={PL} y1={y} x2={W - PR} y2={y} stroke="currentColor" strokeOpacity="0.08" strokeWidth="1" />
+        <line key={y} x1={PL} y1={y} x2={W - PR} y2={y} stroke="#ffffff" strokeOpacity="0.06" strokeWidth="1" />
       ))}
 
       {/* 5–95 band */}
-      <path d={bandPath("p5", "p95")} fill="currentColor" fillOpacity="0.06" />
+      <path d={bandPath("p5", "p95")} fill="#C9A227" fillOpacity="0.12" />
       {/* 25–75 band */}
-      <path d={bandPath("p25", "p75")} fill="currentColor" fillOpacity="0.10" />
+      <path d={bandPath("p25", "p75")} fill="#C9A227" fillOpacity="0.22" />
       {/* Median */}
-      <path d={pathFor("p50")} fill="none" stroke="#C9A227" strokeWidth="2" strokeLinejoin="round" />
+      <path d={pathFor("p50")} fill="none" stroke="#C9A227" strokeWidth="2.5" strokeLinejoin="round" />
 
       {/* Y-axis labels */}
       {yTicks.map(({ v, y }) => (
-        <text key={v} x={PL - 6} y={y + 4} textAnchor="end" fontSize="10" fill="currentColor" fillOpacity="0.45">
+        <text key={v} x={PL - 6} y={y + 4} textAnchor="end" fontSize="10" fill="#ffffff" fillOpacity="0.4">
           {fmt$(v)}
         </text>
       ))}
 
       {/* X-axis labels */}
       {xTicks.map(b => (
-        <text key={b.age} x={PL + xScale(b.age)} y={H - 4} textAnchor="middle" fontSize="10" fill="currentColor" fillOpacity="0.45">
+        <text key={b.age} x={PL + xScale(b.age)} y={H - 4} textAnchor="middle" fontSize="10" fill="#ffffff" fillOpacity="0.4">
           {b.age}
         </text>
       ))}
 
       {/* Legend */}
-      <rect x={PL + 8} y={PT + 6} width={10} height={10} fill="currentColor" fillOpacity="0.06" />
-      <text x={PL + 22} y={PT + 15} fontSize="9" fill="currentColor" fillOpacity="0.4">5–95th pct</text>
-      <rect x={PL + 78} y={PT + 6} width={10} height={10} fill="currentColor" fillOpacity="0.10" />
-      <text x={PL + 92} y={PT + 15} fontSize="9" fill="currentColor" fillOpacity="0.4">25–75th pct</text>
-      <line x1={PL + 152} y1={PT + 11} x2={PL + 162} y2={PT + 11} stroke="#C9A227" strokeWidth="2" />
-      <text x={PL + 166} y={PT + 15} fontSize="9" fill="currentColor" fillOpacity="0.4">Median</text>
+      <rect x={PL + 8} y={PT + 6} width={10} height={10} fill="#C9A227" fillOpacity="0.12" />
+      <text x={PL + 22} y={PT + 15} fontSize="9" fill="#ffffff" fillOpacity="0.4">5–95th pct</text>
+      <rect x={PL + 78} y={PT + 6} width={10} height={10} fill="#C9A227" fillOpacity="0.22" />
+      <text x={PL + 92} y={PT + 15} fontSize="9" fill="#ffffff" fillOpacity="0.4">25–75th pct</text>
+      <line x1={PL + 152} y1={PT + 11} x2={PL + 162} y2={PT + 11} stroke="#C9A227" strokeWidth="2.5" />
+      <text x={PL + 166} y={PT + 15} fontSize="9" fill="#ffffff" fillOpacity="0.4">Median</text>
     </svg>
   );
 }
