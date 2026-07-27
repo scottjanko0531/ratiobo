@@ -153,8 +153,14 @@ function getCashFlow(profile) {
   return rows;
 }
 
+const PCT_KEYS = ["p95", "p75", "p50", "p25", "p5"];
+const PCT_LABELS = { p95: "95th", p75: "75th", p50: "Median", p25: "25th", p5: "5th" };
+
 // ── SVG Chart: Monte Carlo fan ────────────────────────────────────────────
 function FanChart({ bands }) {
+  const [hover, setHover] = useState(null);
+  const svgRef = useRef(null);
+
   if (!bands?.length || bands.length < 2) return null;
   const W = 640, H = 220, PL = 64, PR = 16, PT = 12, PB = 28;
   const cW = W - PL - PR, cH = H - PT - PB;
@@ -165,7 +171,6 @@ function FanChart({ bands }) {
 
   const xScale = (age) => ((age - minAge) / ageRange) * cW;
   const yScale = (v) => cH - (v / maxVal) * cH;
-
   const pt = (x, y) => `${(PL + x).toFixed(1)},${(PT + y).toFixed(1)}`;
 
   const pathFor = (key) =>
@@ -177,47 +182,88 @@ function FanChart({ bands }) {
     return `M ${fwd} L ${rev} Z`;
   };
 
-  // Y-axis ticks
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map(f => ({ v: maxVal * f, y: PT + yScale(maxVal * f) }));
-  // X-axis ticks (every 5 years)
   const xTicks = bands.filter(b => b.age % 5 === 0);
 
+  const onMouseMove = (e) => {
+    const svg = svgRef.current;
+    if (!svg?.getScreenCTM) return;
+    try {
+      const p = svg.createSVGPoint();
+      p.x = e.clientX; p.y = e.clientY;
+      const loc = p.matrixTransform(svg.getScreenCTM().inverse());
+      const fraction = Math.max(0, Math.min(1, (loc.x - PL) / cW));
+      const idx = Math.min(Math.round(fraction * (bands.length - 1)), bands.length - 1);
+      const band = bands[idx];
+      setHover({ band, svgX: PL + xScale(band.age), clientX: e.clientX, clientY: e.clientY });
+    } catch { setHover(null); }
+  };
+
+  const hSvgX = hover ? (PL + xScale(hover.band.age)).toFixed(1) : null;
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H }}>
-      {/* Grid lines */}
-      {yTicks.map(({ y }) => (
-        <line key={y} x1={PL} y1={y} x2={W - PR} y2={y} stroke="#ffffff" strokeOpacity="0.06" strokeWidth="1" />
-      ))}
+    <div className="relative">
+      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair"
+        style={{ height: H }} onMouseMove={onMouseMove} onMouseLeave={() => setHover(null)}>
+        {yTicks.map(({ y }) => (
+          <line key={y} x1={PL} y1={y} x2={W - PR} y2={y} stroke="#ffffff" strokeOpacity="0.06" strokeWidth="1" />
+        ))}
 
-      {/* 5–95 band */}
-      <path d={bandPath("p5", "p95")} style={{ fill: "#C9A227", fillOpacity: 0.15 }} />
-      {/* 25–75 band */}
-      <path d={bandPath("p25", "p75")} style={{ fill: "#C9A227", fillOpacity: 0.28 }} />
-      {/* Median */}
-      <path d={pathFor("p50")} style={{ fill: "none", stroke: "#C9A227", strokeWidth: 2.5 }} />
+        <path d={bandPath("p5", "p95")} style={{ fill: "#C9A227", fillOpacity: 0.15 }} />
+        <path d={bandPath("p25", "p75")} style={{ fill: "#C9A227", fillOpacity: 0.28 }} />
+        <path d={pathFor("p50")} style={{ fill: "none", stroke: "#C9A227", strokeWidth: 2.5 }} />
 
-      {/* Y-axis labels */}
-      {yTicks.map(({ v, y }) => (
-        <text key={v} x={PL - 6} y={y + 4} textAnchor="end" fontSize="10" fill="#ffffff" fillOpacity="0.4">
-          {fmt$(v)}
-        </text>
-      ))}
+        {/* Hover crosshair */}
+        {hSvgX && <>
+          <line x1={hSvgX} y1={PT} x2={hSvgX} y2={PT + cH}
+            stroke="#ffffff" strokeOpacity="0.2" strokeWidth="1" strokeDasharray="3,3" />
+          {["p5","p25","p50","p75","p95"].map(k => (
+            <circle key={k} cx={hSvgX} cy={(PT + yScale(hover.band[k])).toFixed(1)}
+              r="3.5" fill="#C9A227" stroke="#000" strokeWidth="1" />
+          ))}
+        </>}
 
-      {/* X-axis labels */}
-      {xTicks.map(b => (
-        <text key={b.age} x={PL + xScale(b.age)} y={H - 4} textAnchor="middle" fontSize="10" fill="#ffffff" fillOpacity="0.4">
-          {b.age}
-        </text>
-      ))}
+        {yTicks.map(({ v, y }) => (
+          <text key={v} x={PL - 6} y={y + 4} textAnchor="end" fontSize="10" fill="#ffffff" fillOpacity="0.4">
+            {fmt$(v)}
+          </text>
+        ))}
+        {xTicks.map(b => (
+          <text key={b.age} x={PL + xScale(b.age)} y={H - 4} textAnchor="middle" fontSize="10" fill="#ffffff" fillOpacity="0.4">
+            {b.age}
+          </text>
+        ))}
 
-      {/* Legend */}
-      <rect x={PL + 8} y={PT + 6} width={10} height={10} fill="#C9A227" fillOpacity="0.12" />
-      <text x={PL + 22} y={PT + 15} fontSize="9" fill="#ffffff" fillOpacity="0.4">5–95th pct</text>
-      <rect x={PL + 78} y={PT + 6} width={10} height={10} fill="#C9A227" fillOpacity="0.22" />
-      <text x={PL + 92} y={PT + 15} fontSize="9" fill="#ffffff" fillOpacity="0.4">25–75th pct</text>
-      <line x1={PL + 152} y1={PT + 11} x2={PL + 162} y2={PT + 11} stroke="#C9A227" strokeWidth="2.5" />
-      <text x={PL + 166} y={PT + 15} fontSize="9" fill="#ffffff" fillOpacity="0.4">Median</text>
-    </svg>
+        <rect x={PL + 8} y={PT + 6} width={10} height={10} fill="#C9A227" fillOpacity="0.15" />
+        <text x={PL + 22} y={PT + 15} fontSize="9" fill="#ffffff" fillOpacity="0.4">5–95th pct</text>
+        <rect x={PL + 78} y={PT + 6} width={10} height={10} fill="#C9A227" fillOpacity="0.28" />
+        <text x={PL + 92} y={PT + 15} fontSize="9" fill="#ffffff" fillOpacity="0.4">25–75th pct</text>
+        <line x1={PL + 152} y1={PT + 11} x2={PL + 162} y2={PT + 11} stroke="#C9A227" strokeWidth="2.5" />
+        <text x={PL + 166} y={PT + 15} fontSize="9" fill="#ffffff" fillOpacity="0.4">Median</text>
+      </svg>
+
+      {/* Hover tooltip */}
+      {hover && (
+        <div className="fixed z-50 pointer-events-none"
+          style={{ left: hover.clientX + 16, top: hover.clientY - 80 }}>
+          <div className="rounded-lg border border-ink-line bg-ink shadow-lg px-3 py-2 text-xs min-w-[160px]">
+            <p className="font-medium text-paper mb-1.5">
+              Age {hover.band.age} · {CUR_YEAR + (hover.band.age - bands[0].age)}
+            </p>
+            <div className="space-y-0.5">
+              {PCT_KEYS.map(k => (
+                <div key={k} className="flex justify-between gap-6">
+                  <span className="text-paper-dim">{PCT_LABELS[k]}</span>
+                  <span className={`font-mono tabular-nums ${k === "p50" ? "text-brass-soft font-medium" : "text-paper-dim"}`}>
+                    {fmt$(hover.band[k])}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -743,6 +789,43 @@ export default function PlanningPage() {
                 <span>Annual rebalancing assumed</span>
               </div>
             </div>
+
+            {/* Percentile detail table */}
+            {mcResults.bands.length > 1 && (() => {
+              const ages = new Set([mcResults.bands[0].age, mcResults.bands[mcResults.bands.length - 1].age]);
+              mcResults.bands.forEach(b => { if (b.age % 5 === 0) ages.add(b.age); });
+              const rows = mcResults.bands.filter(b => ages.has(b.age)).sort((a, b) => a.age - b.age);
+              return (
+                <div className="mt-4 rounded-lg border border-ink-line overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-ink-line bg-ink-soft/30">
+                        <th className="text-left py-2 px-3 text-paper-dim font-medium">Age</th>
+                        <th className="text-right py-2 px-3 text-paper-dim font-medium">Year</th>
+                        <th className="text-right py-2 px-3 text-paper-dim/60 font-medium">5th Pct</th>
+                        <th className="text-right py-2 px-3 text-paper-dim/60 font-medium">25th Pct</th>
+                        <th className="text-right py-2 px-3 text-brass-soft font-medium">Median</th>
+                        <th className="text-right py-2 px-3 text-paper-dim/60 font-medium">75th Pct</th>
+                        <th className="text-right py-2 px-3 text-paper-dim/60 font-medium">95th Pct</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(b => (
+                        <tr key={b.age} className="border-b border-ink-line/40 hover:bg-ink-soft/20">
+                          <td className="py-1.5 px-3 font-medium">{b.age}</td>
+                          <td className="py-1.5 px-3 text-right text-paper-dim">{CUR_YEAR + (b.age - mcResults.bands[0].age)}</td>
+                          <td className="py-1.5 px-3 text-right font-mono tabular-nums text-loss">{fmt$(b.p5)}</td>
+                          <td className="py-1.5 px-3 text-right font-mono tabular-nums text-paper-dim">{fmt$(b.p25)}</td>
+                          <td className="py-1.5 px-3 text-right font-mono tabular-nums text-brass-soft font-medium">{fmt$(b.p50)}</td>
+                          <td className="py-1.5 px-3 text-right font-mono tabular-nums text-paper-dim">{fmt$(b.p75)}</td>
+                          <td className="py-1.5 px-3 text-right font-mono tabular-nums text-gain">{fmt$(b.p95)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
           </section>
 
           {/* Income Streams Summary */}
