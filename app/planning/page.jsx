@@ -108,26 +108,19 @@ function runMonteCarlo(profile, portfolioKey, nSims = 1000) {
     schedule.push(income - expenses);
   }
 
-  // Simulate — surplus years grow the portfolio; deficit years draw it down
+  // Simulate — surplus years contribute to portfolio; deficit years draw it down
   const paths = Array.from({ length: nSims }, () => [total]);
   for (let y = 0; y < years; y++) {
     const net = schedule[y];
     for (let s = 0; s < nSims; s++) {
       const prev = paths[s][y];
       const ret = Math.exp(drift + sigma * normalRandom()) - 1;
-      // Only clamp to 0 when drawing down — surplus can always be invested
       const next = prev * (1 + ret) + net;
-      paths[s].push(net < 0 ? Math.max(0, next) : Math.max(0, next));
+      paths[s].push(Math.max(0, next));
     }
   }
 
-  // Failure = portfolio hits $0 during a withdrawal year
-  const survivors = paths.filter((p, pi) => {
-    for (let y = 0; y < years; y++) {
-      if (schedule[y] < 0 && p[y + 1] <= 0) return false;
-    }
-    return true;
-  }).length;
+  const survivors = paths.filter(p => p[p.length - 1] > 0).length;
 
   // Percentile bands
   const bands = [];
@@ -166,7 +159,7 @@ function FanChart({ bands }) {
   const W = 640, H = 220, PL = 64, PR = 16, PT = 12, PB = 28;
   const cW = W - PL - PR, cH = H - PT - PB;
 
-  const maxVal = Math.max(...bands.map(b => b.p95), 1);
+  const maxVal = Math.max(...bands.map(b => b.p95 || 0)) || 1;
   const minAge = bands[0].age, maxAge = bands[bands.length - 1].age;
   const ageRange = maxAge - minAge || 1;
 
@@ -530,6 +523,7 @@ export default function PlanningPage() {
   const [aiPlan, setAIPlan]         = useState(null);
   const [aiLoading, setAILoading]   = useState(false);
   const [aiError, setAIError]       = useState(null);
+  const [mcError, setMCError]       = useState(null);
   const [loading, setLoading]       = useState(true);
   const [userId, setUserId]         = useState(null);
 
@@ -556,6 +550,7 @@ export default function PlanningPage() {
   // Re-run Monte Carlo when profile changes
   useEffect(() => {
     if (!profile) return;
+    setMCError(null);
     try {
       const mc = runMonteCarlo(profile, profile.chosen_portfolio || "bw_modified");
       setMC(mc);
@@ -563,6 +558,7 @@ export default function PlanningPage() {
       setAIPlan(null);
     } catch (e) {
       console.error("[MC]", e);
+      setMCError(String(e));
     }
   }, [profile]);
 
@@ -646,6 +642,12 @@ export default function PlanningPage() {
             className="px-5 py-2.5 rounded-lg border border-brass/40 bg-brass/10 text-brass-soft text-sm hover:bg-brass/20 transition-colors">
             Get Started
           </button>
+        </div>
+      )}
+
+      {mcError && (
+        <div className="px-3 py-2 rounded-lg border border-loss/30 bg-loss/10 text-xs text-loss mb-4">
+          Simulation error: {mcError}
         </div>
       )}
 
