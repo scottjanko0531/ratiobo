@@ -132,7 +132,7 @@ export default function PortfoliosPage() {
     })();
 
     return {
-      totalValue, costBasis, totalGain, returnPct, income, count: hs.length,
+      totalValue, costBasis, totalGain, returnPct, count: hs.length,
       dayChg, monthChg: periodChg(periodSnaps.month), qtrChg: periodChg(periodSnaps.qtr), ytdChg: periodChg(periodSnaps.year),
     };
   }
