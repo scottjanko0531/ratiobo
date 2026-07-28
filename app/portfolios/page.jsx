@@ -114,19 +114,10 @@ export default function PortfoliosPage() {
     const totalValue = hs.reduce((s, h) => s + Number(h.current_value ?? 0), 0);
     const costBasis  = hs.reduce((s, h) => s + Number(h.cost_basis  ?? 0), 0);
 
-    const hIds = new Set(hs.map((h) => h.id));
-    let income = 0, reinvested = 0;
-    for (const t of allTransactions) {
-      if (!hIds.has(t.holding_id)) continue;
-      const amt = Number(t.amount ?? 0);
-      if ((t.txn_type === "dividend" || t.txn_type === "interest") && !t.is_reinvested) income += amt;
-      if (t.txn_type === "fee") income -= amt;
-      if (t.is_reinvested) reinvested += amt;
-    }
-    const netGain   = hs.reduce((s, h) => s + Number(h.net_gain ?? 0), 0);
-    const totalGain = netGain + reinvested + income;
-    const origCost  = costBasis - reinvested;
-    const returnPct = origCost > 0 ? (totalGain / origCost) * 100 : null;
+    // Use pre-aggregated view columns — same formula as group rows
+    const totalGain = hs.reduce((s, h) =>
+      s + Number(h.net_gain ?? 0) + Number(h.total_dividends ?? 0) + Number(h.total_interest ?? 0) - Number(h.total_fees ?? 0), 0);
+    const returnPct = costBasis > 0 ? (totalGain / costBasis) * 100 : null;
 
     const periodChg = (snap) => {
       let prev = 0, found = 0;
