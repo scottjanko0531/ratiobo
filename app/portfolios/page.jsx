@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from "react";
 import Shell from "../../components/Shell";
 import { supabase } from "../../lib/supabase";
 import { SIMULATOR_KEYS, resolveSimulatorKey } from "../../lib/simulatorKeys";
+import HoldingDetailDrawer from "../../components/HoldingDetailDrawer";
 
 const usd = (v) => {
   if (v == null || isNaN(Number(v))) return "—";
@@ -27,7 +28,11 @@ export default function PortfoliosPage() {
   const [snapPriceMap, setSnapPriceMap]       = useState({}); // holding_id -> start-of-day price
   const [periodSnaps, setPeriodSnaps]         = useState({ month: {}, qtr: {}, year: {} });
   const [allTransactions, setAllTransactions] = useState([]);
+  const [assetTypes, setAssetTypes]           = useState([]);
+  const [txnTypes, setTxnTypes]               = useState([]);
   const [busy, setBusy]                       = useState(true);
+
+  const [detailHolding, setDetailHolding]     = useState(null);
 
   const [viewingPortfolio, setViewingPortfolio] = useState(null);
   const [expandedBuckets, setExpandedBuckets]   = useState(new Set()); // empty = all collapsed
@@ -58,6 +63,8 @@ export default function PortfoliosPage() {
       { data: mo },
       { data: qtr },
       { data: yr },
+      { data: atData },
+      { data: ttData },
     ] = await Promise.all([
       supabase.from("portfolios").select("*").order("portfolio_name"),
       supabase.from("portfolio_holdings").select("portfolio_id, holding_id"),
@@ -68,6 +75,8 @@ export default function PortfoliosPage() {
       supabase.rpc("snapshot_at", { snap_date: monthSnap }),
       supabase.rpc("snapshot_at", { snap_date: qtrSnap }),
       supabase.rpc("snapshot_at", { snap_date: yearSnap }),
+      supabase.from("asset_types").select("code, label").eq("is_active", true).order("sort_order"),
+      supabase.from("transaction_types").select("code, label, affects_quantity").eq("is_active", true).order("sort_order"),
     ]);
 
     setPortfolios(pfData ?? []);
@@ -94,6 +103,8 @@ export default function PortfoliosPage() {
 
     setPeriodSnaps({ month: toMap(mo), qtr: toMap(qtr), year: toMap(yr) });
     setAllTransactions(txns ?? []);
+    setAssetTypes(atData ?? []);
+    setTxnTypes(ttData ?? []);
     setBusy(false);
   }
 
@@ -462,7 +473,7 @@ export default function PortfoliosPage() {
                                   const hYield = h.dividend_yield ?? h.interest_rate;
                                   const expIncome = hYield != null ? Number(h.current_value ?? 0) * Number(hYield) / 100 : null;
                                   return (
-                                    <tr key={h.id} className="border-b border-ink-line/40 last:border-0 hover:bg-ink-soft/40 transition-colors">
+                                    <tr key={h.id} className="border-b border-ink-line/40 last:border-0 hover:bg-ink-soft/40 transition-colors cursor-pointer" onClick={() => setDetailHolding(h)}>
                                       <td className="py-2 pr-3 pl-5">
                                         <span className="font-medium">{h.symbol}</span>
                                         {h.name && <span className="block text-[10px] text-paper-dim leading-tight">{h.name}</span>}
@@ -631,6 +642,17 @@ export default function PortfoliosPage() {
           )}
         </div>
       </div>
+
+      <HoldingDetailDrawer
+        holding={detailHolding}
+        onClose={() => setDetailHolding(null)}
+        snapMap={snapMap}
+        accountMap={accountMap}
+        assetTypes={assetTypes}
+        txnTypes={txnTypes}
+        holdings={holdings}
+        onRefresh={load}
+      />
     </Shell>
   );
 }

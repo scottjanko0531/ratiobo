@@ -6,6 +6,7 @@ import {
 } from "recharts";
 import { supabase } from "../../lib/supabase";
 import { cashAmount, CASH_LEG_TYPES } from "../../lib/cash";
+import HoldingDetailDrawer from "../../components/HoldingDetailDrawer";
 import { SIMULATOR_KEYS, defaultSimulatorKey, resolveSimulatorKey } from "../../lib/simulatorKeys";
 import Shell from "../../components/Shell";
 
@@ -1678,7 +1679,18 @@ export default function HoldingsPage() {
       </div>
 
       {/* ── Detail / Transactions drawer ───────────────────────────────────── */}
-      <div className={`fixed inset-0 z-30 ${viewingHolding ? "" : "pointer-events-none"}`}>
+      <HoldingDetailDrawer
+        holding={viewingHolding}
+        onClose={closeDetail}
+        snapMap={snapMap}
+        accountMap={accountMap}
+        assetTypes={assetTypes}
+        txnTypes={txnTypes}
+        holdings={holdings}
+        onRefresh={load}
+        onEditHolding={openEdit}
+      />
+      <div className={`fixed inset-0 z-30 ${viewingHolding ? "" : "pointer-events-none"} hidden`}>
         <div
           className={`absolute inset-0 bg-ink/70 transition-opacity ${viewingHolding ? "opacity-100" : "opacity-0"}`}
           onClick={closeDetail}
