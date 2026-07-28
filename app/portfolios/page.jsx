@@ -32,7 +32,7 @@ export default function PortfoliosPage() {
   const [viewingPortfolio, setViewingPortfolio] = useState(null);
   const [expandedBuckets, setExpandedBuckets]   = useState(new Set()); // empty = all collapsed
   const [editingPortfolio, setEditingPortfolio] = useState(null); // "new" | portfolio obj
-  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "" });
+  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {} });
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -139,13 +139,18 @@ export default function PortfoliosPage() {
 
   // ── CRUD ─────────────────────────────────────────────────────────────────────
   function openNew() {
-    setForm({ portfolio_name: "", description: "", strategy_detail: "" });
+    setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {} });
     setFormError("");
     setEditingPortfolio("new");
   }
 
   function openEdit(pf) {
-    setForm({ portfolio_name: pf.portfolio_name, description: pf.description ?? "", strategy_detail: pf.strategy_detail ?? "" });
+    setForm({
+      portfolio_name:     pf.portfolio_name,
+      description:        pf.description        ?? "",
+      strategy_detail:    pf.strategy_detail    ?? "",
+      target_allocations: pf.target_allocations ?? {},
+    });
     setFormError("");
     setEditingPortfolio(pf);
   }
@@ -155,10 +160,11 @@ export default function PortfoliosPage() {
     setFormBusy(true); setFormError("");
     const { data: { user } } = await supabase.auth.getUser();
     const payload = {
-      portfolio_name:  form.portfolio_name.trim(),
-      description:     form.description.trim()     || null,
-      strategy_detail: form.strategy_detail.trim() || null,
-      updated_at:      new Date().toISOString(),
+      portfolio_name:     form.portfolio_name.trim(),
+      description:        form.description.trim()  || null,
+      strategy_detail:    form.strategy_detail.trim() || null,
+      target_allocations: form.target_allocations,
+      updated_at:         new Date().toISOString(),
     };
     let error;
     if (editingPortfolio === "new") {
@@ -390,6 +396,9 @@ export default function PortfoliosPage() {
                                 if (next.has(key)) next.delete(key); else next.add(key);
                                 return next;
                               });
+                              const hasTargets = pf.target_allocations && Object.keys(pf.target_allocations).length > 0;
+                              const targetPct  = hasTargets ? (Number(pf.target_allocations[key]) || 0) : null;
+                              const diffPct    = targetPct != null ? groupPct - targetPct : null;
                               return [
                                 /* Group header — clickable to expand/collapse */
                                 <tr
@@ -406,10 +415,22 @@ export default function PortfoliosPage() {
                                         <path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                                       </svg>
                                       <span className="label text-[11px] font-semibold text-brass-soft">{label}</span>
-                                      <div className="flex-1 max-w-[100px] h-1.5 bg-ink-line rounded-full overflow-hidden">
+                                      <div className="relative flex-1 max-w-[100px] h-1.5 bg-ink-line rounded-full overflow-hidden">
                                         <div className="h-full bg-brass/60 rounded-full" style={{ width: `${Math.min(groupPct, 100)}%` }} />
+                                        {targetPct != null && targetPct > 0 && (
+                                          <div className="absolute inset-y-0 w-px bg-white/60" style={{ left: `${Math.min(targetPct, 100)}%` }} />
+                                        )}
                                       </div>
                                       <span className="num text-[11px] font-semibold text-paper">{groupPct.toFixed(1)}%</span>
+                                      {targetPct != null && (
+                                        <span className={`text-[10px] tabular-nums ${
+                                          diffPct >  2 ? "text-loss" :
+                                          diffPct < -2 ? "text-gain" :
+                                          "text-paper-dim"
+                                        }`}>
+                                          / {targetPct}% tgt
+                                        </span>
+                                      )}
                                       <span className="label text-[10px] text-paper-dim">{items.length} holding{items.length !== 1 ? "s" : ""}</span>
                                     </div>
                                   </td>
@@ -551,6 +572,45 @@ export default function PortfoliosPage() {
                   value={form.strategy_detail}
                   onChange={(e) => setForm((f) => ({ ...f, strategy_detail: e.target.value }))}
                 />
+              </div>
+
+              <div>
+                <label className="label block mb-2">Target Allocations</label>
+                <div className="space-y-1">
+                  {SIMULATOR_KEYS.map(({ key, label }) => {
+                    const val = form.target_allocations[key] ?? "";
+                    return (
+                      <div key={key} className="flex items-center gap-2">
+                        <span className="text-xs text-paper-dim flex-1">{label}</span>
+                        <input
+                          type="number" min="0" max="100" step="1"
+                          className="field w-16 py-1 px-2 text-xs text-right"
+                          placeholder="0"
+                          value={val}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            const n = raw === "" ? 0 : Math.max(0, Math.min(100, Number(raw)));
+                            setForm((f) => ({
+                              ...f,
+                              target_allocations: { ...f.target_allocations, [key]: n },
+                            }));
+                          }}
+                        />
+                        <span className="text-xs text-paper-dim w-3">%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {(() => {
+                  const total = SIMULATOR_KEYS.reduce((s, { key }) => s + (Number(form.target_allocations[key]) || 0), 0);
+                  const diff  = total - 100;
+                  return (
+                    <div className={`flex justify-between mt-2 pt-2 border-t border-ink-line text-xs font-medium ${Math.abs(diff) <= 1 ? "text-gain" : "text-loss"}`}>
+                      <span>Total</span>
+                      <span>{total}% {diff !== 0 ? `(${diff > 0 ? "+" : ""}${diff} from 100)` : "✓"}</span>
+                    </div>
+                  );
+                })()}
               </div>
 
               {formError && <p className="text-loss text-sm">{formError}</p>}
