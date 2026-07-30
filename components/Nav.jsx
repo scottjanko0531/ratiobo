@@ -15,6 +15,7 @@ const links = [
   { href: "/backtesting", label: "Backtesting" },
   { href: "/planning", label: "Planning" },
   { href: "/transactions", label: "Transactions" },
+  { href: "/documents", label: "Documents" },
 ];
 
 function Brand() {
