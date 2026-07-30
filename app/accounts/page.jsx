@@ -76,14 +76,14 @@ export default function AccountsPage() {
   const [types, setTypes] = useState([]);
   const [assetTypes, setAssetTypes] = useState([]);
   const [txnTypes, setTxnTypes] = useState([]);
-  const [form, setForm] = useState({ name: "", institution: "", account_type: "", initial_cash: "", parent_account_id: "" });
+  const [form, setForm] = useState({ name: "", institution: "", account_type: "", initial_cash: "", parent_account_id: "", site_url: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const [menuOpenId, setMenuOpenId] = useState(null);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
   const [editing, setEditing] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", institution: "", account_type: "", parent_account_id: "" });
+  const [editForm, setEditForm] = useState({ name: "", institution: "", account_type: "", parent_account_id: "", site_url: "" });
   const [expandedSubaccounts, setExpandedSubaccounts] = useState(new Set());
   const [editError, setEditError] = useState("");
   const [editBusy, setEditBusy] = useState(false);
@@ -272,7 +272,8 @@ export default function AccountsPage() {
         name: form.name,
         institution: form.institution || null,
         account_type: form.account_type,
-        parent_account_id: form.parent_account_id || null
+        parent_account_id: form.parent_account_id || null,
+        site_url: form.site_url || null,
       })
       .select()
       .single();
@@ -323,7 +324,7 @@ export default function AccountsPage() {
     }
 
     setBusy(false);
-    setForm({ name: "", institution: "", account_type: "", initial_cash: "", parent_account_id: "" });
+    setForm({ name: "", institution: "", account_type: "", initial_cash: "", parent_account_id: "", site_url: "" });
     setShowAddAccount(false);
     load();
   }
@@ -591,7 +592,8 @@ export default function AccountsPage() {
       name: account.name,
       institution: account.institution ?? "",
       account_type: account.account_type,
-      parent_account_id: account.parent_account_id ?? ""
+      parent_account_id: account.parent_account_id ?? "",
+      site_url: account.site_url ?? "",
     });
     setEditAccountTags(accountTagMap[account.id] ?? []);
     setEditError("");
@@ -611,7 +613,8 @@ export default function AccountsPage() {
         name: editForm.name,
         institution: editForm.institution || null,
         account_type: editForm.account_type,
-        parent_account_id: editForm.parent_account_id || null
+        parent_account_id: editForm.parent_account_id || null,
+        site_url: editForm.site_url || null,
       })
       .eq("id", editing.id);
     if (error) { setEditBusy(false); setEditError(error.message); return; }
@@ -1183,7 +1186,25 @@ export default function AccountsPage() {
                               </button>
                             )}
                             <div>
-                              <div className="font-medium">{a.name}</div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-medium">{a.name}</span>
+                                {a.site_url && (
+                                  <a
+                                    href={a.site_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-paper-dim/60 hover:text-brass transition-colors"
+                                    aria-label="Open account website"
+                                  >
+                                    <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                      <path d="M6 2H2a1 1 0 00-1 1v9a1 1 0 001 1h9a1 1 0 001-1V8" />
+                                      <path d="M9 1h4v4" />
+                                      <path d="M13 1L7 7" />
+                                    </svg>
+                                  </a>
+                                )}
+                              </div>
                               {(accountTagMap[a.id]?.length > 0) && (
                                 <div className="flex flex-wrap gap-1 mt-1">
                                   {accountTagMap[a.id].map((tid) => {
@@ -1309,6 +1330,17 @@ export default function AccountsPage() {
             />
           </div>
           <div>
+            <label className="label block mb-1.5" htmlFor="acct-url">Website (optional)</label>
+            <input
+              id="acct-url"
+              className="field"
+              type="url"
+              placeholder="https://www.fidelity.com"
+              value={form.site_url}
+              onChange={(e) => setForm({ ...form, site_url: e.target.value })}
+            />
+          </div>
+          <div>
             <label className="label block mb-1.5" htmlFor="acct-type">Type</label>
             <select
               id="acct-type"
@@ -1374,7 +1406,25 @@ export default function AccountsPage() {
             <>
               <div className="flex items-center justify-between px-5 py-4 border-b border-ink-line">
                 <div>
-                  <p className="font-semibold text-base">{viewingAccount.name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="font-semibold text-base">{viewingAccount.name}</p>
+                    {viewingAccount.site_url && (
+                      <a
+                        href={viewingAccount.site_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-paper-dim hover:text-brass transition-colors"
+                        aria-label="Open account website"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M6 2H2a1 1 0 00-1 1v9a1 1 0 001 1h9a1 1 0 001-1V8" />
+                          <path d="M9 1h4v4" />
+                          <path d="M13 1L7 7" />
+                        </svg>
+                      </a>
+                    )}
+                  </div>
                   <p className="text-xs text-paper-dim mt-0.5">
                     {typeLabel(viewingAccount.account_type)}
                     {viewingAccount.institution ? ` · ${viewingAccount.institution}` : ""}
@@ -2502,6 +2552,17 @@ export default function AccountsPage() {
               className="field"
               value={editForm.institution}
               onChange={(e) => setEditForm({ ...editForm, institution: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="label block mb-1.5" htmlFor="edit-url">Website (optional)</label>
+            <input
+              id="edit-url"
+              className="field"
+              type="url"
+              placeholder="https://www.fidelity.com"
+              value={editForm.site_url}
+              onChange={(e) => setEditForm({ ...editForm, site_url: e.target.value })}
             />
           </div>
           <div>

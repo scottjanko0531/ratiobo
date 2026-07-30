@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import * as XLSX from "npm:xlsx";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -720,7 +721,6 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         } finally { clearTimeout(gprTid); }
         if (!res.ok) throw new Error(`GPR website: HTTP ${res.status}`);
         const buf = await res.arrayBuffer();
-        const XLSX = await import("npm:xlsx");
         const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: null });
@@ -1583,7 +1583,6 @@ async function updateConsumerExpectations(): Promise<void> {
       );
       if (nyfedRes.ok) {
         const buf = await nyfedRes.arrayBuffer();
-        const XLSX = await import("npm:xlsx");
         const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
         const infWs = wb.Sheets["Inflation expectations"];
         if (infWs) {
