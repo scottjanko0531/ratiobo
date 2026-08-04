@@ -1225,6 +1225,22 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
       })()
     : null;
   const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
+
+  // Structural regime: is the 3-yr trailing trend expansionary and above the Fed's 2% target?
+  // Mirrors the Market Expectations lens above, but built from the Structural column's own
+  // cells (3Y avg level vs. 0% / 2%) instead of the primary momentum-based regimeKey.
+  const structuralRegimeKey = gdp3yAvg?.current_value != null
+    ? (() => {
+        const growthUp = gdp3yAvgVal > 0;
+        const inflUp   = cpi3yAvgVal != null && cpi3yAvgVal > 2;
+        if (growthUp && !inflUp) return "rg_fi";
+        if (growthUp && inflUp)  return "rg_ri";
+        if (!growthUp && inflUp) return "fg_ri";
+        return "fg_fi";
+      })()
+    : null;
+  const structuralMeta = structuralRegimeKey ? REGIME_META[structuralRegimeKey] : null;
+
   const fwd = computeForwardSignal(indicators);
 
   const [allocMethod, setAllocMethod] = useState("bw");
@@ -1485,10 +1501,10 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                   <p className="label text-[10px]">Regime Read</p>
                 </div>
                 <div className="px-3 py-3 border-l border-ink-line">
-                  {regime ? (
+                  {structuralMeta ? (
                     <>
-                      <p className={`font-semibold ${regime.color}`}>{regime.label}</p>
-                      <p className="text-[11px] text-paper-dim mt-0.5">{regime.desc}</p>
+                      <p className={`font-semibold ${structuralMeta.color}`}>{structuralMeta.label}</p>
+                      <p className="text-[11px] text-paper-dim mt-0.5">{structuralMeta.desc}</p>
                     </>
                   ) : <p className="text-paper-dim text-[11px]">—</p>}
                 </div>
@@ -1505,13 +1521,13 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
             </div>
 
             {/* Agreement / divergence banner */}
-            {regimeKey && marketRegimeKey && (
+            {structuralRegimeKey && marketRegimeKey && (
               <div className={`mt-3 rounded-lg px-3 py-2 text-xs flex items-center gap-2 ${
-                regimeKey === marketRegimeKey
+                structuralRegimeKey === marketRegimeKey
                   ? "bg-gain/10 text-gain border border-gain/20"
                   : "bg-brass/10 text-brass-soft border border-brass/20"
               }`}>
-                {regimeKey === marketRegimeKey
+                {structuralRegimeKey === marketRegimeKey
                   ? "✓ Both lenses agree — regime signal is clear"
                   : "⚠ Lenses diverge — markets may be pricing a regime shift"
                 }
@@ -4651,7 +4667,7 @@ export default function MacroDashboard() {
                 </h2>
               </div>
 
-              {layer === 1 && <DalioGauges gaugeKeys={["gauge1", "gauge5"]} />}
+              {layer === 1 && <DalioGauges gaugeKeys={["gauge1", "gauge5", "gauge6"]} />}
               {layer === 2 && <DalioGauges gaugeKeys={["gauge2"]} />}
               {layer === 3 && <DalioGauges gaugeKeys={["gauge3", "pipeline"]} />}
               {layer === 4 && <DalioGauges gaugeKeys={["gauge4"]} />}

@@ -33,6 +33,11 @@ const GAUGE_META = [
     label: "Reserve Confidence Risk",
     desc: "CB gold buying + weakening Treasury auction demand",
   },
+  {
+    key: "gauge6",
+    label: "Dollar Confidence Divergence",
+    desc: "30Y yield rising without dollar support — debt-worry signal",
+  },
 ];
 
 const RISK_RANGES = [
@@ -1121,6 +1126,180 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
   );
 }
 
+// ─── Gauge 6: Dollar Confidence Divergence ───────────────────────────────────
+
+const DOLLAR_DIV_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">What this measures</p>
+      <p className="text-paper-dim">Dollar Confidence Divergence tracks whether the 30-year Treasury yield is rising without the US Dollar Index (DXY) rising alongside it. Normally, buyers who demand a higher yield to hold long-dated US debt also tend to bid up the dollar — reflecting confidence that America can service and repay what it borrows. When yields climb but the dollar stays flat or weakens, it can mean the opposite: creditors want more compensation for the risk, without wanting more dollars. That combination — rising yields, indifferent or falling dollar — is a classic early signal of eroding confidence in a reserve currency's long-term debt.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">How it's calculated</p>
+      <p className="text-paper-dim">Two z-scores are computed from monthly Yahoo Finance data (^TYX for the 30Y yield, DX-Y.NYB for the dollar index) going back up to 20 years: the year-over-year change in the 30Y yield (in percentage points) and the year-over-year change in DXY (in %). Each is z-scored against its own historical distribution of YoY changes. The composite is <span className="text-paper font-mono">z(30Y yield YoY Δ) − z(DXY YoY Δ)</span> — positive when yields are accelerating faster than their own norm while the dollar is not keeping pace, negative when the dollar is strengthening faster than yields are rising.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Why it matters</p>
+      <p className="text-paper-dim">In Dalio's framework, a reserve currency's privilege rests on the world's willingness to hold and lend in it cheaply. Rising long yields paired with dollar weakness suggests investors are pricing in more compensation for US debt risk (inflation, fiscal deficits, political dysfunction) without a matching flight-to-dollar bid — the opposite of the traditional safe-haven pattern. Sustained readings here often precede or accompany periods of reserve-currency stress, alongside gauges like Reserve Confidence Risk (central bank gold buying, Treasury auction demand).</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Thresholds</p>
+      <div className="space-y-1 text-[10px]">
+        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.5</span><span className="text-paper-dim">Severe Divergence — yields sharply outrunning the dollar, acute confidence concern</span></div>
+        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.0</span><span className="text-paper-dim">Elevated Risk — yields rising meaningfully faster than the dollar is supporting</span></div>
+        <div className="flex gap-2"><span className="text-brass-soft font-mono w-16">&gt; +0.25</span><span className="text-paper-dim">Watch — mild divergence, monitor for persistence</span></div>
+        <div className="flex gap-2"><span className="text-paper font-mono w-16">±0.25</span><span className="text-paper-dim">Neutral — yields and dollar moving in normal proportion</span></div>
+        <div className="flex gap-2"><span className="text-gain font-mono w-16">&lt; −0.25</span><span className="text-paper-dim">Reinforcing — dollar strength keeping pace with or outrunning yields</span></div>
+      </div>
+    </div>
+  </div>
+);
+
+function dollarDivAssessment(gauge6) {
+  if (gauge6 == null) return null;
+  if (gauge6 > 1.5) return {
+    label: "Severe Divergence",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "The 30-year Treasury yield is rising far faster than its own historical norm while the dollar is failing to keep pace — a sharp break from the usual pattern where higher compensation for holding US debt comes with a stronger currency. This configuration is consistent with markets demanding a bigger risk premium for US debt without a matching flight to the dollar, historically associated with acute reserve-currency stress episodes. Worth cross-checking against Reserve Confidence Risk (central bank gold buying, Treasury auction demand) for corroboration.",
+  };
+  if (gauge6 > 1.0) return {
+    label: "Elevated Risk",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "Long-duration yields are climbing meaningfully faster than the dollar is strengthening in response. This is an early form of the divergence pattern that historically accompanies growing concern about US fiscal sustainability or inflation — buyers want more yield to hold the debt, but aren't rewarding the currency for it. Not yet extreme, but the direction is worth monitoring closely, especially if it persists or accelerates.",
+  };
+  if (gauge6 > 0.25) return {
+    label: "Watch",
+    color: "text-brass-soft", border: "border-brass/20", bg: "bg-brass/5",
+    text: "A mild divergence is present — the 30Y yield is running somewhat ahead of its historical trend relative to the dollar's own trend. This alone is not alarming; it can reflect normal cyclical noise or a temporary decoupling. The key is whether this persists or widens over subsequent readings, which would suggest a more structural loss of confidence rather than short-term volatility.",
+  };
+  if (gauge6 > -0.25) return {
+    label: "Neutral",
+    color: "text-paper", border: "border-ink-line", bg: "bg-ink/40",
+    text: "The 30Y yield and the dollar are moving in roughly normal proportion to their own historical trends. There is no meaningful signal that creditors are demanding more yield without a corresponding vote of confidence in the currency. This is consistent with a stable, unstressed reserve-currency environment.",
+  };
+  return {
+    label: "Reinforcing",
+    color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
+    text: "The dollar is strengthening in line with or ahead of the rise in long-duration yields — the traditional, confidence-reinforcing pattern where demand for US assets supports both the currency and reasonable financing costs. This is the most favorable reading for reserve-currency stability in this framework.",
+  };
+}
+
+function DollarDivergenceDrawer({ open, onClose, latestGauge }) {
+  const [t30Rows, setT30Rows] = useState(null);
+  const [dxyRows, setDxyRows] = useState(null);
+  const [range, setRange] = useState(2010);
+
+  useEffect(() => {
+    if (!open || t30Rows !== null) return;
+    Promise.all([
+      fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-t30-history`).then(r => r.json()).then(d => d?.rows ?? []),
+      fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-dxy-history`).then(r => r.json()),
+    ]).then(([t30, dxy]) => {
+      setT30Rows(Array.isArray(t30) ? t30 : []);
+      setDxyRows(Array.isArray(dxy) ? dxy : []);
+    }).catch(() => { setT30Rows([]); setDxyRows([]); });
+  }, [open, t30Rows]);
+
+  // One composite z-score per year (from monthly YoY series), mirroring the
+  // server-side computeGauge6 methodology so the chart/table match the gauge value.
+  const yearlyRows = useMemo(() => {
+    if (!t30Rows?.length || !dxyRows?.length) return [];
+    const dxyMap = Object.fromEntries(dxyRows.filter(r => r.yoy != null).map(r => [r.date, r.yoy]));
+    const merged = t30Rows
+      .filter(r => r.yoy != null && dxyMap[r.date] != null)
+      .map(r => ({ date: r.date, year: Number(r.date.slice(0, 4)), t30Yoy: r.yoy, dxyYoy: dxyMap[r.date] }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    if (merged.length < 6) return [];
+    const t30Vals = merged.map(r => r.t30Yoy);
+    const dxyVals = merged.map(r => r.dxyYoy);
+    const mT = t30Vals.reduce((s, v) => s + v, 0) / t30Vals.length;
+    const sT = Math.sqrt(t30Vals.reduce((s, v) => s + (v - mT) ** 2, 0) / t30Vals.length) || 1;
+    const mD = dxyVals.reduce((s, v) => s + v, 0) / dxyVals.length;
+    const sD = Math.sqrt(dxyVals.reduce((s, v) => s + (v - mD) ** 2, 0) / dxyVals.length) || 1;
+    const byYear = {};
+    for (const r of merged) {
+      const zT30 = (r.t30Yoy - mT) / sT;
+      const zDxy = (r.dxyYoy - mD) / sD;
+      byYear[r.year] = {
+        year: r.year, t30Yoy: r.t30Yoy, dxyYoy: r.dxyYoy,
+        zT30: Math.round(zT30 * 1000) / 1000,
+        zDxy: Math.round(zDxy * 1000) / 1000,
+        composite: Math.round((zT30 - zDxy) * 1000) / 1000,
+      };
+    }
+    return Object.values(byYear).sort((a, b) => a.year - b.year);
+  }, [t30Rows, dxyRows]);
+
+  const chartData = useMemo(() => {
+    return yearlyRows
+      .filter((r) => r.year >= range)
+      .map((r, i, arr) => ({
+        year: r.year,
+        zScore: r.composite,
+        change: i > 0 ? Math.round((r.composite - arr[i - 1].composite) * 1000) / 1000 : null,
+      }));
+  }, [yearlyRows, range]);
+
+  const tableRows = useMemo(() => [...yearlyRows].sort((a, b) => b.year - a.year), [yearlyRows]);
+
+  const assessed = dollarDivAssessment(latestGauge);
+  const assessment = assessed ? (
+    <div className={`card p-4 border ${assessed.border} ${assessed.bg}`}>
+      <p className="label text-[10px] mb-2">Current Assessment</p>
+      <p className={`text-xs font-semibold mb-2 ${assessed.color}`}>{assessed.label}</p>
+      <p className="text-[11px] text-paper-dim leading-relaxed">{assessed.text}</p>
+    </div>
+  ) : null;
+
+  return (
+    <BaseGaugeDrawer
+      open={open} onClose={onClose}
+      title="Dollar Confidence Divergence"
+      desc="z(30Y yield YoY Δ) − z(DXY YoY Δ) · one composite reading per year"
+      source="Yahoo Finance: ^TYX (30Y yield) · DX-Y.NYB (DXY)"
+      latestGauge={latestGauge}
+      range={range} setRange={setRange}
+      loading={t30Rows === null || dxyRows === null}
+      renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Divergence z" />}
+      gaugeHistory={[]}
+      gaugeKey="gauge6"
+      infoContent={DOLLAR_DIV_INFO}
+      assessment={assessment}
+      renderTable={() => (
+        <div className="card p-4">
+          <p className="label text-[10px] mb-3">Annual Readings</p>
+          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(5, 62px)" }}>
+            <span>Year</span>
+            <span className="text-right">30Y YoY</span>
+            <span className="text-right">DXY YoY</span>
+            <span className="text-right">30Y z</span>
+            <span className="text-right">DXY z</span>
+            <span className="text-right">Composite</span>
+          </div>
+          {tableRows.length === 0 ? (
+            <p className="text-sm text-paper-dim py-4 text-center">No historical data yet.</p>
+          ) : (
+            <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+              {tableRows.map((r) => (
+                <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(5, 62px)" }}>
+                  <span className="text-paper-dim">{r.year}</span>
+                  <span className="num text-right text-paper">{r.t30Yoy >= 0 ? "+" : ""}{r.t30Yoy.toFixed(2)}pp</span>
+                  <span className="num text-right text-paper">{r.dxyYoy >= 0 ? "+" : ""}{r.dxyYoy.toFixed(2)}%</span>
+                  <span className="num text-right text-paper-dim">{r.zT30 >= 0 ? "+" : ""}{r.zT30.toFixed(2)}</span>
+                  <span className="num text-right text-paper-dim">{r.zDxy >= 0 ? "+" : ""}{r.zDxy.toFixed(2)}</span>
+                  <span className={`num text-right font-semibold ${r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
+                    {r.composite >= 0 ? "+" : ""}{r.composite.toFixed(2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    />
+  );
+}
+
 // ─── Pipeline Inflation ──────────────────────────────────────────────────────
 
 const PIPE_META = [
@@ -1498,6 +1677,7 @@ export default function DalioGauges({ gaugeKeys } = {}) {
   const [growthInflOpen, setGrowthInflOpen] = useState(false);
   const [incomeAffordOpen, setIncomeAffordOpen] = useState(false);
   const [reserveConfOpen, setReserveConfOpen] = useState(false);
+  const [dollarDivOpen, setDollarDivOpen] = useState(false);
   const [pipelineData, setPipelineData] = useState(null);
   const [pipelineOpen, setPipelineOpen] = useState(false);
   const [newYear, setNewYear] = useState("");
@@ -1524,7 +1704,7 @@ export default function DalioGauges({ gaugeKeys } = {}) {
   async function fetchReadings() {
     const { data } = await supabase
       .from("dalio_gauge_readings")
-      .select("year,gauge1,gauge2,gauge3,gauge4,gauge5")
+      .select("year,gauge1,gauge2,gauge3,gauge4,gauge5,gauge6")
       .order("year", { ascending: false })
       .limit(5);
 
@@ -1533,7 +1713,7 @@ export default function DalioGauges({ gaugeKeys } = {}) {
     // Most-recent non-null value per gauge
     const result = {};
     for (const row of data) {
-      for (const g of ["gauge1", "gauge2", "gauge3", "gauge4", "gauge5"]) {
+      for (const g of ["gauge1", "gauge2", "gauge3", "gauge4", "gauge5", "gauge6"]) {
         if (result[g] == null && row[g] != null) {
           result[g] = { value: Number(row[g]), year: row.year };
         }
@@ -1591,6 +1771,7 @@ export default function DalioGauges({ gaugeKeys } = {}) {
           : key === "gauge3" ? (growthInflAssessment(val)?.label ?? null)
           : key === "gauge4" ? (incomeAffordAssessment(val)?.label ?? null)
           : key === "gauge5" ? (reserveConfAssessment(val)?.label ?? null)
+          : key === "gauge6" ? (dollarDivAssessment(val)?.label ?? null)
           : null;
           let pipelineAnnotation = null;
           if (key === "gauge3" && pipelineData?.compositeZ != null) {
@@ -1616,6 +1797,7 @@ export default function DalioGauges({ gaugeKeys } = {}) {
               : key === "gauge3" ? () => setGrowthInflOpen(true)
               : key === "gauge4" ? () => setIncomeAffordOpen(true)
               : key === "gauge5" ? () => setReserveConfOpen(true)
+              : key === "gauge6" ? () => setDollarDivOpen(true)
               : undefined
               }
             />
@@ -1650,6 +1832,11 @@ export default function DalioGauges({ gaugeKeys } = {}) {
         open={reserveConfOpen}
         onClose={() => setReserveConfOpen(false)}
         latestGauge={latest?.gauge5?.value ?? null}
+      />
+      <DollarDivergenceDrawer
+        open={dollarDivOpen}
+        onClose={() => setDollarDivOpen(false)}
+        latestGauge={latest?.gauge6?.value ?? null}
       />
       <PipelineDrawer
         open={pipelineOpen}

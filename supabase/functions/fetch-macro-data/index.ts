@@ -1559,6 +1559,81 @@ async function computeGauge5(): Promise<void> {
   } catch (e) { console.error("[gauge5]", e); }
 }
 
+// Gauge 6: Dollar Confidence Divergence.
+// Rising 30Y yields without commensurate dollar strength can signal eroding
+// confidence in USD debt (buyers demand more yield without bidding up the dollar).
+async function computeGauge6(): Promise<void> {
+  try {
+    const r4 = (n: number) => Math.round(n * 10000) / 10000;
+    const mean  = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / arr.length;
+    const stdev = (arr: number[], mu: number) =>
+      Math.sqrt(arr.reduce((s, v) => s + (v - mu) ** 2, 0) / arr.length) || 1;
+
+    const toMonthly = (raw: { date: string; value: number }[]): { date: string; value: number }[] => {
+      const byMonth = new Map<string, number[]>();
+      for (const o of raw) {
+        const m = o.date.slice(0, 7);
+        if (!byMonth.has(m)) byMonth.set(m, []);
+        byMonth.get(m)!.push(o.value);
+      }
+      return [...byMonth.entries()]
+        .map(([date, vals]) => ({ date: date + "-01", value: vals.reduce((s, v) => s + v, 0) / vals.length }))
+        .sort((a, b) => b.date.localeCompare(a.date));
+    };
+
+    const [t30Raw, dxyRaw] = await Promise.all([
+      fetchYahooTicker("^TYX", "20y"),
+      fetchYahooTicker("DX-Y.NYB", "20y"),
+    ]);
+    const t30Obs = toMonthly(t30Raw);
+    const dxyObs = toMonthly(dxyRaw);
+
+    // 30Y yield: YoY as percentage-point difference (natural for a rate).
+    const t30YoY = (() => {
+      const byDate = new Map(t30Obs.map(o => [o.date.slice(0, 7), o.value]));
+      return t30Obs.map(o => {
+        const d = new Date(o.date);
+        const yaKey = `${d.getUTCFullYear() - 1}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+        const ya = byDate.get(yaKey);
+        return ya == null ? NaN : o.value - ya;
+      }).filter((v): v is number => !isNaN(v));
+    })();
+
+    // DXY: YoY as relative % change (natural for an index).
+    const dxyYoY = (() => {
+      const byDate = new Map(dxyObs.map(o => [o.date.slice(0, 7), o.value]));
+      return dxyObs.map(o => {
+        const d = new Date(o.date);
+        const yaKey = `${d.getUTCFullYear() - 1}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+        const ya = byDate.get(yaKey);
+        if (ya == null || ya === 0) return NaN;
+        return (o.value / ya - 1) * 100;
+      }).filter((v): v is number => !isNaN(v));
+    })();
+
+    if (t30YoY.length < 24 || dxyYoY.length < 24) {
+      console.error("[gauge6] insufficient data"); return;
+    }
+
+    const zs = (series: number[]) => {
+      const mu = mean(series);
+      const sd = stdev(series, mu);
+      return r4((series[0] - mu) / sd);
+    };
+
+    const zT30 = zs(t30YoY);
+    const zDxy = zs(dxyYoY);
+    const gauge6 = r4(zT30 - zDxy);
+
+    const currentYear = new Date().getFullYear();
+    const { error } = await supabase.from("dalio_gauge_readings").upsert(
+      { year: currentYear, z_t30: zT30, z_dxy: zDxy, gauge6 },
+      { onConflict: "year" }
+    );
+    if (error) console.error("[gauge6] upsert:", error);
+  } catch (e) { console.error("[gauge6]", e); }
+}
+
 async function updateConsumerExpectations(): Promise<void> {
   try {
     const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -1735,6 +1810,7 @@ Deno.serve(async (req: Request) => {
     await updateIncomeSeries();
     await computeGauge4();
     await computeGauge5();
+    await computeGauge6();
     await updateConsumerExpectations();
     await generateNotifications();
   })());
