@@ -1578,7 +1578,7 @@ async function computeGauge6(): Promise<void> {
       }
       return [...byMonth.entries()]
         .map(([date, vals]) => ({ date: date + "-01", value: vals.reduce((s, v) => s + v, 0) / vals.length }))
-        .sort((a, b) => b.date.localeCompare(a.date));
+        .sort((a, b) => a.date.localeCompare(b.date));
     };
 
     const [t30Raw, dxyRaw] = await Promise.all([
@@ -1588,48 +1588,51 @@ async function computeGauge6(): Promise<void> {
     const t30Obs = toMonthly(t30Raw);
     const dxyObs = toMonthly(dxyRaw);
 
-    // 30Y yield: YoY as percentage-point difference (natural for a rate).
-    const t30YoY = (() => {
-      const byDate = new Map(t30Obs.map(o => [o.date.slice(0, 7), o.value]));
-      return t30Obs.map(o => {
+    // YoY series per month, keeping year so we can backfill every year, not just the latest.
+    const yoySeries = (
+      obs: { date: string; value: number }[], asPct: boolean
+    ): { date: string; year: number; yoy: number }[] => {
+      const byDate = new Map(obs.map(o => [o.date.slice(0, 7), o.value]));
+      const out: { date: string; year: number; yoy: number }[] = [];
+      for (const o of obs) {
         const d = new Date(o.date);
         const yaKey = `${d.getUTCFullYear() - 1}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
         const ya = byDate.get(yaKey);
-        return ya == null ? NaN : o.value - ya;
-      }).filter((v): v is number => !isNaN(v));
-    })();
+        if (ya == null || (asPct && ya === 0)) continue;
+        out.push({ date: o.date, year: d.getUTCFullYear(), yoy: asPct ? (o.value / ya - 1) * 100 : o.value - ya });
+      }
+      return out;
+    };
 
+    // 30Y yield: YoY as percentage-point difference (natural for a rate).
+    const t30YoY = yoySeries(t30Obs, false);
     // DXY: YoY as relative % change (natural for an index).
-    const dxyYoY = (() => {
-      const byDate = new Map(dxyObs.map(o => [o.date.slice(0, 7), o.value]));
-      return dxyObs.map(o => {
-        const d = new Date(o.date);
-        const yaKey = `${d.getUTCFullYear() - 1}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-        const ya = byDate.get(yaKey);
-        if (ya == null || ya === 0) return NaN;
-        return (o.value / ya - 1) * 100;
-      }).filter((v): v is number => !isNaN(v));
-    })();
+    const dxyYoY = yoySeries(dxyObs, true);
 
     if (t30YoY.length < 24 || dxyYoY.length < 24) {
       console.error("[gauge6] insufficient data"); return;
     }
 
-    const zs = (series: number[]) => {
-      const mu = mean(series);
-      const sd = stdev(series, mu);
-      return r4((series[0] - mu) / sd);
-    };
+    // z-score baseline: each series against its own full available YoY history.
+    const t30Vals = t30YoY.map(r => r.yoy);
+    const dxyVals = dxyYoY.map(r => r.yoy);
+    const mT = mean(t30Vals), sT = stdev(t30Vals, mT);
+    const mD = mean(dxyVals), sD = stdev(dxyVals, mD);
 
-    const zT30 = zs(t30YoY);
-    const zDxy = zs(dxyYoY);
-    const gauge6 = r4(zT30 - zDxy);
+    // One row per year — last month in that year for which both series have YoY data.
+    const dxyByDate = new Map(dxyYoY.map(r => [r.date, r.yoy]));
+    const byYear = new Map<number, { zT30: number; zDxy: number }>();
+    for (const r of t30YoY) {
+      const dYoy = dxyByDate.get(r.date);
+      if (dYoy == null) continue;
+      byYear.set(r.year, { zT30: r4((r.yoy - mT) / sT), zDxy: r4((dYoy - mD) / sD) });
+    }
+    if (!byYear.size) { console.error("[gauge6] no overlapping months"); return; }
 
-    const currentYear = new Date().getFullYear();
-    const { error } = await supabase.from("dalio_gauge_readings").upsert(
-      { year: currentYear, z_t30: zT30, z_dxy: zDxy, gauge6 },
-      { onConflict: "year" }
-    );
+    const upserts = [...byYear.entries()].map(([year, v]) => ({
+      year, z_t30: v.zT30, z_dxy: v.zDxy, gauge6: r4(v.zT30 - v.zDxy),
+    }));
+    const { error } = await supabase.from("dalio_gauge_readings").upsert(upserts, { onConflict: "year" });
     if (error) console.error("[gauge6] upsert:", error);
   } catch (e) { console.error("[gauge6]", e); }
 }
