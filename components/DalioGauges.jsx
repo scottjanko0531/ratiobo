@@ -1187,6 +1187,7 @@ function dollarDivAssessment(gauge6) {
 function DollarDivergenceDrawer({ open, onClose, latestGauge }) {
   const [t30Rows, setT30Rows] = useState(null);
   const [dxyRows, setDxyRows] = useState(null);
+  const [gaugeHistory, setGaugeHistory] = useState(null);
   const [range, setRange] = useState(2010);
 
   useEffect(() => {
@@ -1194,14 +1195,18 @@ function DollarDivergenceDrawer({ open, onClose, latestGauge }) {
     Promise.all([
       fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-t30-history`).then(r => r.json()).then(d => d?.rows ?? []),
       fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-dxy-history`).then(r => r.json()),
-    ]).then(([t30, dxy]) => {
+      supabase.from("dalio_gauge_readings").select("year,gauge6,z_t30,z_dxy").order("year"),
+    ]).then(([t30, dxy, gauge]) => {
       setT30Rows(Array.isArray(t30) ? t30 : []);
       setDxyRows(Array.isArray(dxy) ? dxy : []);
-    }).catch(() => { setT30Rows([]); setDxyRows([]); });
+      setGaugeHistory(gauge.data ?? []);
+    }).catch(() => { setT30Rows([]); setDxyRows([]); setGaugeHistory([]); });
   }, [open, t30Rows]);
 
-  // One composite z-score per year (from monthly YoY series), mirroring the
-  // server-side computeGauge6 methodology so the chart/table match the gauge value.
+  // Approximate composite per year, computed client-side from raw Yahoo history —
+  // used only to draw the multi-year chart trend line. The table below reads the
+  // actual stored z_t30/z_dxy/gauge6 from dalio_gauge_readings so its numbers match
+  // the gauge tile exactly (same convention as the other five gauges' drawers).
   const yearlyRows = useMemo(() => {
     if (!t30Rows?.length || !dxyRows?.length) return [];
     const dxyMap = Object.fromEntries(dxyRows.filter(r => r.yoy != null).map(r => [r.date, r.yoy]));
@@ -1240,7 +1245,19 @@ function DollarDivergenceDrawer({ open, onClose, latestGauge }) {
       }));
   }, [yearlyRows, range]);
 
-  const tableRows = useMemo(() => [...yearlyRows].sort((a, b) => b.year - a.year), [yearlyRows]);
+  const tableRows = useMemo(() => {
+    const gaugeMap = Object.fromEntries((gaugeHistory ?? []).map((r) => [r.year, r]));
+    return [...yearlyRows]
+      .sort((a, b) => b.year - a.year)
+      .map((r) => ({
+        year: r.year,
+        t30Yoy: r.t30Yoy,
+        dxyYoy: r.dxyYoy,
+        zT30: gaugeMap[r.year]?.z_t30 != null ? Number(gaugeMap[r.year].z_t30) : null,
+        zDxy: gaugeMap[r.year]?.z_dxy != null ? Number(gaugeMap[r.year].z_dxy) : null,
+        composite: gaugeMap[r.year]?.gauge6 != null ? Number(gaugeMap[r.year].gauge6) : null,
+      }));
+  }, [yearlyRows, gaugeHistory]);
 
   const assessed = dollarDivAssessment(latestGauge);
   const assessment = assessed ? (
@@ -1267,7 +1284,10 @@ function DollarDivergenceDrawer({ open, onClose, latestGauge }) {
       assessment={assessment}
       renderTable={() => (
         <div className="card p-4">
-          <p className="label text-[10px] mb-3">Annual Readings</p>
+          <div className="flex items-baseline gap-2 mb-3">
+            <p className="label text-[10px]">Annual Readings</p>
+            <p className="text-[9px] text-paper-dim/60">30Y/DXY YoY from raw history · z-scores &amp; Composite are the actual stored gauge values (recent years only)</p>
+          </div>
           <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(5, 62px)" }}>
             <span>Year</span>
             <span className="text-right">30Y YoY</span>
@@ -1285,10 +1305,10 @@ function DollarDivergenceDrawer({ open, onClose, latestGauge }) {
                   <span className="text-paper-dim">{r.year}</span>
                   <span className="num text-right text-paper">{r.t30Yoy >= 0 ? "+" : ""}{r.t30Yoy.toFixed(2)}pp</span>
                   <span className="num text-right text-paper">{r.dxyYoy >= 0 ? "+" : ""}{r.dxyYoy.toFixed(2)}%</span>
-                  <span className="num text-right text-paper-dim">{r.zT30 >= 0 ? "+" : ""}{r.zT30.toFixed(2)}</span>
-                  <span className="num text-right text-paper-dim">{r.zDxy >= 0 ? "+" : ""}{r.zDxy.toFixed(2)}</span>
-                  <span className={`num text-right font-semibold ${r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
-                    {r.composite >= 0 ? "+" : ""}{r.composite.toFixed(2)}
+                  <span className="num text-right text-paper-dim">{r.zT30 != null ? `${r.zT30 >= 0 ? "+" : ""}${r.zT30.toFixed(2)}` : "—"}</span>
+                  <span className="num text-right text-paper-dim">{r.zDxy != null ? `${r.zDxy >= 0 ? "+" : ""}${r.zDxy.toFixed(2)}` : "—"}</span>
+                  <span className={`num text-right font-semibold ${r.composite == null ? "text-paper-dim" : r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
+                    {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
                   </span>
                 </div>
               ))}
