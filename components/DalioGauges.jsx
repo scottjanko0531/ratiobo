@@ -1188,6 +1188,7 @@ function DollarDivergenceDrawer({ open, onClose, latestGauge }) {
   const [t30Rows, setT30Rows] = useState(null);
   const [dxyRows, setDxyRows] = useState(null);
   const [gaugeHistory, setGaugeHistory] = useState(null);
+  const [momentum, setMomentum] = useState(undefined); // undefined = not fetched yet, null = fetched but unavailable
   const [range, setRange] = useState(2010);
 
   useEffect(() => {
@@ -1196,11 +1197,13 @@ function DollarDivergenceDrawer({ open, onClose, latestGauge }) {
       fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-t30-history`).then(r => r.json()).then(d => d?.rows ?? []),
       fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-dxy-history`).then(r => r.json()),
       supabase.from("dalio_gauge_readings").select("year,gauge6,z_t30,z_dxy").order("year"),
-    ]).then(([t30, dxy, gauge]) => {
+      fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-dollar-momentum`).then(r => r.json()).catch(() => null),
+    ]).then(([t30, dxy, gauge, mom]) => {
       setT30Rows(Array.isArray(t30) ? t30 : []);
       setDxyRows(Array.isArray(dxy) ? dxy : []);
       setGaugeHistory(gauge.data ?? []);
-    }).catch(() => { setT30Rows([]); setDxyRows([]); setGaugeHistory([]); });
+      setMomentum(mom && !mom.error ? mom : null);
+    }).catch(() => { setT30Rows([]); setDxyRows([]); setGaugeHistory([]); setMomentum(null); });
   }, [open, t30Rows]);
 
   // Approximate composite per year, computed client-side from raw Yahoo history —
@@ -1268,6 +1271,25 @@ function DollarDivergenceDrawer({ open, onClose, latestGauge }) {
     </div>
   ) : null;
 
+  // Momentum panel: rolling 20d/60d OLS-slope divergence, independent of the
+  // YoY-level gauge above — de-noised direction/magnitude read, not a level snapshot.
+  const momLatest = momentum?.latest ?? null;
+  const momHistory = momentum?.history ?? [];
+  const trendRead = (() => {
+    if (!momLatest || momLatest.spreadTrend == null || momLatest.spread60 == null) return null;
+    const EPS = 0.015; // ~p25 of |trend| over trailing 2y — below this is noise, not a real inflection
+    if (Math.abs(momLatest.spreadTrend) < EPS) return { label: "Stable", color: "text-paper-dim" };
+    const widening = Math.sign(momLatest.spread60 || 1) * momLatest.spreadTrend > 0;
+    return widening ? { label: "↑ Widening", color: "text-loss" } : { label: "↓ Closing", color: "text-gain" };
+  })();
+  const corrRead = (v) => {
+    if (v == null) return null;
+    if (v > 0.4) return { label: "Intact", color: "text-gain" };
+    if (v > 0.1) return { label: "Weak", color: "text-brass-soft" };
+    return { label: "Broken", color: "text-loss" };
+  };
+  const spreadColor = (v) => v == null ? "text-paper-dim" : v > 1 ? "text-loss" : v < -1 ? "text-gain" : "text-brass-soft";
+
   return (
     <BaseGaugeDrawer
       open={open} onClose={onClose}
@@ -1283,37 +1305,158 @@ function DollarDivergenceDrawer({ open, onClose, latestGauge }) {
       infoContent={DOLLAR_DIV_INFO}
       assessment={assessment}
       renderTable={() => (
-        <div className="card p-4">
-          <div className="flex items-baseline gap-2 mb-3">
-            <p className="label text-[10px]">Annual Readings</p>
-            <p className="text-[9px] text-paper-dim/60">30Y/DXY YoY from raw history · z-scores &amp; Composite are the actual stored gauge values (recent years only)</p>
-          </div>
-          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(5, 62px)" }}>
-            <span>Year</span>
-            <span className="text-right">30Y YoY</span>
-            <span className="text-right">DXY YoY</span>
-            <span className="text-right">30Y z</span>
-            <span className="text-right">DXY z</span>
-            <span className="text-right">Composite</span>
-          </div>
-          {tableRows.length === 0 ? (
-            <p className="text-sm text-paper-dim py-4 text-center">No historical data yet.</p>
-          ) : (
-            <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
-              {tableRows.map((r) => (
-                <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(5, 62px)" }}>
-                  <span className="text-paper-dim">{r.year}</span>
-                  <span className="num text-right text-paper">{r.t30Yoy >= 0 ? "+" : ""}{r.t30Yoy.toFixed(2)}pp</span>
-                  <span className="num text-right text-paper">{r.dxyYoy >= 0 ? "+" : ""}{r.dxyYoy.toFixed(2)}%</span>
-                  <span className="num text-right text-paper-dim">{r.zT30 != null ? `${r.zT30 >= 0 ? "+" : ""}${r.zT30.toFixed(2)}` : "—"}</span>
-                  <span className="num text-right text-paper-dim">{r.zDxy != null ? `${r.zDxy >= 0 ? "+" : ""}${r.zDxy.toFixed(2)}` : "—"}</span>
-                  <span className={`num text-right font-semibold ${r.composite == null ? "text-paper-dim" : r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
-                    {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
-                  </span>
-                </div>
-              ))}
+        <div className="space-y-4">
+          <div className="card p-4">
+            <div className="flex items-baseline gap-2 mb-3">
+              <p className="label text-[10px]">Annual Readings</p>
+              <p className="text-[9px] text-paper-dim/60">30Y/DXY YoY from raw history · z-scores &amp; Composite are the actual stored gauge values (recent years only)</p>
             </div>
-          )}
+            <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(5, 62px)" }}>
+              <span>Year</span>
+              <span className="text-right">30Y YoY</span>
+              <span className="text-right">DXY YoY</span>
+              <span className="text-right">30Y z</span>
+              <span className="text-right">DXY z</span>
+              <span className="text-right">Composite</span>
+            </div>
+            {tableRows.length === 0 ? (
+              <p className="text-sm text-paper-dim py-4 text-center">No historical data yet.</p>
+            ) : (
+              <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+                {tableRows.map((r) => (
+                  <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(5, 62px)" }}>
+                    <span className="text-paper-dim">{r.year}</span>
+                    <span className="num text-right text-paper">{r.t30Yoy >= 0 ? "+" : ""}{r.t30Yoy.toFixed(2)}pp</span>
+                    <span className="num text-right text-paper">{r.dxyYoy >= 0 ? "+" : ""}{r.dxyYoy.toFixed(2)}%</span>
+                    <span className="num text-right text-paper-dim">{r.zT30 != null ? `${r.zT30 >= 0 ? "+" : ""}${r.zT30.toFixed(2)}` : "—"}</span>
+                    <span className="num text-right text-paper-dim">{r.zDxy != null ? `${r.zDxy >= 0 ? "+" : ""}${r.zDxy.toFixed(2)}` : "—"}</span>
+                    <span className={`num text-right font-semibold ${r.composite == null ? "text-paper-dim" : r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
+                      {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── Momentum Divergence ─────────────────────────────────────── */}
+          <div className="card p-4">
+            <div className="flex items-baseline justify-between gap-2 mb-3">
+              <p className="label text-[10px]">Momentum Divergence</p>
+              <p className="text-[9px] text-paper-dim/60">Rolling 20d/60d OLS slope · bp/day (30Y) vs %/day (DXY) · z-scored vs own history</p>
+            </div>
+            {momentum === undefined ? (
+              <p className="text-sm text-paper-dim py-4 text-center">Loading…</p>
+            ) : momentum === null || !momLatest ? (
+              <p className="text-sm text-paper-dim py-4 text-center">Momentum data unavailable.</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div className="bg-ink rounded-lg p-3">
+                    <p className="text-[10px] text-paper-dim mb-1">20-day spread</p>
+                    <p className={`num text-lg font-bold ${spreadColor(momLatest.spread20)}`}>
+                      {momLatest.spread20 != null ? `${momLatest.spread20 >= 0 ? "+" : ""}${momLatest.spread20.toFixed(2)}` : "—"}
+                    </p>
+                    <p className="text-[9px] text-paper-dim/60 mt-0.5">z(30Y mom) − z(DXY mom)</p>
+                  </div>
+                  <div className="bg-ink rounded-lg p-3">
+                    <p className="text-[10px] text-paper-dim mb-1">60-day spread</p>
+                    <p className={`num text-lg font-bold ${spreadColor(momLatest.spread60)}`}>
+                      {momLatest.spread60 != null ? `${momLatest.spread60 >= 0 ? "+" : ""}${momLatest.spread60.toFixed(2)}` : "—"}
+                    </p>
+                    <p className="text-[9px] text-paper-dim/60 mt-0.5">z(30Y mom) − z(DXY mom)</p>
+                  </div>
+                </div>
+
+                <div className={`rounded-lg px-3 py-2 text-xs mb-3 flex items-center justify-between gap-2 ${
+                  momLatest.agreement ? "bg-loss/10 border border-loss/20" : "bg-ink-soft border border-ink-line"
+                }`}>
+                  <span className={momLatest.agreement ? "text-loss font-medium" : "text-paper-dim"}>
+                    {momLatest.agreement
+                      ? "⚠ Short & long windows agree — confirmed divergence"
+                      : "Short & long windows disagree — unconfirmed"}
+                  </span>
+                  {trendRead && (
+                    <span className={`font-semibold shrink-0 ${trendRead.color}`}>{trendRead.label}</span>
+                  )}
+                </div>
+
+                {momHistory.length > 0 && (
+                  <>
+                    <ResponsiveContainer width="100%" height={180}>
+                      <ComposedChart data={momHistory} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                        <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                        <XAxis
+                          dataKey="date"
+                          tick={{ fill: "#A8ADB8", fontSize: 9 }}
+                          tickLine={false}
+                          axisLine={false}
+                          tickFormatter={(v) => v.slice(0, 7)}
+                          interval={Math.max(1, Math.floor(momHistory.length / 6))}
+                        />
+                        <YAxis tick={{ fill: "#A8ADB8", fontSize: 10 }} tickLine={false} axisLine={false} width={32} />
+                        <Tooltip content={<RiskTooltip />} />
+                        <ReferenceLine y={0} stroke="#2A3240" strokeWidth={1} />
+                        <ReferenceLine y={1} stroke="#ef4444" strokeDasharray="4 2" strokeOpacity={0.4} />
+                        <ReferenceLine y={-1} stroke="#22c55e" strokeDasharray="4 2" strokeOpacity={0.4} />
+                        <Line type="monotone" dataKey="spread20" name="20d spread" stroke="#818CF8" strokeWidth={1.25} dot={false} connectNulls />
+                        <Line type="monotone" dataKey="spread60" name="60d spread" stroke="#C9A227" strokeWidth={2} dot={false} connectNulls />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                    <div className="flex items-center gap-4 mt-2 mb-4 text-[10px] text-paper-dim/70">
+                      <span className="flex items-center gap-1.5"><span className="inline-block w-6 h-[2px] rounded-sm bg-[#818CF8]" /> 20d spread</span>
+                      <span className="flex items-center gap-1.5"><span className="inline-block w-6 h-[2px] rounded-sm bg-[#C9A227]" /> 60d spread</span>
+                    </div>
+                  </>
+                )}
+
+                <div className="grid grid-cols-2 gap-3 mb-2">
+                  <div className="flex items-center justify-between bg-ink rounded-lg px-3 py-2">
+                    <span className="text-[10px] text-paper-dim">Corr (20d)</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="num text-xs text-paper">{momLatest.corr20 != null ? momLatest.corr20.toFixed(2) : "—"}</span>
+                      {corrRead(momLatest.corr20) && (
+                        <span className={`text-[9px] font-medium ${corrRead(momLatest.corr20).color}`}>{corrRead(momLatest.corr20).label}</span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between bg-ink rounded-lg px-3 py-2">
+                    <span className="text-[10px] text-paper-dim">Corr (60d)</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="num text-xs text-paper">{momLatest.corr60 != null ? momLatest.corr60.toFixed(2) : "—"}</span>
+                      {corrRead(momLatest.corr60) && (
+                        <span className={`text-[9px] font-medium ${corrRead(momLatest.corr60).color}`}>{corrRead(momLatest.corr60).label}</span>
+                      )}
+                    </span>
+                  </div>
+                </div>
+                <p className="text-[9px] text-paper-dim/50 mb-4">
+                  Rolling Pearson correlation of daily % change — tests whether the historical yield/dollar relationship is intact, independent of which direction each is currently moving.
+                </p>
+
+                <div className="pt-3 border-t border-ink-line">
+                  <p className="label text-[10px] mb-2">Component Breakdown · {momLatest.date}</p>
+                  <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line" style={{ gridTemplateColumns: "1fr 70px 70px" }}>
+                    <span>Window</span>
+                    <span className="text-right">30Y mom z</span>
+                    <span className="text-right">DXY mom z</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr 70px 70px" }}>
+                      <span className="text-paper-dim">20-day</span>
+                      <span className="num text-right text-paper">{momLatest.zT30_20 != null ? `${momLatest.zT30_20 >= 0 ? "+" : ""}${momLatest.zT30_20.toFixed(2)}` : "—"}</span>
+                      <span className="num text-right text-paper">{momLatest.zDxy_20 != null ? `${momLatest.zDxy_20 >= 0 ? "+" : ""}${momLatest.zDxy_20.toFixed(2)}` : "—"}</span>
+                    </div>
+                    <div className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr 70px 70px" }}>
+                      <span className="text-paper-dim">60-day</span>
+                      <span className="num text-right text-paper">{momLatest.zT30_60 != null ? `${momLatest.zT30_60 >= 0 ? "+" : ""}${momLatest.zT30_60.toFixed(2)}` : "—"}</span>
+                      <span className="num text-right text-paper">{momLatest.zDxy_60 != null ? `${momLatest.zDxy_60 >= 0 ? "+" : ""}${momLatest.zDxy_60.toFixed(2)}` : "—"}</span>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
     />
