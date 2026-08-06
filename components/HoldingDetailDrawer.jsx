@@ -6,22 +6,12 @@ import {
 } from "recharts";
 import { supabase } from "../lib/supabase";
 import { cashAmount, CASH_LEG_TYPES } from "../lib/cash";
+import { MARKET_TYPES, TV_CHART_TYPES, getTVSymbol } from "../lib/tvSymbol";
 
 const usd = (n) =>
   n == null
     ? "—"
     : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" });
-
-const MARKET_TYPES = new Set(["equity", "etf", "closed_end_fund", "mutual_fund", "money_market", "bond", "crypto", "metal"]);
-const TV_CHART_TYPES = new Set(["equity", "etf", "closed_end_fund", "crypto", "metal"]);
-const METAL_TV_SYMBOLS = { XAU: "TVC:GOLD", XAG: "TVC:SILVER", XPT: "TVC:PLATINUM", XPD: "TVC:PALLADIUM" };
-
-function getTVSymbol(symbol, assetType) {
-  const s = (symbol ?? "").toUpperCase();
-  if (assetType === "crypto") return `COINBASE:${s}USD`;
-  if (assetType === "metal") return METAL_TV_SYMBOLS[s] ?? `TVC:${s}`;
-  return s;
-}
 
 function KebabIcon() {
   return (
@@ -195,7 +185,10 @@ export default function HoldingDetailDrawer({
         await supabase.from("transactions").insert({
           user_id: user.id, holding_id: linked, cash_holding_id: null,
           txn_type: pairedType, txn_date: addForm.txn_date,
-          quantity: null, price_per_unit: null, amount, fees: 0,
+          // linked is always a cash holding (picker filters to asset_type === "cash"),
+          // so quantity must mirror amount — a null here corrupts holdings_valued's
+          // average-cost calc (it divides total $ by total units).
+          quantity: amount, price_per_unit: null, amount, fees: 0,
         });
         const { data: lh } = await supabase.from("holdings").select("quantity").eq("id", linked).single();
         if (lh) await supabase.from("holdings").update({ quantity: Number(lh.quantity) + pairedDelta }).eq("id", linked);
