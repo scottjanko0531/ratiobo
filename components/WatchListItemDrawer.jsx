@@ -1,9 +1,20 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MARKET_TYPES, TV_CHART_TYPES, getTVSymbol } from "../lib/tvSymbol";
 
 const usd = (n, digits = 2) =>
   n == null ? "—" : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: digits, maximumFractionDigits: digits });
+
+function timeAgo(unixSeconds) {
+  if (!unixSeconds) return "";
+  const diffMs = Date.now() - unixSeconds * 1000;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 60) return `${Math.max(mins, 0)}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
 
 function EyeIcon({ open }) {
   return open ? (
@@ -21,6 +32,25 @@ function EyeIcon({ open }) {
 
 export default function WatchListItemDrawer({ item, marketRow, assetTypes, onClose, onEdit, onDelete }) {
   const [showTVChart, setShowTVChart] = useState(true);
+  const [news, setNews] = useState(undefined); // undefined = loading, [] = none found, array = items
+
+  useEffect(() => {
+    if (!item) return;
+    setNews(undefined);
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const params = new URLSearchParams({ symbol: item.symbol, asset_type: item.asset_type, name: item.name || "" });
+        const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-symbol-news?${params}`, { signal: controller.signal });
+        const data = res.ok ? await res.json() : [];
+        setNews(Array.isArray(data) ? data : []);
+      } catch (_) {
+        setNews([]);
+      }
+    })();
+    return () => controller.abort();
+  }, [item?.symbol, item?.asset_type, item?.name]);
+
   if (!item) return null;
 
   const price = marketRow?.price ?? null;
@@ -106,6 +136,34 @@ export default function WatchListItemDrawer({ item, marketRow, assetTypes, onClo
             <p className="text-xs text-paper-dim">Chart unavailable for this asset type.</p>
           </div>
         )}
+
+        {/* News */}
+        <div className="px-5 py-4 border-b border-ink-line">
+          <p className="label text-xs mb-2">Latest news</p>
+          {news === undefined ? (
+            <p className="text-xs text-paper-dim">Loading…</p>
+          ) : news.length === 0 ? (
+            <p className="text-xs text-paper-dim">No recent news found.</p>
+          ) : (
+            <ul className="space-y-2.5">
+              {news.map((n) => (
+                <li key={n.url}>
+                  <a
+                    href={n.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-paper hover:text-brass-soft transition-colors leading-snug block"
+                  >
+                    {n.headline}
+                  </a>
+                  <p className="text-[10px] text-paper-dim mt-0.5">
+                    {n.source}{n.publishedAt ? ` · ${timeAgo(n.publishedAt)}` : ""}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
         {item.notes && (
           <div className="px-5 py-4 border-b border-ink-line">
