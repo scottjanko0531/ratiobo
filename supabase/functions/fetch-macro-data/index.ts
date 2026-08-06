@@ -147,7 +147,8 @@ interface Indicator {
     | "cb_gold_imf"
     | "level_with_3m"
     | "yahoo_price_with_3m"
-    | "supabase_lei";
+    | "supabase_lei"
+    | "supabase_ism";
   series?: string;
   series2?: string;
   zscore?: boolean;
@@ -326,6 +327,13 @@ const INDICATORS: Indicator[] = [
     statusFn: v => v > 0 ? "healthy" : v >= -0.3 ? "watch" : "danger",
   },
   // ── LAYER 3: Business Cycle ──
+  {
+    name: "ISM Manufacturing PMI", layer: 3, layer_name: "Business Cycle",
+    description: "Institute for Supply Management Manufacturing PMI — above 50 signals expansion, below 50 contraction; classic leading indicator of industrial activity",
+    fred_series_id: null, unit: "index", data_source: "ism_scrape", sort_order: 155,
+    type: "supabase_ism",
+    statusFn: v => v >= 50 ? "healthy" : v >= 45 ? "watch" : "danger",
+  },
   {
     name: "Real GDP Growth", layer: 3, layer_name: "Business Cycle",
     description: "Annualized real GDP YoY — expansion vs contraction",
@@ -798,6 +806,19 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         current  = Number(leiRows[0].mom_pct);
         previous = Number(leiRows[1].mom_pct);
         metadata = { level: Number(leiRows[0].level), period: leiRows[0].period_date };
+        break;
+      }
+      case "supabase_ism": {
+        // Read latest 2 rows from ism_history (written by scrape-ism edge function)
+        const { data: ismRows, error: ismErr } = await supabase
+          .from("ism_history")
+          .select("period_date, pmi, new_orders")
+          .order("period_date", { ascending: false })
+          .limit(2);
+        if (ismErr || !ismRows || ismRows.length < 2) return null;
+        current  = Number(ismRows[0].pmi);
+        previous = Number(ismRows[1].pmi);
+        metadata = { new_orders: ismRows[0].new_orders != null ? Number(ismRows[0].new_orders) : null, period: ismRows[0].period_date };
         break;
       }
       case "yahoo_price_with_3m": {
