@@ -145,19 +145,38 @@ export default function WatchListsPage() {
     setSymbolLookupBusy(false);
   }
 
+  async function fetchSymbolSummary(symbol, name, asset_type) {
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-symbol-summary`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, name, asset_type }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.summary ?? null;
+    } catch (_) { return null; } // summary is best-effort, never blocks saving
+  }
+
   async function saveItem() {
     if (!itemForm.symbol.trim()) { setItemFormError("Symbol is required."); return; }
     if (!itemForm.asset_type) { setItemFormError("Asset type is required."); return; }
     setItemFormBusy(true); setItemFormError("");
+    const symbol = itemForm.symbol.trim().toUpperCase();
+    const name = itemForm.name.trim() || null;
     const payload = {
       watch_list_id: viewingList.id,
-      symbol: itemForm.symbol.trim().toUpperCase(),
-      name: itemForm.name.trim() || null,
+      symbol,
+      name,
       asset_type: itemForm.asset_type,
       buy_price: itemForm.buy_price === "" ? null : Number(itemForm.buy_price),
       sell_price: itemForm.sell_price === "" ? null : Number(itemForm.sell_price),
       notes: itemForm.notes.trim() || null,
     };
+    // Only generate a fresh summary for newly added symbols; edits leave the existing one alone.
+    if (editingItem === "new") {
+      payload.summary = await fetchSymbolSummary(symbol, name, itemForm.asset_type);
+    }
     let error;
     if (editingItem === "new") {
       ({ error } = await supabase.from("watch_list_items").insert(payload));
@@ -170,6 +189,14 @@ export default function WatchListsPage() {
     await load();
     // Kick a sync so a brand-new symbol's price shows up without waiting for the 15-min cron.
     fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/sync-market-data`, { method: "POST" }).catch(() => {});
+  }
+
+  async function regenerateSummary(item) {
+    setItemFormBusy(true);
+    const summary = await fetchSymbolSummary(item.symbol, item.name, item.asset_type);
+    await supabase.from("watch_list_items").update({ summary }).eq("id", item.id);
+    setItemFormBusy(false);
+    await load();
   }
 
   async function deleteItem(item) {
@@ -289,7 +316,7 @@ export default function WatchListsPage() {
                                 className="border-b border-ink-line/40 last:border-0 hover:bg-ink-soft/40 transition-colors cursor-pointer"
                                 onClick={() => setDetailItem(item)}
                               >
-                                <td className="py-2 pr-3">
+                                <td className="py-2 pr-3" title={item.summary || undefined}>
                                   <span className="font-medium">{item.symbol}</span>
                                   {item.name && <span className="block text-[10px] text-paper-dim leading-tight">{item.name}</span>}
                                 </td>
@@ -460,6 +487,25 @@ export default function WatchListsPage() {
                   onChange={(e) => setItemForm((f) => ({ ...f, notes: e.target.value }))}
                 />
               </div>
+
+              {editingItem !== "new" && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="label">Summary</label>
+                    <button
+                      type="button"
+                      onClick={() => regenerateSummary(editingItem)}
+                      disabled={itemFormBusy}
+                      className="text-[10px] text-paper-dim hover:text-paper transition-colors"
+                    >
+                      Regenerate
+                    </button>
+                  </div>
+                  <p className="text-xs text-paper-dim leading-relaxed">
+                    {editingItem.summary || "No summary yet."}
+                  </p>
+                </div>
+              )}
 
               {itemFormError && <p className="text-loss text-sm">{itemFormError}</p>}
 

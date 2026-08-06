@@ -68,6 +68,13 @@ export default function WatchListItemDrawer({ item, marketRow, assetTypes, onClo
           ))}
         </div>
 
+        {item.summary && (
+          <div className="px-5 py-4 border-b border-ink-line">
+            <p className="label text-xs mb-1.5">About</p>
+            <p className="text-sm text-paper-dim leading-relaxed">{item.summary}</p>
+          </div>
+        )}
+
         {(buyHit || sellHit) && (
           <div className={`px-5 py-2.5 text-xs font-medium border-b border-ink-line ${buyHit ? "bg-gain/10 text-gain" : "bg-loss/10 text-loss"}`}>
             {buyHit
