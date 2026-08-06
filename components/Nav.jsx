@@ -10,6 +10,7 @@ const links = [
   { href: "/accounts", label: "Accounts" },
   { href: "/holdings", label: "Holdings" },
   { href: "/portfolios", label: "Portfolios" },
+  { href: "/watch-lists", label: "Watch Lists" },
   { href: "/macro", label: "Macro" },
   { href: "/simulator", label: "Simulator" },
   { href: "/backtesting", label: "Backtesting" },

@@ -209,16 +209,17 @@ Deno.serve(async (_req: Request) => {
 
   const { data: heldRows, error: heldErr } = await supabase.from("holdings").select("symbol, asset_type");
   const { data: mdRows,   error: mdErr   } = await supabase.from("market_data").select("symbol, asset_type");
+  const { data: watchRows, error: watchErr } = await supabase.from("watch_list_items").select("symbol, asset_type");
 
-  if (heldErr || mdErr) {
+  if (heldErr || mdErr || watchErr) {
     return new Response(
-      JSON.stringify({ ok: false, error: heldErr?.message ?? mdErr?.message }),
+      JSON.stringify({ ok: false, error: heldErr?.message ?? mdErr?.message ?? watchErr?.message }),
       { status: 500, headers: { "Content-Type": "application/json" } },
     );
   }
 
   const wanted = new Map<string, { symbol: string; asset_type: string }>();
-  for (const r of [...(heldRows ?? []), ...(mdRows ?? [])]) {
+  for (const r of [...(heldRows ?? []), ...(mdRows ?? []), ...(watchRows ?? [])]) {
     wanted.set(`${r.symbol}|${r.asset_type}`, r);
   }
 
