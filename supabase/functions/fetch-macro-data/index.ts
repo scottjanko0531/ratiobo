@@ -1502,80 +1502,61 @@ async function computeGauge4(): Promise<void> {
   } catch (e) { console.error("[gauge4]", e); }
 }
 
+// Gauge 5: Reserve Confidence Risk — central bank gold buying (direct substitution
+// away from USD reserves) composited with the YoY change in USD's share of global
+// FX reserves (IMF COFER). Each series is z-scored against its own full history;
+// the USD-share z-score is stored raw (positive = share rising = less risk) and
+// subtracted in the composite, mirroring gauge6's z_t30 − z_dxy convention.
 async function computeGauge5(): Promise<void> {
   try {
     const r4 = (n: number) => Math.round(n * 10000) / 10000;
-    const mean  = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / arr.length;
-    const stdev = (arr: number[], mu: number) =>
-      Math.sqrt(arr.reduce((s, v) => s + (v - mu) ** 2, 0) / arr.length) || 1;
-
-    const [ppiacoObs, wtiObs, copperObs, uraniumObs] = await Promise.all([
-      fetchFredObsMonthly("PPIACO",     300),
-      fetchFredObsMonthly("DCOILWTICO", 300),
-      fetchFredObsMonthly("PCOPPUSDM",  300),
-      fetchFredObsMonthly("PURANUSDM",  300),
-    ]);
-    // Silver has no reliable FRED monthly series; use Yahoo SI=F converted to monthly
-    let silverObs: { date: string; value: number }[] = [];
-    try {
-      const raw = await fetchYahooTicker("SI=F", "10y");
-      const byMonth = new Map<string, number[]>();
-      for (const o of raw) {
-        const m = o.date.slice(0, 7);
-        if (!byMonth.has(m)) byMonth.set(m, []);
-        byMonth.get(m)!.push(o.value);
-      }
-      silverObs = [...byMonth.entries()]
-        .map(([date, vals]) => ({ date: date + "-01", value: vals.reduce((s, v) => s + v, 0) / vals.length }))
-        .sort((a, b) => b.date.localeCompare(a.date));
-    } catch { /* zSilver will be null, weight redistributed */ }
-
-    const toYoY = (obs: { date: string; value: number }[]): number[] => {
-      const byDate = new Map(obs.map(o => [o.date.slice(0, 7), o.value]));
-      return obs
-        .map(o => {
-          const d = new Date(o.date);
-          const yaKey = `${d.getUTCFullYear() - 1}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-          const ya = byDate.get(yaKey);
-          if (ya == null || ya === 0) return NaN;
-          return (o.value / ya - 1) * 100;
-        })
-        .filter((v): v is number => !isNaN(v));
+    const zScoreEach = (pairs: { year: number; value: number }[]) => {
+      const vals = pairs.map((p) => p.value);
+      const mu = vals.reduce((s, v) => s + v, 0) / vals.length;
+      const sd = Math.sqrt(vals.reduce((s, v) => s + (v - mu) ** 2, 0) / vals.length) || 1;
+      return new Map(pairs.map((p) => [p.year, r4((p.value - mu) / sd)]));
     };
 
-    const ppiYoY     = toYoY(ppiacoObs);
-    const wtiYoY     = toYoY(wtiObs);
-    const copperYoY  = toYoY(copperObs);
-    const silverYoY  = toYoY(silverObs);
-    const uraniumYoY = toYoY(uraniumObs);
+    const { data: wgcRows } = await supabase.from("wgc_gold_purchases").select("year, tonnes").order("year");
+    const goldPairs = (wgcRows ?? [])
+      .filter((r: { tonnes: number | null }) => r.tonnes != null)
+      .map((r: { year: number; tonnes: number }) => ({ year: r.year, value: Number(r.tonnes) }));
+    if (goldPairs.length < 5) { console.error("[gauge5] insufficient gold data"); return; }
+    const zGoldByYear = zScoreEach(goldPairs);
 
-    if (ppiYoY.length < 24 || wtiYoY.length < 24 || copperYoY.length < 24) {
-      console.error("[gauge5] insufficient data"); return;
+    const { data: fxRows } = await supabase
+      .from("fx_reserves_observations")
+      .select("period_year, period_quarter, share_pct")
+      .eq("currency_code", "USD")
+      .order("period_year", { ascending: true })
+      .order("period_quarter", { ascending: true });
+
+    // For each year, take the latest reported quarter's USD share (rows arrive
+    // quarter-ascending, so the last write per year wins).
+    const usdShareByYear = new Map<number, number>();
+    for (const r of (fxRows ?? []) as { period_year: number; share_pct: number | null }[]) {
+      if (r.share_pct != null) usdShareByYear.set(r.period_year, Number(r.share_pct));
     }
+    const usdShareYoYPairs: { year: number; value: number }[] = [];
+    for (const year of [...usdShareByYear.keys()].sort((a, b) => a - b)) {
+      const prev = usdShareByYear.get(year - 1);
+      const curr = usdShareByYear.get(year);
+      if (prev != null && curr != null) usdShareYoYPairs.push({ year, value: curr - prev });
+    }
+    const zUsdShareByYear = usdShareYoYPairs.length >= 5 ? zScoreEach(usdShareYoYPairs) : new Map<number, number>();
 
-    const zs = (series: number[]) => {
-      const mu = mean(series);
-      const sd = stdev(series, mu);
-      return r4((series[0] - mu) / sd);
-    };
+    const allYears = new Set<number>([...zGoldByYear.keys(), ...zUsdShareByYear.keys()]);
+    const upserts = [...allYears].map((year) => {
+      const zGold = zGoldByYear.get(year) ?? null;
+      const zUsd = zUsdShareByYear.get(year) ?? null;
+      const gauge5 =
+        zGold != null && zUsd != null ? r4(0.5 * zGold - 0.5 * zUsd) :
+        zGold != null ? zGold :
+        zUsd != null ? r4(-zUsd) : null;
+      return { year, z_cb_gold: zGold, z_usd_share: zUsd, gauge5 };
+    }).filter((r) => r.gauge5 != null);
 
-    const zPpi     = zs(ppiYoY);
-    const zWti     = zs(wtiYoY);
-    const zCopper  = zs(copperYoY);
-    const zSilver  = silverYoY.length  >= 12 ? zs(silverYoY)  : null;
-    const zUranium = uraniumYoY.length >= 12 ? zs(uraniumYoY) : null;
-
-    let wTotal = 0.30 + 0.25 + 0.20;
-    let g5 = 0.30 * zPpi + 0.25 * zWti + 0.20 * zCopper;
-    if (zSilver  != null) { g5 += 0.15 * zSilver;  wTotal += 0.15; }
-    if (zUranium != null) { g5 += 0.10 * zUranium; wTotal += 0.10; }
-    const gauge5 = r4(g5 / wTotal);
-
-    const currentYear = new Date().getFullYear();
-    const { error } = await supabase.from("dalio_gauge_readings").upsert(
-      { year: currentYear, z_ppi: zPpi, z_wti: zWti, z_copper: zCopper, z_silver: zSilver, z_uranium: zUranium, gauge5 },
-      { onConflict: "year" }
-    );
+    const { error } = await supabase.from("dalio_gauge_readings").upsert(upserts, { onConflict: "year" });
     if (error) console.error("[gauge5] upsert:", error);
   } catch (e) { console.error("[gauge5]", e); }
 }

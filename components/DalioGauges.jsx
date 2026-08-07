@@ -31,7 +31,7 @@ const GAUGE_META = [
   {
     key: "gauge5",
     label: "Reserve Confidence Risk",
-    desc: "CB gold buying + weakening Treasury auction demand",
+    desc: "CB gold buying + declining USD share of global FX reserves",
   },
   {
     key: "gauge6",
@@ -972,24 +972,24 @@ const RESERVE_CONF_INFO = (
   <div className="space-y-4 text-[11px] leading-relaxed">
     <div>
       <p className="text-paper font-semibold mb-1">What this measures</p>
-      <p className="text-paper-dim">Reserve Confidence Risk captures the degree to which global central banks and sovereign institutions are reducing their reliance on the US dollar as a reserve currency. It combines two signals: central bank net gold purchases (a direct substitution away from USD-denominated reserves) and US Treasury auction bid-to-cover ratios (which measure the appetite of the global investor base for US government debt). Together, these reflect the market's revealed confidence — or lack thereof — in the dominant reserve currency.</p>
+      <p className="text-paper-dim">Reserve Confidence Risk captures the degree to which global central banks and sovereign institutions are reducing their reliance on the US dollar as a reserve currency. It combines two signals: central bank net gold purchases (a direct substitution away from USD-denominated reserves) and the year-over-year change in the US dollar's share of allocated global FX reserves (IMF COFER data — the actual, revealed composition of what central banks hold). Together, these reflect the market's revealed confidence — or lack thereof — in the dominant reserve currency.</p>
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">How it's calculated</p>
-      <p className="text-paper-dim">Two z-scores are computed: one for annual central bank net gold purchases (from the World Gold Council), and one for the Treasury auction bid-to-cover ratio. Gold purchases are scored directly — heavy buying is elevated risk, since it signals reserve diversification away from dollar assets. Bid-to-cover is scored inversely — declining demand for Treasury auctions signals reduced confidence in US debt. The two z-scores are averaged to form the composite gauge reading.</p>
+      <p className="text-paper-dim">Two z-scores are computed: one for annual central bank net gold purchases (from the World Gold Council), and one for the year-over-year change in USD's share of IMF-reported FX reserves. Gold purchases are scored directly — heavy buying is elevated risk, since it signals reserve diversification away from dollar assets. USD reserve share is scored inversely — a declining share signals central banks are actively reallocating away from the dollar. The composite is <span className="text-paper font-mono">0.5·z(CB gold) − 0.5·z(USD reserve share YoY Δ)</span>; where one input is unavailable (USD reserve share only goes back to 2013), the gauge falls back to gold alone.</p>
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">Why it matters</p>
-      <p className="text-paper-dim">In Dalio's framework, the long-term debt cycle reaches its most dangerous inflection when the reserve currency's credibility is challenged. The United States can sustain an unusually high debt level precisely because the dollar's reserve status allows it to borrow in its own currency at low rates from global savers. If that privilege erodes — through excessive money printing, fiscal instability, or geopolitical fragmentation — foreign demand for US debt weakens, interest rates rise, and the ability to inflate or grow out of the debt burden is diminished. A rising reading on this gauge is one of the clearest signals of late-cycle reserve currency fragility.</p>
+      <p className="text-paper-dim">In Dalio's framework, the long-term debt cycle reaches its most dangerous inflection when the reserve currency's credibility is challenged. The United States can sustain an unusually high debt level precisely because the dollar's reserve status allows it to borrow in its own currency at low rates from global savers. If that privilege erodes — through excessive money printing, fiscal instability, or geopolitical fragmentation — central banks visibly shift reserves toward gold and other currencies, interest rates rise, and the ability to inflate or grow out of the debt burden is diminished. A rising reading on this gauge is one of the clearest signals of late-cycle reserve currency fragility.</p>
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">Thresholds</p>
       <div className="space-y-1 text-[10px]">
-        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.5</span><span className="text-paper-dim">Critical — extreme gold accumulation and/or severe Treasury demand decline</span></div>
+        <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.5</span><span className="text-paper-dim">Critical — extreme gold accumulation and/or a sharp drop in USD reserve share</span></div>
         <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.0</span><span className="text-paper-dim">Elevated Risk — meaningful reserve diversification away from USD</span></div>
         <div className="flex gap-2"><span className="text-brass-soft font-mono w-16">&gt; +0.25</span><span className="text-paper-dim">Watch — early signals of reserve reallocation, trend to monitor</span></div>
         <div className="flex gap-2"><span className="text-paper font-mono w-16">±0.25</span><span className="text-paper-dim">Neutral — reserve confidence broadly intact</span></div>
-        <div className="flex gap-2"><span className="text-gain font-mono w-16">&lt; −0.25</span><span className="text-paper-dim">Low Risk — strong demand for USD assets and Treasuries</span></div>
+        <div className="flex gap-2"><span className="text-gain font-mono w-16">&lt; −0.25</span><span className="text-paper-dim">Low Risk — light gold buying and/or a rising USD reserve share</span></div>
       </div>
     </div>
   </div>
@@ -1000,32 +1000,33 @@ function reserveConfAssessment(gauge5) {
   if (gauge5 > 1.5) return {
     label: "Critical",
     color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
-    text: "Central bank gold accumulation is at or near historic extremes, and/or Treasury auction demand has deteriorated severely. This combination signals a meaningful breakdown in global confidence in the US dollar as a reserve asset. The structural foundation that enables US fiscal deficits to be financed at low rates is under genuine strain. Capital flows are rotating away from dollar-denominated assets — if sustained, this would pressure the dollar, raise long-term interest rates, and reduce the US government's ability to inflate away its debt burden.",
+    text: "Central bank gold accumulation is at or near historic extremes, and/or the USD's share of global FX reserves is falling sharply. This combination signals a meaningful breakdown in global confidence in the US dollar as a reserve asset. The structural foundation that enables US fiscal deficits to be financed at low rates is under genuine strain. Capital flows are rotating away from dollar-denominated assets — if sustained, this would pressure the dollar, raise long-term interest rates, and reduce the US government's ability to inflate away its debt burden.",
   };
   if (gauge5 > 1.0) return {
     label: "Elevated Risk",
     color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
-    text: "Central banks are buying gold at above-average rates and/or Treasury auction bid-to-cover ratios are declining meaningfully. This signals an active, sustained shift in reserve allocation away from the dollar. The magnitude is not yet at historic extremes, but the signal is consistent and directional. In Dalio's framework, this is the phase where reserve currency credibility begins to slip — slowly at first, then quickly. The risk premium on US assets has not yet repriced sharply, but the underlying trend is concerning.",
+    text: "Central banks are buying gold at above-average rates and/or the USD's share of global FX reserves is declining meaningfully year over year. This signals an active, sustained shift in reserve allocation away from the dollar. The magnitude is not yet at historic extremes, but the signal is consistent and directional. In Dalio's framework, this is the phase where reserve currency credibility begins to slip — slowly at first, then quickly. The risk premium on US assets has not yet repriced sharply, but the underlying trend is concerning.",
   };
   if (gauge5 > 0.25) return {
     label: "Watch",
     color: "text-brass-soft", border: "border-brass/20", bg: "bg-brass/5",
-    text: "Early signals of reserve reallocation are present — central bank gold buying is modestly above average and/or Treasury auction demand shows some softening. These signals are not severe enough to indicate a crisis of confidence, but they suggest that the marginal appetite for dollar assets among global central banks is declining. In the context of elevated US fiscal deficits and geopolitical fragmentation, this warrants monitoring for signs of acceleration.",
+    text: "Early signals of reserve reallocation are present — central bank gold buying is modestly above average and/or the USD's FX reserve share is softening. These signals are not severe enough to indicate a crisis of confidence, but they suggest that the marginal appetite for dollar assets among global central banks is declining. In the context of elevated US fiscal deficits and geopolitical fragmentation, this warrants monitoring for signs of acceleration.",
   };
   if (gauge5 > -0.25) return {
     label: "Neutral",
     color: "text-paper", border: "border-ink-line", bg: "bg-ink/40",
-    text: "Central bank gold purchases and Treasury auction demand are near their historical averages, indicating that reserve confidence is broadly intact. There is no significant signal of reserve diversification away from the dollar at this level. Global demand for US Treasury debt is in line with historical norms, and the structural advantage of dollar reserve status is not under measurable pressure.",
+    text: "Central bank gold purchases and the USD's share of global FX reserves are near their historical averages, indicating that reserve confidence is broadly intact. There is no significant signal of reserve diversification away from the dollar at this level. Central bank reserve composition is in line with historical norms, and the structural advantage of dollar reserve status is not under measurable pressure.",
   };
   return {
     label: "Low Risk",
     color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
-    text: "Central bank gold purchases are below average and/or Treasury auction demand is strong, indicating elevated confidence in the US dollar as a reserve asset. Global savers are actively seeking dollar-denominated assets, which keeps long-term interest rates low and supports the US government's ability to finance its debt at favorable terms. Reserve currency privilege is being actively reinforced rather than eroded.",
+    text: "Central bank gold purchases are below average and/or the USD's share of global FX reserves is holding or rising, indicating elevated confidence in the US dollar as a reserve asset. Global central banks are not actively diversifying away from dollar-denominated reserves, which keeps long-term interest rates low and supports the US government's ability to finance its debt at favorable terms. Reserve currency privilege is being actively reinforced rather than eroded.",
   };
 }
 
 function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
   const [rows, setRows] = useState(null);
+  const [fxRows, setFxRows] = useState(null);
   const [gaugeHistory, setGaugeHistory] = useState(null);
   const [range, setRange] = useState(1952);
 
@@ -1033,11 +1034,63 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
     if (!open || rows !== null) return;
     Promise.all([
       supabase.from("wgc_gold_purchases").select("year,tonnes").order("year"),
-      supabase.from("dalio_gauge_readings").select("year,gauge5,z_cb_gold,z_bid_to_cover").order("year"),
-    ]).then(([wgc, gauge]) => { setRows(wgc.data ?? []); setGaugeHistory(gauge.data ?? []); });
+      supabase.from("fx_reserves_observations").select("period_year,period_quarter,share_pct").eq("currency_code", "USD").order("period_year").order("period_quarter"),
+      supabase.from("dalio_gauge_readings").select("year,gauge5,z_cb_gold,z_usd_share").order("year"),
+    ]).then(([wgc, fx, gauge]) => {
+      setRows(wgc.data ?? []);
+      setFxRows(fx.data ?? []);
+      setGaugeHistory(gauge.data ?? []);
+    });
   }, [open, rows]);
 
-  const chartData = useMemo(() => buildZScoreData(rows, "tonnes", range), [rows, range]);
+  // Latest reported quarter's USD share per year — rows arrive quarter-ascending,
+  // so the last write per year wins.
+  const usdShareByYear = useMemo(() => {
+    const m = {};
+    for (const r of fxRows ?? []) {
+      if (r.share_pct != null) m[r.period_year] = Number(r.share_pct);
+    }
+    return m;
+  }, [fxRows]);
+
+  // Approximate composite per year, computed client-side from raw gold tonnes +
+  // USD reserve share — used only to draw the multi-year chart trend line. The
+  // table below reads the actual stored z_cb_gold/z_usd_share/gauge5 so its
+  // numbers match the gauge tile exactly (same convention as the other gauges).
+  const chartData = useMemo(() => {
+    if (!rows?.length) return [];
+    const goldVals = rows.filter((r) => r.tonnes != null).map((r) => Number(r.tonnes));
+    if (!goldVals.length) return [];
+    const mG = goldVals.reduce((s, v) => s + v, 0) / goldVals.length;
+    const sG = Math.sqrt(goldVals.reduce((s, v) => s + (v - mG) ** 2, 0) / goldVals.length) || 1;
+    const goldByYear = Object.fromEntries(rows.filter((r) => r.tonnes != null).map((r) => [r.year, Number(r.tonnes)]));
+
+    const usdYears = Object.keys(usdShareByYear).map(Number).sort((a, b) => a - b);
+    const usdYoYByYear = {};
+    for (const y of usdYears) {
+      const prev = usdShareByYear[y - 1];
+      if (prev != null) usdYoYByYear[y] = usdShareByYear[y] - prev;
+    }
+    const usdYoYVals = Object.values(usdYoYByYear);
+    const mU = usdYoYVals.length ? usdYoYVals.reduce((s, v) => s + v, 0) / usdYoYVals.length : 0;
+    const sU = usdYoYVals.length ? Math.sqrt(usdYoYVals.reduce((s, v) => s + (v - mU) ** 2, 0) / usdYoYVals.length) || 1 : 1;
+
+    const allYears = [...new Set([...Object.keys(goldByYear).map(Number), ...usdYears])].sort((a, b) => a - b);
+    const composites = {};
+    for (const year of allYears) {
+      const zGold = goldByYear[year] != null ? (goldByYear[year] - mG) / sG : null;
+      const zUsd = usdYoYByYear[year] != null ? (usdYoYByYear[year] - mU) / sU : null;
+      const composite = zGold != null && zUsd != null ? 0.5 * zGold - 0.5 * zUsd : zGold != null ? zGold : zUsd != null ? -zUsd : null;
+      if (composite != null) composites[year] = Math.round(composite * 1000) / 1000;
+    }
+    return allYears
+      .filter((year) => year >= range && composites[year] != null)
+      .map((year, i, arr) => ({
+        year,
+        zScore: composites[year],
+        change: i > 0 ? Math.round((composites[year] - composites[arr[i - 1].year]) * 1000) / 1000 : null,
+      }));
+  }, [rows, usdShareByYear, range]);
 
   const tableRows = useMemo(() => {
     const wgcMap = Object.fromEntries(
@@ -1046,23 +1099,26 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
     const gaugeMap = Object.fromEntries((gaugeHistory ?? []).map((r) => [r.year, r]));
     const allYears = [...new Set([
       ...(rows ?? []).map((r) => r.year),
+      ...Object.keys(usdShareByYear).map(Number),
       ...(gaugeHistory ?? []).map((r) => r.year),
     ])].sort((a, b) => b - a);
     return allYears
       .map((year) => {
         const tonnes = wgcMap[year] ?? null;
-        const prevTonnes = wgcMap[year - 1] ?? null;
+        const usdShare = usdShareByYear[year] ?? null;
+        const prevUsdShare = usdShareByYear[year - 1] ?? null;
         return {
           year,
           tonnes,
-          netDelta: tonnes != null && prevTonnes != null ? tonnes - prevTonnes : null,
+          usdShare,
+          usdShareYoY: usdShare != null && prevUsdShare != null ? usdShare - prevUsdShare : null,
           zCbGold: gaugeMap[year]?.z_cb_gold != null ? Number(gaugeMap[year].z_cb_gold) : null,
-          zBidCover: gaugeMap[year]?.z_bid_to_cover != null ? Number(gaugeMap[year].z_bid_to_cover) : null,
+          zUsdShare: gaugeMap[year]?.z_usd_share != null ? Number(gaugeMap[year].z_usd_share) : null,
           composite: gaugeMap[year]?.gauge5 != null ? Number(gaugeMap[year].gauge5) : null,
         };
       })
-      .filter((r) => r.tonnes != null || r.zCbGold != null || r.composite != null);
-  }, [rows, gaugeHistory]);
+      .filter((r) => r.tonnes != null || r.usdShare != null || r.composite != null);
+  }, [rows, usdShareByYear, gaugeHistory]);
 
   const assessed = reserveConfAssessment(latestGauge);
   const assessment = assessed ? (
@@ -1077,12 +1133,12 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
     <BaseGaugeDrawer
       open={open} onClose={onClose}
       title="Reserve Confidence Risk"
-      desc="CB gold purchases z-score · heavy buying signals declining reserve confidence"
-      source="wgc_gold_purchases · tonnes"
+      desc="CB gold buying − USD share of FX reserves, z-scored"
+      source="wgc_gold_purchases · tonnes  +  fx_reserves_observations · USD share%"
       latestGauge={latestGauge}
       range={range} setRange={setRange}
       loading={rows === null}
-      renderChart={() => <StandardZScoreChart chartData={chartData} lineName="CB Gold z" />}
+      renderChart={() => <StandardZScoreChart chartData={chartData} lineName="Reserve Confidence z" />}
       gaugeHistory={gaugeHistory}
       gaugeKey="gauge5"
       infoContent={RESERVE_CONF_INFO}
@@ -1090,29 +1146,33 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
       renderTable={() => (
         <div className="card p-4">
           <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
-          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(5, 60px)" }}>
+          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(6, 58px)" }}>
             <span>Year</span>
             <span className="text-right">CB Gold(t)</span>
-            <span className="text-right">Net Δ(t)</span>
             <span className="text-right">CB Gold z</span>
-            <span className="text-right">Bid/Cov z</span>
+            <span className="text-right">USD Shr%</span>
+            <span className="text-right">USD Shr YoY</span>
+            <span className="text-right">USD Shr z</span>
             <span className="text-right">Composite</span>
           </div>
           <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
             {tableRows.map((r) => (
-              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(5, 60px)" }}>
+              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(6, 58px)" }}>
                 <span className="text-paper-dim">{r.year}</span>
                 <span className="num text-right text-paper">
                   {r.tonnes != null ? Math.round(r.tonnes).toLocaleString() : "—"}
                 </span>
-                <span className={`num text-right ${r.netDelta == null ? "text-paper-dim" : r.netDelta > 0 ? "text-loss" : r.netDelta < 0 ? "text-gain" : "text-paper-dim"}`}>
-                  {r.netDelta != null ? `${r.netDelta >= 0 ? "+" : ""}${Math.round(r.netDelta).toLocaleString()}` : "—"}
-                </span>
                 <span className="num text-right text-paper-dim">
                   {r.zCbGold != null ? `${r.zCbGold >= 0 ? "+" : ""}${r.zCbGold.toFixed(2)}` : "—"}
                 </span>
+                <span className="num text-right text-paper">
+                  {r.usdShare != null ? `${r.usdShare.toFixed(1)}%` : "—"}
+                </span>
+                <span className={`num text-right ${r.usdShareYoY == null ? "text-paper-dim" : r.usdShareYoY < 0 ? "text-loss" : r.usdShareYoY > 0 ? "text-gain" : "text-paper-dim"}`}>
+                  {r.usdShareYoY != null ? `${r.usdShareYoY >= 0 ? "+" : ""}${r.usdShareYoY.toFixed(1)}pp` : "—"}
+                </span>
                 <span className="num text-right text-paper-dim">
-                  {r.zBidCover != null ? `${r.zBidCover >= 0 ? "+" : ""}${r.zBidCover.toFixed(2)}` : "—"}
+                  {r.zUsdShare != null ? `${r.zUsdShare >= 0 ? "+" : ""}${r.zUsdShare.toFixed(2)}` : "—"}
                 </span>
                 <span className={`num text-right font-semibold ${r.composite == null ? "text-paper-dim" : r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
                   {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
@@ -1140,7 +1200,7 @@ const DOLLAR_DIV_INFO = (
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">Why it matters</p>
-      <p className="text-paper-dim">In Dalio's framework, a reserve currency's privilege rests on the world's willingness to hold and lend in it cheaply. Rising long yields paired with dollar weakness suggests investors are pricing in more compensation for US debt risk (inflation, fiscal deficits, political dysfunction) without a matching flight-to-dollar bid — the opposite of the traditional safe-haven pattern. Sustained readings here often precede or accompany periods of reserve-currency stress, alongside gauges like Reserve Confidence Risk (central bank gold buying, Treasury auction demand).</p>
+      <p className="text-paper-dim">In Dalio's framework, a reserve currency's privilege rests on the world's willingness to hold and lend in it cheaply. Rising long yields paired with dollar weakness suggests investors are pricing in more compensation for US debt risk (inflation, fiscal deficits, political dysfunction) without a matching flight-to-dollar bid — the opposite of the traditional safe-haven pattern. Sustained readings here often precede or accompany periods of reserve-currency stress, alongside gauges like Reserve Confidence Risk (central bank gold buying, USD share of global FX reserves).</p>
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">Thresholds</p>
