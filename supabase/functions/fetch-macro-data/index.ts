@@ -1531,17 +1531,23 @@ async function computeGauge5(): Promise<void> {
       .order("period_year", { ascending: true })
       .order("period_quarter", { ascending: true });
 
-    // For each year, take the latest reported quarter's USD share (rows arrive
-    // quarter-ascending, so the last write per year wins).
-    const usdShareByYear = new Map<number, number>();
-    for (const r of (fxRows ?? []) as { period_year: number; share_pct: number | null }[]) {
-      if (r.share_pct != null) usdShareByYear.set(r.period_year, Number(r.share_pct));
+    // Track by exact (year, quarter) so YoY always compares the same calendar
+    // quarter a year apart — comparing "latest reported quarter" across years
+    // naively breaks for the current, still-incomplete year (e.g. Q1-2026 vs
+    // Q4-2025 is a 3-month change, not a 12-month YoY, and can point the wrong
+    // direction relative to the true same-quarter trend).
+    const shareByYQ = new Map<string, number>();
+    const latestQByYear = new Map<number, number>();
+    for (const r of (fxRows ?? []) as { period_year: number; period_quarter: number; share_pct: number | null }[]) {
+      if (r.share_pct == null) continue;
+      shareByYQ.set(`${r.period_year}-${r.period_quarter}`, Number(r.share_pct));
+      latestQByYear.set(r.period_year, r.period_quarter); // rows arrive quarter-ascending, so last write per year wins
     }
     const usdShareYoYPairs: { year: number; value: number }[] = [];
-    for (const year of [...usdShareByYear.keys()].sort((a, b) => a - b)) {
-      const prev = usdShareByYear.get(year - 1);
-      const curr = usdShareByYear.get(year);
-      if (prev != null && curr != null) usdShareYoYPairs.push({ year, value: curr - prev });
+    for (const [year, q] of latestQByYear) {
+      const curr = shareByYQ.get(`${year}-${q}`);
+      const prev = shareByYQ.get(`${year - 1}-${q}`);
+      if (curr != null && prev != null) usdShareYoYPairs.push({ year, value: curr - prev });
     }
     const zUsdShareByYear = usdShareYoYPairs.length >= 5 ? zScoreEach(usdShareYoYPairs) : new Map<number, number>();
 

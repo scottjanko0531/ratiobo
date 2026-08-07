@@ -1043,14 +1043,37 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
     });
   }, [open, rows]);
 
-  // Latest reported quarter's USD share per year — rows arrive quarter-ascending,
-  // so the last write per year wins.
+  // Latest reported quarter's USD share per year (for display) — rows arrive
+  // quarter-ascending, so the last write per year wins. Kept separately from
+  // the year-quarter map below, which YoY math uses to always compare the same
+  // calendar quarter a year apart (see backend computeGauge5 for why this
+  // matters: "latest quarter" for the current, still-incomplete year is often
+  // not Q4, so naively diffing "latest vs latest" can compare a 3-month gap
+  // and mislabel it as a 12-month YoY change).
   const usdShareByYear = useMemo(() => {
     const m = {};
     for (const r of fxRows ?? []) {
       if (r.share_pct != null) m[r.period_year] = Number(r.share_pct);
     }
     return m;
+  }, [fxRows]);
+
+  const usdShareYoYByYear = useMemo(() => {
+    const byYQ = {};
+    const latestQByYear = {};
+    for (const r of fxRows ?? []) {
+      if (r.share_pct == null) continue;
+      byYQ[`${r.period_year}-${r.period_quarter}`] = Number(r.share_pct);
+      latestQByYear[r.period_year] = r.period_quarter;
+    }
+    const out = {};
+    for (const [yearStr, q] of Object.entries(latestQByYear)) {
+      const year = Number(yearStr);
+      const curr = byYQ[`${year}-${q}`];
+      const prev = byYQ[`${year - 1}-${q}`];
+      if (curr != null && prev != null) out[year] = curr - prev;
+    }
+    return out;
   }, [fxRows]);
 
   // Approximate composite per year, computed client-side from raw gold tonnes +
@@ -1065,12 +1088,8 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
     const sG = Math.sqrt(goldVals.reduce((s, v) => s + (v - mG) ** 2, 0) / goldVals.length) || 1;
     const goldByYear = Object.fromEntries(rows.filter((r) => r.tonnes != null).map((r) => [r.year, Number(r.tonnes)]));
 
-    const usdYears = Object.keys(usdShareByYear).map(Number).sort((a, b) => a - b);
-    const usdYoYByYear = {};
-    for (const y of usdYears) {
-      const prev = usdShareByYear[y - 1];
-      if (prev != null) usdYoYByYear[y] = usdShareByYear[y] - prev;
-    }
+    const usdYoYByYear = usdShareYoYByYear;
+    const usdYears = Object.keys(usdYoYByYear).map(Number).sort((a, b) => a - b);
     const usdYoYVals = Object.values(usdYoYByYear);
     const mU = usdYoYVals.length ? usdYoYVals.reduce((s, v) => s + v, 0) / usdYoYVals.length : 0;
     const sU = usdYoYVals.length ? Math.sqrt(usdYoYVals.reduce((s, v) => s + (v - mU) ** 2, 0) / usdYoYVals.length) || 1 : 1;
@@ -1090,7 +1109,7 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
         zScore: composites[year],
         change: i > 0 ? Math.round((composites[year] - composites[arr[i - 1].year]) * 1000) / 1000 : null,
       }));
-  }, [rows, usdShareByYear, range]);
+  }, [rows, usdShareYoYByYear, range]);
 
   const tableRows = useMemo(() => {
     const wgcMap = Object.fromEntries(
@@ -1106,19 +1125,18 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
       .map((year) => {
         const tonnes = wgcMap[year] ?? null;
         const usdShare = usdShareByYear[year] ?? null;
-        const prevUsdShare = usdShareByYear[year - 1] ?? null;
         return {
           year,
           tonnes,
           usdShare,
-          usdShareYoY: usdShare != null && prevUsdShare != null ? usdShare - prevUsdShare : null,
+          usdShareYoY: usdShareYoYByYear[year] ?? null,
           zCbGold: gaugeMap[year]?.z_cb_gold != null ? Number(gaugeMap[year].z_cb_gold) : null,
           zUsdShare: gaugeMap[year]?.z_usd_share != null ? Number(gaugeMap[year].z_usd_share) : null,
           composite: gaugeMap[year]?.gauge5 != null ? Number(gaugeMap[year].gauge5) : null,
         };
       })
       .filter((r) => r.tonnes != null || r.usdShare != null || r.composite != null);
-  }, [rows, usdShareByYear, gaugeHistory]);
+  }, [rows, usdShareByYear, usdShareYoYByYear, gaugeHistory]);
 
   const assessed = reserveConfAssessment(latestGauge);
   const assessment = assessed ? (
