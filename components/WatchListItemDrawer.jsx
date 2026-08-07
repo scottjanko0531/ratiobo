@@ -30,7 +30,7 @@ function EyeIcon({ open }) {
   );
 }
 
-export default function WatchListItemDrawer({ item, marketRow, assetTypes, onClose, onEdit, onDelete }) {
+export default function WatchListItemDrawer({ item, marketRow, assetTypes, onClose, onEdit, onDelete, onAnalyze }) {
   const [showTVChart, setShowTVChart] = useState(true);
   const [news, setNews] = useState(undefined); // undefined = loading, [] = none found, array = items
 
@@ -77,6 +77,7 @@ export default function WatchListItemDrawer({ item, marketRow, assetTypes, onClo
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <button onClick={() => onAnalyze(item)} className="px-3 py-1.5 rounded-lg text-xs border border-brass/40 text-brass-soft hover:bg-brass/10 transition-colors">Analyze</button>
             <button onClick={() => onEdit(item)} className="px-3 py-1.5 rounded-lg text-xs border border-ink-line text-paper-dim hover:text-paper transition-colors">Edit</button>
             <button onClick={() => onDelete(item)} className="px-3 py-1.5 rounded-lg text-xs border border-ink-line text-paper-dim hover:text-loss hover:border-loss/40 transition-colors">Remove</button>
             <button onClick={onClose} className="text-paper-dim hover:text-paper ml-1" aria-label="Close">✕</button>

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Shell from "../../components/Shell";
 import { supabase } from "../../lib/supabase";
 import WatchListItemDrawer from "../../components/WatchListItemDrawer";
+import WatchAnalysisPanel from "../../components/WatchAnalysisPanel";
 
 const usd = (v, digits = 2) => {
   if (v == null || isNaN(Number(v))) return "—";
@@ -34,6 +35,11 @@ export default function WatchListsPage() {
   const [symbolLookupBusy, setSymbolLookupBusy] = useState(false);
 
   const [detailItem, setDetailItem] = useState(null);
+
+  const [analysis, setAnalysis]         = useState(null); // { scope, title, content, generated_at } | null
+  const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [analysisError, setAnalysisError] = useState("");
+  const [analysisReq, setAnalysisReq]   = useState(null); // last { scope, watch_list_id, watch_list_item_id, title } for regenerate
 
   async function load() {
     setBusy(true);
@@ -199,6 +205,44 @@ export default function WatchListsPage() {
     await load();
   }
 
+  async function runAnalysis(req) {
+    setAnalysisReq(req);
+    setAnalysisBusy(true);
+    setAnalysisError("");
+    setAnalysis((prev) => (prev && prev.title === req.title ? prev : { title: req.title, content: null, generated_at: null }));
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/analyze-watch-item`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: req.scope,
+          watch_list_id: req.watch_list_id,
+          watch_list_item_id: req.watch_list_item_id,
+          force: req.force ?? false,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setAnalysisError(data.error || "Analysis generation failed.");
+      } else {
+        setAnalysis({ title: req.title, content: data.content, generated_at: data.generated_at });
+      }
+    } catch (_) {
+      setAnalysisError("Analysis generation failed.");
+    }
+    setAnalysisBusy(false);
+  }
+
+  function analyzeGroup(wl) {
+    setDetailItem(null);
+    runAnalysis({ scope: "group", watch_list_id: wl.id, title: `${wl.name} — Comparative Analysis` });
+  }
+
+  function analyzeItem(item) {
+    setDetailItem(null);
+    runAnalysis({ scope: "item", watch_list_id: item.watch_list_id, watch_list_item_id: item.id, title: `${item.symbol} — Research Note` });
+  }
+
   async function deleteItem(item) {
     if (!confirm(`Remove ${item.symbol} from this watch list?`)) return;
     await supabase.from("watch_list_items").delete().eq("id", item.id);
@@ -278,6 +322,9 @@ export default function WatchListsPage() {
                     {wl.description && <p className="text-xs text-paper-dim mt-0.5">{wl.description}</p>}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
+                    {items.length > 0 && (
+                      <button onClick={() => analyzeGroup(wl)} className="px-3 py-1.5 rounded-lg text-xs border border-brass/40 text-brass-soft hover:bg-brass/10 transition-colors">Analyze Group</button>
+                    )}
                     <button onClick={openAddItem} className="px-3 py-1.5 rounded-lg text-xs border border-ink-line text-paper-dim hover:text-paper transition-colors">+ Add Symbol</button>
                     <button onClick={() => openEditList(wl)} className="px-3 py-1.5 rounded-lg text-xs border border-ink-line text-paper-dim hover:text-paper transition-colors">Edit</button>
                     <button onClick={() => setViewingList(null)} className="text-paper-dim hover:text-paper ml-1" aria-label="Close">✕</button>
@@ -533,6 +580,15 @@ export default function WatchListsPage() {
         onClose={() => setDetailItem(null)}
         onEdit={openEditItem}
         onDelete={deleteItem}
+        onAnalyze={analyzeItem}
+      />
+
+      <WatchAnalysisPanel
+        analysis={analysis}
+        busy={analysisBusy}
+        error={analysisError}
+        onClose={() => setAnalysis(null)}
+        onRegenerate={() => analysisReq && runAnalysis({ ...analysisReq, force: true })}
       />
     </Shell>
   );
