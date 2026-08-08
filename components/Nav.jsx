@@ -12,6 +12,7 @@ const links = [
   { href: "/portfolios", label: "Portfolios" },
   { href: "/watch-lists", label: "Watch Lists" },
   { href: "/macro", label: "Macro" },
+  { href: "/supply-chain", label: "Supply Chain" },
   { href: "/simulator", label: "Simulator" },
   { href: "/backtesting", label: "Backtesting" },
   { href: "/planning", label: "Planning" },
