@@ -21,6 +21,10 @@ const REGIME_LABELS: Record<string, string> = {
 
 interface MarketTick { name: string; price: number; changePct: number; }
 interface NewsItem { headline: string; source: string; publishedAt: number; }
+interface SupplyChainRisk {
+  name: string; category: string; score: number; status: string; trend: string;
+  primaryThreat: string | null; concentration: string | null;
+}
 
 // ── News helpers (same RSS approach as get-macro-news) ────────────────────────
 function getText(block: string, tag: string): string {
@@ -46,6 +50,13 @@ function getSource(block: string): string {
 function cleanTitle(title: string, source: string): string {
   const suffix = " - " + source;
   return source && title.endsWith(suffix) ? title.slice(0, -suffix.length).trim() : title;
+}
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/^#{1,6}\s.*$/gm, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/^[-*]\s+/gm, "")
+    .trim();
 }
 
 async function fetchMacroVoices(): Promise<NewsItem | null> {
@@ -154,6 +165,25 @@ async function getMarketSnapshot(): Promise<MarketTick[]> {
   return results.filter((r): r is MarketTick => r !== null);
 }
 
+// ── Supply chain risk snapshot ──────────────────────────────────────────────────
+async function getSupplyChainRisks(sb: ReturnType<typeof createClient>): Promise<SupplyChainRisk[]> {
+  const { data } = await sb
+    .from("supply_chain_items")
+    .select("name,category,current_score,current_status,current_trend,primary_threat,concentration")
+    .eq("is_active", true)
+    .order("current_score", { ascending: false });
+  return (data ?? [])
+    .filter((r: { current_score: number | null }) => r.current_score != null)
+    .map((r: {
+      name: string; category: string; current_score: number; current_status: string;
+      current_trend: string | null; primary_threat: string | null; concentration: string | null;
+    }) => ({
+      name: r.name, category: r.category, score: r.current_score,
+      status: r.current_status, trend: r.current_trend ?? "stable",
+      primaryThreat: r.primary_threat, concentration: r.concentration,
+    }));
+}
+
 // ── Main regime analysis ──────────────────────────────────────────────────────
 async function generateAnalysis(params: {
   regimeLabel: string; marketLabel: string | null; fwdLabel: string | null;
@@ -163,6 +193,7 @@ async function generateAnalysis(params: {
   prevGdp: number | null; prevCpi: number | null; prevPpi: number | null;
   prevLei: number | null; prevBe: number | null;
   marketSnapshot: MarketTick[];
+  supplyChain: SupplyChainRisk[];
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY) return null;
   try {
@@ -170,12 +201,17 @@ async function generateAnalysis(params: {
       regimeLabel, marketLabel, fwdLabel, fwdConf, divergence,
       gdp, cpi, ppi, t10y2y, lei, breakeven,
       prevGdp, prevCpi, prevPpi, prevLei, prevBe,
-      marketSnapshot,
+      marketSnapshot, supplyChain,
     } = params;
 
     const mktLines = marketSnapshot
       .map(m => `${m.name}: ${m.changePct >= 0 ? "+" : ""}${m.changePct.toFixed(1)}%`)
       .join(" | ");
+    const scLines = supplyChain
+      .filter(s => s.status === "critical" || s.trend === "worsening")
+      .slice(0, 6)
+      .map(s => `  ${s.score} ${s.status.toUpperCase()}/${s.trend} — ${s.name} (${s.category})${s.primaryThreat ? `: ${s.primaryThreat}` : ""}`)
+      .join("\n");
     const n = (v: number | null, d = 1, plus = false) =>
       v != null ? `${plus && v >= 0 ? "+" : ""}${v.toFixed(d)}%` : "n/a";
     const delta = (curr: number | null, prev: number | null) => {
@@ -196,13 +232,13 @@ async function generateAnalysis(params: {
       !gdpUp && inflUp  ? "Stagflation" : "Deflationary Bust";
     const momentumDiverges = momentumRegime !== regimeLabel;
 
-    const prompt = `You are a macro analyst at RatioBo using the Dalio/Bridgewater four-quadrant framework. Write direct, sharp analysis — no hedging, no fluff, no headers, no bullet points. Plain prose, 3–4 paragraphs, under 300 words.
+    const prompt = `You are Clio, macro analyst at RatioBo, using the Dalio/Bridgewater four-quadrant framework. Write direct, sharp analysis — no hedging language, no fluff. Plain prose only, 4–5 paragraphs separated by blank lines, under 400 words. Do not use any markdown syntax: no #, no **, no bullet or numbered lists, no title line.
 
 PORTFOLIO FRAMEWORK — BW Modified (structural base, always held):
   US Equities 20% · International 8% · EM 5% · Nominal Bonds 20% · TIPS 20% · Commodities 12% · Gold 12% · Cash 3%
   Rationale: Bridgewater's 2025–2026 thesis holds that the old paradigm (US-heavy, equity-heavy, long nominal bonds) is broken. Modern mercantilism, AI-driven commodity demand, and CB gold accumulation create structural bids for real assets regardless of the cyclical quadrant. BW Modified is the resilient base. Regime-specific tilts are overlays on top of it, only when the signal is unambiguous.
 
-You have three signals that may conflict. Reconcile all three explicitly.
+You have four signals that may conflict. Reconcile all four explicitly.
 
 SIGNAL 1 — Structural regime (level-based, 3Y trailing averages):
   ${regimeLabel}
@@ -222,7 +258,10 @@ SIGNAL 3 — Market pricing (yesterday's action, forward-looking):
   Forward signal: ${fwdLabel ?? "none"}${fwdConf != null ? ` (${fwdConf}% confidence)` : ""}
   ${mktLines}
 
-Assess in 3–4 paragraphs: (1) What is the hard data momentum telling us — is the structural regime transitioning, and how confident should we be? (2) Is yesterday's market action consistent with that momentum signal, or pricing a different scenario? (3) Given all three signals and the BW Modified structural base, what is the right posture — hold the base, tilt toward the confirmed regime, or reduce regime-specific exposure and wait for confirmation?`;
+SIGNAL 4 — Supply chain / structural tail risk (12 tracked chokepoints, daily AI+web-search scored, 0–100):
+${scLines || "  No critical or worsening chokepoints currently flagged."}
+
+Assess in 4–5 paragraphs: (1) What is the hard data momentum telling us — is the structural regime transitioning, and how confident should we be? (2) Is yesterday's market action consistent with that momentum signal, or pricing a different scenario? (3) What does the supply chain signal confirm or complicate — does it corroborate the BW Modified real-assets sleep (gold/commodities/TIPS), and is any specific chokepoint above a live tail risk for a sector or asset class in the portfolio? (4) Given all four signals and the BW Modified structural base, name concrete investing opportunities (where to lean in, and with what instrument/asset class) and concrete hedging strategies (what specific exposure to hedge and how) — be specific, not just "hold the base."`;
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -233,13 +272,14 @@ Assess in 3–4 paragraphs: (1) What is the hard data momentum telling us — is
       },
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 600,
+        max_tokens: 1100,
         messages: [{ role: "user", content: prompt }],
       }),
     });
     if (!res.ok) return null;
     const j = await res.json();
-    return (j.content?.[0]?.text as string | undefined) ?? null;
+    const raw = (j.content?.[0]?.text as string | undefined) ?? null;
+    return raw ? stripMarkdown(raw) : null;
   } catch { return null; }
 }
 
@@ -262,7 +302,7 @@ async function generateNewsMusing(params: {
       ? `\nThe first item is the most recent MacroVoices podcast episode. Briefly note what it covers and how it informs the macro picture.`
       : "";
 
-    const prompt = `You are Clio, macro analyst at RatioBo. Write 2 sharp paragraphs (under 180 words total) — no headers, no bullets, plain prose.
+    const prompt = `You are Clio, macro analyst at RatioBo. Write 2 sharp paragraphs (under 180 words total), plain prose only. Do not use any markdown syntax: no #, no **, no bullet or numbered lists, no title line.
 
 Current regime signals:
   Structural: ${regimeLabel}
@@ -289,7 +329,8 @@ Assess: (1) What macro narrative are these headlines collectively signaling — 
     });
     if (!res.ok) return null;
     const j = await res.json();
-    return (j.content?.[0]?.text as string | undefined) ?? null;
+    const raw = (j.content?.[0]?.text as string | undefined) ?? null;
+    return raw ? stripMarkdown(raw) : null;
   } catch { return null; }
 }
 
@@ -316,7 +357,7 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const [{ data: regimeRow }, { data: macroRows }, marketSnapshot, topNews, mvItem] = await Promise.all([
+    const [{ data: regimeRow }, { data: macroRows }, marketSnapshot, topNews, mvItem, supplyChain] = await Promise.all([
       sb.from("macro_regime_history")
         .select("structural_key,market_key,forward_key,forward_confidence")
         .order("period_date", { ascending: false })
@@ -326,6 +367,7 @@ Deno.serve(async (req: Request) => {
       getMarketSnapshot(),
       fetchTopNews(5),
       fetchMacroVoices(),
+      getSupplyChainRisks(sb),
     ]);
     const headlines: NewsItem[] = mvItem ? [mvItem, ...topNews] : topNews;
 
@@ -375,6 +417,7 @@ Deno.serve(async (req: Request) => {
         prevLei:   getPrev("Conference Board LEI"),
         prevBe:    getPrev("10Y Breakeven Inflation"),
         marketSnapshot,
+        supplyChain,
       }),
       generateNewsMusing({ headlines, regimeLabel, momentumRegime, marketLabel }),
     ]);

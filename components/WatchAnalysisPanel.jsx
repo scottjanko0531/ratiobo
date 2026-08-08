@@ -1,7 +1,7 @@
 "use client";
 import Markdown from "./Markdown";
 
-export default function WatchAnalysisPanel({ analysis, busy, error, onClose, onRegenerate }) {
+export default function WatchAnalysisPanel({ analysis, busy, error, progress, onClose, onRegenerate }) {
   if (!analysis) return null;
 
   return (
@@ -35,7 +35,12 @@ export default function WatchAnalysisPanel({ analysis, busy, error, onClose, onR
           )}
           {busy && !analysis.content ? (
             <div className="space-y-3">
-              <p className="text-sm text-paper-dim">Researching — this pulls live financial data and can take up to a minute…</p>
+              <p className="text-sm text-paper-dim">
+                {progress || "Researching — this pulls live financial data…"}
+              </p>
+              <p className="text-xs text-paper-dim/60">
+                A full sector research pass can take a few minutes the first time; it's cached and reused for other stocks in the same sector after that.
+              </p>
               <div className="h-2 w-full bg-ink rounded overflow-hidden">
                 <div className="h-full w-1/3 bg-brass/60 animate-pulse" />
               </div>
