@@ -498,20 +498,6 @@ const INDICATORS: Indicator[] = [
     statusFn: v => v < 70 ? "healthy" : v < 90 ? "watch" : "danger",
   },
   {
-    name: "Crude Oil Inventories", layer: 3, layer_name: "Business Cycle",
-    description: "U.S. commercial crude stocks (weekly EIA, thousand bbl) — low vs 5Y avg = upward price pressure",
-    fred_series_id: "WCESTUS1", unit: "Kbbl", data_source: "fred", sort_order: 291,
-    series: "WCESTUS1", type: "level",
-    statusFn: v => v > 420000 ? "healthy" : v > 370000 ? "watch" : "danger",
-  },
-  {
-    name: "Strategic Petroleum Reserve", layer: 3, layer_name: "Business Cycle",
-    description: "U.S. SPR crude stocks (weekly EIA, thousand bbl) — geopolitical cushion; low = vulnerable to supply shocks",
-    fred_series_id: "WCSSTUS1", unit: "Kbbl", data_source: "fred", sort_order: 292,
-    series: "WCSSTUS1", type: "level",
-    statusFn: v => v > 500000 ? "healthy" : v > 350000 ? "watch" : "danger",
-  },
-  {
     name: "Gasoline Retail Price", layer: 3, layer_name: "Business Cycle",
     description: "U.S. weekly regular gasoline ($/gal) — direct consumer transmission of crude price moves",
     fred_series_id: "GASREGCOVW", unit: "$/gal", data_source: "fred", sort_order: 293,
