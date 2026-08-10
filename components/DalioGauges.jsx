@@ -983,6 +983,10 @@ const RESERVE_CONF_INFO = (
       <p className="text-paper-dim">In Dalio's framework, the long-term debt cycle reaches its most dangerous inflection when the reserve currency's credibility is challenged. The United States can sustain an unusually high debt level precisely because the dollar's reserve status allows it to borrow in its own currency at low rates from global savers. If that privilege erodes — through excessive money printing, fiscal instability, or geopolitical fragmentation — central banks visibly shift reserves toward gold and other currencies, interest rates rise, and the ability to inflate or grow out of the debt burden is diminished. A rising reading on this gauge is one of the clearest signals of late-cycle reserve currency fragility.</p>
     </div>
     <div>
+      <p className="text-paper font-semibold mb-1">Futures term structure (supplementary)</p>
+      <p className="text-paper-dim">The drawer below also shows the COMEX gold and silver futures basis — the front December contract vs. the same contract one year out, z-scored against its own multi-year history. This is not part of the composite score above; it's a distinct read on whether physical-market stress (contango compressing toward or through backwardation) is corroborating the official-sector accumulation signal, versus gold/silver strength that's better explained by a conventional rates or dollar move. Wide, stable, or widening contango is the normal cost-of-carry pattern; compression toward backwardation — especially in both metals together — has historically coincided with acute physical demand or delivery stress.</p>
+    </div>
+    <div>
       <p className="text-paper font-semibold mb-1">Thresholds</p>
       <div className="space-y-1 text-[10px]">
         <div className="flex gap-2"><span className="text-loss font-mono w-16">&gt; +1.5</span><span className="text-paper-dim">Critical — extreme gold accumulation and/or a sharp drop in USD reserve share</span></div>
@@ -1028,6 +1032,7 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
   const [rows, setRows] = useState(null);
   const [fxRows, setFxRows] = useState(null);
   const [gaugeHistory, setGaugeHistory] = useState(null);
+  const [metalsBasis, setMetalsBasis] = useState(undefined); // undefined = not fetched yet, null = fetched but unavailable
   const [range, setRange] = useState(1952);
 
   useEffect(() => {
@@ -1036,10 +1041,12 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
       supabase.from("wgc_gold_purchases").select("year,tonnes").order("year"),
       supabase.from("fx_reserves_observations").select("period_year,period_quarter,share_pct").eq("currency_code", "USD").order("period_year").order("period_quarter"),
       supabase.from("dalio_gauge_readings").select("year,gauge5,z_cb_gold,z_usd_share").order("year"),
-    ]).then(([wgc, fx, gauge]) => {
+      fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-metals-futures-basis`).then(r => r.json()).catch(() => null),
+    ]).then(([wgc, fx, gauge, basis]) => {
       setRows(wgc.data ?? []);
       setFxRows(fx.data ?? []);
       setGaugeHistory(gauge.data ?? []);
+      setMetalsBasis(basis && !basis.error ? basis : null);
     });
   }, [open, rows]);
 
@@ -1138,6 +1145,15 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
       .filter((r) => r.tonnes != null || r.usdShare != null || r.composite != null);
   }, [rows, usdShareByYear, usdShareYoYByYear, gaugeHistory]);
 
+  // Merge gold + silver z-scored basis history by date for the combined chart.
+  const basisChartData = useMemo(() => {
+    if (!metalsBasis) return [];
+    const goldMap = new Map((metalsBasis.gold?.history ?? []).map((r) => [r.date, r.zBasis]));
+    const silverMap = new Map((metalsBasis.silver?.history ?? []).map((r) => [r.date, r.zBasis]));
+    const dates = [...new Set([...goldMap.keys(), ...silverMap.keys()])].sort();
+    return dates.map((date) => ({ date, goldZ: goldMap.get(date) ?? null, silverZ: silverMap.get(date) ?? null }));
+  }, [metalsBasis]);
+
   const assessed = reserveConfAssessment(latestGauge);
   const assessment = assessed ? (
     <div className={`card p-4 border ${assessed.border} ${assessed.bg}`}>
@@ -1146,6 +1162,19 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
       <p className="text-[11px] text-paper-dim leading-relaxed">{assessed.text}</p>
     </div>
   ) : null;
+
+  // Futures-basis panel reads: negative z / negative trend = contango
+  // compressing toward (or through) backwardation — the physical-stress
+  // direction. Positive = wide, normal-or-widening carry — no stress.
+  const basisZColor = (v) => v == null ? "text-paper-dim" : v < -1 ? "text-loss" : v > 1 ? "text-gain" : "text-brass-soft";
+  const basisTrendRead = (trend20d) => {
+    if (trend20d == null) return null;
+    const EPS = 0.004; // small vs typical multi-day moves in a ~1-6% basis
+    if (Math.abs(trend20d) < EPS) return { label: "Stable", color: "text-paper-dim" };
+    return trend20d < 0
+      ? { label: "↓ Compressing", color: "text-loss" }
+      : { label: "↑ Widening", color: "text-gain" };
+  };
 
   return (
     <BaseGaugeDrawer
@@ -1162,41 +1191,117 @@ function ReserveConfidenceDrawer({ open, onClose, latestGauge }) {
       infoContent={RESERVE_CONF_INFO}
       assessment={assessment}
       renderTable={() => (
-        <div className="card p-4">
-          <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
-          <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(6, 58px)" }}>
-            <span>Year</span>
-            <span className="text-right">CB Gold(t)</span>
-            <span className="text-right">CB Gold z</span>
-            <span className="text-right">USD Shr%</span>
-            <span className="text-right">USD Shr YoY</span>
-            <span className="text-right">USD Shr z</span>
-            <span className="text-right">Composite</span>
+        <div className="space-y-4">
+          <div className="card p-4">
+            <p className="label text-[10px] mb-3">Gauge Readings (actual)</p>
+            <div className="grid text-[10px] text-paper-dim pb-1.5 mb-1.5 border-b border-ink-line pr-1" style={{ gridTemplateColumns: "1fr repeat(6, 58px)" }}>
+              <span>Year</span>
+              <span className="text-right">CB Gold(t)</span>
+              <span className="text-right">CB Gold z</span>
+              <span className="text-right">USD Shr%</span>
+              <span className="text-right">USD Shr YoY</span>
+              <span className="text-right">USD Shr z</span>
+              <span className="text-right">Composite</span>
+            </div>
+            <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
+              {tableRows.map((r) => (
+                <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(6, 58px)" }}>
+                  <span className="text-paper-dim">{r.year}</span>
+                  <span className="num text-right text-paper">
+                    {r.tonnes != null ? Math.round(r.tonnes).toLocaleString() : "—"}
+                  </span>
+                  <span className="num text-right text-paper-dim">
+                    {r.zCbGold != null ? `${r.zCbGold >= 0 ? "+" : ""}${r.zCbGold.toFixed(2)}` : "—"}
+                  </span>
+                  <span className="num text-right text-paper">
+                    {r.usdShare != null ? `${r.usdShare.toFixed(1)}%` : "—"}
+                  </span>
+                  <span className={`num text-right ${r.usdShareYoY == null ? "text-paper-dim" : r.usdShareYoY < 0 ? "text-loss" : r.usdShareYoY > 0 ? "text-gain" : "text-paper-dim"}`}>
+                    {r.usdShareYoY != null ? `${r.usdShareYoY >= 0 ? "+" : ""}${r.usdShareYoY.toFixed(1)}pp` : "—"}
+                  </span>
+                  <span className="num text-right text-paper-dim">
+                    {r.zUsdShare != null ? `${r.zUsdShare >= 0 ? "+" : ""}${r.zUsdShare.toFixed(2)}` : "—"}
+                  </span>
+                  <span className={`num text-right font-semibold ${r.composite == null ? "text-paper-dim" : r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
+                    {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
-            {tableRows.map((r) => (
-              <div key={r.year} className="grid items-center text-xs" style={{ gridTemplateColumns: "1fr repeat(6, 58px)" }}>
-                <span className="text-paper-dim">{r.year}</span>
-                <span className="num text-right text-paper">
-                  {r.tonnes != null ? Math.round(r.tonnes).toLocaleString() : "—"}
-                </span>
-                <span className="num text-right text-paper-dim">
-                  {r.zCbGold != null ? `${r.zCbGold >= 0 ? "+" : ""}${r.zCbGold.toFixed(2)}` : "—"}
-                </span>
-                <span className="num text-right text-paper">
-                  {r.usdShare != null ? `${r.usdShare.toFixed(1)}%` : "—"}
-                </span>
-                <span className={`num text-right ${r.usdShareYoY == null ? "text-paper-dim" : r.usdShareYoY < 0 ? "text-loss" : r.usdShareYoY > 0 ? "text-gain" : "text-paper-dim"}`}>
-                  {r.usdShareYoY != null ? `${r.usdShareYoY >= 0 ? "+" : ""}${r.usdShareYoY.toFixed(1)}pp` : "—"}
-                </span>
-                <span className="num text-right text-paper-dim">
-                  {r.zUsdShare != null ? `${r.zUsdShare >= 0 ? "+" : ""}${r.zUsdShare.toFixed(2)}` : "—"}
-                </span>
-                <span className={`num text-right font-semibold ${r.composite == null ? "text-paper-dim" : r.composite > 1 ? "text-loss" : r.composite < -1 ? "text-gain" : "text-brass-soft"}`}>
-                  {r.composite != null ? `${r.composite >= 0 ? "+" : ""}${r.composite.toFixed(2)}` : "—"}
-                </span>
-              </div>
-            ))}
+
+          {/* ── Futures Term Structure ──────────────────────────────────── */}
+          <div className="card p-4">
+            <div className="flex items-baseline justify-between gap-2 mb-3">
+              <p className="label text-[10px]">Futures Term Structure</p>
+              <p className="text-[9px] text-paper-dim/60">COMEX Dec-on-Dec basis, front vs +1yr · z-scored vs own history</p>
+            </div>
+            {metalsBasis === undefined ? (
+              <p className="text-sm text-paper-dim py-4 text-center">Loading…</p>
+            ) : metalsBasis === null ? (
+              <p className="text-sm text-paper-dim py-4 text-center">Futures basis data unavailable.</p>
+            ) : (
+              <>
+                <p className="text-[10px] text-paper-dim/70 mb-3 leading-relaxed">
+                  Not part of the composite score above — a supplementary read on whether the gold/silver
+                  futures curve is showing physical-market stress (contango compressing toward or through
+                  backwardation) alongside official-sector accumulation, distinct from price level or momentum.
+                </p>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  {[{ key: "gold", label: "Gold" }, { key: "silver", label: "Silver" }].map(({ key, label }) => {
+                    const m = metalsBasis[key]?.latest;
+                    if (!m) return <div key={key} className="bg-ink rounded-lg p-3"><p className="text-[10px] text-paper-dim">{label} unavailable</p></div>;
+                    const trend = basisTrendRead(m.trend20d);
+                    return (
+                      <div key={key} className="bg-ink rounded-lg p-3">
+                        <p className="text-[10px] text-paper-dim mb-1">{label} 12mo basis</p>
+                        <p className={`num text-lg font-bold ${basisZColor(m.zBasis)}`}>
+                          {m.basisPct >= 0 ? "+" : ""}{m.basisPct.toFixed(2)}%
+                        </p>
+                        <div className="flex items-center justify-between mt-0.5">
+                          <span className="text-[9px] text-paper-dim/60">z {m.zBasis >= 0 ? "+" : ""}{m.zBasis.toFixed(2)}</span>
+                          {trend && <span className={`text-[9px] font-medium ${trend.color}`}>{trend.label}</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {metalsBasis.agreement && (
+                  <div className="rounded-lg px-3 py-2 text-xs mb-3 bg-loss/10 border border-loss/20">
+                    <span className="text-loss font-medium">⚠ Gold and silver both showing compressed contango — cross-metal confirmation</span>
+                  </div>
+                )}
+
+                {basisChartData.length > 0 && (
+                  <>
+                    <ResponsiveContainer width="100%" height={160}>
+                      <ComposedChart data={basisChartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                        <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                        <XAxis
+                          dataKey="date"
+                          tick={{ fill: "#A8ADB8", fontSize: 9 }}
+                          tickLine={false}
+                          axisLine={false}
+                          tickFormatter={(v) => v.slice(0, 7)}
+                          interval={Math.max(1, Math.floor(basisChartData.length / 6))}
+                        />
+                        <YAxis tick={{ fill: "#A8ADB8", fontSize: 10 }} tickLine={false} axisLine={false} width={32} />
+                        <Tooltip content={<RiskTooltip />} />
+                        <ReferenceLine y={0} stroke="#2A3240" strokeWidth={1} />
+                        <ReferenceLine y={-1} stroke="#ef4444" strokeDasharray="4 2" strokeOpacity={0.4} />
+                        <Line type="monotone" dataKey="goldZ" name="Gold basis z" stroke="#C9A227" strokeWidth={2} dot={false} connectNulls />
+                        <Line type="monotone" dataKey="silverZ" name="Silver basis z" stroke="#818CF8" strokeWidth={1.25} dot={false} connectNulls />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                    <div className="flex items-center gap-4 mt-2 text-[10px] text-paper-dim/70">
+                      <span className="flex items-center gap-1.5"><span className="inline-block w-6 h-[2px] rounded-sm bg-[#C9A227]" /> Gold basis z</span>
+                      <span className="flex items-center gap-1.5"><span className="inline-block w-6 h-[2px] rounded-sm bg-[#818CF8]" /> Silver basis z</span>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
           </div>
         </div>
       )}
