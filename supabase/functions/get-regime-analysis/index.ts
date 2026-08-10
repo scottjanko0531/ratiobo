@@ -51,12 +51,13 @@ function cleanTitle(title: string, source: string): string {
   const suffix = " - " + source;
   return source && title.endsWith(suffix) ? title.slice(0, -suffix.length).trim() : title;
 }
-function stripMarkdown(text: string): string {
-  return text
+function stripMarkdown(text: string, opts: { allowBullets?: boolean } = {}): string {
+  let out = text
     .replace(/^#{1,6}\s.*$/gm, "")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/^[-*]\s+/gm, "")
-    .trim();
+    .replace(/\*\*(.+?)\*\*/g, "$1");
+  if (!opts.allowBullets) out = out.replace(/^[-*]\s+/gm, "");
+  else out = out.replace(/^\*\s+/gm, "- "); // normalize "* " bullets to "- "
+  return out.trim();
 }
 
 async function fetchMacroVoices(): Promise<NewsItem | null> {
@@ -232,7 +233,7 @@ async function generateAnalysis(params: {
       !gdpUp && inflUp  ? "Stagflation" : "Deflationary Bust";
     const momentumDiverges = momentumRegime !== regimeLabel;
 
-    const prompt = `You are Clio, macro analyst at RatioBo, using the Dalio/Bridgewater four-quadrant framework. Write direct, sharp analysis — no hedging language, no fluff. Plain prose only, 4–5 paragraphs separated by blank lines, under 400 words. Do not use any markdown syntax: no #, no **, no bullet or numbered lists, no title line.
+    const prompt = `You are Clio, macro analyst at RatioBo, using the Dalio/Bridgewater four-quadrant framework. Write direct, sharp analysis — no hedging language, no fluff, under 400 words total. No markdown headers, no bold, no title line.
 
 PORTFOLIO FRAMEWORK — BW Modified (structural base, always held):
   US Equities 20% · International 8% · EM 5% · Nominal Bonds 20% · TIPS 20% · Commodities 12% · Gold 12% · Cash 3%
@@ -261,7 +262,13 @@ SIGNAL 3 — Market pricing (yesterday's action, forward-looking):
 SIGNAL 4 — Supply chain / structural tail risk (12 tracked chokepoints, daily AI+web-search scored, 0–100):
 ${scLines || "  No critical or worsening chokepoints currently flagged."}
 
-Assess in 4–5 paragraphs: (1) What is the hard data momentum telling us — is the structural regime transitioning, and how confident should we be? (2) Is yesterday's market action consistent with that momentum signal, or pricing a different scenario? (3) What does the supply chain signal confirm or complicate — does it corroborate the BW Modified real-assets sleep (gold/commodities/TIPS), and is any specific chokepoint above a live tail risk for a sector or asset class in the portfolio? (4) Given all four signals and the BW Modified structural base, name concrete investing opportunities (where to lean in, and with what instrument/asset class) and concrete hedging strategies (what specific exposure to hedge and how) — be specific, not just "hold the base."`;
+Structure your answer in four parts, separated by blank lines:
+(1) A paragraph: what is the hard data momentum telling us — is the structural regime transitioning, and how confident should we be?
+(2) A paragraph: is yesterday's market action consistent with that momentum signal, or pricing a different scenario?
+(3) A paragraph: what does the supply chain signal confirm or complicate — does it corroborate the BW Modified real-assets sleeve (gold/commodities/TIPS), and is any specific chokepoint above a live tail risk for a sector or asset class in the portfolio?
+(4) A "Concrete moves:" section: one short lead-in sentence, then 3-6 bullet points (each on its own line, starting with "- "), each one specific, actionable sentence naming a real instrument or asset class and what to do with it — not just "hold the base." Split opportunities and hedges across the bullets as the analysis warrants, rather than writing separate paragraphs for each.
+
+Parts 1-3 must be plain prose — no bullets, no bold, no headers. Part 4 must be lead-in sentence + bullets only, no bold, no headers.`;
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -279,7 +286,7 @@ Assess in 4–5 paragraphs: (1) What is the hard data momentum telling us — is
     if (!res.ok) return null;
     const j = await res.json();
     const raw = (j.content?.[0]?.text as string | undefined) ?? null;
-    return raw ? stripMarkdown(raw) : null;
+    return raw ? stripMarkdown(raw, { allowBullets: true }) : null;
   } catch { return null; }
 }
 

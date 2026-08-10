@@ -4419,11 +4419,29 @@ function RegimeAnalysisCard() {
           </div>
         </div>
 
-        {/* Analysis prose */}
+        {/* Analysis prose — the "Concrete moves" section renders as a bullet list, the rest as paragraphs */}
         <div className="space-y-3 mb-5">
-          {data.analysis.split(/\n\n+/).map((p, i) => (
-            <p key={i} className="text-sm text-paper-dim leading-relaxed">{p.trim()}</p>
-          ))}
+          {data.analysis.split(/\n\n+/).map((block, i) => {
+            const lines = block.trim().split("\n").map((l) => l.trim()).filter(Boolean);
+            const bulletLines = lines.filter((l) => /^[-*]\s+/.test(l));
+            const isBulletBlock = bulletLines.length >= 2 && bulletLines.length >= lines.length - 1;
+            if (!isBulletBlock) {
+              return <p key={i} className="text-sm text-paper-dim leading-relaxed">{block.trim()}</p>;
+            }
+            const leadIn = lines.filter((l) => !/^[-*]\s+/.test(l));
+            return (
+              <div key={i}>
+                {leadIn.map((l, j) => (
+                  <p key={`lead-${j}`} className="text-sm text-paper-dim leading-relaxed mb-2">{l}</p>
+                ))}
+                <ul className="list-disc pl-5 space-y-1.5">
+                  {bulletLines.map((l, j) => (
+                    <li key={j} className="text-sm text-paper-dim leading-relaxed">{l.replace(/^[-*]\s+/, "")}</li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
         </div>
 
         {/* Market snapshot */}
