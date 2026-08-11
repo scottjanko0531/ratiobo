@@ -124,7 +124,16 @@ export default function SupplyChainPage() {
                       >
                         <div className="flex items-center justify-between gap-2 mb-2">
                           <span className="font-medium text-sm">{item.name}</span>
-                          <span className={`text-[10px] font-medium px-2 py-0.5 rounded shrink-0 ${st.bg} ${st.color}`}>{st.label}</span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {item.risk_type && (
+                              <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded border ${
+                                item.risk_type === "active" ? "text-loss border-loss/30 bg-loss/5" : "text-paper-dim border-ink-line"
+                              }`}>
+                                {item.risk_type === "active" ? "Active" : "Structural"}
+                              </span>
+                            )}
+                            <span className={`text-[10px] font-medium px-2 py-0.5 rounded ${st.bg} ${st.color}`}>{st.label}</span>
+                          </div>
                         </div>
                         <div className="h-1.5 w-full bg-ink rounded overflow-hidden mb-2.5">
                           <div

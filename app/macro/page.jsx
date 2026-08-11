@@ -4357,6 +4357,20 @@ function CbGoldDrawer({ open, onClose, ind }) {
   );
 }
 
+// Distinguishes model-synthesized commentary (this card) from the sourced
+// FRED/BLS/World Gold Council gauges elsewhere on the page — same visual
+// authority otherwise made it easy to mistake one for the other.
+function ProvenanceBadge() {
+  return (
+    <span
+      className="text-[9px] font-medium px-1.5 py-0.5 rounded border border-brass/30 text-brass-soft bg-brass/5 shrink-0"
+      title="This commentary is generated and interpreted by an AI model from the page's live data — it is cross-checked against the gauges above for internal consistency, but it is not itself a sourced data feed like the indicators on this page."
+    >
+      Model-synthesized
+    </span>
+  );
+}
+
 // ── Regime vs. Market Analysis ────────────────────────────────────────────────
 function RegimeAnalysisCard() {
   const [data, setData] = useState(null);
@@ -4391,7 +4405,10 @@ function RegimeAnalysisCard() {
   if (loading) {
     return (
       <div className="card p-5 mb-6">
-        <p className="label mb-3">Clio Musings: Current Regime vs. Market Analysis</p>
+        <div className="flex items-center gap-2 mb-3">
+          <p className="label">Clio Musings: Current Regime vs. Market Analysis</p>
+          <ProvenanceBadge />
+        </div>
         <p className="text-paper-dim text-sm">Generating analysis…</p>
       </div>
     );
@@ -4406,7 +4423,10 @@ function RegimeAnalysisCard() {
     <>
       <div className={`card p-5 mb-6 border ${alignedBorder}`}>
         <div className="flex items-start justify-between gap-4 mb-4">
-          <p className="label">Clio Musings: Current Regime vs. Market Analysis</p>
+          <div className="flex items-center gap-2">
+            <p className="label">Clio Musings: Current Regime vs. Market Analysis</p>
+            <ProvenanceBadge />
+          </div>
           <div className="flex items-center gap-3 shrink-0">
             <span className={`text-[11px] font-semibold ${alignedColor}`}>{alignedLabel}</span>
             <button
@@ -4469,7 +4489,10 @@ function RegimeAnalysisCard() {
       {/* Clio on the News */}
       {(newsHeadlines.length > 0 || newsMusing) && (
         <div className="card p-5 mb-6 border border-ink-line">
-          <p className="label mb-4">Clio Musings: What the News Is Saying</p>
+          <div className="flex items-center gap-2 mb-4">
+            <p className="label">Clio Musings: What the News Is Saying</p>
+            <ProvenanceBadge />
+          </div>
 
           {/* Headlines */}
           {newsHeadlines.length > 0 && (

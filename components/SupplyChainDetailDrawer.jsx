@@ -67,7 +67,16 @@ export default function SupplyChainDetailDrawer({ item, onClose }) {
       <div className="absolute right-0 top-0 h-full w-full max-w-[720px] bg-ink-soft border-l border-ink-line overflow-y-auto">
         <div className="flex items-start justify-between px-5 py-4 border-b border-ink-line">
           <div className="flex-1 min-w-0 pr-4">
-            <p className="font-semibold text-base">{item.name}</p>
+            <div className="flex items-center gap-2">
+              <p className="font-semibold text-base">{item.name}</p>
+              {item.risk_type && (
+                <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded border ${
+                  item.risk_type === "active" ? "text-loss border-loss/30 bg-loss/5" : "text-paper-dim border-ink-line"
+                }`}>
+                  {item.risk_type === "active" ? "Active catalyst" : "Structural risk"}
+                </span>
+              )}
+            </div>
             <p className="text-xs text-paper-dim mt-0.5">{item.category}</p>
           </div>
           <button onClick={onClose} className="text-paper-dim hover:text-paper" aria-label="Close">✕</button>
@@ -159,6 +168,15 @@ export default function SupplyChainDetailDrawer({ item, onClose }) {
             </div>
           )}
         </div>
+
+        {(item.source_note || item.updated_at) && (
+          <div className="px-5 py-3 border-t border-ink-line">
+            <p className="text-[10px] text-paper-dim/60">
+              {item.source_note ? `Source: ${item.source_note}` : "Source: not recorded"}
+              {item.updated_at ? ` · Last verified ${new Date(item.updated_at).toLocaleString()}` : ""}
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

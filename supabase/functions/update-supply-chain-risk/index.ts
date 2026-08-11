@@ -62,11 +62,13 @@ interface Assessment {
   risk_score: number;
   status: "critical" | "watch" | "healthy";
   trend: "worsening" | "stable" | "improving";
+  risk_type: "active" | "structural";
   summary: string;
   concentration: string;
   primary_threat: string;
   alternatives: string;
   recent_signal: string;
+  source_note: string;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -87,16 +89,23 @@ ${roster}${chinaWatchNote}
 
 For EACH item, research: how concentrated the supply is in a single country/company/chokepoint, the primary threat right now, viable alternatives, and any recent (last few weeks) news signal.
 
+Also classify each item's "risk_type":
+- "active": there is a confirmed, currently-in-progress disruption (e.g. a closed strait, an enforced export ban, a live blockade) — something you can point to specific recent evidence for, happening right now, not merely plausible.
+- "structural": the concentration/vulnerability is real and elevated but there is no active triggering event in progress right now — it's a standing, thesis-driven tail risk, not a live crisis.
+Do not default to "active" just because a risk is severe — a severe risk with no live triggering event is still "structural."
+
 Return an object per item with these exact fields:
 - "key": the exact key given above, unchanged
 - "risk_score": integer 0-100 (0 = no risk, 100 = acute crisis). Critical >= 75, Watch 35-74, Healthy < 35.
 - "status": "critical" | "watch" | "healthy" — must match the risk_score threshold above
 - "trend": "worsening" | "stable" | "improving" — direction over the last 1-3 months
+- "risk_type": "active" | "structural" — per the definitions above
 - "summary": one tight sentence, under 25 words, specific and current
 - "concentration": one short phrase with a real number/percentage
 - "primary_threat": one short phrase naming the specific risk
 - "alternatives": one short phrase on what mitigates this, if anything
 - "recent_signal": one short phrase citing a specific recent development
+- "source_note": one short phrase naming what kind of source grounds this assessment (e.g. "Reuters shipping-transit reporting", "IMF/WTO export-control filings", "company earnings + trade press") — be specific about source type, not just "web search"
 
 Respond with ONLY a raw JSON array of ${items.length} objects, one per item above, in the same order given. No markdown code fences, no prose before or after, no trailing commas.`;
 }
@@ -202,6 +211,7 @@ Deno.serve(async (req: Request) => {
         primary_threat: a.primary_threat ?? null, alternatives: a.alternatives ?? null,
         recent_signal: a.recent_signal ?? null, updated_at: now,
         china_watch_adjustment: cwAdjustment, china_watch_spi: cwSpi,
+        risk_type: a.risk_type ?? null, source_note: a.source_note ?? null,
       }).eq("id", item.id);
       if (updErr) { console.error(`[supply-chain] update ${a.key}:`, updErr); skipped.push(a.key); continue; }
 
@@ -211,6 +221,7 @@ Deno.serve(async (req: Request) => {
         primary_threat: a.primary_threat ?? null, alternatives: a.alternatives ?? null,
         recent_signal: a.recent_signal ?? null,
         china_watch_adjustment: cwAdjustment, china_watch_spi: cwSpi,
+        risk_type: a.risk_type ?? null, source_note: a.source_note ?? null,
       }, { onConflict: "item_id,snapshot_date" });
       if (snapErr) { console.error(`[supply-chain] snapshot ${a.key}:`, snapErr); continue; }
 
