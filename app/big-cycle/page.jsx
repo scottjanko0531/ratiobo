@@ -240,7 +240,7 @@ export default function BigCyclePage() {
           <>
             <div className="card p-3 mb-6 border-brass/20 bg-brass/5">
               <p className="text-[11px] text-paper-dim leading-relaxed">
-                Framework and stage placement are Dalio's — <span className="text-paper">this is a structured lens, not a forecast</span>. Metrics tagged "Manual" below are hand-entered (click the value or note to edit); everything else refreshes automatically. Stage labels marked as "current" reflect an editorial judgment call given the metrics below, not an authoritative dating.
+                Framework and stage placement are Dalio's — <span className="text-paper">this is a structured lens, not a forecast</span>. Metrics tagged "Manual" below are hand-entered (click the value or note to edit); everything else refreshes automatically. The debt cycle's "current" stage is computed automatically from live thresholds (fed funds level, Fed balance sheet %GDP, deficit %GDP, r − g); internal and external cycle stages are still an editorial judgment call given the metrics below, not an authoritative dating.
               </p>
             </div>
 

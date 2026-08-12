@@ -41,8 +41,16 @@ async function fredLatest(seriesId: string): Promise<{ value: number; date: stri
 
 const pct1 = (v: number) => `${v.toFixed(1)}%`;
 
-async function computeFredUpdates(): Promise<Update[]> {
+interface FredUpdatesResult {
+  updates: Update[];
+  fedFundsMid: number | null;
+  deficitAbs: number | null;
+}
+
+async function computeFredUpdates(): Promise<FredUpdatesResult> {
   const updates: Update[] = [];
+  let fedFundsMid: number | null = null;
+  let deficitAbs: number | null = null;
 
   // debt_to_gdp is cross-referenced from the Macro dashboard's Layer 1 (total
   // nonfinancial debt, not just federal) — see computeMacroCrossRefUpdates.
@@ -50,6 +58,7 @@ async function computeFredUpdates(): Promise<Update[]> {
   const [fedFundsUpper, fedFundsLower] = await Promise.all([fredLatest("DFEDTARU"), fredLatest("DFEDTARL")]);
   if (fedFundsUpper && fedFundsLower) {
     const mid = (fedFundsUpper.value + fedFundsLower.value) / 2;
+    fedFundsMid = mid;
     updates.push({
       key: "fed_funds_rate", value_numeric: mid,
       value_display: `${fedFundsLower.value.toFixed(2)}–${fedFundsUpper.value.toFixed(2)}%`,
@@ -57,12 +66,14 @@ async function computeFredUpdates(): Promise<Update[]> {
       status: "good", status_label: "MP1 intact",
     });
   } else if (fedFundsUpper) {
+    fedFundsMid = fedFundsUpper.value;
     updates.push({ key: "fed_funds_rate", value_numeric: fedFundsUpper.value, value_display: pct1(fedFundsUpper.value) });
   }
 
   const deficit = await fredLatest("FYFSGDA188S");
   if (deficit) {
     const mag = Math.abs(deficit.value);
+    deficitAbs = mag;
     updates.push({
       key: "deficit_pct_gdp", value_numeric: mag, value_display: pct1(mag),
       note_suffix: `Federal deficit as % of GDP (annual). FRED series is signed; displayed here as positive magnitude.`,
@@ -93,7 +104,7 @@ async function computeFredUpdates(): Promise<Update[]> {
   // home_price_income_ratio is manual (Redfin-sourced) — FRED has no equivalent series
   // for the existing-home-price methodology Redfin uses, so this is hand-entered.
 
-  return updates;
+  return { updates, fedFundsMid, deficitAbs };
 }
 
 async function computeTreasuryUpdate(): Promise<Update | null> {
@@ -297,6 +308,61 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
   return updates;
 }
 
+const DEBT_CYCLE_ID = "da204e3f-ae22-47dd-95bb-2844d4f75685";
+
+// Classifies the debt cycle's current stage (MP1 / MP1 (strained) / MP2 / MP3) from live
+// data instead of a fixed editorial flag. Criteria per Dalio's Principles for Navigating
+// Big Debt Crises, with "MP1 (strained)" as an interim marker for the late-MP1 phase:
+//   MP1              — rates well above zero; deficit not structurally elevated; r <= g.
+//   MP1 (strained)    — rates still well above zero (MP1's tool still works), but the
+//                        deficit is elevated even without a recession, and/or r > g —
+//                        i.e. fiscal dominance building before the tool runs out.
+//   MP2               — rates at/near the zero lower bound — conventional rate cuts are
+//                        exhausted, forcing QE (balance-sheet expansion) as the tool.
+//   MP3               — MP2 conditions (near-zero rates) plus a large, sustained Fed
+//                        balance-sheet footprint AND a very large deficit — the proxy for
+//                        QE no longer reaching the real economy, forcing direct monetary-
+//                        fiscal coordination. This is inherently an approximation: MP3 is
+//                        a policy-regime call (yield-curve control, direct deficit
+//                        financing), not something four thresholds can fully capture.
+function classifyDebtCycleStage(
+  fedFundsMid: number, walclPctGdp: number, deficitAbs: number, rateGrowthSpread: number,
+): string {
+  const nearZero = fedFundsMid < 0.5;
+  const qeFootprintHigh = walclPctGdp >= 30;
+  const deficitElevated = deficitAbs >= 4;
+  const rGreaterG = rateGrowthSpread >= 2;
+
+  if (nearZero && qeFootprintHigh && deficitElevated) return "MP3";
+  if (nearZero) return "MP2";
+  if (deficitElevated || rGreaterG) return "MP1 (strained)";
+  return "MP1";
+}
+
+async function updateDebtCycleStage(
+  sb: ReturnType<typeof createClient>, fedFundsMid: number | null, deficitAbs: number | null,
+): Promise<{ stage: string; inputs: Record<string, number> } | null> {
+  try {
+    if (fedFundsMid == null || deficitAbs == null) return null;
+    const { data: macroRows } = await sb
+      .from("macro_indicators")
+      .select("name, current_value")
+      .in("name", ["Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread"]);
+    const byName = new Map((macroRows ?? []).map((r: { name: string; current_value: number }) => [r.name, Number(r.current_value)]));
+    const walcl = byName.get("Fed Balance Sheet % GDP");
+    const rateGrowthSpread = byName.get("Rate vs. GDP Growth Spread");
+    if (walcl == null || rateGrowthSpread == null) return null;
+
+    const stage = classifyDebtCycleStage(fedFundsMid, walcl, deficitAbs, rateGrowthSpread);
+
+    await sb.from("big_cycle_stages").update({ is_current: false }).eq("cycle_id", DEBT_CYCLE_ID);
+    const { error } = await sb.from("big_cycle_stages").update({ is_current: true }).eq("cycle_id", DEBT_CYCLE_ID).eq("label", stage);
+    if (error) { console.error("[big-cycle] stage write:", error); return null; }
+
+    return { stage, inputs: { fedFundsMid, walclPctGdp: walcl, deficitAbs, rateGrowthSpread } };
+  } catch (e) { console.error("[big-cycle] stage classification:", e); return null; }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -310,7 +376,7 @@ Deno.serve(async (req: Request) => {
     if (mErr || !metrics) return json({ error: mErr?.message ?? "no metrics" }, 500);
     const byKey = new Map((metrics as MetricRow[]).map((m) => [m.key, m]));
 
-    const [fredUpdates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, macroXrefUpdates] = await Promise.all([
+    const [fredResult, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, macroXrefUpdates] = await Promise.all([
       computeFredUpdates(),
       computeTreasuryUpdate(),
       computeImfUpdate(),
@@ -318,7 +384,8 @@ Deno.serve(async (req: Request) => {
       computeVoteviewUpdate(),
       computeMacroCrossRefUpdates(sb),
     ]);
-    const allUpdates = [...fredUpdates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, ...macroXrefUpdates].filter((u): u is Update => u != null);
+    const allUpdates = [...fredResult.updates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, ...macroXrefUpdates].filter((u): u is Update => u != null);
+    const stageResult = await updateDebtCycleStage(sb, fredResult.fedFundsMid, fredResult.deficitAbs);
 
     const today = new Date().toISOString().slice(0, 10);
     const now = new Date().toISOString();
@@ -358,7 +425,7 @@ Deno.serve(async (req: Request) => {
       }).eq("name", determinantName);
     }
 
-    return json({ updated, skipped, total: allUpdates.length, timestamp: now });
+    return json({ updated, skipped, total: allUpdates.length, debtCycleStage: stageResult, timestamp: now });
   } catch (e) {
     return json({ error: String(e) }, 500);
   }
