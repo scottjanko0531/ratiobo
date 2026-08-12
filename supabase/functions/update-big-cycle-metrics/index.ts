@@ -44,12 +44,8 @@ const pct1 = (v: number) => `${v.toFixed(1)}%`;
 async function computeFredUpdates(): Promise<Update[]> {
   const updates: Update[] = [];
 
-  const debtGdp = await fredLatest("GFDEGDQ188S");
-  if (debtGdp) updates.push({
-    key: "debt_to_gdp", value_numeric: debtGdp.value, value_display: pct1(debtGdp.value),
-    status: debtGdp.value > 120 ? "bad" : debtGdp.value > 90 ? "warn" : "good",
-    status_label: debtGdp.value > 120 ? "Elevated" : debtGdp.value > 90 ? "Rising" : "Sustainable",
-  });
+  // debt_to_gdp is cross-referenced from the Macro dashboard's Layer 1 (total
+  // nonfinancial debt, not just federal) — see computeMacroCrossRefUpdates.
 
   const [fedFundsUpper, fedFundsLower] = await Promise.all([fredLatest("DFEDTARU"), fredLatest("DFEDTARL")]);
   if (fedFundsUpper && fedFundsLower) {
@@ -228,6 +224,79 @@ async function computeVoteviewUpdate(): Promise<Update | null> {
   } catch { return null; }
 }
 
+// Cross-references the Macro dashboard's Layer 1 ("Long-term Debt Cycle") indicators
+// and Dalio gauge composites instead of re-deriving them from FRED independently —
+// keeps Big Cycle's debt panel consistent with /macro rather than a parallel,
+// narrower slice of the same underlying data.
+const MACRO_STATUS_MAP: Record<string, "good" | "warn" | "bad"> = { healthy: "good", watch: "warn", danger: "bad" };
+
+async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>): Promise<Update[]> {
+  const updates: Update[] = [];
+  try {
+    const { data } = await sb
+      .from("macro_indicators")
+      .select("name, current_value, status")
+      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread"]);
+    const byName = new Map((data ?? []).map((r: { name: string }) => [r.name, r]));
+
+    const totalDebt = byName.get("Total Debt / GDP") as { current_value: number; status: string } | undefined;
+    if (totalDebt?.current_value != null) {
+      const v = Number(totalDebt.current_value);
+      const status = MACRO_STATUS_MAP[totalDebt.status] ?? null;
+      updates.push({
+        key: "debt_to_gdp", value_numeric: v, value_display: pct1(v),
+        status, status_label: status === "bad" ? "High" : status === "warn" ? "Elevated" : "Sustainable",
+        note_suffix: "Total nonfinancial debt (household + corporate + government) as % of GDP — matches Dalio's aggregate-debt framing. Cross-referenced from the Macro dashboard's Long-Term Debt Cycle layer, not re-derived here.",
+      });
+    }
+
+    const walcl = byName.get("Fed Balance Sheet % GDP") as { current_value: number; status: string } | undefined;
+    if (walcl?.current_value != null) {
+      const v = Number(walcl.current_value);
+      const status = MACRO_STATUS_MAP[walcl.status] ?? null;
+      updates.push({
+        key: "fed_balance_sheet_gdp", value_numeric: v, value_display: pct1(v),
+        status, status_label: status === "bad" ? "MP2 — QE-driven" : status === "warn" ? "Watch" : "MP1 — no active QE",
+        note_suffix: "Fed total assets as % of GDP — the direct empirical signal for whether QE (MP2) is active, i.e. the evidence behind the debt-cycle stage call above. Cross-referenced from Macro.",
+      });
+    }
+
+    const rg = byName.get("Rate vs. GDP Growth Spread") as { current_value: number; status: string } | undefined;
+    if (rg?.current_value != null) {
+      const v = Number(rg.current_value);
+      const status = MACRO_STATUS_MAP[rg.status] ?? null;
+      updates.push({
+        key: "rate_growth_spread", value_numeric: v, value_display: pct1(v),
+        status, status_label: status === "bad" ? "r > g — unsustainable trajectory" : status === "warn" ? "r ≈ g — borderline" : "r < g — sustainable",
+        note_suffix: "10Y Treasury yield minus real GDP growth (r−g) — the classic debt-sustainability test. Cross-referenced from Macro.",
+      });
+    }
+
+    const { data: gaugeRow } = await sb
+      .from("dalio_gauge_readings")
+      .select("year, gauge1, gauge5")
+      .order("year", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (gaugeRow) {
+      const g1 = gaugeRow.gauge1 != null ? Number(gaugeRow.gauge1) : null;
+      const g5 = gaugeRow.gauge5 != null ? Number(gaugeRow.gauge5) : null;
+      const zStatus = (z: number) => Math.abs(z) > 1.5 ? "bad" : Math.abs(z) > 1 ? "warn" : "good";
+      if (g1 != null) updates.push({
+        key: "debt_sustainability_gauge", value_numeric: g1, value_display: `${g1 >= 0 ? "+" : ""}${g1.toFixed(2)}`,
+        status: zStatus(g1), status_label: zStatus(g1) === "bad" ? "Elevated" : zStatus(g1) === "warn" ? "Watch" : "Normal",
+        note_suffix: `${gaugeRow.year} composite z-score (debt-to-GDP + debt-to-income gap, annual). See Macro dashboard, Gauge 1 — Debt Sustainability Risk.`,
+      });
+      if (g5 != null) updates.push({
+        key: "reserve_confidence_gauge", value_numeric: g5, value_display: `${g5 >= 0 ? "+" : ""}${g5.toFixed(2)}`,
+        status: zStatus(g5), status_label: zStatus(g5) === "bad" ? "Elevated" : zStatus(g5) === "warn" ? "Watch" : "Normal",
+        note_suffix: `${gaugeRow.year} composite z-score (CB gold buying + declining USD reserve share, annual). See Macro dashboard, Gauge 5 — Reserve Confidence Risk.`,
+      });
+    }
+  } catch (e) { console.error("[big-cycle] macro cross-ref:", e); }
+  return updates;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -237,18 +306,19 @@ Deno.serve(async (req: Request) => {
     const { data: metrics, error: mErr } = await sb
       .from("big_cycle_metrics")
       .select("id,key,refresh_method,fred_series_id")
-      .in("refresh_method", ["api_fred", "api_treasury", "api_imf", "api_cofer", "csv_voteview"]);
+      .in("refresh_method", ["api_fred", "api_treasury", "api_imf", "api_cofer", "csv_voteview", "api_macro_xref"]);
     if (mErr || !metrics) return json({ error: mErr?.message ?? "no metrics" }, 500);
     const byKey = new Map((metrics as MetricRow[]).map((m) => [m.key, m]));
 
-    const [fredUpdates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate] = await Promise.all([
+    const [fredUpdates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, macroXrefUpdates] = await Promise.all([
       computeFredUpdates(),
       computeTreasuryUpdate(),
       computeImfUpdate(),
       computeCoferUpdate(sb),
       computeVoteviewUpdate(),
+      computeMacroCrossRefUpdates(sb),
     ]);
-    const allUpdates = [...fredUpdates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate].filter((u): u is Update => u != null);
+    const allUpdates = [...fredUpdates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, ...macroXrefUpdates].filter((u): u is Update => u != null);
 
     const today = new Date().toISOString().slice(0, 10);
     const now = new Date().toISOString();
