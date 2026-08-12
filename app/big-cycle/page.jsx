@@ -13,21 +13,75 @@ function fmtDateTime(d) {
   return d ? new Date(d).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—";
 }
 
-function StageTracker({ stages, color }) {
+// Full definitions for the debt cycle's monetary-policy stages, per Dalio's Principles
+// for Navigating Big Debt Crises. "MP1 (strained)" is not one of his three canonical
+// stages — it's this dashboard's own interim marker for the late-MP1 transition zone
+// (see the debt-cycle stage classifier in update-big-cycle-metrics for the live thresholds).
+const STAGE_DEFINITIONS_BY_CYCLE = {
+  debt: {
+    "MP1": "Interest-rate policy — the default tool. The central bank manages growth and inflation by moving short-term rates up or down. This works as long as there's room to cut: rates are comfortably above zero, and deficits are cyclical (widening in recessions, shrinking in expansions) rather than structural.",
+    "MP1 (strained)": "The late phase of MP1, not one of Dalio's three canonical stages. Rates are still well above zero, so the classic tool still works — but the fiscal side shows strain: deficits stay elevated even without a recession, and/or the interest rate exceeds GDP growth (r > g). This \"fiscal dominance building\" signal is what eventually forces a move to MP2.",
+    "MP2": "Quantitative easing. Once rates hit the zero lower bound and can't be cut further, the central bank prints money and buys financial assets — mostly government bonds — to push liquidity into the system and suppress long-term yields. Used in the US 2008–2015 and 2020–2021.",
+    "MP3": "Monetary-fiscal coordination, i.e. debt monetization. When QE stops reaching the real economy — money inflates asset prices without stimulating spending, a \"liquidity trap\" — the central bank and government coordinate directly: money is created to fund deficits and spending rather than just buying bonds in the open market, blurring monetary and fiscal policy into one. Historically rare (e.g. WWII-era Fed support for Treasury issuance).",
+  },
+};
+
+function StageInfoIcon({ isCurrent, active, onClick }) {
   return (
-    <div className="flex items-center gap-1 overflow-x-auto pb-1 -mx-1 px-1">
-      {stages.map((s, i) => (
-        <div key={s.id} className="flex items-center gap-1 shrink-0">
-          <div
-            title={s.description}
-            className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium whitespace-nowrap ${s.is_current ? "text-ink font-semibold" : "text-paper-dim border border-ink-line"}`}
-            style={s.is_current ? { backgroundColor: color } : {}}
-          >
-            {s.label}
-          </div>
-          {i < stages.length - 1 && <span className="text-paper-dim/25 text-xs shrink-0">→</span>}
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label="About this stage"
+      title="About this stage"
+      className={`w-[13px] h-[13px] rounded-full border text-[8px] font-bold flex items-center justify-center shrink-0 transition-colors ${
+        active
+          ? "border-brass text-brass bg-brass/10"
+          : isCurrent
+          ? "border-ink/40 text-ink/70 hover:border-ink hover:text-ink"
+          : "border-paper-dim/40 text-paper-dim/70 hover:border-paper-dim hover:text-paper-dim"
+      }`}
+    >
+      i
+    </button>
+  );
+}
+
+function StageTracker({ stages, color, definitions }) {
+  const [openLabel, setOpenLabel] = useState(null);
+  const openDef = openLabel && definitions?.[openLabel];
+
+  return (
+    <div>
+      <div className="flex items-center gap-1 overflow-x-auto pb-1 -mx-1 px-1">
+        {stages.map((s, i) => {
+          const hasDef = definitions?.[s.label];
+          return (
+            <div key={s.id} className="flex items-center gap-1 shrink-0">
+              <div
+                title={s.description}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium whitespace-nowrap ${s.is_current ? "text-ink font-semibold" : "text-paper-dim border border-ink-line"}`}
+                style={s.is_current ? { backgroundColor: color } : {}}
+              >
+                <span>{s.label}</span>
+                {hasDef && (
+                  <StageInfoIcon
+                    isCurrent={s.is_current}
+                    active={openLabel === s.label}
+                    onClick={() => setOpenLabel((v) => (v === s.label ? null : s.label))}
+                  />
+                )}
+              </div>
+              {i < stages.length - 1 && <span className="text-paper-dim/25 text-xs shrink-0">→</span>}
+            </div>
+          );
+        })}
+      </div>
+      {openDef && (
+        <div className="mt-2 p-3 rounded-lg border border-ink-line bg-ink text-[11px] leading-relaxed">
+          <p className="text-paper font-semibold mb-1">{openLabel}</p>
+          <p className="text-paper-dim">{openDef}</p>
         </div>
-      ))}
+      )}
     </div>
   );
 }
@@ -89,7 +143,7 @@ function CycleSection({ cycle, stages, metrics, editableKeys, onSaveMetric }) {
       </div>
       <p className="text-xs text-paper-dim/70 mb-3">{cycle.description}</p>
 
-      <StageTracker stages={stages} color={cycle.color} />
+      <StageTracker stages={stages} color={cycle.color} definitions={STAGE_DEFINITIONS_BY_CYCLE[cycle.slug]} />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
         {metrics.map((m) => (
