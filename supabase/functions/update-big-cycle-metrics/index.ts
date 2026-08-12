@@ -107,6 +107,57 @@ async function computeFredUpdates(): Promise<FredUpdatesResult> {
   return { updates, fedFundsMid, deficitAbs };
 }
 
+// Redfin's public Data Center publishes a genuine national-level file (not just
+// metro-level) — small enough (~1.3MB decompressed, ~1900 rows) to fetch and parse
+// directly, no streaming/aggregation needed. This is the same underlying source
+// Redfin's own affordability figures are built from, unlike FRED's MSPUS (new homes
+// only) or Zillow's ZHVI (a smoothed "typical value" index, not a straight median).
+// It still won't exactly reproduce Redfin's own published ratio, which pairs against
+// a median *family* income series, not Census household income.
+async function computeRedfinHomePriceUpdate(): Promise<Update | null> {
+  try {
+    const res = await fetch(
+      "https://redfin-public-data.s3-us-west-2.amazonaws.com/redfin_market_tracker/us_national_market_tracker.tsv000.gz",
+      { signal: AbortSignal.timeout(30_000) },
+    );
+    if (!res.ok || !res.body) return null;
+
+    const decompressed = await new Response(res.body.pipeThrough(new DecompressionStream("gzip"))).text();
+    const lines = decompressed.split("\n");
+    const header = lines[0].split("\t").map((s) => s.replace(/^"|"$/g, ""));
+    const iPeriodEnd = header.indexOf("PERIOD_END");
+    const iPropType = header.indexOf("PROPERTY_TYPE");
+    const iSA = header.indexOf("IS_SEASONALLY_ADJUSTED");
+    const iPrice = header.indexOf("MEDIAN_SALE_PRICE");
+    if ([iPeriodEnd, iPropType, iSA, iPrice].some((i) => i === -1)) return null;
+
+    let latestPeriod = "";
+    let latestPrice: number | null = null;
+    for (let i = 1; i < lines.length; i++) {
+      if (!lines[i]) continue;
+      const cols = lines[i].split("\t");
+      if (cols[iPropType]?.replace(/"/g, "") !== "All Residential") continue;
+      if (cols[iSA]?.replace(/"/g, "") !== "false") continue; // raw, not seasonally adjusted — matches how Redfin quotes its headline median
+      const period = cols[iPeriodEnd]?.replace(/"/g, "");
+      const price = parseFloat(cols[iPrice]);
+      if (!period || !isFinite(price)) continue;
+      if (period > latestPeriod) { latestPeriod = period; latestPrice = price; }
+    }
+    if (latestPrice == null) return null;
+
+    const income = await fredLatest("MEHOINUSA646N");
+    if (!income) return null;
+    const ratio = latestPrice / income.value;
+
+    return {
+      key: "home_price_income_ratio", value_numeric: ratio, value_display: `${ratio.toFixed(2)}x`,
+      note_suffix: `National median sale price ($${Math.round(latestPrice).toLocaleString()}, period ending ${latestPeriod}) from Redfin's public national-level data, divided by Census median household income ($${income.value.toLocaleString()}, ${income.date}). Approximates but won't exactly match Redfin's own published affordability ratio, which uses a median family income denominator instead of household income.`,
+      status: ratio > 5.5 ? "bad" : ratio > 4.5 ? "warn" : "good",
+      status_label: ratio > 5.5 ? "Stretched" : ratio > 4.5 ? "Elevated" : "Historically normal",
+    };
+  } catch (e) { console.error("[big-cycle] redfin home price:", e); return null; }
+}
+
 async function computeTreasuryUpdate(): Promise<Update | null> {
   try {
     // Treasury publishes on business days only — 22 records ≈ one calendar month.
@@ -372,19 +423,20 @@ Deno.serve(async (req: Request) => {
     const { data: metrics, error: mErr } = await sb
       .from("big_cycle_metrics")
       .select("id,key,refresh_method,fred_series_id")
-      .in("refresh_method", ["api_fred", "api_treasury", "api_imf", "api_cofer", "csv_voteview", "api_macro_xref"]);
+      .in("refresh_method", ["api_fred", "api_treasury", "api_imf", "api_cofer", "csv_voteview", "api_macro_xref", "api_redfin"]);
     if (mErr || !metrics) return json({ error: mErr?.message ?? "no metrics" }, 500);
     const byKey = new Map((metrics as MetricRow[]).map((m) => [m.key, m]));
 
-    const [fredResult, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, macroXrefUpdates] = await Promise.all([
+    const [fredResult, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, macroXrefUpdates, redfinUpdate] = await Promise.all([
       computeFredUpdates(),
       computeTreasuryUpdate(),
       computeImfUpdate(),
       computeCoferUpdate(sb),
       computeVoteviewUpdate(),
       computeMacroCrossRefUpdates(sb),
+      computeRedfinHomePriceUpdate(),
     ]);
-    const allUpdates = [...fredResult.updates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, ...macroXrefUpdates].filter((u): u is Update => u != null);
+    const allUpdates = [...fredResult.updates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, ...macroXrefUpdates, redfinUpdate].filter((u): u is Update => u != null);
     const stageResult = await updateDebtCycleStage(sb, fredResult.fedFundsMid, fredResult.deficitAbs);
 
     const today = new Date().toISOString().slice(0, 10);
