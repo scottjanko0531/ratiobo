@@ -283,6 +283,108 @@ async function getFedRateOdds(): Promise<FedOdds | null> {
   } catch { return null; }
 }
 
+// ── Live regime detection (structural / market / forward) ──────────────────────
+// Ported verbatim from fetch-macro-data's detectRegimeKey + computeEdgeFwdSignal
+// (and the frontend's identical computeForwardSignal) so all three surfaces
+// agree by construction. Computed here from the same macro_indicators snapshot
+// this request already fetched, rather than trusting the once-nightly
+// macro_regime_history cache, which was found to silently go a full day stale.
+function detectRegimeKeyLive(gdpYoy: number, cpiYoy: number, gdp3y: number, cpi3y: number): string {
+  const growing = gdpYoy > gdp3y;
+  const rising = cpiYoy > cpi3y;
+  if (growing && !rising) return "rg_fi";
+  if (growing && rising) return "rg_ri";
+  if (!growing && rising) return "fg_ri";
+  return "fg_fi";
+}
+
+type Getter = (name: string) => number | null;
+
+function computeLiveRegimeKeys(
+  get: Getter, getPrev: Getter, getMeta3m: Getter,
+): { structuralKey: string | null; marketKey: string | null; fwdKey: string | null; fwdConf: number | null } {
+  const gdpYoy = get("Real GDP Growth");
+  const cpiYoy = get("CPI (YoY)");
+  const gdp3y = get("GDP Growth (3Y Avg)");
+  const cpi3y = get("CPI Growth (3Y Avg)");
+  const breakeven = get("10Y Breakeven Inflation");
+
+  const structuralKey = gdpYoy != null && cpiYoy != null
+    ? detectRegimeKeyLive(gdpYoy, cpiYoy, gdp3y ?? 0, cpi3y ?? cpiYoy)
+    : null;
+
+  const marketKey = gdpYoy != null && gdp3y != null
+    ? (() => {
+        const mktInflUp = (breakeven ?? 2.5) > 2.5;
+        const mktGrowthUp = gdpYoy > gdp3y;
+        return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
+      })()
+    : null;
+
+  type Sig = { name: string; w: number; useDir?: boolean; usePct3m?: boolean; vote: (v: number) => number };
+  const G: Sig[] = [
+    { name: "2yr/10yr Yield Spread",  w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
+    { name: "3mo/10yr Yield Spread",  w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
+    { name: "Sr Loan Officer Survey", w: 0.20, vote: v => v < 15  ? 1 : v <= 35   ? 0 : -1 },
+    { name: "Conference Board LEI",   w: 0.15, vote: v => v > 0   ? 1 : v >= -0.3 ? 0 : -1 },
+    { name: "HY Credit Spread (OAS)", w: 0.10, vote: v => v < 4   ? 1 : v <= 6    ? 0 : -1 },
+    { name: "C&I Loan Growth (YoY)",  w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
+  ];
+  const I: Sig[] = [
+    { name: "CPI (YoY)",                       w: 0.20, useDir: true,   vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
+    { name: "PPI (YoY)",                       w: 0.10, useDir: true,   vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
+    { name: "10Y Breakeven Inflation",         w: 0.20,                 vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
+    { name: "Consumer Inflation Expectations", w: 0.15,                 vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
+    { name: "Copper Price",                    w: 0.15, usePct3m: true, vote: v => v > 5   ? 1 : v >= -5 ? 0 : -1 },
+    { name: "WTI Crude Oil",                   w: 0.10, usePct3m: true, vote: v => v > 5   ? 1 : v >= -5 ? 0 : -1 },
+    { name: "M2 Growth (YoY)",                 w: 0.10,                 vote: v => v > 8   ? 1 : v >= 3  ? 0 : -1 },
+  ];
+  const getDirPct = (name: string): number | null => {
+    const curr = get(name), prev = getPrev(name);
+    return curr != null && prev != null && prev !== 0 ? (curr - prev) / Math.abs(prev) * 100 : null;
+  };
+  type Scored = { w: number; vote: number | null };
+  const scoreGroup = (sigs: Sig[]): { signals: Scored[]; score: number | null } => {
+    let weighted = 0, totalW = 0;
+    const signals = sigs.map((s) => {
+      const val = s.useDir ? getDirPct(s.name) : s.usePct3m ? getMeta3m(s.name) : get(s.name);
+      if (val == null) return { w: s.w, vote: null };
+      const v = s.vote(val);
+      weighted += v * s.w; totalW += s.w;
+      return { w: s.w, vote: v };
+    });
+    return { signals, score: totalW > 0 ? weighted / totalW : null };
+  };
+  const growth = scoreGroup(G);
+  const infl = scoreGroup(I);
+  const THRESH = 0.05;
+  const dir = (s: number | null) => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
+  const rawGDir = dir(growth.score);
+  const rawIDir = dir(infl.score);
+  const gDir = rawGDir === "neutral" ? (growth.score! >= 0 ? "up" : "down") : rawGDir;
+  const iDir = rawIDir === "neutral" ? (infl.score! >= 0 ? "up" : "down") : rawIDir;
+  const fwdKey =
+    gDir === "up" && iDir === "down" ? "rg_fi" :
+    gDir === "up" && iDir === "up" ? "rg_ri" :
+    gDir === "down" && iDir === "up" ? "fg_ri" :
+    gDir === "down" && iDir === "down" ? "fg_fi" : null;
+
+  let fwdConf: number | null = null;
+  if (fwdKey && gDir && iDir) {
+    const consensus = (signals: Scored[], d: string): number | null => {
+      const target = d === "up" ? 1 : -1;
+      let agreed = 0, total = 0;
+      for (const s of signals) { if (s.vote == null) continue; total += s.w; if (s.vote === target) agreed += s.w; }
+      return total > 0 ? Math.round(agreed / total * 100) : null;
+    };
+    const gConf = consensus(growth.signals, gDir);
+    const iConf = consensus(infl.signals, iDir);
+    fwdConf = gConf != null && iConf != null ? Math.round((gConf + iConf) / 2) : null;
+  }
+
+  return { structuralKey, marketKey, fwdKey, fwdConf };
+}
+
 // ── Reference block shared by the main prompt and the consistency checker ──────
 // Keeping this in one place means the "ground truth" the model is constrained
 // against and the "ground truth" the validator checks against never drift apart.
@@ -559,13 +661,8 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const [{ data: regimeRow }, { data: macroRows }, marketSnapshot, topNews, mvItem, supplyChain, yieldCurve, fedOdds] = await Promise.all([
-      sb.from("macro_regime_history")
-        .select("structural_key,market_key,forward_key,forward_confidence")
-        .order("period_date", { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-      sb.from("macro_indicators").select("name,current_value,previous_value,status"),
+    const [{ data: macroRows }, marketSnapshot, topNews, mvItem, supplyChain, yieldCurve, fedOdds] = await Promise.all([
+      sb.from("macro_indicators").select("name,current_value,previous_value,status,metadata"),
       getMarketSnapshot(),
       fetchTopNews(5),
       fetchMacroVoices(),
@@ -587,16 +684,25 @@ Deno.serve(async (req: Request) => {
       const i = (macroRows ?? []).find((x: { name: string; status: string | null }) => x.name === name);
       return i?.status ?? null;
     };
+    const getMeta3m = (name: string): number | null => {
+      const i = (macroRows ?? []).find((x: { name: string; metadata: Record<string, unknown> | null }) => x.name === name);
+      const v = i?.metadata?.change3m_pct;
+      return typeof v === "number" ? v : null;
+    };
     const creditIndicatorNames = ["HY Credit Spread (OAS)", "IG Credit Spread (OAS)", "Sr Loan Officer Survey", "C&I Loan Growth (YoY)"];
     const credit: CreditIndicator[] = creditIndicatorNames.map((name) => ({ name, value: get(name), status: getStatus(name) }));
 
-    const structuralKey = regimeRow?.structural_key ?? null;
-    const marketKey = regimeRow?.market_key ?? null;
-    const fwdKey = regimeRow?.forward_key ?? null;
+    // Regime keys are computed LIVE from current macro_indicators rather than
+    // read from the once-nightly macro_regime_history cache — that cache was
+    // found stale by a full day (forward_confidence showing 43% against a
+    // freshly-computed 37%, with structural/market keys equally stale) when
+    // its nightly update silently failed to run for that day. Computing live
+    // means Clio's narrative can never drift from what the Forward Signal tile
+    // on the same page shows, regardless of whether the nightly job succeeded.
+    const { structuralKey, marketKey, fwdKey, fwdConf } = computeLiveRegimeKeys(get, getPrev, getMeta3m);
     const regimeLabel = structuralKey ? (REGIME_LABELS[structuralKey] ?? structuralKey) : "Unknown";
     const marketLabel = marketKey ? (REGIME_LABELS[marketKey] ?? marketKey) : null;
     const fwdLabel = fwdKey ? (REGIME_LABELS[fwdKey] ?? fwdKey) : null;
-    const fwdConf: number | null = regimeRow?.forward_confidence ?? null;
     const divergence = !!(structuralKey && marketKey && structuralKey !== marketKey);
 
     const gdp     = get("Real GDP Growth");
