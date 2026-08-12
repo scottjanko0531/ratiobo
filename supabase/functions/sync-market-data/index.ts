@@ -100,29 +100,102 @@ async function fetchMetals(): Promise<{ rows: PriceRow[]; errors: string[] }> {
   return { rows, errors };
 }
 
+// Shared Yahoo Finance v8 chart fetch (query1 -> query2 fallback) + parse.
+// Used both for mutual funds (which have no real-time-quote provider here)
+// and as a fallback for equity/etf symbols where Finnhub's free-tier /quote
+// lacks real previous-close coverage — for thin-volume ETFs (bond funds,
+// some commodity funds) Finnhub has been observed returning `pc` identical
+// to `c`, producing a hard 0.00% change that isn't a real flat day.
+async function fetchYahooChartPrice(
+  symbol: string,
+  assetType: string,
+  now: string,
+): Promise<{ row?: PriceRow; error?: string }> {
+  const headers1 = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://finance.yahoo.com/",
+    "Origin": "https://finance.yahoo.com",
+  };
+  const headers2 = { ...headers1 };
+  try {
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`,
+      { headers: headers1 },
+    );
+    if (res.ok) {
+      const json = await res.json() as Record<string, unknown>;
+      return parseYahooChart(symbol, json, now, assetType);
+    }
+    const res2 = await fetch(
+      `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`,
+      { headers: headers2 },
+    );
+    if (!res2.ok) return { error: `${assetType}: ${symbol} HTTP ${res.status} (query1) and ${res2.status} (query2)` };
+    const json2 = await res2.json() as Record<string, unknown>;
+    return parseYahooChart(symbol, json2, now, assetType);
+  } catch (e) {
+    return { error: `${assetType}: ${symbol} fetch error — ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 async function fetchEquities(symbols: string[]): Promise<{ rows: PriceRow[]; errors: string[] }> {
   const key = Deno.env.get("FINNHUB_API_KEY");
-  if (!key) return { rows: [], errors: ["equities: FINNHUB_API_KEY not set (skipping)"] };
   const errors: string[] = [];
   const rows: PriceRow[] = [];
   const now = new Date().toISOString();
-  for (const symbol of symbols) {
-    const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${key}`);
-    if (!res.ok) { errors.push(`equities: ${symbol} HTTP ${res.status}`); continue; }
-    const q = await res.json();
-    if (q.c && q.c > 0) {
-      rows.push({ symbol, asset_type: "equity", name: null, price: q.c, currency: "USD",
-        change_24h_pct: q.dp != null ? Math.round(q.dp * 100) / 100 : null,
-        dividend_yield: null, source: "finnhub", fetched_at: now });
-    } else {
-      errors.push(`equities: ${symbol} returned no price from Finnhub (c=${q.c ?? "null"})`);
+
+  await Promise.all(symbols.map(async (symbol) => {
+    let finnhubRow: PriceRow | null = null;
+    let finnhubSuspect = true; // no key / bad response also routes to the Yahoo fallback
+
+    if (key) {
+      try {
+        const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${key}`);
+        if (!res.ok) {
+          errors.push(`equities: ${symbol} HTTP ${res.status} from Finnhub`);
+        } else {
+          const q = await res.json();
+          if (q.c && q.c > 0) {
+            finnhubRow = { symbol, asset_type: "equity", name: null, price: q.c, currency: "USD",
+              change_24h_pct: q.dp != null ? Math.round(q.dp * 100) / 100 : null,
+              dividend_yield: null, source: "finnhub", fetched_at: now };
+            // pc === c is Finnhub's tell for "no real previous-close data" on
+            // thin-volume tickers, not a genuine flat day — verify via Yahoo.
+            finnhubSuspect = q.pc != null && q.pc === q.c;
+          } else {
+            errors.push(`equities: ${symbol} returned no price from Finnhub (c=${q.c ?? "null"})`);
+          }
+        }
+      } catch (e) {
+        errors.push(`equities: ${symbol} Finnhub fetch error — ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
-  }
+
+    if (finnhubRow && !finnhubSuspect) {
+      rows.push(finnhubRow);
+      return;
+    }
+
+    const y = await fetchYahooChartPrice(symbol, "equity", now);
+    if (y.row) {
+      rows.push(y.row);
+    } else if (finnhubRow) {
+      // Yahoo fallback failed too — a suspect-but-present Finnhub value beats nothing.
+      rows.push(finnhubRow);
+      errors.push(`equities: ${symbol} — Yahoo fallback failed (${y.error}), used suspect Finnhub value`);
+    } else {
+      errors.push(y.error ?? `equities: ${symbol} — no price from Finnhub or Yahoo`);
+    }
+  }));
+
   return { rows, errors };
 }
 
-// Mutual funds: NAV-priced once daily (Vanguard, Fidelity, etc.).
-// Uses Yahoo Finance v8 chart endpoint per symbol — more reliable server-side than batch v7.
+// Mutual funds: NAV-priced once daily (Vanguard, Fidelity, etc.). No real-time
+// quote provider covers these, so Yahoo's chart endpoint is the primary (not
+// fallback) source.
 async function fetchMutualFunds(symbols: string[]): Promise<{ rows: PriceRow[]; errors: string[] }> {
   const errors: string[] = [];
   if (!symbols.length) return { rows: [], errors };
@@ -131,46 +204,9 @@ async function fetchMutualFunds(symbols: string[]): Promise<{ rows: PriceRow[]; 
   const now = new Date().toISOString();
 
   await Promise.all(symbols.map(async (symbol) => {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
-    try {
-      const res = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-          "Accept": "application/json, */*",
-          "Accept-Language": "en-US,en;q=0.9",
-          "Referer": "https://finance.yahoo.com/",
-          "Origin": "https://finance.yahoo.com",
-        },
-      });
-      if (!res.ok) {
-        const res2 = await fetch(
-          `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`,
-          {
-            headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-              "Accept": "application/json, */*",
-              "Accept-Language": "en-US,en;q=0.9",
-              "Referer": "https://finance.yahoo.com/",
-            },
-          }
-        );
-        if (!res2.ok) {
-          errors.push(`mutual_fund: ${symbol} HTTP ${res.status} (query1) and ${res2.status} (query2)`);
-          return;
-        }
-        const json2 = await res2.json() as Record<string, unknown>;
-        const r2 = parseYahooChart(symbol, json2, now);
-        if (r2.error) { errors.push(r2.error); return; }
-        rows.push(r2.row!);
-        return;
-      }
-      const json = await res.json() as Record<string, unknown>;
-      const r = parseYahooChart(symbol, json, now);
-      if (r.error) { errors.push(r.error); return; }
-      rows.push(r.row!);
-    } catch (e) {
-      errors.push(`mutual_fund: ${symbol} fetch error — ${e instanceof Error ? e.message : String(e)}`);
-    }
+    const r = await fetchYahooChartPrice(symbol, "mutual_fund", now);
+    if (r.row) rows.push(r.row);
+    else if (r.error) errors.push(r.error);
   }));
 
   return { rows, errors };
@@ -180,23 +216,24 @@ function parseYahooChart(
   symbol: string,
   json: Record<string, unknown>,
   now: string,
+  assetType: string,
 ): { row?: PriceRow; error?: string } {
   const result = ((json?.chart as Record<string, unknown>)?.result) as Record<string, unknown>[] | null;
   if (!Array.isArray(result) || !result[0]) {
     const errMsg = ((json?.chart as Record<string, unknown>)?.error as Record<string, string>)?.description ?? "no result";
-    return { error: `mutual_fund: ${symbol} — ${errMsg}` };
+    return { error: `${assetType}: ${symbol} — ${errMsg}` };
   }
   const meta = result[0].meta as Record<string, number> | undefined;
   const price = meta?.regularMarketPrice;
   if (!price || price <= 0) {
-    return { error: `mutual_fund: ${symbol} — no price in meta (got ${price ?? "null"})` };
+    return { error: `${assetType}: ${symbol} — no price in meta (got ${price ?? "null"})` };
   }
   const prevClose = meta?.chartPreviousClose ?? meta?.previousClose;
   const changePct = prevClose && prevClose > 0
     ? Math.round(((price - prevClose) / prevClose) * 10000) / 100
     : null;
   return {
-    row: { symbol, asset_type: "mutual_fund", name: null, price, currency: "USD",
+    row: { symbol, asset_type: assetType, name: null, price, currency: "USD",
       change_24h_pct: changePct, dividend_yield: null, source: "yahoo_finance", fetched_at: now },
   };
 }
