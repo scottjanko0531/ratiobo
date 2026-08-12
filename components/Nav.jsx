@@ -14,6 +14,7 @@ const links = [
   { href: "/macro", label: "Macro" },
   { href: "/supply-chain", label: "Supply Chain" },
   { href: "/china-watch", label: "China Watch" },
+  { href: "/big-cycle", label: "Big Cycle" },
   { href: "/simulator", label: "Simulator" },
   { href: "/backtesting", label: "Backtesting" },
   { href: "/planning", label: "Planning" },
