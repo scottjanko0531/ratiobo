@@ -148,7 +148,8 @@ interface Indicator {
     | "level_with_3m"
     | "yahoo_price_with_3m"
     | "supabase_lei"
-    | "supabase_ism";
+    | "supabase_ism"
+    | "supabase_liquidity";
   series?: string;
   series2?: string;
   zscore?: boolean;
@@ -333,6 +334,13 @@ const INDICATORS: Indicator[] = [
     fred_series_id: null, unit: "index", data_source: "ism_scrape", sort_order: 155,
     type: "supabase_ism",
     statusFn: v => v >= 50 ? "healthy" : v >= 45 ? "watch" : "danger",
+  },
+  {
+    name: "US Total Liquidity Composite", layer: 3, layer_name: "Business Cycle",
+    description: "YoY momentum of Fed net liquidity (balance sheet − TGA − RRP) and private liquidity (repo, commercial paper, M2) — public-data approximation of the Michael Howell / GL Indexes global liquidity framework",
+    fred_series_id: null, unit: "%", data_source: "supabase", sort_order: 300,
+    type: "supabase_liquidity",
+    statusFn: v => v > 0 ? "healthy" : v > -3 ? "watch" : "danger",
   },
   {
     name: "Real GDP Growth", layer: 3, layer_name: "Business Cycle",
@@ -805,6 +813,26 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         current  = Number(ismRows[0].pmi);
         previous = Number(ismRows[1].pmi);
         metadata = { new_orders: ismRows[0].new_orders != null ? Number(ismRows[0].new_orders) : null, period: ismRows[0].period_date };
+        break;
+      }
+      case "supabase_liquidity": {
+        // Read latest 2 non-null months from liquidity_monthly (written by
+        // ingest-liquidity-data edge function); skip any trailing null months
+        // (e.g. M2 not yet published) so the card always shows a real reading.
+        const { data: liqRows, error: liqErr } = await supabase
+          .from("liquidity_monthly")
+          .select("month, total_composite_yoy, composite_zscore, stock_yoy, is_partial")
+          .not("total_composite_yoy", "is", null)
+          .order("month", { ascending: false })
+          .limit(2);
+        if (liqErr || !liqRows || liqRows.length < 2) return null;
+        current  = Number(liqRows[0].total_composite_yoy);
+        previous = Number(liqRows[1].total_composite_yoy);
+        metadata = {
+          zscore: liqRows[0].composite_zscore != null ? Number(liqRows[0].composite_zscore) : null,
+          stock_yoy: liqRows[0].stock_yoy != null ? Number(liqRows[0].stock_yoy) : null,
+          is_partial: liqRows[0].is_partial, period: liqRows[0].month,
+        };
         break;
       }
       case "yahoo_price_with_3m": {

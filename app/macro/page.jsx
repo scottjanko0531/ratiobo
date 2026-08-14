@@ -4357,6 +4357,252 @@ function CbGoldDrawer({ open, onClose, ind }) {
   );
 }
 
+// ── US Total Liquidity Composite ──────────────────────────────────────────────
+
+const LIQUIDITY_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">US Total Liquidity Composite</p>
+      <p className="text-paper-dim">Measures the momentum of money available to US financial markets, combining two channels: <i>official liquidity</i> (the Fed's balance sheet net of the Treasury's cash account and reverse-repo drains) and <i>private liquidity</i> (repo-market funding volumes, commercial paper outstanding, and the M2 money stock). All components are expressed as year-over-year growth and averaged; the z-score positions today's reading against the indicator's own history (0 ≈ normal, ±2σ ≈ historical extremes).</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Why it matters</p>
+      <p className="text-paper-dim">Asset prices are driven less by the level of liquidity than by its rate of change. Rising liquidity has historically supported equities, credit, and crypto; falling liquidity pressures long-duration bonds and equity valuations while favoring cash, defensives, and — late in the cycle — commodities, as money migrates from financial markets into the real economy. Liquidity cycles have historically run roughly five to six years and lead the real economy by 12–18 months.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Reading it</p>
+      <p className="text-paper-dim">Above zero and rising = expansionary regime (risk-on historically favored). Above zero but falling = late-cycle deceleration (reduce beta, watch commodities). Below zero = contraction (historically the most dangerous regime for risk assets). The dashed line shows the same concept weighted by dollar size, which moves more slowly because M2 dominates it.</p>
+    </div>
+    <p className="text-[10px] text-paper-dim/50 italic">Public-data approximation inspired by the Cross-Border Capital / GL Indexes global liquidity framework. Not investment advice. Sources: Federal Reserve (FRED), US Office of Financial Research.</p>
+  </div>
+);
+
+function LiquidityTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload;
+  return (
+    <div className="card px-3 py-2 text-xs space-y-1 min-w-[200px]">
+      <p className="font-semibold text-paper mb-1">
+        {label}
+        {row?.is_partial && <span className="text-paper-dim font-normal"> (partial)</span>}
+      </p>
+      {payload.map((p) => p.value == null ? null : (
+        <div key={p.dataKey} className="flex justify-between gap-4">
+          <span style={{ color: p.stroke ?? p.color }}>{p.name}</span>
+          <span className="num text-paper">
+            {p.dataKey === "composite_zscore"
+              ? `${Number(p.value) >= 0 ? "+" : ""}${Number(p.value).toFixed(2)}σ`
+              : `${Number(p.value) >= 0 ? "+" : ""}${Number(p.value).toFixed(1)}%`}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LiquidityDrawer({ open, onClose, ind }) {
+  const [rows, setRows] = useState(null);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [showFullHistory, setShowFullHistory] = useState(false);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    supabase
+      .from("liquidity_monthly")
+      .select("*")
+      .order("month", { ascending: true })
+      .then(({ data }) => setRows(data ?? []))
+      .catch(() => setRows([]));
+  }, [open, rows]);
+
+  const chartData = useMemo(() => {
+    if (!rows) return [];
+    return rows
+      .filter((r) => r.month >= "2019-01-01")
+      .map((r) => ({
+        month: r.month,
+        net_liq_yoy: r.net_liq_yoy != null ? Number(r.net_liq_yoy) : null,
+        private_composite_yoy: r.private_composite_yoy != null ? Number(r.private_composite_yoy) : null,
+        total_composite_yoy: r.total_composite_yoy != null ? Number(r.total_composite_yoy) : null,
+        stock_yoy: r.stock_yoy != null ? Number(r.stock_yoy) : null,
+        composite_zscore: r.composite_zscore != null ? Number(r.composite_zscore) : null,
+        is_partial: r.is_partial,
+      }));
+  }, [rows]);
+
+  const xTicks = useMemo(() => chartData.filter((r) => r.month.slice(5, 7) === "01").map((r) => r.month), [chartData]);
+
+  const tableRows = useMemo(() => {
+    if (!rows) return [];
+    const sorted = [...rows].sort((a, b) => b.month.localeCompare(a.month));
+    return showFullHistory ? sorted : sorted.slice(0, 24);
+  }, [rows, showFullHistory]);
+
+  function fmtPct(v) { return v == null ? "—" : `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(1)}%`; }
+  function fmtTn(v) { return v == null ? "—" : `$${Number(v).toFixed(2)}T`; }
+  function fmtBn(v) { return v == null ? "—" : `$${Number(v).toFixed(0)}B`; }
+  function pctColor(v) { return v == null ? "text-paper-dim" : Number(v) >= 0 ? "text-gain" : "text-loss"; }
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div className={`fixed right-0 top-0 h-full w-[650px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}>
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-paper">US Total Liquidity Composite</h2>
+              <button
+                onClick={() => setInfoOpen((v) => !v)}
+                className={`w-[18px] h-[18px] rounded-full border text-[10px] font-bold flex items-center justify-center flex-shrink-0 transition-colors ${infoOpen ? "border-brass text-brass bg-brass/10" : "border-paper-dim/40 text-paper-dim hover:border-paper hover:text-paper"}`}
+                title="About this indicator"
+              >
+                i
+              </button>
+            </div>
+            <p className="text-[10px] text-paper-dim mt-0.5">Fed net liquidity + private liquidity proxy · YoY momentum · Monthly</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {ind?.current_value != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${Number(ind.current_value) > 0 ? "text-gain" : "text-loss"}`}>
+                  {formatValue(ind.current_value, "%")}
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">Total Composite YoY</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        {infoOpen && (
+          <div className="px-5 py-4 border-b border-ink-line bg-ink shrink-0 overflow-y-auto max-h-[45vh]">
+            {LIQUIDITY_INFO}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <ResponsiveContainer width="100%" height={280}>
+                <ComposedChart data={chartData} margin={{ top: 5, right: 8, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2f38" vertical={false} />
+                  <XAxis
+                    dataKey="month"
+                    ticks={xTicks}
+                    tickFormatter={(d) => d.slice(0, 4)}
+                    tick={{ fontSize: 10, fill: "#8a8f98" }}
+                    axisLine={{ stroke: "#2a2f38" }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    yAxisId="left"
+                    tick={{ fontSize: 10, fill: "#8a8f98" }}
+                    axisLine={{ stroke: "#2a2f38" }}
+                    tickLine={false}
+                    tickFormatter={(v) => `${v}%`}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    tick={{ fontSize: 10, fill: "#8a8f98" }}
+                    axisLine={{ stroke: "#2a2f38" }}
+                    tickLine={false}
+                    tickFormatter={(v) => `${v}σ`}
+                  />
+                  <ReferenceLine yAxisId="left" y={0} stroke="#8a8f98" strokeOpacity={0.5} />
+                  <Tooltip content={<LiquidityTooltip />} />
+                  <Line yAxisId="left" type="monotone" dataKey="net_liq_yoy" name="Net Liquidity YoY" stroke="#4472C4" strokeWidth={1.5} dot={false} connectNulls />
+                  <Line yAxisId="left" type="monotone" dataKey="private_composite_yoy" name="Private Liquidity YoY" stroke="#ED7D31" strokeWidth={1.5} dot={false} connectNulls />
+                  <Line yAxisId="left" type="monotone" dataKey="total_composite_yoy" name="Total Composite YoY" stroke="#1F4E78" strokeWidth={3} dot={false} connectNulls />
+                  <Line yAxisId="left" type="monotone" dataKey="stock_yoy" name="Stock-Weighted YoY" stroke="#7030A0" strokeWidth={2} strokeDasharray="6 3" dot={false} connectNulls />
+                  <Line yAxisId="right" type="monotone" dataKey="composite_zscore" name="Composite Z-Score" stroke="#00B050" strokeWidth={1.5} strokeDasharray="2 2" dot={false} connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div className="flex flex-wrap items-center gap-4 mt-3 text-[10px] text-paper-dim/70">
+                <span className="flex items-center gap-1.5"><span className="inline-block w-5 h-[1.5px] rounded-sm" style={{ backgroundColor: "#4472C4" }} />Net Liquidity</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-5 h-[1.5px] rounded-sm" style={{ backgroundColor: "#ED7D31" }} />Private Liquidity</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-5 h-[2.5px] rounded-sm" style={{ backgroundColor: "#1F4E78" }} />Total Composite</span>
+                <span className="flex items-center gap-1.5">
+                  <svg width="20" height="4" className="overflow-visible"><line x1="0" y1="2" x2="20" y2="2" stroke="#7030A0" strokeWidth="2" strokeDasharray="5 3" /></svg>
+                  Stock-Weighted
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <svg width="20" height="4" className="overflow-visible"><line x1="0" y1="2" x2="20" y2="2" stroke="#00B050" strokeWidth="1.5" strokeDasharray="2 2" /></svg>
+                  Z-Score (right axis)
+                </span>
+              </div>
+            </div>
+          )}
+
+          {tableRows.length > 0 && (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="label text-[10px]">Monthly Detail{showFullHistory ? "" : " · last 24 months"}</p>
+                <button
+                  onClick={() => setShowFullHistory((v) => !v)}
+                  className="text-[10px] text-brass-soft hover:text-brass transition-colors"
+                >
+                  {showFullHistory ? "Show last 24 months" : "Show full history"}
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px] min-w-[640px]">
+                  <thead>
+                    <tr className="text-paper-dim text-[10px]">
+                      <th className="text-left pb-2 font-medium pr-2">Month</th>
+                      <th className="text-right pb-2 font-medium px-2">Net Liq.</th>
+                      <th className="text-right pb-2 font-medium px-2">Repo Avg</th>
+                      <th className="text-right pb-2 font-medium px-2">CP</th>
+                      <th className="text-right pb-2 font-medium px-2">M2</th>
+                      <th className="text-right pb-2 font-medium px-2">Net Liq YoY</th>
+                      <th className="text-right pb-2 font-medium px-2">Private YoY</th>
+                      <th className="text-right pb-2 font-medium px-2">Total Composite YoY</th>
+                      <th className="text-right pb-2 font-medium px-2">Stock YoY</th>
+                      <th className="text-right pb-2 font-medium pl-2">Z-Score</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows.map((r) => (
+                      <tr key={r.month} className="border-t border-ink-line/50">
+                        <td className="py-1.5 pr-2 text-paper-dim whitespace-nowrap">
+                          {new Date(r.month + "T00:00:00").toLocaleDateString("en-US", { month: "short", year: "numeric" })}
+                          {r.is_partial && <span className="ml-1 text-[9px] text-brass-soft">(partial)</span>}
+                        </td>
+                        <td className="py-1.5 px-2 text-right num text-paper">{fmtTn(r.net_liquidity_tn)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper-dim">{fmtBn(r.repo_avg_bn)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper-dim">{fmtBn(r.cp_avg_bn)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper-dim">{fmtBn(r.m2_bn)}</td>
+                        <td className={`py-1.5 px-2 text-right num ${pctColor(r.net_liq_yoy)}`}>{fmtPct(r.net_liq_yoy)}</td>
+                        <td className={`py-1.5 px-2 text-right num ${pctColor(r.private_composite_yoy)}`}>{fmtPct(r.private_composite_yoy)}</td>
+                        <td className={`py-1.5 px-2 text-right num font-semibold ${pctColor(r.total_composite_yoy)}`}>{fmtPct(r.total_composite_yoy)}</td>
+                        <td className={`py-1.5 px-2 text-right num ${pctColor(r.stock_yoy)}`}>{fmtPct(r.stock_yoy)}</td>
+                        <td className="py-1.5 pl-2 text-right num text-paper-dim">
+                          {r.composite_zscore != null ? `${Number(r.composite_zscore) >= 0 ? "+" : ""}${Number(r.composite_zscore).toFixed(2)}σ` : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60 leading-relaxed">
+            Sources: Federal Reserve H.4.1 via FRED (WALCL, WTREGEN, WLRRAL), FRED (COMPOUT, M2SL), OFR Short-term Funding Monitor (tri-party repo). Updated weekdays. M2 publishes with a ~2-month lag.
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // Distinguishes model-synthesized commentary (this card) from the sourced
 // FRED/BLS/World Gold Council gauges elsewhere on the page — same visual
 // authority otherwise made it easy to mistake one for the other.
@@ -4542,6 +4788,7 @@ export default function MacroDashboard() {
   const [t30DrawerOpen, setT30DrawerOpen] = useState(false);
   const [dxyDrawerOpen, setDxyDrawerOpen] = useState(false);
   const [dbcDrawerOpen, setDbcDrawerOpen] = useState(false);
+  const [liquidityDrawerOpen, setLiquidityDrawerOpen] = useState(false);
   const [regimeHistory, setRegimeHistory] = useState([]);
 
   const fetchIndicators = useCallback(async () => {
@@ -4738,6 +4985,7 @@ export default function MacroDashboard() {
                           : ind.name === "30Y Treasury Yield" ? () => setT30DrawerOpen(true)
                           : ind.name === "DXY" ? () => setDxyDrawerOpen(true)
                           : ind.name === "DBC Commodity Index" ? () => setDbcDrawerOpen(true)
+                          : ind.name === "US Total Liquidity Composite" ? () => setLiquidityDrawerOpen(true)
                           : undefined
                         }
                     />
@@ -4818,6 +5066,11 @@ export default function MacroDashboard() {
         open={dbcDrawerOpen}
         onClose={() => setDbcDrawerOpen(false)}
         currentValue={indicators?.find((i) => i.name === "DBC Commodity Index")?.current_value}
+      />
+      <LiquidityDrawer
+        open={liquidityDrawerOpen}
+        onClose={() => setLiquidityDrawerOpen(false)}
+        ind={indicators?.find((i) => i.name === "US Total Liquidity Composite")}
       />
     </Shell>
   );
