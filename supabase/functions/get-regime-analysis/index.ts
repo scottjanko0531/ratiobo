@@ -26,6 +26,12 @@ interface SupplyChainRisk {
   primaryThreat: string | null; concentration: string | null; riskType: string | null;
 }
 interface CreditIndicator { name: string; value: number | null; status: string | null; }
+interface LiquidityIndicator {
+  totalCompositeYoy: number | null;
+  zscore: number | null;
+  sixMonthAgoYoy: number | null;
+  direction: "accelerating" | "decelerating" | "stable" | "unknown";
+}
 type YieldCurveState = "inverted" | "normalizing_from_inversion" | "never_inverted_steep" | "unknown";
 
 // ── News helpers (same RSS approach as get-macro-news) ────────────────────────
@@ -198,6 +204,39 @@ async function getSupplyChainRisks(sb: ReturnType<typeof createClient>): Promise
     }));
 }
 
+// ── Liquidity composite snapshot ────────────────────────────────────────────────
+// Reads liquidity_monthly directly (rather than the macro_indicators mirror) to get
+// a 6-month-ago comparison point — matching the "Direction (latest vs 6m ago)"
+// convention already established in the source calc sheet this indicator was
+// validated against, rather than a noisier single-month-over-month read.
+async function getLiquiditySnapshot(sb: ReturnType<typeof createClient>): Promise<LiquidityIndicator> {
+  try {
+    const { data } = await sb
+      .from("liquidity_monthly")
+      .select("month, total_composite_yoy, composite_zscore")
+      .not("total_composite_yoy", "is", null)
+      .order("month", { ascending: false })
+      .limit(7);
+    const rows = data ?? [];
+    if (!rows.length) return { totalCompositeYoy: null, zscore: null, sixMonthAgoYoy: null, direction: "unknown" };
+    const latest = rows[0];
+    const sixMoAgo = rows.length >= 7 ? rows[6] : null;
+    const curr = latest.total_composite_yoy != null ? Number(latest.total_composite_yoy) : null;
+    const prior = sixMoAgo?.total_composite_yoy != null ? Number(sixMoAgo.total_composite_yoy) : null;
+    const direction: LiquidityIndicator["direction"] =
+      curr == null || prior == null ? "unknown"
+      : curr > prior + 0.5 ? "accelerating"
+      : curr < prior - 0.5 ? "decelerating"
+      : "stable";
+    return {
+      totalCompositeYoy: curr,
+      zscore: latest.composite_zscore != null ? Number(latest.composite_zscore) : null,
+      sixMonthAgoYoy: prior,
+      direction,
+    };
+  } catch { return { totalCompositeYoy: null, zscore: null, sixMonthAgoYoy: null, direction: "unknown" }; }
+}
+
 // ── Yield curve state (3-state model) ───────────────────────────────────────────
 // A positive 2/10 spread means very different things depending on recent history:
 // still-inverted, just-normalized-from-inversion (the historically volatile,
@@ -329,6 +368,8 @@ function computeLiveRegimeKeys(
     { name: "Conference Board LEI",   w: 0.15, vote: v => v > 0   ? 1 : v >= -0.3 ? 0 : -1 },
     { name: "HY Credit Spread (OAS)", w: 0.10, vote: v => v < 4   ? 1 : v <= 6    ? 0 : -1 },
     { name: "C&I Loan Growth (YoY)",  w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
+    // Liquidity leads growth by ~12-18mo (banding matches the card's own healthy/watch/danger thresholds)
+    { name: "US Total Liquidity Composite", w: 0.15, vote: v => v > 0 ? 1 : v > -3 ? 0 : -1 },
   ];
   const I: Sig[] = [
     { name: "CPI (YoY)",                       w: 0.20, useDir: true,   vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
@@ -391,17 +432,22 @@ function computeLiveRegimeKeys(
 function buildReferenceBlock(p: {
   regimeLabel: string; marketLabel: string | null; fwdLabel: string | null; fwdConf: number | null;
   qualifier: string; yieldCurveValue: number | null; yieldCurveState: YieldCurveState;
-  credit: CreditIndicator[];
+  credit: CreditIndicator[]; liquidity: LiquidityIndicator;
 }): string {
   const creditLines = p.credit
     .map((c) => `  ${c.name}: ${c.value != null ? c.value : "n/a"}${c.status ? ` (${c.status.toUpperCase()})` : ""}`)
     .join("\n");
+  const liq = p.liquidity;
+  const liquidityLine = liq.totalCompositeYoy != null
+    ? `${liq.totalCompositeYoy >= 0 ? "+" : ""}${liq.totalCompositeYoy.toFixed(1)}% YoY (z ${liq.zscore != null ? liq.zscore.toFixed(2) : "n/a"}σ), ${liq.direction} vs. 6 months ago`
+    : "n/a";
   return `Structural regime: ${p.regimeLabel}
 Market-implied regime: ${p.marketLabel ?? "unknown"}
 Forward signal: ${p.fwdLabel ?? "none"}${p.fwdConf != null ? `, ${p.fwdConf}% confidence — must be described as "${p.qualifier}"` : ""}
 2/10 yield curve: ${p.yieldCurveValue != null ? p.yieldCurveValue.toFixed(2) + "%" : "n/a"} — ${YIELD_CURVE_STATE_NOTE[p.yieldCurveState]}
 Credit stress indicators (lead recessions; HEALTHY = no stress despite any bust narrative):
-${creditLines}`;
+${creditLines}
+Liquidity composite (leads risk appetite): ${liquidityLine}`;
 }
 
 // ── Main regime analysis ──────────────────────────────────────────────────────
@@ -416,6 +462,7 @@ async function generateAnalysis(params: {
   supplyChain: SupplyChainRisk[];
   yieldCurveState: YieldCurveState;
   credit: CreditIndicator[];
+  liquidity: LiquidityIndicator;
   correction?: string; // set on the one-shot retry after a failed consistency check
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY) return null;
@@ -424,7 +471,7 @@ async function generateAnalysis(params: {
       regimeLabel, marketLabel, fwdLabel, fwdConf, divergence,
       gdp, cpi, ppi, t10y2y, lei, breakeven,
       prevGdp, prevCpi, prevPpi, prevLei, prevBe,
-      marketSnapshot, supplyChain, yieldCurveState, credit, correction,
+      marketSnapshot, supplyChain, yieldCurveState, credit, liquidity, correction,
     } = params;
 
     const qualifier = confidenceQualifier(fwdConf);
@@ -441,6 +488,16 @@ async function generateAnalysis(params: {
       .map(c => `  ${c.name}: ${c.value != null ? c.value : "n/a"}${c.status ? ` (${c.status.toUpperCase()})` : ""}`)
       .join("\n");
     const anyCreditHealthy = credit.some(c => c.status === "healthy");
+
+    const liquidityLine = liquidity.totalCompositeYoy != null
+      ? `${liquidity.totalCompositeYoy >= 0 ? "+" : ""}${liquidity.totalCompositeYoy.toFixed(1)}% YoY (z ${liquidity.zscore != null ? liquidity.zscore.toFixed(2) : "n/a"}σ vs. full history) — ${liquidity.direction === "unknown" ? "trend unavailable" : `${liquidity.direction} vs. 6 months ago`}`
+      : "n/a";
+    const liquidityConstraint = liquidity.totalCompositeYoy == null ? ""
+      : liquidity.totalCompositeYoy < 0
+      ? `  Constraint: liquidity is contractionary (below zero) — historically the most dangerous regime for risk assets. If your narrative leans risk-on/bullish on equities or credit, you MUST explicitly acknowledge this headwind.`
+      : liquidity.direction === "decelerating"
+      ? `  Constraint: liquidity is expansionary but decelerating vs. 6 months ago — a late-cycle caution signal, not an unambiguous tailwind. Do not describe it as clean risk-on without noting the deceleration.`
+      : `  Constraint: liquidity is expansionary${liquidity.direction === "accelerating" ? " and accelerating — a genuine tailwind" : ""}. If your narrative is bearish on risk assets, acknowledge this counter-signal.`;
 
     const n = (v: number | null, d = 1, plus = false) =>
       v != null ? `${plus && v >= 0 ? "+" : ""}${v.toFixed(d)}%` : "n/a";
@@ -489,6 +546,11 @@ SIGNAL 2b — Credit stress (leads recessions; check this before asserting a bus
 ${creditLines || "  No credit-stress data available."}
 ${anyCreditHealthy ? `  Constraint: at least one credit-stress indicator above is HEALTHY. If your narrative leans toward an imminent recession/deflationary-bust case, you MUST explicitly acknowledge this tension (e.g. "credit markets are not yet confirming this") rather than asserting an unhedged bust case.` : ""}
 
+SIGNAL 2c — Liquidity momentum (Fed net liquidity + private liquidity proxy, leads risk appetite by ~12-18 months; public-data approximation of the Michael Howell / GL Indexes global liquidity framework):
+  Total Composite YoY: ${liquidityLine}
+  Reading guide: above zero and accelerating = expansionary tailwind (risk-on historically favored); above zero but decelerating = late-cycle caution; below zero = contraction, historically the most dangerous regime for risk assets.
+${liquidityConstraint}
+
 SIGNAL 3 — Market pricing (yesterday's action, forward-looking):
   Market-implied regime: ${marketLabel ?? "unknown"}
   ${divergence ? `⚑ Market diverges from structural regime` : "✓ Market aligns with structural regime"}
@@ -501,7 +563,7 @@ ${scLines || "  No critical or worsening chokepoints currently flagged."}
 
 Structure your answer in four parts, separated by blank lines:
 (1) A paragraph: what is the hard data momentum telling us — is the structural regime transitioning, and how confident should we be? (must use the "${qualifier}" language constraint above)
-(2) A paragraph: is yesterday's market action consistent with that momentum signal, or pricing a different scenario? If leaning toward a recession/bust read, address the credit-stress tension from Signal 2b if it applies.
+(2) A paragraph: is yesterday's market action consistent with that momentum signal, or pricing a different scenario? If leaning toward a recession/bust read, address the credit-stress tension from Signal 2b if it applies. Also weigh in the liquidity signal (2c) — does it corroborate or complicate the market-pricing read on risk appetite, respecting its constraint above.
 (3) A paragraph: what does the supply chain signal confirm or complicate — does it corroborate the BW Modified real-assets sleeve (gold/commodities/TIPS), and is any specific chokepoint above a live tail risk for a sector or asset class in the portfolio? Respect the active-vs-structural framing constraint above.
 (4) A "Concrete moves:" section: one short lead-in sentence, then 3-6 bullet points (each on its own line, starting with "- "), each one specific, actionable sentence naming a real instrument or asset class and what to do with it — not just "hold the base." Split opportunities and hedges across the bullets as the analysis warrants, rather than writing separate paragraphs for each.
 
@@ -541,6 +603,7 @@ Specifically check for:
 1. Confidence language stronger than the reference's required qualifier (e.g. reference requires "moderate confidence" but the text says "high confidence" or "unambiguous").
 2. Yield-curve claims that contradict the reference's stated state (e.g. calling the curve "inverted" when the reference says it is not, or omitting required recession-framing constraints).
 3. An unhedged recession/deflationary-bust narrative that does NOT acknowledge a HEALTHY credit-stress indicator the reference flags as requiring acknowledgment.
+4. A risk-on/bullish narrative that ignores a contractionary (below-zero) liquidity composite reading, or a risk-off/bearish narrative that ignores an expansionary-and-accelerating one, per the reference's liquidity composite line.
 
 REFERENCE DATA:
 ${reference}
@@ -661,7 +724,7 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const [{ data: macroRows }, marketSnapshot, topNews, mvItem, supplyChain, yieldCurve, fedOdds] = await Promise.all([
+    const [{ data: macroRows }, marketSnapshot, topNews, mvItem, supplyChain, yieldCurve, fedOdds, liquidity] = await Promise.all([
       sb.from("macro_indicators").select("name,current_value,previous_value,status,metadata"),
       getMarketSnapshot(),
       fetchTopNews(5),
@@ -669,6 +732,7 @@ Deno.serve(async (req: Request) => {
       getSupplyChainRisks(sb),
       getYieldCurveState(),
       getFedRateOdds(),
+      getLiquiditySnapshot(sb),
     ]);
     const headlines: NewsItem[] = mvItem ? [mvItem, ...topNews] : topNews;
 
@@ -735,6 +799,7 @@ Deno.serve(async (req: Request) => {
       supplyChain,
       yieldCurveState: yieldCurve.state,
       credit,
+      liquidity,
     };
 
     const [analysisFirstPass, newsMusing] = await Promise.all([
@@ -756,7 +821,7 @@ Deno.serve(async (req: Request) => {
       regimeLabel, marketLabel, fwdLabel, fwdConf,
       qualifier: confidenceQualifier(fwdConf),
       yieldCurveValue: yieldCurve.value, yieldCurveState: yieldCurve.state,
-      credit,
+      credit, liquidity,
     });
     const check = await validateConsistency(analysisFirstPass, referenceBlock);
 

@@ -333,6 +333,8 @@ const FWD_GROWTH_SIGNALS = [
   { label: "LEI",               name: "Conference Board LEI",      w: 0.15, vote: v => v > 0   ? 1 : v >= -0.3 ? 0 : -1 },
   { label: "HY Spread",         name: "HY Credit Spread (OAS)",   w: 0.10, vote: v => v < 4   ? 1 : v <= 6    ? 0 : -1 },
   { label: "C&I Loans",         name: "C&I Loan Growth (YoY)",    w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
+  // Liquidity leads growth by ~12-18mo (banding matches the card's own healthy/watch/danger thresholds)
+  { label: "Liquidity",         name: "US Total Liquidity Composite", w: 0.15, vote: v => v > 0 ? 1 : v > -3 ? 0 : -1 },
 ];
 const FWD_INFL_SIGNALS = [
   // Direction-of-change signals capture disinflation momentum even when levels are still elevated
