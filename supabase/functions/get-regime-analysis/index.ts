@@ -370,6 +370,8 @@ function computeLiveRegimeKeys(
     { name: "C&I Loan Growth (YoY)",  w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
     // Liquidity leads growth by ~12-18mo (banding matches the card's own healthy/watch/danger thresholds)
     { name: "US Total Liquidity Composite", w: 0.15, vote: v => v > 0 ? 1 : v > -3 ? 0 : -1 },
+    // Consumer spending, ~2/3 of GDP by expenditure (banding matches the card's own thresholds)
+    { name: "Retail Sales (YoY)", w: 0.15, vote: v => v >= 2 ? 1 : v >= 0 ? 0 : -1 },
   ];
   const I: Sig[] = [
     { name: "CPI (YoY)",                       w: 0.20, useDir: true,   vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
