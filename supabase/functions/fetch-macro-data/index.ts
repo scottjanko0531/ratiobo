@@ -149,7 +149,8 @@ interface Indicator {
     | "yahoo_price_with_3m"
     | "supabase_lei"
     | "supabase_ism"
-    | "supabase_liquidity";
+    | "supabase_liquidity"
+    | "supabase_bigcycle_xref";
   series?: string;
   series2?: string;
   zscore?: boolean;
@@ -318,6 +319,23 @@ const INDICATORS: Indicator[] = [
     fred_series_id: "TDSP", unit: "%", data_source: "fred", sort_order: 14,
     series: "TDSP", type: "level",
     statusFn: v => v < 10 ? "healthy" : v < 12 ? "watch" : "danger",
+  },
+  {
+    name: "Credit Card Delinquency Rate",
+    layer: 2, layer_name: "Short-Term Debt Cycle",
+    description: "Delinquency rate on credit card loans, all commercial banks (quarterly) — consumer-side credit stress, distinct from the bank/corporate-facing signals above",
+    fred_series_id: "DRCCLACBS", unit: "%", data_source: "fred", sort_order: 16,
+    series: "DRCCLACBS", type: "level",
+    // Full history: ~1.5% (2021 pandemic-stimulus low) to 6.8% (2009 GFC peak); pre-2008 normal was ~3.5-4.5%
+    statusFn: v => v < 3.5 ? "healthy" : v < 5 ? "watch" : "danger",
+  },
+  {
+    name: "Student Loan Delinquency Rate",
+    layer: 2, layer_name: "Short-Term Debt Cycle",
+    description: "90+ day delinquency rate on student loans (NY Fed Household Debt Report) — cross-referenced from the Big Cycle dashboard's manually-tracked figure rather than re-entered here",
+    fred_series_id: null, unit: "%", data_source: "supabase", sort_order: 17,
+    type: "supabase_bigcycle_xref",
+    statusFn: v => v < 6 ? "healthy" : v < 9 ? "watch" : "danger",
   },
   {
     name: "Conference Board LEI",
@@ -833,6 +851,22 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
           stock_yoy: liqRows[0].stock_yoy != null ? Number(liqRows[0].stock_yoy) : null,
           is_partial: liqRows[0].is_partial, period: liqRows[0].month,
         };
+        break;
+      }
+      case "supabase_bigcycle_xref": {
+        // Read a manually-tracked figure from big_cycle_metrics rather than
+        // re-entering it here — Big Cycle owns the manual-entry UI for this value.
+        // No snapshot history exists for manual Big Cycle metrics, so previous_value
+        // mirrors current_value (flat, no change arrow) rather than faking a trend.
+        const { data: bcRow, error: bcErr } = await supabase
+          .from("big_cycle_metrics")
+          .select("value_numeric, note, last_updated")
+          .eq("key", "student_loan_delinquency")
+          .maybeSingle();
+        if (bcErr || !bcRow || bcRow.value_numeric == null) return null;
+        current = Number(bcRow.value_numeric);
+        previous = current;
+        metadata = { source_note: bcRow.note, big_cycle_last_updated: bcRow.last_updated };
         break;
       }
       case "yahoo_price_with_3m": {
