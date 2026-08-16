@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import * as XLSX from "npm:xlsx";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -156,6 +157,69 @@ async function computeRedfinHomePriceUpdate(): Promise<Update | null> {
       status_label: ratio > 5.5 ? "Stretched" : ratio > 4.5 ? "Elevated" : "Historically normal",
     };
   } catch (e) { console.error("[big-cycle] redfin home price:", e); return null; }
+}
+
+// NY Fed publishes the Household Debt and Credit Report's full underlying data as a
+// plain xlsx at a predictable per-quarter URL — no auth, no scraping. "Page 12 Data"
+// is "Percent of Balance 90+ Days Delinquent by Loan Type", with a STUDENT LOAN
+// column; this is the exact series the dashboard's figure was originally sourced
+// from by hand (confirmed: Q2 2026 = 10.6%, an exact match to the prior manual entry).
+// Reports publish ~6-8 weeks after quarter-end, so this tries the current calendar
+// quarter first and steps back up to 3 quarters until a file actually resolves.
+async function computeNyFedStudentLoanUpdate(): Promise<Update | null> {
+  const now = new Date();
+  let y = now.getUTCFullYear();
+  let q = Math.floor(now.getUTCMonth() / 3) + 1; // 1-4
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const url = `https://www.newyorkfed.org/medialibrary/interactives/householdcredit/data/xls/HHD_C_Report_${y}Q${q}.xlsx`;
+    try {
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          "Referer": "https://www.newyorkfed.org/microeconomics/hhdc",
+          "Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*",
+        },
+      });
+      if (res.ok) {
+        const buf = await res.arrayBuffer();
+        const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+        const ws = wb.Sheets["Page 12 Data"];
+        if (!ws) { q--; if (q < 1) { q = 4; y--; } continue; }
+        const data = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: null });
+
+        let studentCol = -1;
+        for (const row of data) {
+          const idx = (row as unknown[]).findIndex((c) => typeof c === "string" && c.trim().toUpperCase() === "STUDENT LOAN");
+          if (idx !== -1) { studentCol = idx; break; }
+        }
+        if (studentCol === -1) return null;
+
+        // Last row matching a "YY:QN" quarter label in column 0 is the latest observation.
+        let latestLabel: string | null = null;
+        let latestVal: number | null = null;
+        for (const row of data) {
+          const r = row as unknown[];
+          const label = r[0];
+          if (typeof label !== "string" || !/^\d{2}:Q[1-4]$/.test(label)) continue;
+          const v = Number(r[studentCol]);
+          if (!isFinite(v)) continue;
+          latestLabel = label; latestVal = v;
+        }
+        if (latestVal == null) return null;
+
+        const rounded = Math.round(latestVal * 10) / 10;
+        return {
+          key: "student_loan_delinquency", value_numeric: rounded, value_display: `${rounded.toFixed(1)}%`,
+          note_suffix: `Percent of balance 90+ days delinquent, student loans (${latestLabel}). NY Fed Consumer Credit Panel/Equifax, Quarterly Report on Household Debt and Credit.`,
+          status: rounded > 12 ? "bad" : rounded > 8 ? "warn" : "good",
+          status_label: rounded > 12 ? "Elevated" : rounded > 8 ? "Rebounded post-forbearance" : "Contained",
+        };
+      }
+    } catch (e) { console.error(`[big-cycle] nyfed student loan (${y}Q${q}):`, e); }
+    q--; if (q < 1) { q = 4; y--; }
+  }
+  return null;
 }
 
 async function computeTreasuryUpdate(): Promise<Update | null> {
@@ -423,11 +487,11 @@ Deno.serve(async (req: Request) => {
     const { data: metrics, error: mErr } = await sb
       .from("big_cycle_metrics")
       .select("id,key,refresh_method,fred_series_id")
-      .in("refresh_method", ["api_fred", "api_treasury", "api_imf", "api_cofer", "csv_voteview", "api_macro_xref", "api_redfin"]);
+      .in("refresh_method", ["api_fred", "api_treasury", "api_imf", "api_cofer", "csv_voteview", "api_macro_xref", "api_redfin", "api_nyfed"]);
     if (mErr || !metrics) return json({ error: mErr?.message ?? "no metrics" }, 500);
     const byKey = new Map((metrics as MetricRow[]).map((m) => [m.key, m]));
 
-    const [fredResult, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, macroXrefUpdates, redfinUpdate] = await Promise.all([
+    const [fredResult, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, macroXrefUpdates, redfinUpdate, nyFedUpdate] = await Promise.all([
       computeFredUpdates(),
       computeTreasuryUpdate(),
       computeImfUpdate(),
@@ -435,8 +499,9 @@ Deno.serve(async (req: Request) => {
       computeVoteviewUpdate(),
       computeMacroCrossRefUpdates(sb),
       computeRedfinHomePriceUpdate(),
+      computeNyFedStudentLoanUpdate(),
     ]);
-    const allUpdates = [...fredResult.updates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, ...macroXrefUpdates, redfinUpdate].filter((u): u is Update => u != null);
+    const allUpdates = [...fredResult.updates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, ...macroXrefUpdates, redfinUpdate, nyFedUpdate].filter((u): u is Update => u != null);
     const stageResult = await updateDebtCycleStage(sb, fredResult.fedFundsMid, fredResult.deficitAbs);
 
     const today = new Date().toISOString().slice(0, 10);
