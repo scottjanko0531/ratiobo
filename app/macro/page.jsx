@@ -4847,6 +4847,242 @@ function SomaDrawer({ open, onClose, ind }) {
   );
 }
 
+// ── Foreign Official Share of UST Holdings ──────────────────────────────────────
+
+const TIC_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">Foreign Official Share of UST Holdings</p>
+      <p className="text-paper-dim">Splits total foreign holdings of US Treasury securities into <i>Foreign Official</i> (central banks and other official reserve managers) vs. the private-sector residual (Grand Total minus Foreign Official). This is distinct from the Reserve Confidence gauge above, which tracks the USD's share of <i>global FX reserves</i> broadly — this tracks the official/private split specifically within US Treasury holdings. A declining official share means private buyers, the Fed (via QE), or banks (via regulatory pressure) have to absorb more of the slack central banks leave behind.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Methodology</p>
+      <p className="text-paper-dim">Source: US Treasury's TIC "Table 5: Major Foreign Holders of Treasury Securities" — a monthly <i>stock</i> (level) figure, not a net-transaction flow, so it isn't noisy the way monthly buy/sell figures can be. The headline number is the 12-month change in official share (percentage points). The z-score is computed against the mean/standard deviation of official share across all months this dashboard has stored — since this indicator was only added recently, its history is currently short, so treat early z-scores as provisional; they'll sharpen as more months accumulate (the table keeps every month it has ever fetched, even though the source file itself only ever exposes a rolling 13-month window).</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Reading it</p>
+      <p className="text-paper-dim">A negative z-score / negative YoY change means the official share is below its own recent norm and falling — central banks are relatively more net-sellers than private buyers. This indicator is tracked here as a leading, informational signal; it does not yet feed the Big Cycle debt-cycle MP1/MP2/MP3 stage classification.</p>
+    </div>
+    <p className="text-[10px] text-paper-dim/50 italic">Source: US Department of the Treasury, Treasury International Capital (TIC) System.</p>
+  </div>
+);
+
+function TicTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="card px-3 py-2 text-xs space-y-1 min-w-[200px]">
+      <p className="font-semibold text-paper mb-1">{label}</p>
+      {payload.map((p) => p.value == null ? null : (
+        <div key={p.dataKey} className="flex justify-between gap-4">
+          <span style={{ color: p.stroke ?? p.fill ?? p.color }}>{p.name}</span>
+          <span className="num text-paper">
+            {p.dataKey === "share_pct" ? `${Number(p.value).toFixed(2)}%` : `${Number(p.value) >= 0 ? "+" : ""}${Number(p.value).toFixed(2)}pts`}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TicHoldingsDrawer({ open, onClose, ind }) {
+  const [rows, setRows] = useState(null);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [showFullHistory, setShowFullHistory] = useState(false);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    supabase
+      .from("tic_foreign_official_holdings")
+      .select("*")
+      .order("as_of_month", { ascending: true })
+      .then(({ data }) => setRows(data ?? []))
+      .catch(() => setRows([]));
+  }, [open, rows]);
+
+  // Derive share%, YoY point-change (needs 12 months of lookback), and a
+  // z-score of the share level against the full history this table has
+  // accumulated so far (grows over time — see TIC_INFO for why).
+  const monthlyRows = useMemo(() => {
+    if (!rows?.length) return [];
+    const sorted = [...rows].sort((a, b) => a.as_of_month.localeCompare(b.as_of_month));
+    const shares = sorted.map((r) => Number(r.foreign_official_bn) / Number(r.grand_total_bn) * 100);
+    const mean = shares.reduce((s, v) => s + v, 0) / shares.length;
+    const sd = Math.sqrt(shares.reduce((s, v) => s + (v - mean) ** 2, 0) / shares.length) || 1;
+    return sorted.map((r, i) => ({
+      as_of_month: r.as_of_month,
+      grand_total_bn: Number(r.grand_total_bn),
+      foreign_official_bn: Number(r.foreign_official_bn),
+      private_bn: Number(r.grand_total_bn) - Number(r.foreign_official_bn),
+      share_pct: Math.round(shares[i] * 100) / 100,
+      yoy_change_pts: i >= 12 ? Math.round((shares[i] - shares[i - 12]) * 100) / 100 : null,
+      z_score: Math.round(((shares[i] - mean) / sd) * 100) / 100,
+    }));
+  }, [rows]);
+
+  const xTicks = useMemo(() => {
+    const total = monthlyRows.length;
+    const step = total > 36 ? 6 : total > 12 ? 3 : 1;
+    return monthlyRows.filter((_, i) => i % step === 0).map((r) => r.as_of_month);
+  }, [monthlyRows]);
+
+  const tableRows = useMemo(() => {
+    const sorted = [...monthlyRows].sort((a, b) => b.as_of_month.localeCompare(a.as_of_month));
+    return showFullHistory ? sorted : sorted.slice(0, 24);
+  }, [monthlyRows, showFullHistory]);
+
+  function fmtBn(v) { return v == null ? "—" : `$${Number(v).toFixed(0)}B`; }
+  function fmtPts(v) { return v == null ? "—" : `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(2)}pts`; }
+  function fmtZ(v) { return v == null ? "—" : `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(2)}`; }
+  function trendColor(v) { return v == null ? "text-paper-dim" : Number(v) >= 0 ? "text-gain" : "text-loss"; }
+  function zColor(v) { return v == null ? "text-paper-dim" : Number(v) <= -1 ? "text-loss" : Number(v) >= 1 ? "text-gain" : "text-brass-soft"; }
+  const fmtDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div className={`fixed right-0 top-0 h-full w-[780px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}>
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-paper">Foreign Official Share of UST Holdings</h2>
+              <button
+                onClick={() => setInfoOpen((v) => !v)}
+                className={`w-[18px] h-[18px] rounded-full border text-[10px] font-bold flex items-center justify-center flex-shrink-0 transition-colors ${infoOpen ? "border-brass text-brass bg-brass/10" : "border-paper-dim/40 text-paper-dim hover:border-paper hover:text-paper"}`}
+                title="About this indicator"
+              >
+                i
+              </button>
+            </div>
+            <p className="text-[10px] text-paper-dim mt-0.5">Central bank vs. private share of foreign-held Treasuries · Monthly · TIC</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {ind?.current_value != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${Number(ind.current_value) < 0 ? "text-loss" : "text-gain"}`}>
+                  {Number(ind.current_value) >= 0 ? "+" : ""}{Number(ind.current_value).toFixed(2)}pts
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">
+                  12-Mo Δ{ind?.metadata?.latest_share_pct != null ? ` · now ${Number(ind.metadata.latest_share_pct).toFixed(1)}%` : ""}
+                </p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        {infoOpen && (
+          <div className="px-5 py-4 border-b border-ink-line bg-ink shrink-0 overflow-y-auto max-h-[45vh]">
+            {TIC_INFO}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <ResponsiveContainer width="100%" height={280}>
+                <ComposedChart data={monthlyRows} margin={{ top: 5, right: 8, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2f38" vertical={false} />
+                  <XAxis
+                    dataKey="as_of_month"
+                    ticks={xTicks}
+                    tickFormatter={fmtDate}
+                    tick={{ fontSize: 10, fill: "#8a8f98" }}
+                    axisLine={{ stroke: "#2a2f38" }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    yAxisId="left"
+                    tick={{ fontSize: 10, fill: "#8a8f98" }}
+                    axisLine={{ stroke: "#2a2f38" }}
+                    tickLine={false}
+                    tickFormatter={(v) => `${v}pts`}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    domain={["dataMin - 2", "dataMax + 2"]}
+                    tick={{ fontSize: 10, fill: "#8a8f98" }}
+                    axisLine={{ stroke: "#2a2f38" }}
+                    tickLine={false}
+                    tickFormatter={(v) => `${Math.round(v)}%`}
+                  />
+                  <ReferenceLine yAxisId="left" y={0} stroke="#8a8f98" strokeOpacity={0.5} />
+                  <Tooltip content={<TicTooltip />} labelFormatter={fmtDate} />
+                  <Bar yAxisId="left" dataKey="yoy_change_pts" name="12-Mo Δ (Official Share)" maxBarSize={10}>
+                    {monthlyRows.map((r, i) => (
+                      <Cell key={i} fill={r.yoy_change_pts == null ? "transparent" : r.yoy_change_pts >= 0 ? "#3FB984" : "#E0635C"} fillOpacity={0.7} />
+                    ))}
+                  </Bar>
+                  <Line yAxisId="right" type="monotone" dataKey="share_pct" name="Official Share Level" stroke="#7030A0" strokeWidth={2} dot={false} connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div className="flex flex-wrap items-center gap-4 mt-3 text-[10px] text-paper-dim/70">
+                <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#3FB984", opacity: 0.7 }} />Share rising YoY (+Δ)</span>
+                <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#E0635C", opacity: 0.7 }} />Share falling YoY (−Δ)</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-5 h-[2px] rounded-sm" style={{ backgroundColor: "#7030A0" }} />
+                  Official share level (right axis)
+                </span>
+              </div>
+            </div>
+          )}
+
+          {tableRows.length > 0 && (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="label text-[10px]">Monthly Detail{showFullHistory ? "" : " · last 24 months"}</p>
+                <button
+                  onClick={() => setShowFullHistory((v) => !v)}
+                  className="text-[10px] text-brass-soft hover:text-brass transition-colors"
+                >
+                  {showFullHistory ? "Show last 24 months" : "Show full history"}
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px] min-w-[640px]">
+                  <thead>
+                    <tr className="text-paper-dim text-[10px]">
+                      <th className="text-left pb-2 font-medium pr-2">Month</th>
+                      <th className="text-right pb-2 font-medium px-2">Grand Total</th>
+                      <th className="text-right pb-2 font-medium px-2">Official</th>
+                      <th className="text-right pb-2 font-medium px-2">Official Share</th>
+                      <th className="text-right pb-2 font-medium px-2">12-Mo Δ</th>
+                      <th className="text-right pb-2 font-medium pl-2">Z-Score</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows.map((r) => (
+                      <tr key={r.as_of_month} className="border-t border-ink-line/50">
+                        <td className="py-1.5 pr-2 text-paper-dim whitespace-nowrap">{fmtDate(r.as_of_month)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper-dim">{fmtBn(r.grand_total_bn)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper-dim">{fmtBn(r.foreign_official_bn)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper font-semibold">{r.share_pct.toFixed(2)}%</td>
+                        <td className={`py-1.5 px-2 text-right num font-semibold ${trendColor(r.yoy_change_pts)}`}>{fmtPts(r.yoy_change_pts)}</td>
+                        <td className={`py-1.5 pl-2 text-right num ${zColor(r.z_score)}`}>{fmtZ(r.z_score)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60 leading-relaxed">
+            Source: US Department of the Treasury, Treasury International Capital (TIC) System — Table 5, Major Foreign Holders of Treasury Securities. Published monthly with a ~6-week lag.
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // Distinguishes model-synthesized commentary (this card) from the sourced
 // FRED/BLS/World Gold Council gauges elsewhere on the page — same visual
 // authority otherwise made it easy to mistake one for the other.
@@ -5034,6 +5270,7 @@ export default function MacroDashboard() {
   const [dbcDrawerOpen, setDbcDrawerOpen] = useState(false);
   const [liquidityDrawerOpen, setLiquidityDrawerOpen] = useState(false);
   const [somaDrawerOpen, setSomaDrawerOpen] = useState(false);
+  const [ticDrawerOpen, setTicDrawerOpen] = useState(false);
   const [regimeHistory, setRegimeHistory] = useState([]);
 
   const fetchIndicators = useCallback(async () => {
@@ -5232,6 +5469,7 @@ export default function MacroDashboard() {
                           : ind.name === "DBC Commodity Index" ? () => setDbcDrawerOpen(true)
                           : ind.name === "US Total Liquidity Composite" ? () => setLiquidityDrawerOpen(true)
                           : ind.name === "Fed SOMA Long-Duration Holdings (Δ)" ? () => setSomaDrawerOpen(true)
+                          : ind.name === "Foreign Official Share of UST Holdings (YoY Δ)" ? () => setTicDrawerOpen(true)
                           : undefined
                         }
                     />
@@ -5322,6 +5560,11 @@ export default function MacroDashboard() {
         open={somaDrawerOpen}
         onClose={() => setSomaDrawerOpen(false)}
         ind={indicators?.find((i) => i.name === "Fed SOMA Long-Duration Holdings (Δ)")}
+      />
+      <TicHoldingsDrawer
+        open={ticDrawerOpen}
+        onClose={() => setTicDrawerOpen(false)}
+        ind={indicators?.find((i) => i.name === "Foreign Official Share of UST Holdings (YoY Δ)")}
       />
     </Shell>
   );

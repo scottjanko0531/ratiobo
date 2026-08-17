@@ -151,7 +151,8 @@ interface Indicator {
     | "supabase_ism"
     | "supabase_liquidity"
     | "supabase_bigcycle_xref"
-    | "supabase_soma_duration";
+    | "supabase_soma_duration"
+    | "supabase_tic_official_share";
   series?: string;
   series2?: string;
   zscore?: boolean;
@@ -247,6 +248,14 @@ const INDICATORS: Indicator[] = [
     fred_series_id: null, unit: "$B", data_source: "supabase", sort_order: 98,
     type: "supabase_soma_duration",
     statusFn: v => v > 5 ? "danger" : v > 1 ? "watch" : "healthy",
+  },
+  {
+    name: "Foreign Official Share of UST Holdings (YoY Δ)",
+    layer: 1, layer_name: "Long-term Debt Cycle",
+    description: "12-month change in foreign central banks' share of total foreign-held US Treasuries (Treasury TIC Table 5) — distinct from Gauge 5's global FX reserve share; a declining official share means private buyers, the Fed (QE), or banks (regulatory pressure) must absorb more of the slack",
+    fred_series_id: null, unit: "pts YoY", data_source: "supabase", sort_order: 99,
+    type: "supabase_tic_official_share",
+    statusFn: v => v <= -3 ? "danger" : v <= -1 ? "watch" : "healthy",
   },
   {
     name: "Silver Price",
@@ -913,6 +922,29 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
           .filter(([, v]) => v.curr != null && v.prev != null)
           .reduce((s, [, v]) => s + (v.curr! - v.prev!), 0);
         metadata = { as_of_date: dates[0], short_term_delta_bn: Math.round(shortTermDelta * 10) / 10 };
+        break;
+      }
+      case "supabase_tic_official_share": {
+        // Foreign Official share of total foreign UST holdings (level), from
+        // monthly snapshots written by update-tic-holdings. Reports the
+        // 12-month point change in that share; "previous" needs a 14th month
+        // of history to give a real period-over-period arrow, so it mirrors
+        // current until the table has accumulated enough rows (same pattern
+        // as the manual Big Cycle cross-ref fields).
+        const { data: rows, error: ticErr } = await supabase
+          .from("tic_foreign_official_holdings")
+          .select("as_of_month, grand_total_bn, foreign_official_bn")
+          .order("as_of_month", { ascending: false });
+        if (ticErr || !rows || rows.length < 13) return null;
+        const shares = (rows as { as_of_month: string; grand_total_bn: number; foreign_official_bn: number }[])
+          .map((r) => ({ month: r.as_of_month, share: Number(r.foreign_official_bn) / Number(r.grand_total_bn) * 100 }));
+        current = Math.round((shares[0].share - shares[12].share) * 100) / 100;
+        previous = shares.length >= 14 ? Math.round((shares[1].share - shares[13].share) * 100) / 100 : current;
+        metadata = {
+          latest_share_pct: Math.round(shares[0].share * 100) / 100,
+          as_of_month: shares[0].month,
+          yoy_change_pts: current,
+        };
         break;
       }
       case "yahoo_price_with_3m": {

@@ -362,7 +362,7 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
     const { data } = await sb
       .from("macro_indicators")
       .select("name, current_value, status")
-      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread", "Fed SOMA Long-Duration Holdings (Δ)"]);
+      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread", "Fed SOMA Long-Duration Holdings (Δ)", "Foreign Official Share of UST Holdings (YoY Δ)"]);
     const byName = new Map((data ?? []).map((r: { name: string }) => [r.name, r]));
 
     const totalDebt = byName.get("Total Debt / GDP") as { current_value: number; status: string } | undefined;
@@ -406,6 +406,17 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
         key: "soma_long_duration_delta", value_numeric: v, value_display: `${v >= 0 ? "+" : ""}$${v.toFixed(1)}B`,
         status, status_label: status === "bad" ? "Absorbing duration" : status === "warn" ? "Watch" : "No absorption",
         note_suffix: "Weekly change in Fed SOMA Treasury holdings, 5Y+ remaining maturity — a composition signal distinct from the balance-sheet-size test above; not yet used to classify the MP-stage itself, since a single week's reading isn't a trend. Cross-referenced from Macro.",
+      });
+    }
+
+    const ticOfficial = byName.get("Foreign Official Share of UST Holdings (YoY Δ)") as { current_value: number; status: string } | undefined;
+    if (ticOfficial?.current_value != null) {
+      const v = Number(ticOfficial.current_value);
+      const status = MACRO_STATUS_MAP[ticOfficial.status] ?? null;
+      updates.push({
+        key: "tic_foreign_official_share_yoy", value_numeric: v, value_display: `${v >= 0 ? "+" : ""}${v.toFixed(2)}pts`,
+        status, status_label: status === "bad" ? "Official retreat" : status === "warn" ? "Watch" : "Stable",
+        note_suffix: "12-month change in foreign central banks' share of total foreign-held US Treasuries (Treasury TIC data) — a declining official share means private buyers, the Fed (QE), or banks (regulatory pressure) must absorb more of the slack; not yet used to classify the MP-stage itself. Cross-referenced from Macro.",
       });
     }
 
