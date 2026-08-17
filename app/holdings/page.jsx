@@ -1842,18 +1842,22 @@ export default function HoldingsPage() {
 
                 {/* Holding value history */}
                 {(() => {
-                  const RANGES = [
-                    { key: "1W", days: 7 },
-                    { key: "1M", days: 30 },
-                    { key: "3M", days: 90 },
-                    { key: "6M", days: 180 },
-                    { key: "1Y", days: 365 },
-                    { key: "All", days: null },
-                  ];
-                  const cutoff = RANGES.find((r) => r.key === historyRange)?.days;
-                  const cutoffDate = cutoff
-                    ? new Date(Date.now() - cutoff * 86400000).toISOString().slice(0, 10)
-                    : null;
+                  const RANGES = ["1W", "1M", "3M", "6M", "1Y", "All"];
+                  // Calendar-aligned cutoffs, not rolling day-count windows: 1W =
+                  // Monday of this week, 1M/3M/6M/1Y = 1st of the month N-1 back
+                  // (or Jan 1 for 1Y) — same convention as the Dashboard chart.
+                  const now = new Date();
+                  const dowOff = (now.getDay() + 6) % 7;
+                  const cutoffMap = {
+                    "1W": (() => { const d = new Date(now); d.setDate(now.getDate() - dowOff); return d; })(),
+                    "1M": new Date(now.getFullYear(), now.getMonth(), 1),
+                    "3M": new Date(now.getFullYear(), now.getMonth() - 2, 1),
+                    "6M": new Date(now.getFullYear(), now.getMonth() - 5, 1),
+                    "1Y": new Date(now.getFullYear(), 0, 1),
+                    "All": null,
+                  };
+                  const cutoff = cutoffMap[historyRange];
+                  const cutoffDate = cutoff ? cutoff.toISOString().slice(0, 10) : null;
                   const visibleHistory = cutoffDate
                     ? holdingHistory.filter((p) => p.date >= cutoffDate)
                     : holdingHistory;
@@ -1871,17 +1875,17 @@ export default function HoldingsPage() {
                           </button>
                         </div>
                         <div className="flex gap-0.5">
-                          {RANGES.map((r) => (
+                          {RANGES.map((key) => (
                             <button
-                              key={r.key}
-                              onClick={() => setHistoryRange(r.key)}
+                              key={key}
+                              onClick={() => setHistoryRange(key)}
                               className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                                historyRange === r.key
+                                historyRange === key
                                   ? "bg-ink text-brass-soft"
                                   : "text-paper-dim hover:text-paper"
                               }`}
                             >
-                              {r.key}
+                              {key}
                             </button>
                           ))}
                         </div>

@@ -418,17 +418,39 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
     if (gaugeRow) {
       const g1 = gaugeRow.gauge1 != null ? Number(gaugeRow.gauge1) : null;
       const g5 = gaugeRow.gauge5 != null ? Number(gaugeRow.gauge5) : null;
-      const zStatus = (z: number) => Math.abs(z) > 1.5 ? "bad" : Math.abs(z) > 1 ? "warn" : "good";
-      if (g1 != null) updates.push({
-        key: "debt_sustainability_gauge", value_numeric: g1, value_display: `${g1 >= 0 ? "+" : ""}${g1.toFixed(2)}`,
-        status: zStatus(g1), status_label: zStatus(g1) === "bad" ? "Elevated" : zStatus(g1) === "warn" ? "Watch" : "Normal",
-        note_suffix: `${gaugeRow.year} composite z-score (debt-to-GDP + debt-to-income gap, annual). See Macro dashboard, Gauge 1 — Debt Sustainability Risk.`,
-      });
-      if (g5 != null) updates.push({
-        key: "reserve_confidence_gauge", value_numeric: g5, value_display: `${g5 >= 0 ? "+" : ""}${g5.toFixed(2)}`,
-        status: zStatus(g5), status_label: zStatus(g5) === "bad" ? "Elevated" : zStatus(g5) === "warn" ? "Watch" : "Normal",
-        note_suffix: `${gaugeRow.year} composite z-score (CB gold buying + declining USD reserve share, annual). See Macro dashboard, Gauge 5 — Reserve Confidence Risk.`,
-      });
+      // Mirrors the exact band thresholds/labels from debtSustAssessment() and
+      // reserveConfAssessment() in components/DalioGauges.jsx — must stay in sync
+      // with that file so the same z-score never shows two different verdicts.
+      const debtSustAssessment = (g: number) => {
+        if (g > 2.0) return { status: "bad" as const, label: "Critical Risk" };
+        if (g > 1.5) return { status: "bad" as const, label: "Elevated Risk" };
+        if (g > 1.0) return { status: "bad" as const, label: "Elevated — Watch" };
+        if (g > 0.0) return { status: "warn" as const, label: "Mild Pressure" };
+        return { status: "good" as const, label: "Sustainable" };
+      };
+      const reserveConfAssessment = (g: number) => {
+        if (g > 1.5) return { status: "bad" as const, label: "Critical" };
+        if (g > 1.0) return { status: "bad" as const, label: "Elevated Risk" };
+        if (g > 0.25) return { status: "warn" as const, label: "Watch" };
+        if (g > -0.25) return { status: "good" as const, label: "Neutral" };
+        return { status: "good" as const, label: "Low Risk" };
+      };
+      if (g1 != null) {
+        const a = debtSustAssessment(g1);
+        updates.push({
+          key: "debt_sustainability_gauge", value_numeric: g1, value_display: `${g1 >= 0 ? "+" : ""}${g1.toFixed(2)}`,
+          status: a.status, status_label: a.label,
+          note_suffix: `${gaugeRow.year} composite z-score (debt-to-GDP + debt-to-income gap, annual). See Macro dashboard, Gauge 1 — Debt Sustainability Risk.`,
+        });
+      }
+      if (g5 != null) {
+        const a = reserveConfAssessment(g5);
+        updates.push({
+          key: "reserve_confidence_gauge", value_numeric: g5, value_display: `${g5 >= 0 ? "+" : ""}${g5.toFixed(2)}`,
+          status: a.status, status_label: a.label,
+          note_suffix: `${gaugeRow.year} composite z-score (CB gold buying + declining USD reserve share, annual). See Macro dashboard, Gauge 5 — Reserve Confidence Risk.`,
+        });
+      }
     }
   } catch (e) { console.error("[big-cycle] macro cross-ref:", e); }
   return updates;
