@@ -4607,6 +4607,246 @@ function LiquidityDrawer({ open, onClose, ind }) {
   );
 }
 
+// ── Fed SOMA Long-Duration Holdings ─────────────────────────────────────────────
+
+const SOMA_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">Fed SOMA Long-Duration Holdings</p>
+      <p className="text-paper-dim">Tracks the Federal Reserve's SOMA (System Open Market Account) Treasury holdings, bucketed by remaining maturity, with weekly change in the 5Y+ buckets (5-10Y and &gt;10Y combined) as the headline figure. This is a <i>composition</i> signal, distinct from the Fed Balance Sheet % GDP indicator above it, which only measures total <i>size</i>. The Fed can quietly absorb long-duration Treasury supply — a precursor to formal QE or yield-curve control — while the total balance sheet stays roughly flat; a pure size measure can't see that shift happening.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Methodology</p>
+      <p className="text-paper-dim">Source: NY Fed's public Markets Data API (CUSIP-level SOMA holdings, updated weekly). Each week's full snapshot is bucketed by remaining maturity as of that snapshot's own date, and bucket totals are diffed week-over-week. The per-security "change from prior week" field NY Fed publishes is not used directly — Treasury bill CUSIPs roll over into new CUSIPs on every auction, so per-CUSIP diffing silently misses that churn. Diffing full bucket totals avoids this.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Reading it</p>
+      <p className="text-paper-dim">A single week's reading is noise. What matters is a sustained run of positive weekly changes in the 5Y+ buckets — that would indicate the Fed is genuinely absorbing long-duration supply, not just rolling short-term bills. This indicator is tracked here as a leading, informational signal; it does not yet feed the Big Cycle debt-cycle MP1/MP2/MP3 stage classification, since one week's data isn't a trend to act on.</p>
+    </div>
+    <p className="text-[10px] text-paper-dim/50 italic">Source: Federal Reserve Bank of New York, Markets Data API (SOMA holdings).</p>
+  </div>
+);
+
+function SomaTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="card px-3 py-2 text-xs space-y-1 min-w-[200px]">
+      <p className="font-semibold text-paper mb-1">{label}</p>
+      {payload.map((p) => p.value == null ? null : (
+        <div key={p.dataKey} className="flex justify-between gap-4">
+          <span style={{ color: p.stroke ?? p.fill ?? p.color }}>{p.name}</span>
+          <span className="num text-paper">
+            {p.dataKey === "long_level" ? `$${Number(p.value).toFixed(0)}B` : `${Number(p.value) >= 0 ? "+" : ""}${Number(p.value).toFixed(2)}B`}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SomaDrawer({ open, onClose, ind }) {
+  const [rows, setRows] = useState(null);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [showFullHistory, setShowFullHistory] = useState(false);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    supabase
+      .from("soma_holdings_by_maturity")
+      .select("*")
+      .order("as_of_date", { ascending: true })
+      .then(({ data }) => setRows(data ?? []))
+      .catch(() => setRows([]));
+  }, [open, rows]);
+
+  // Pivot bucket rows into one wide row per week, then compute week-over-week
+  // deltas for the combined long-duration (5-10Y + >10Y) and short-end
+  // (16-90D + 91D-1Y) series — the raw table only stores levels per bucket.
+  const weeklyRows = useMemo(() => {
+    if (!rows) return [];
+    const byDate = new Map();
+    for (const r of rows) {
+      if (!byDate.has(r.as_of_date)) byDate.set(r.as_of_date, {});
+      byDate.get(r.as_of_date)[r.bucket] = Number(r.par_value_bn);
+    }
+    const dates = [...byDate.keys()].sort();
+    return dates.map((d, i) => {
+      const b = byDate.get(d);
+      const longLevel = (b["5-10Y"] ?? 0) + (b[">10Y"] ?? 0);
+      const shortLevel = (b["16-90D"] ?? 0) + (b["91D-1Y"] ?? 0);
+      const prev = i > 0 ? byDate.get(dates[i - 1]) : null;
+      const prevLong = prev ? (prev["5-10Y"] ?? 0) + (prev[">10Y"] ?? 0) : null;
+      const prevShort = prev ? (prev["16-90D"] ?? 0) + (prev["91D-1Y"] ?? 0) : null;
+      return {
+        as_of_date: d,
+        b510: b["5-10Y"] ?? null, bOver10: b[">10Y"] ?? null,
+        long_level: longLevel,
+        long_delta: prevLong != null ? longLevel - prevLong : null,
+        short_delta: prevShort != null ? shortLevel - prevShort : null,
+      };
+    });
+  }, [rows]);
+
+  const xTicks = useMemo(() => {
+    const total = weeklyRows.length;
+    const step = total > 40 ? 8 : total > 16 ? 4 : 2;
+    return weeklyRows.filter((_, i) => i % step === 0).map((r) => r.as_of_date);
+  }, [weeklyRows]);
+
+  const tableRows = useMemo(() => {
+    const sorted = [...weeklyRows].sort((a, b) => b.as_of_date.localeCompare(a.as_of_date));
+    return showFullHistory ? sorted : sorted.slice(0, 24);
+  }, [weeklyRows, showFullHistory]);
+
+  function fmtBn(v) { return v == null ? "—" : `${Number(v) >= 0 ? "+" : ""}$${Number(v).toFixed(2)}B`; }
+  function fmtLevel(v) { return v == null ? "—" : `$${Number(v).toFixed(0)}B`; }
+  function pctColor(v) { return v == null ? "text-paper-dim" : Number(v) >= 0 ? "text-loss" : "text-gain"; }
+  const fmtDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" });
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div className={`fixed right-0 top-0 h-full w-[780px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}>
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-paper">Fed SOMA Long-Duration Holdings</h2>
+              <button
+                onClick={() => setInfoOpen((v) => !v)}
+                className={`w-[18px] h-[18px] rounded-full border text-[10px] font-bold flex items-center justify-center flex-shrink-0 transition-colors ${infoOpen ? "border-brass text-brass bg-brass/10" : "border-paper-dim/40 text-paper-dim hover:border-paper hover:text-paper"}`}
+                title="About this indicator"
+              >
+                i
+              </button>
+            </div>
+            <p className="text-[10px] text-paper-dim mt-0.5">5-10Y + &gt;10Y SOMA Treasury holdings · Weekly Δ · NY Fed</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {ind?.current_value != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${Number(ind.current_value) > 1 ? "text-loss" : "text-gain"}`}>
+                  {Number(ind.current_value) >= 0 ? "+" : ""}${Number(ind.current_value).toFixed(1)}B
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">Weekly Δ, 5Y+</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        {infoOpen && (
+          <div className="px-5 py-4 border-b border-ink-line bg-ink shrink-0 overflow-y-auto max-h-[45vh]">
+            {SOMA_INFO}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <ResponsiveContainer width="100%" height={280}>
+                <ComposedChart data={weeklyRows} margin={{ top: 5, right: 8, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2f38" vertical={false} />
+                  <XAxis
+                    dataKey="as_of_date"
+                    ticks={xTicks}
+                    tickFormatter={fmtDate}
+                    tick={{ fontSize: 10, fill: "#8a8f98" }}
+                    axisLine={{ stroke: "#2a2f38" }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    yAxisId="left"
+                    tick={{ fontSize: 10, fill: "#8a8f98" }}
+                    axisLine={{ stroke: "#2a2f38" }}
+                    tickLine={false}
+                    tickFormatter={(v) => `$${v}B`}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    domain={["dataMin - 20", "dataMax + 20"]}
+                    tick={{ fontSize: 10, fill: "#8a8f98" }}
+                    axisLine={{ stroke: "#2a2f38" }}
+                    tickLine={false}
+                    tickFormatter={(v) => `$${Math.round(v)}B`}
+                  />
+                  <ReferenceLine yAxisId="left" y={0} stroke="#8a8f98" strokeOpacity={0.5} />
+                  <Tooltip content={<SomaTooltip />} labelFormatter={fmtDate} />
+                  <Bar yAxisId="left" dataKey="long_delta" name="Weekly Δ (5Y+)" maxBarSize={10}>
+                    {weeklyRows.map((r, i) => (
+                      <Cell key={i} fill={r.long_delta == null ? "transparent" : r.long_delta >= 0 ? "#E0635C" : "#3FB984"} fillOpacity={0.7} />
+                    ))}
+                  </Bar>
+                  <Line yAxisId="right" type="monotone" dataKey="long_level" name="Total 5Y+ Level" stroke="#7030A0" strokeWidth={2} dot={false} connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div className="flex flex-wrap items-center gap-4 mt-3 text-[10px] text-paper-dim/70">
+                <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#E0635C", opacity: 0.7 }} />Absorbing (+Δ)</span>
+                <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#3FB984", opacity: 0.7 }} />Reducing (−Δ)</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-5 h-[2px] rounded-sm" style={{ backgroundColor: "#7030A0" }} />
+                  Total 5Y+ level (right axis)
+                </span>
+              </div>
+            </div>
+          )}
+
+          {tableRows.length > 0 && (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="label text-[10px]">Weekly Detail{showFullHistory ? "" : " · last 24 weeks"}</p>
+                <button
+                  onClick={() => setShowFullHistory((v) => !v)}
+                  className="text-[10px] text-brass-soft hover:text-brass transition-colors"
+                >
+                  {showFullHistory ? "Show last 24 weeks" : "Show full history"}
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px] min-w-[560px]">
+                  <thead>
+                    <tr className="text-paper-dim text-[10px]">
+                      <th className="text-left pb-2 font-medium pr-2">Week</th>
+                      <th className="text-right pb-2 font-medium px-2">5-10Y</th>
+                      <th className="text-right pb-2 font-medium px-2">&gt;10Y</th>
+                      <th className="text-right pb-2 font-medium px-2">Combined 5Y+</th>
+                      <th className="text-right pb-2 font-medium px-2">Weekly Δ (5Y+)</th>
+                      <th className="text-right pb-2 font-medium pl-2">Short-End Δ (≤1Y)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows.map((r) => (
+                      <tr key={r.as_of_date} className="border-t border-ink-line/50">
+                        <td className="py-1.5 pr-2 text-paper-dim whitespace-nowrap">{fmtDate(r.as_of_date)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper-dim">{fmtLevel(r.b510)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper-dim">{fmtLevel(r.bOver10)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper font-semibold">{fmtLevel(r.long_level)}</td>
+                        <td className={`py-1.5 px-2 text-right num font-semibold ${pctColor(r.long_delta)}`}>{fmtBn(r.long_delta)}</td>
+                        <td className={`py-1.5 pl-2 text-right num ${pctColor(r.short_delta)}`}>{fmtBn(r.short_delta)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60 leading-relaxed">
+            Source: Federal Reserve Bank of New York, Markets Data API (SOMA holdings by CUSIP). Data as of each Wednesday, published Thursday.
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // Distinguishes model-synthesized commentary (this card) from the sourced
 // FRED/BLS/World Gold Council gauges elsewhere on the page — same visual
 // authority otherwise made it easy to mistake one for the other.
@@ -4793,6 +5033,7 @@ export default function MacroDashboard() {
   const [dxyDrawerOpen, setDxyDrawerOpen] = useState(false);
   const [dbcDrawerOpen, setDbcDrawerOpen] = useState(false);
   const [liquidityDrawerOpen, setLiquidityDrawerOpen] = useState(false);
+  const [somaDrawerOpen, setSomaDrawerOpen] = useState(false);
   const [regimeHistory, setRegimeHistory] = useState([]);
 
   const fetchIndicators = useCallback(async () => {
@@ -4990,6 +5231,7 @@ export default function MacroDashboard() {
                           : ind.name === "DXY" ? () => setDxyDrawerOpen(true)
                           : ind.name === "DBC Commodity Index" ? () => setDbcDrawerOpen(true)
                           : ind.name === "US Total Liquidity Composite" ? () => setLiquidityDrawerOpen(true)
+                          : ind.name === "Fed SOMA Long-Duration Holdings (Δ)" ? () => setSomaDrawerOpen(true)
                           : undefined
                         }
                     />
@@ -5075,6 +5317,11 @@ export default function MacroDashboard() {
         open={liquidityDrawerOpen}
         onClose={() => setLiquidityDrawerOpen(false)}
         ind={indicators?.find((i) => i.name === "US Total Liquidity Composite")}
+      />
+      <SomaDrawer
+        open={somaDrawerOpen}
+        onClose={() => setSomaDrawerOpen(false)}
+        ind={indicators?.find((i) => i.name === "Fed SOMA Long-Duration Holdings (Δ)")}
       />
     </Shell>
   );

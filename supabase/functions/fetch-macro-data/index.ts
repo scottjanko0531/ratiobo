@@ -150,7 +150,8 @@ interface Indicator {
     | "supabase_lei"
     | "supabase_ism"
     | "supabase_liquidity"
-    | "supabase_bigcycle_xref";
+    | "supabase_bigcycle_xref"
+    | "supabase_soma_duration";
   series?: string;
   series2?: string;
   zscore?: boolean;
@@ -238,6 +239,14 @@ const INDICATORS: Indicator[] = [
     fred_series_id: null, unit: "% YoY", data_source: "yahoo", sort_order: 97,
     type: "cb_gold_imf",
     statusFn: v => v < 5 ? "healthy" : v < 25 ? "watch" : "danger",
+  },
+  {
+    name: "Fed SOMA Long-Duration Holdings (Δ)",
+    layer: 1, layer_name: "Long-term Debt Cycle",
+    description: "Weekly change in Fed SOMA Treasury holdings, 5Y+ remaining maturity — a composition signal distinct from WALCL's balance-sheet size; the Fed can quietly absorb long-duration supply (an MP1→MP2 precursor) while total balance sheet size stays flat",
+    fred_series_id: null, unit: "$B", data_source: "supabase", sort_order: 98,
+    type: "supabase_soma_duration",
+    statusFn: v => v > 5 ? "danger" : v > 1 ? "watch" : "healthy",
   },
   {
     name: "Silver Price",
@@ -867,6 +876,43 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         current = Number(bcRow.value_numeric);
         previous = current;
         metadata = { source_note: bcRow.note, big_cycle_last_updated: bcRow.last_updated };
+        break;
+      }
+      case "supabase_soma_duration": {
+        // Weekly change in combined 5-10Y + >10Y SOMA par value — computed from
+        // bucket-total snapshots (written by update-soma-holdings), not a single
+        // stored delta, so this needs at least 3 distinct weekly snapshots to
+        // report both a current and a previous week-over-week change.
+        const { data: rows, error: somaErr } = await supabase
+          .from("soma_holdings_by_maturity")
+          .select("as_of_date, bucket, par_value_bn")
+          .in("bucket", ["5-10Y", ">10Y"])
+          .order("as_of_date", { ascending: false });
+        if (somaErr || !rows) return null;
+        const byDate = new Map<string, number>();
+        for (const r of rows as { as_of_date: string; bucket: string; par_value_bn: number }[]) {
+          byDate.set(r.as_of_date, (byDate.get(r.as_of_date) ?? 0) + Number(r.par_value_bn));
+        }
+        const dates = [...byDate.keys()].sort((a, b) => b.localeCompare(a));
+        if (dates.length < 2) return null;
+        current = byDate.get(dates[0])! - byDate.get(dates[1])!;
+        previous = dates.length >= 3 ? byDate.get(dates[1])! - byDate.get(dates[2])! : current;
+
+        const { data: shortRows } = await supabase
+          .from("soma_holdings_by_maturity")
+          .select("as_of_date, bucket, par_value_bn")
+          .in("bucket", ["16-90D", "91D-1Y"])
+          .in("as_of_date", [dates[0], dates[1]]);
+        const shortByBucket: Record<string, { curr?: number; prev?: number }> = {};
+        for (const r of (shortRows ?? []) as { as_of_date: string; bucket: string; par_value_bn: number }[]) {
+          if (!shortByBucket[r.bucket]) shortByBucket[r.bucket] = {};
+          if (r.as_of_date === dates[0]) shortByBucket[r.bucket].curr = Number(r.par_value_bn);
+          else shortByBucket[r.bucket].prev = Number(r.par_value_bn);
+        }
+        const shortTermDelta = Object.entries(shortByBucket)
+          .filter(([, v]) => v.curr != null && v.prev != null)
+          .reduce((s, [, v]) => s + (v.curr! - v.prev!), 0);
+        metadata = { as_of_date: dates[0], short_term_delta_bn: Math.round(shortTermDelta * 10) / 10 };
         break;
       }
       case "yahoo_price_with_3m": {

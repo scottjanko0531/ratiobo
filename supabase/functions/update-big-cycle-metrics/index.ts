@@ -362,7 +362,7 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
     const { data } = await sb
       .from("macro_indicators")
       .select("name, current_value, status")
-      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread"]);
+      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread", "Fed SOMA Long-Duration Holdings (Δ)"]);
     const byName = new Map((data ?? []).map((r: { name: string }) => [r.name, r]));
 
     const totalDebt = byName.get("Total Debt / GDP") as { current_value: number; status: string } | undefined;
@@ -395,6 +395,17 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
         key: "rate_growth_spread", value_numeric: v, value_display: pct1(v),
         status, status_label: status === "bad" ? "r > g — unsustainable trajectory" : status === "warn" ? "r ≈ g — borderline" : "r < g — sustainable",
         note_suffix: "10Y Treasury yield minus real GDP growth (r−g) — the classic debt-sustainability test. Cross-referenced from Macro.",
+      });
+    }
+
+    const somaDuration = byName.get("Fed SOMA Long-Duration Holdings (Δ)") as { current_value: number; status: string } | undefined;
+    if (somaDuration?.current_value != null) {
+      const v = Number(somaDuration.current_value);
+      const status = MACRO_STATUS_MAP[somaDuration.status] ?? null;
+      updates.push({
+        key: "soma_long_duration_delta", value_numeric: v, value_display: `${v >= 0 ? "+" : ""}$${v.toFixed(1)}B`,
+        status, status_label: status === "bad" ? "Absorbing duration" : status === "warn" ? "Watch" : "No absorption",
+        note_suffix: "Weekly change in Fed SOMA Treasury holdings, 5Y+ remaining maturity — a composition signal distinct from the balance-sheet-size test above; not yet used to classify the MP-stage itself, since a single week's reading isn't a trend. Cross-referenced from Macro.",
       });
     }
 
