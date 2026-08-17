@@ -26,7 +26,13 @@ interface Portfolio {
   id: string; portfolio_name: string; description: string | null;
   strategy_detail: string | null; target_allocations: Record<string, number> | null;
   rebalance_band_pct: number | null;
+  strategy_framework: "static" | "tactical" | "regime_driven" | null;
+  current_regime_key: string | null; regime_confirmed_since: string | null;
 }
+
+const REGIME_LABELS: Record<string, string> = {
+  rg_fi: "Disinflationary Boom", rg_ri: "Reflation", fg_ri: "Stagflation", fg_fi: "Deflationary Bust",
+};
 interface HoldingValued {
   id: string; symbol: string; name: string | null; asset_type: string; current_value: number | null;
   cost_basis: number | null; net_gain: number | null; total_dividends: number | null;
@@ -119,6 +125,18 @@ async function generatePortfolioAnalysis(params: {
       .join("\n") || "  No holdings assigned.";
     const anyOutOfBand = summary.allocation.some(a => a.outOfBand);
 
+    const STATIC_TEXT = `This portfolio is explicitly configured as a STATIC, regime-agnostic framework (e.g. risk parity, All Weather) — it does NOT need to predict which macro regime is active, because diversification comes from the mix of asset classes itself. Your recommendations must stay within rebalancing back to the target allocations shown above — do NOT recommend new sector, style, or duration tilts driven by today's regime call (e.g. "shift into small-cap/value," "avoid mega-cap"), since that contradicts this framework's own design philosophy. Judge holding composition on its own terms from what's actually listed above (e.g. a broad total-market fund like VTI or ITOT is not a "mega-cap" or "duration" bet — it's simply unstyled market-cap-weighted exposure) rather than speculating about what a bucket might contain.`;
+    const TACTICAL_TEXT = `This portfolio is explicitly configured as a TACTICAL, regime-responsive framework — it is meant to rotate or tilt exposure based on the macro cycle. Regime-driven tilts, including within a single sleeve and beyond simple rebalancing to target, are appropriate and expected.`;
+    const regimeDrivenLabel = portfolio.current_regime_key ? (REGIME_LABELS[portfolio.current_regime_key] ?? portfolio.current_regime_key) : null;
+    const REGIME_DRIVEN_TEXT = `This portfolio is explicitly configured as REGIME-DRIVEN: its target allocations shown above are set AUTOMATICALLY by a daily job that tracks Dalio's four-quadrant structural regime and only shifts targets once a new regime has held for 30 consecutive days (avoiding whipsaw on noise) — currently targeting ${regimeDrivenLabel ?? "an unset regime"}${portfolio.regime_confirmed_since ? `, confirmed since ${portfolio.regime_confirmed_since}` : ""}. The regime tilt has ALREADY happened at the target-allocation level — treat this exactly like a static framework for recommendation purposes: stay within rebalancing back to the CURRENT target shown above, do NOT layer additional freelance tactical tilts on top of what the automated target already encodes. If you believe the live regime differs from what's targeted, note that as context only — do not recommend the portfolio manually front-run the confirmation window.`;
+    const UNSET_TEXT = `Determine from the stated strategy and actual holdings above whether this portfolio is a static, regime-agnostic asset-allocation framework (e.g. risk parity, All Weather — explicitly designed so the investor does NOT need to predict which macro regime is active) or a tactical, regime-responsive framework (e.g. explicitly built to rotate or tilt exposure based on the macro cycle, such as BW Modified). If static/regime-agnostic, recommendations must stay within rebalancing back to the target allocations shown above — do NOT recommend new sector, style, or duration tilts driven by today's regime call. Judge holding composition on its own terms (e.g. a broad total-market fund like VTI or ITOT is not a "mega-cap" bet) rather than speculating about what a bucket might contain. If tactical/regime-responsive, regime-driven tilts are appropriate and expected.`;
+    const frameworkConstraint = "FRAMEWORK CONSTRAINT: " + (
+      portfolio.strategy_framework === "static" ? STATIC_TEXT
+      : portfolio.strategy_framework === "tactical" ? TACTICAL_TEXT
+      : portfolio.strategy_framework === "regime_driven" ? REGIME_DRIVEN_TEXT
+      : UNSET_TEXT
+    );
+
     const prompt = `You are Clio, macro analyst at RatioBo. You already wrote today's regime analysis and news musing (both below). Now assess this ONE portfolio specifically against that backdrop. Write direct, sharp analysis — no hedging language, no fluff, under 350 words total. No markdown headers, no bold, no title line.
 
 PORTFOLIO: ${portfolio.portfolio_name}
@@ -149,7 +167,7 @@ ${clioAnalysis ?? "Not yet generated today."}
 CLIO'S NEWS MUSING (already published today):
 ${clioMusing ?? "Not yet generated today."}
 
-FRAMEWORK CONSTRAINT — read the stated strategy and actual holdings above carefully before recommending anything: determine whether this portfolio is a static, regime-agnostic asset-allocation framework (e.g. risk parity, All Weather — explicitly designed so the investor does NOT need to predict which macro regime is active, because diversification comes from the mix of asset classes itself) or a tactical, regime-responsive framework (e.g. explicitly built to rotate or tilt exposure based on the macro cycle, such as BW Modified). If it is static/regime-agnostic, your recommendations must stay within rebalancing back to the portfolio's own stated target allocations shown above — do NOT recommend new sector, style, or duration tilts driven by today's regime call (e.g. "shift into small-cap/value," "avoid mega-cap"), since that contradicts the framework's own design philosophy of not needing to correctly guess the regime. Judge holding composition on its own terms from what's actually listed above (e.g. a broad total-market fund like VTI or ITOT is not a "mega-cap" or "duration" bet — it's simply unstyled market-cap-weighted exposure) rather than speculating about what a bucket might contain. If the framework is tactical/regime-responsive, regime-driven tilts — including within a single sleeve — are appropriate and expected.
+${frameworkConstraint}
 
 Structure your answer in two parts, separated by a blank line:
 (1) A paragraph assessing this portfolio's health: is its current allocation appropriate given its stated strategy AND the macro backdrop above? Where is it well-positioned, and where is it exposed? If it has no stated strategy, note that explicitly and assess purely against the macro backdrop.

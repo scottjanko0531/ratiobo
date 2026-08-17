@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Shell from "../../components/Shell";
 import { supabase } from "../../lib/supabase";
-import { SIMULATOR_KEYS, resolveSimulatorKey } from "../../lib/simulatorKeys";
+import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META } from "../../lib/simulatorKeys";
 import HoldingDetailDrawer from "../../components/HoldingDetailDrawer";
 
 const usd = (v) => {
@@ -39,7 +39,7 @@ export default function PortfoliosPage() {
   const [viewingPortfolio, setViewingPortfolio] = useState(null);
   const [expandedBuckets, setExpandedBuckets]   = useState(new Set()); // empty = all collapsed
   const [editingPortfolio, setEditingPortfolio] = useState(null); // "new" | portfolio obj
-  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5 });
+  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "" });
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -145,6 +145,17 @@ export default function PortfoliosPage() {
   // Reset bucket expansion whenever a different portfolio is opened
   useEffect(() => { setExpandedBuckets(new Set()); }, [viewingPortfolio?.id]);
 
+  const [regimeShifts, setRegimeShifts] = useState([]);
+  useEffect(() => {
+    if (!viewingPortfolio || viewingPortfolio.strategy_framework !== "regime_driven") { setRegimeShifts([]); return; }
+    supabase
+      .from("portfolio_regime_shifts")
+      .select("*")
+      .eq("portfolio_id", viewingPortfolio.id)
+      .order("shifted_at", { ascending: false })
+      .then(({ data }) => setRegimeShifts(data ?? []));
+  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework]);
+
   // ── Helpers ──────────────────────────────────────────────────────────────────
   const holdingsFor = useCallback((pfId) => {
     const ids = new Set(phMap[pfId] ?? []);
@@ -183,7 +194,7 @@ export default function PortfoliosPage() {
 
   // ── CRUD ─────────────────────────────────────────────────────────────────────
   function openNew() {
-    setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5 });
+    setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "" });
     setFormError("");
     setEditingPortfolio("new");
   }
@@ -195,6 +206,7 @@ export default function PortfoliosPage() {
       strategy_detail:    pf.strategy_detail    ?? "",
       target_allocations: pf.target_allocations ?? {},
       rebalance_band_pct: pf.rebalance_band_pct ?? 5,
+      strategy_framework: pf.strategy_framework ?? "",
     });
     setFormError("");
     setEditingPortfolio(pf);
@@ -204,13 +216,20 @@ export default function PortfoliosPage() {
     if (!form.portfolio_name.trim()) { setFormError("Name is required."); return; }
     setFormBusy(true); setFormError("");
     const { data: { user } } = await supabase.auth.getUser();
+    const wasRegimeDriven = editingPortfolio !== "new" && editingPortfolio.strategy_framework === "regime_driven";
+    const nowRegimeDriven = form.strategy_framework === "regime_driven";
     const payload = {
       portfolio_name:     form.portfolio_name.trim(),
       description:        form.description.trim()  || null,
       strategy_detail:    form.strategy_detail.trim() || null,
       target_allocations: form.target_allocations,
       rebalance_band_pct: form.rebalance_band_pct === "" || form.rebalance_band_pct == null ? 5 : Number(form.rebalance_band_pct),
+      strategy_framework: form.strategy_framework || null,
       updated_at:         new Date().toISOString(),
+      // Turning regime-driven off releases manual control of target_allocations again;
+      // turning it on (or switching regimes) resets tracking so the next daily cron
+      // treats it as a fresh activation rather than resuming stale state.
+      ...(wasRegimeDriven && !nowRegimeDriven ? { current_regime_key: null, regime_confirmed_since: null, pending_regime_key: null, pending_regime_since: null } : {}),
     };
     let error;
     if (editingPortfolio === "new") {
@@ -337,6 +356,35 @@ export default function PortfoliosPage() {
                   <div className="px-5 py-3 border-b border-ink-line bg-ink/30">
                     <p className="label text-[10px] mb-1">Strategy</p>
                     <p className="text-xs text-paper-dim leading-relaxed whitespace-pre-wrap">{pf.strategy_detail}</p>
+                  </div>
+                )}
+
+                {/* Regime-driven status */}
+                {pf.strategy_framework === "regime_driven" && (
+                  <div className="px-5 py-3 border-b border-ink-line bg-ink/30">
+                    <p className="label text-[10px] mb-1">Regime-Driven Targets</p>
+                    {pf.current_regime_key ? (
+                      <p className="text-xs text-paper-dim leading-relaxed">
+                        Currently targeting <span className="text-paper font-medium">{REGIME_META[pf.current_regime_key]?.label ?? pf.current_regime_key}</span> weights
+                        {pf.regime_confirmed_since && `, confirmed since ${pf.regime_confirmed_since}`}.
+                        {pf.pending_regime_key && pf.pending_regime_key !== pf.current_regime_key && (
+                          <span className="block mt-1 text-brass-soft">
+                            Watching a shift to {REGIME_META[pf.pending_regime_key]?.label ?? pf.pending_regime_key} — confirms after 30 days if it persists (since {pf.pending_regime_since}).
+                          </span>
+                        )}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-paper-dim italic">Not yet activated — the daily job will set an initial target on its next run.</p>
+                    )}
+                    {regimeShifts.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-ink-line/50 space-y-1">
+                        {regimeShifts.slice(0, 5).map((r) => (
+                          <p key={r.id} className="text-[10px] text-paper-dim/70">
+                            {r.shifted_at?.slice(0, 10)} — {r.from_label ? `${r.from_label} → ${r.to_label}` : `Activated at ${r.to_label}`}
+                          </p>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -683,33 +731,64 @@ export default function PortfoliosPage() {
               </div>
 
               <div>
+                <label className="label block mb-1.5">Strategy Framework</label>
+                <select
+                  className="field"
+                  value={form.strategy_framework}
+                  onChange={(e) => setForm((f) => ({ ...f, strategy_framework: e.target.value }))}
+                >
+                  <option value="">Auto-detect from strategy text (default)</option>
+                  <option value="static">Static — regime-agnostic (e.g. All Weather, risk parity)</option>
+                  <option value="tactical">Tactical — discretionary regime-responsive tilts</option>
+                  <option value="regime_driven">Regime-driven — target allocations auto-follow Dalio's quadrant</option>
+                </select>
+                <p className="text-[10px] text-paper-dim/60 mt-1">
+                  {form.strategy_framework === "regime_driven"
+                    ? "Target Allocations below are managed automatically once saved — a daily job shifts them to match the confirmed macro regime (30-day confirmation window to avoid whipsaw). Manual edits below will be overwritten."
+                    : "Determines how Daily Analysis reasons about rebalancing vs. tactical tilts. Leave on auto-detect unless you want it locked explicitly."}
+                </p>
+              </div>
+
+              <div>
                 <label className="label block mb-2">Target Allocations</label>
-                <div className="space-y-1">
-                  {SIMULATOR_KEYS.map(({ key, label }) => {
-                    const val = form.target_allocations[key] ?? "";
-                    return (
+                {form.strategy_framework === "regime_driven" ? (
+                  <div className="space-y-1 opacity-50 pointer-events-none">
+                    {SIMULATOR_KEYS.filter(({ key }) => (form.target_allocations[key] ?? 0) > 0 || ["eq","intl","em","nb","tip","com","gld","cash"].includes(key)).map(({ key, label }) => (
                       <div key={key} className="flex items-center gap-2">
                         <span className="text-xs text-paper-dim flex-1">{label}</span>
-                        <input
-                          type="number" min="0" max="100" step="1"
-                          className="field w-16 py-1 px-2 text-xs text-right"
-                          placeholder="0"
-                          value={val}
-                          onChange={(e) => {
-                            const raw = e.target.value;
-                            const n = raw === "" ? 0 : Math.max(0, Math.min(100, Number(raw)));
-                            setForm((f) => ({
-                              ...f,
-                              target_allocations: { ...f.target_allocations, [key]: n },
-                            }));
-                          }}
-                        />
+                        <span className="field w-16 py-1 px-2 text-xs text-right block">{form.target_allocations[key] ?? 0}</span>
                         <span className="text-xs text-paper-dim w-3">%</span>
                       </div>
-                    );
-                  })}
-                </div>
-                {(() => {
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {SIMULATOR_KEYS.map(({ key, label }) => {
+                      const val = form.target_allocations[key] ?? "";
+                      return (
+                        <div key={key} className="flex items-center gap-2">
+                          <span className="text-xs text-paper-dim flex-1">{label}</span>
+                          <input
+                            type="number" min="0" max="100" step="1"
+                            className="field w-16 py-1 px-2 text-xs text-right"
+                            placeholder="0"
+                            value={val}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const n = raw === "" ? 0 : Math.max(0, Math.min(100, Number(raw)));
+                              setForm((f) => ({
+                                ...f,
+                                target_allocations: { ...f.target_allocations, [key]: n },
+                              }));
+                            }}
+                          />
+                          <span className="text-xs text-paper-dim w-3">%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {form.strategy_framework !== "regime_driven" && (() => {
                   const total = SIMULATOR_KEYS.reduce((s, { key }) => s + (Number(form.target_allocations[key]) || 0), 0);
                   const diff  = total - 100;
                   return (
