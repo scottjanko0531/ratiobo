@@ -4857,11 +4857,11 @@ const TIC_INFO = (
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">Methodology</p>
-      <p className="text-paper-dim">Source: US Treasury's TIC "Table 5: Major Foreign Holders of Treasury Securities" — a monthly <i>stock</i> (level) figure, not a net-transaction flow, so it isn't noisy the way monthly buy/sell figures can be. The headline number is the 12-month change in official share (percentage points). The z-score is computed against the mean/standard deviation of official share across all months this dashboard has stored — since this indicator was only added recently, its history is currently short, so treat early z-scores as provisional; they'll sharpen as more months accumulate (the table keeps every month it has ever fetched, even though the source file itself only ever exposes a rolling 13-month window).</p>
+      <p className="text-paper-dim">Source: US Treasury's TIC "Table 5: Major Foreign Holders of Treasury Securities" — a monthly <i>stock</i> (level) figure, not a net-transaction flow, so it isn't noisy the way monthly buy/sell figures can be. Combines the live rolling 13-month file with Treasury's separate historical archive (year-blocks back to March 2000), giving 26+ years of monthly history. The headline number is the 12-month change in official share (percentage points). The z-score in the chart and table is computed against the mean/standard deviation of official share across that full history.</p>
     </div>
     <div>
       <p className="text-paper font-semibold mb-1">Reading it</p>
-      <p className="text-paper-dim">A negative z-score / negative YoY change means the official share is below its own recent norm and falling — central banks are relatively more net-sellers than private buyers. This indicator is tracked here as a leading, informational signal; it does not yet feed the Big Cycle debt-cycle MP1/MP2/MP3 stage classification.</p>
+      <p className="text-paper-dim">The z-score reflects a real, decades-long structural decline — the official share was consistently 60-90% through the 2000s and 2010s and sits in the low 40s now, so recent readings run persistently negative (roughly -2 to -2.5σ) against that long-run mean. Read the z-score as "how stretched is the current level relative to history," and the 12-month change as the tactical, near-term momentum — a negative YoY change on top of an already-negative z-score means central banks are actively accelerating away from an already-low base, not just sitting at a structurally new normal. This indicator is tracked here as a leading, informational signal; it does not yet feed the Big Cycle debt-cycle MP1/MP2/MP3 stage classification.</p>
     </div>
     <p className="text-[10px] text-paper-dim/50 italic">Source: US Department of the Treasury, Treasury International Capital (TIC) System.</p>
   </div>
@@ -4876,7 +4876,7 @@ function TicTooltip({ active, payload, label }) {
         <div key={p.dataKey} className="flex justify-between gap-4">
           <span style={{ color: p.stroke ?? p.fill ?? p.color }}>{p.name}</span>
           <span className="num text-paper">
-            {p.dataKey === "share_pct" ? `${Number(p.value).toFixed(2)}%` : `${Number(p.value) >= 0 ? "+" : ""}${Number(p.value).toFixed(2)}pts`}
+            {p.dataKey === "share_pct" ? `${Number(p.value).toFixed(2)}%` : `${Number(p.value) >= 0 ? "+" : ""}${Number(p.value).toFixed(2)}σ`}
           </span>
         </div>
       ))}
@@ -4999,10 +4999,11 @@ function TicHoldingsDrawer({ open, onClose, ind }) {
                   />
                   <YAxis
                     yAxisId="left"
+                    domain={["dataMin - 0.5", "dataMax + 0.5"]}
                     tick={{ fontSize: 10, fill: "#8a8f98" }}
                     axisLine={{ stroke: "#2a2f38" }}
                     tickLine={false}
-                    tickFormatter={(v) => `${v}pts`}
+                    tickFormatter={(v) => `${v}σ`}
                   />
                   <YAxis
                     yAxisId="right"
@@ -5015,17 +5016,17 @@ function TicHoldingsDrawer({ open, onClose, ind }) {
                   />
                   <ReferenceLine yAxisId="left" y={0} stroke="#8a8f98" strokeOpacity={0.5} />
                   <Tooltip content={<TicTooltip />} labelFormatter={fmtDate} />
-                  <Bar yAxisId="left" dataKey="yoy_change_pts" name="12-Mo Δ (Official Share)" maxBarSize={10}>
+                  <Bar yAxisId="left" dataKey="z_score" name="Official Share Z-Score" maxBarSize={16}>
                     {monthlyRows.map((r, i) => (
-                      <Cell key={i} fill={r.yoy_change_pts == null ? "transparent" : r.yoy_change_pts >= 0 ? "#3FB984" : "#E0635C"} fillOpacity={0.7} />
+                      <Cell key={i} fill={r.z_score == null ? "transparent" : r.z_score >= 0 ? "#3FB984" : "#E0635C"} fillOpacity={0.7} />
                     ))}
                   </Bar>
                   <Line yAxisId="right" type="monotone" dataKey="share_pct" name="Official Share Level" stroke="#7030A0" strokeWidth={2} dot={false} connectNulls />
                 </ComposedChart>
               </ResponsiveContainer>
               <div className="flex flex-wrap items-center gap-4 mt-3 text-[10px] text-paper-dim/70">
-                <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#3FB984", opacity: 0.7 }} />Share rising YoY (+Δ)</span>
-                <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#E0635C", opacity: 0.7 }} />Share falling YoY (−Δ)</span>
+                <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#3FB984", opacity: 0.7 }} />Above own historical average (+σ)</span>
+                <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#E0635C", opacity: 0.7 }} />Below own historical average (−σ)</span>
                 <span className="flex items-center gap-1.5">
                   <span className="inline-block w-5 h-[2px] rounded-sm" style={{ backgroundColor: "#7030A0" }} />
                   Official share level (right axis)
