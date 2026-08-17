@@ -25,6 +25,7 @@ function stripMarkdown(text: string): string {
 interface Portfolio {
   id: string; portfolio_name: string; description: string | null;
   strategy_detail: string | null; target_allocations: Record<string, number> | null;
+  rebalance_band_pct: number | null;
 }
 interface HoldingValued {
   id: string; symbol: string; name: string | null; asset_type: string; current_value: number | null;
@@ -49,7 +50,19 @@ function resolveSimulatorKey(h: { simulator_key: string | null; asset_type: stri
   return h.simulator_key ?? ASSET_TYPE_DEFAULT[h.asset_type] ?? "unassigned";
 }
 
-function computePortfolioSummary(holdings: HoldingValued[], targets: Record<string, number> | null) {
+// Standard institutional/practitioner rebalancing convention (Vanguard, robo-advisors):
+// a bucket is "out of band" only once its drift exceeds the GREATER of an absolute
+// band (user-set, default 5pt) or a relative band (25% of its own target weight) —
+// the relative leg keeps small target weights from triggering on tiny absolute moves,
+// the absolute leg keeps large target weights from being allowed to drift freely.
+function bandStatus(pct: number, target: number | null, bandPct: number): { effectiveBand: number | null; drift: number | null; outOfBand: boolean } {
+  if (target == null) return { effectiveBand: null, drift: null, outOfBand: false };
+  const effectiveBand = Math.max(bandPct, 0.25 * target);
+  const drift = pct - target;
+  return { effectiveBand, drift, outOfBand: Math.abs(drift) > effectiveBand };
+}
+
+function computePortfolioSummary(holdings: HoldingValued[], targets: Record<string, number> | null, bandPct: number) {
   const totalValue = holdings.reduce((s, h) => s + Number(h.current_value ?? 0), 0);
   const costBasis = holdings.reduce((s, h) => s + Number(h.cost_basis ?? 0), 0);
   const totalGain = holdings.reduce((s, h) =>
@@ -66,11 +79,12 @@ function computePortfolioSummary(holdings: HoldingValued[], targets: Record<stri
   }
   const allocation = [...byBucket.entries()].map(([key, value]) => {
     const pct = totalValue > 0 ? (value / totalValue) * 100 : 0;
-    const target = targets?.[key];
+    const target = targets?.[key] ?? null;
     const holdingsHere = (holdingsByBucket.get(key) ?? [])
       .filter(h => Number(h.current_value ?? 0) > 0)
       .sort((a, b) => Number(b.current_value ?? 0) - Number(a.current_value ?? 0));
-    return { key, label: BUCKET_LABELS[key] ?? key, pct, target: target ?? null, holdings: holdingsHere };
+    const band = bandStatus(pct, target, bandPct);
+    return { key, label: BUCKET_LABELS[key] ?? key, pct, target, holdings: holdingsHere, ...band };
   }).sort((a, b) => b.pct - a.pct);
 
   return { totalValue, costBasis, totalGain, returnPct, count: holdings.length, allocation };
@@ -89,13 +103,21 @@ async function generatePortfolioAnalysis(params: {
     const { portfolio, summary, dayChg, structuralRegime, marketRegime, forwardConfidence, clioAnalysis, clioMusing, macroStatusCounts } = params;
 
     const usd = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`;
+    const bandPct = portfolio.rebalance_band_pct ?? 5;
     const allocLines = summary.allocation
       .map(a => {
-        const header = `  ${a.label}: ${a.pct.toFixed(1)}%${a.target != null ? ` (target ${a.target}%, ${a.pct - a.target >= 0 ? "+" : ""}${(a.pct - a.target).toFixed(1)}pt)` : ""}`;
+        const driftTxt = a.target != null ? `${a.drift! >= 0 ? "+" : ""}${a.drift!.toFixed(1)}pt` : "";
+        const bandTxt = a.target != null
+          ? a.outOfBand
+            ? `OUT OF BAND (±${a.effectiveBand!.toFixed(1)}pt tolerance) — rebalancing this bucket is warranted`
+            : `within ±${a.effectiveBand!.toFixed(1)}pt band — no rebalancing action needed here`
+          : "";
+        const header = `  ${a.label}: ${a.pct.toFixed(1)}%${a.target != null ? ` (target ${a.target}%, ${driftTxt}, ${bandTxt})` : ""}`;
         const holdingsList = a.holdings.map(h => `${h.symbol}${h.name ? ` (${h.name})` : ""}`).join(", ");
         return `${header}\n    Holdings: ${holdingsList || "none"}`;
       })
       .join("\n") || "  No holdings assigned.";
+    const anyOutOfBand = summary.allocation.some(a => a.outOfBand);
 
     const prompt = `You are Clio, macro analyst at RatioBo. You already wrote today's regime analysis and news musing (both below). Now assess this ONE portfolio specifically against that backdrop. Write direct, sharp analysis — no hedging language, no fluff, under 350 words total. No markdown headers, no bold, no title line.
 
@@ -107,8 +129,13 @@ Holdings: ${summary.count}, Total value: ${usd(summary.totalValue)}, Cost basis:
 Total gain: ${summary.totalGain >= 0 ? "+" : ""}${usd(summary.totalGain)} (${summary.returnPct != null ? `${summary.returnPct >= 0 ? "+" : ""}${summary.returnPct.toFixed(1)}%` : "n/a"})
 ${dayChg != null ? `Day change: ${dayChg >= 0 ? "+" : ""}${usd(dayChg)}` : ""}
 
-Current allocation by bucket:
+Current allocation by bucket (rebalancing tolerance band already computed per bucket —
+this portfolio's absolute band is ±${bandPct}pt, widened to 25% of a bucket's own target
+weight when that's larger, which is standard institutional/robo-advisor practice — do
+not compute or judge drift tolerance yourself, use the OUT OF BAND / within band verdict
+already given for each bucket):
 ${allocLines}
+${anyOutOfBand ? "" : "REBALANCING CONSTRAINT: every bucket above is within its band. Do not recommend rebalancing any bucket today — state plainly that the portfolio is within tolerance and no trades are needed on that front, even if a bucket has nonzero drift."}
 
 TODAY'S MACRO BACKDROP:
 Structural regime: ${structuralRegime ?? "unknown"}
@@ -126,7 +153,7 @@ FRAMEWORK CONSTRAINT — read the stated strategy and actual holdings above care
 
 Structure your answer in two parts, separated by a blank line:
 (1) A paragraph assessing this portfolio's health: is its current allocation appropriate given its stated strategy AND the macro backdrop above? Where is it well-positioned, and where is it exposed? If it has no stated strategy, note that explicitly and assess purely against the macro backdrop.
-(2) A "Recommendations:" section: one short lead-in sentence, then 3-5 bullet points (each on its own line, starting with "- "), each a specific, actionable instruction naming a real bucket, asset class, or holding in this portfolio and what to do with it, tied explicitly to either the strategy/target-allocation drift above or the macro regime above.
+(2) A "Recommendations:" section: one short lead-in sentence, then 3-5 bullet points (each on its own line, starting with "- "), each a specific, actionable instruction naming a real bucket, asset class, or holding in this portfolio and what to do with it. Any rebalancing trade must be justified by a bucket marked OUT OF BAND above — never recommend trimming or adding to a bucket that's within its band purely because it has nonzero drift or because of the macro regime call (for static/regime-agnostic frameworks per the constraint above). Bullets not about rebalancing (e.g. macro-driven tactical calls for a tactical framework) don't need a band justification, just the macro regime tie-in.
 
 Part 1 must be plain prose — no bullets, no bold, no headers. Part 2 must be lead-in sentence + bullets only.`;
 
@@ -166,7 +193,8 @@ async function analyzeOnePortfolio(
       .in("id", holdingIds);
     if (!holdings?.length) return { portfolioId: portfolio.id, ok: false, error: "no valued holdings" };
 
-    const summary = computePortfolioSummary(holdings as HoldingValued[], portfolio.target_allocations);
+    const bandPct = portfolio.rebalance_band_pct ?? 5;
+    const summary = computePortfolioSummary(holdings as HoldingValued[], portfolio.target_allocations, bandPct);
 
     // Day change: today's opening snapshot (written by the nightly-portfolio-snapshot
     // cron) vs. current live value — same convention the frontend drawer already uses.
@@ -198,6 +226,7 @@ async function analyzeOnePortfolio(
       structural_regime: macroCtx.structuralRegime,
       market_regime: macroCtx.marketRegime,
       forward_confidence: macroCtx.forwardConfidence,
+      rebalance_band_pct: bandPct,
       generated_at: new Date().toISOString(),
     }, { onConflict: "portfolio_id,analysis_date" });
     if (upErr) return { portfolioId: portfolio.id, ok: false, error: upErr.message };

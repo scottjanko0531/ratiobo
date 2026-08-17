@@ -39,7 +39,7 @@ export default function PortfoliosPage() {
   const [viewingPortfolio, setViewingPortfolio] = useState(null);
   const [expandedBuckets, setExpandedBuckets]   = useState(new Set()); // empty = all collapsed
   const [editingPortfolio, setEditingPortfolio] = useState(null); // "new" | portfolio obj
-  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {} });
+  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5 });
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -183,7 +183,7 @@ export default function PortfoliosPage() {
 
   // ── CRUD ─────────────────────────────────────────────────────────────────────
   function openNew() {
-    setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {} });
+    setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5 });
     setFormError("");
     setEditingPortfolio("new");
   }
@@ -194,6 +194,7 @@ export default function PortfoliosPage() {
       description:        pf.description        ?? "",
       strategy_detail:    pf.strategy_detail    ?? "",
       target_allocations: pf.target_allocations ?? {},
+      rebalance_band_pct: pf.rebalance_band_pct ?? 5,
     });
     setFormError("");
     setEditingPortfolio(pf);
@@ -208,6 +209,7 @@ export default function PortfoliosPage() {
       description:        form.description.trim()  || null,
       strategy_detail:    form.strategy_detail.trim() || null,
       target_allocations: form.target_allocations,
+      rebalance_band_pct: form.rebalance_band_pct === "" || form.rebalance_band_pct == null ? 5 : Number(form.rebalance_band_pct),
       updated_at:         new Date().toISOString(),
     };
     let error;
@@ -385,6 +387,7 @@ export default function PortfoliosPage() {
                                 {isStale ? `Last run ${a.analysis_date}` : "Updated today"}
                                 {a.structural_regime && ` · ${a.structural_regime}${a.market_regime && a.market_regime !== a.structural_regime ? ` / ${a.market_regime}` : ""}`}
                                 {a.forward_confidence != null && ` · ${a.forward_confidence}% forward confidence`}
+                                {a.rebalance_band_pct != null && ` · ±${a.rebalance_band_pct}pt rebalance band`}
                               </p>
                             )}
                           </div>
@@ -716,6 +719,20 @@ export default function PortfoliosPage() {
                     </div>
                   );
                 })()}
+              </div>
+
+              <div>
+                <label className="label block mb-1.5">Rebalance Band</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number" min="0" max="50" step="0.5"
+                    className="field w-20 py-1.5 px-2 text-xs"
+                    value={form.rebalance_band_pct}
+                    onChange={(e) => setForm((f) => ({ ...f, rebalance_band_pct: e.target.value }))}
+                  />
+                  <span className="text-xs text-paper-dim">points absolute, or 25% of a bucket's own target if larger — whichever tolerance is wider</span>
+                </div>
+                <p className="text-[10px] text-paper-dim/60 mt-1">Daily Analysis only recommends rebalancing a bucket once its drift from target exceeds this band.</p>
               </div>
 
               {formError && <p className="text-loss text-sm">{formError}</p>}
