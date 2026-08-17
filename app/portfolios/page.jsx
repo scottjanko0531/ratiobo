@@ -31,6 +31,8 @@ export default function PortfoliosPage() {
   const [assetTypes, setAssetTypes]           = useState([]);
   const [txnTypes, setTxnTypes]               = useState([]);
   const [busy, setBusy]                       = useState(true);
+  const [analysisMap, setAnalysisMap]         = useState({}); // portfolio_id -> latest analysis row
+  const [analysisRunningId, setAnalysisRunningId] = useState(null);
 
   const [detailHolding, setDetailHolding]     = useState(null);
 
@@ -106,6 +108,37 @@ export default function PortfoliosPage() {
     setAssetTypes(atData ?? []);
     setTxnTypes(ttData ?? []);
     setBusy(false);
+    loadAnalyses();
+  }
+
+  // Latest analysis row per portfolio — ordered desc and reduced in JS since we only
+  // need the newest row per portfolio_id, not a full history.
+  async function loadAnalyses() {
+    const { data } = await supabase
+      .from("portfolio_daily_analysis")
+      .select("*")
+      .order("analysis_date", { ascending: false });
+    const map = {};
+    for (const row of data ?? []) {
+      if (!map[row.portfolio_id]) map[row.portfolio_id] = row;
+    }
+    setAnalysisMap(map);
+  }
+
+  async function runPortfolioAnalysis(portfolioId) {
+    setAnalysisRunningId(portfolioId);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/analyze-portfolio-health`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ portfolio_id: portfolioId }),
+      });
+      const row = await res.json();
+      if (res.ok && row?.id) {
+        setAnalysisMap((prev) => ({ ...prev, [portfolioId]: row }));
+      }
+    } catch (_) { /* best-effort */ }
+    setAnalysisRunningId(null);
   }
 
   useEffect(() => { load(); }, []);
@@ -334,6 +367,67 @@ export default function PortfoliosPage() {
                       )}
                     </div>
                   ))}
+                </div>
+
+                {/* Daily Analysis */}
+                <div className="px-5 py-4 border-b border-ink-line">
+                  {(() => {
+                    const a = analysisMap[pf.id];
+                    const running = analysisRunningId === pf.id;
+                    const isStale = a && a.analysis_date !== new Date().toISOString().slice(0, 10);
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <p className="label text-[10px]">Daily Analysis</p>
+                            {a && (
+                              <p className="text-[10px] text-paper-dim/60 mt-0.5">
+                                {isStale ? `Last run ${a.analysis_date}` : "Updated today"}
+                                {a.structural_regime && ` · ${a.structural_regime}${a.market_regime && a.market_regime !== a.structural_regime ? ` / ${a.market_regime}` : ""}`}
+                                {a.forward_confidence != null && ` · ${a.forward_confidence}% forward confidence`}
+                              </p>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => runPortfolioAnalysis(pf.id)}
+                            disabled={running}
+                            className="px-3 py-1.5 rounded-lg text-xs border border-brass/40 text-brass-soft hover:bg-brass/10 disabled:opacity-50 transition-colors shrink-0"
+                          >
+                            {running ? "Running…" : a ? "Run Analysis" : "Run Analysis"}
+                          </button>
+                        </div>
+                        {a ? (
+                          <div className="space-y-2.5">
+                            {a.analysis.split(/\n\n+/).map((block, i) => {
+                              const lines = block.trim().split("\n").map((l) => l.trim()).filter(Boolean);
+                              const bulletLines = lines.filter((l) => /^[-*]\s+/.test(l));
+                              const isBulletBlock = bulletLines.length >= 2 && bulletLines.length >= lines.length - 1;
+                              if (!isBulletBlock) {
+                                return <p key={i} className="text-xs text-paper-dim leading-relaxed">{block.trim()}</p>;
+                              }
+                              const leadIn = lines.filter((l) => !/^[-*]\s+/.test(l));
+                              return (
+                                <div key={i}>
+                                  {leadIn.map((l, j) => (
+                                    <p key={`lead-${j}`} className="text-xs text-paper-dim leading-relaxed mb-1.5">{l}</p>
+                                  ))}
+                                  <ul className="list-disc pl-4 space-y-1">
+                                    {bulletLines.map((l, j) => (
+                                      <li key={j} className="text-xs text-paper-dim leading-relaxed">{l.replace(/^[-*]\s+/, "")}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-paper-dim italic">
+                            {running ? "Generating…" : "No analysis yet — runs automatically each morning, or click Run Analysis."}
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
 
                 {/* Holdings grouped by simulator bucket */}
