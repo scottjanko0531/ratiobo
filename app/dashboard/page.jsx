@@ -102,9 +102,17 @@ export default function Dashboard() {
   const chartData = useMemo(() => {
     let filtered = portfolioHistory;
     if (chartPeriod !== "All") {
-      const days = { "1W": 7, "1M": 30, "3M": 90, "1Y": 365 }[chartPeriod];
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - days);
+      const now = new Date();
+      // Calendar-aligned periods, not rolling day-count windows: 1W = Monday of
+      // this week, 1M = 1st of this month, 3M = 1st of the month 2 back (so the
+      // window spans 3 calendar months incl. this one), 1Y = Jan 1 this year.
+      const daysSinceMonday = (now.getDay() + 6) % 7; // Mon=0, Tue=1, ..., Sun=6
+      const cutoff = {
+        "1W": (() => { const d = new Date(now); d.setDate(now.getDate() - daysSinceMonday); return d; })(),
+        "1M": new Date(now.getFullYear(), now.getMonth(), 1),
+        "3M": new Date(now.getFullYear(), now.getMonth() - 2, 1),
+        "1Y": new Date(now.getFullYear(), 0, 1),
+      }[chartPeriod];
       const cutoffStr = cutoff.toISOString().slice(0, 10);
       filtered = portfolioHistory.filter((e) => e.date >= cutoffStr);
     }
@@ -168,7 +176,11 @@ export default function Dashboard() {
   const periodChanges = useMemo(() => {
     if (!portfolioHistory.length) return { week: null, mtd: null, ytd: null };
     const now = new Date();
-    const weekAgo = new Date(now); weekAgo.setDate(now.getDate() - 7);
+    // Calendar week (Monday-Sunday), not a rolling trailing-7-days lookback —
+    // on a Monday this must resolve to today, so Week Change equals Day Change,
+    // the same way Month/Year Change equal Day Change on the 1st of a month/year.
+    const daysSinceMonday = (now.getDay() + 6) % 7; // Mon=0, Tue=1, ..., Sun=6
+    const weekStart = new Date(now); weekStart.setDate(now.getDate() - daysSinceMonday);
     const mtdStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const ytdStart = new Date(now.getFullYear(), 0, 1);
     const findValue = (target) => {
@@ -177,7 +189,7 @@ export default function Dashboard() {
       return ([...portfolioHistory].reverse().find(e => e.date <= targetStr) ?? portfolioHistory[0])?.value ?? null;
     };
     const current = totals.value;
-    const wv = findValue(weekAgo), mv = findValue(mtdStart), yv = findValue(ytdStart);
+    const wv = findValue(weekStart), mv = findValue(mtdStart), yv = findValue(ytdStart);
     return {
       week: wv != null ? current - wv : null,
       mtd:  mv != null ? current - mv : null,
