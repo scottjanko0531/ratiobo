@@ -27,7 +27,7 @@ interface Portfolio {
   strategy_detail: string | null; target_allocations: Record<string, number> | null;
 }
 interface HoldingValued {
-  id: string; symbol: string; asset_type: string; current_value: number | null;
+  id: string; symbol: string; name: string | null; asset_type: string; current_value: number | null;
   cost_basis: number | null; net_gain: number | null; total_dividends: number | null;
   total_interest: number | null; total_fees: number | null; simulator_key: string | null;
 }
@@ -57,14 +57,20 @@ function computePortfolioSummary(holdings: HoldingValued[], targets: Record<stri
   const returnPct = costBasis > 0 ? (totalGain / costBasis) * 100 : null;
 
   const byBucket = new Map<string, number>();
+  const holdingsByBucket = new Map<string, HoldingValued[]>();
   for (const h of holdings) {
     const key = resolveSimulatorKey(h);
     byBucket.set(key, (byBucket.get(key) ?? 0) + Number(h.current_value ?? 0));
+    if (!holdingsByBucket.has(key)) holdingsByBucket.set(key, []);
+    holdingsByBucket.get(key)!.push(h);
   }
   const allocation = [...byBucket.entries()].map(([key, value]) => {
     const pct = totalValue > 0 ? (value / totalValue) * 100 : 0;
     const target = targets?.[key];
-    return { key, label: BUCKET_LABELS[key] ?? key, pct, target: target ?? null };
+    const holdingsHere = (holdingsByBucket.get(key) ?? [])
+      .filter(h => Number(h.current_value ?? 0) > 0)
+      .sort((a, b) => Number(b.current_value ?? 0) - Number(a.current_value ?? 0));
+    return { key, label: BUCKET_LABELS[key] ?? key, pct, target: target ?? null, holdings: holdingsHere };
   }).sort((a, b) => b.pct - a.pct);
 
   return { totalValue, costBasis, totalGain, returnPct, count: holdings.length, allocation };
@@ -84,7 +90,11 @@ async function generatePortfolioAnalysis(params: {
 
     const usd = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`;
     const allocLines = summary.allocation
-      .map(a => `  ${a.label}: ${a.pct.toFixed(1)}%${a.target != null ? ` (target ${a.target}%, ${a.pct - a.target >= 0 ? "+" : ""}${(a.pct - a.target).toFixed(1)}pt)` : ""}`)
+      .map(a => {
+        const header = `  ${a.label}: ${a.pct.toFixed(1)}%${a.target != null ? ` (target ${a.target}%, ${a.pct - a.target >= 0 ? "+" : ""}${(a.pct - a.target).toFixed(1)}pt)` : ""}`;
+        const holdingsList = a.holdings.map(h => `${h.symbol}${h.name ? ` (${h.name})` : ""}`).join(", ");
+        return `${header}\n    Holdings: ${holdingsList || "none"}`;
+      })
       .join("\n") || "  No holdings assigned.";
 
     const prompt = `You are Clio, macro analyst at RatioBo. You already wrote today's regime analysis and news musing (both below). Now assess this ONE portfolio specifically against that backdrop. Write direct, sharp analysis — no hedging language, no fluff, under 350 words total. No markdown headers, no bold, no title line.
@@ -111,6 +121,8 @@ ${clioAnalysis ?? "Not yet generated today."}
 
 CLIO'S NEWS MUSING (already published today):
 ${clioMusing ?? "Not yet generated today."}
+
+FRAMEWORK CONSTRAINT — read the stated strategy and actual holdings above carefully before recommending anything: determine whether this portfolio is a static, regime-agnostic asset-allocation framework (e.g. risk parity, All Weather — explicitly designed so the investor does NOT need to predict which macro regime is active, because diversification comes from the mix of asset classes itself) or a tactical, regime-responsive framework (e.g. explicitly built to rotate or tilt exposure based on the macro cycle, such as BW Modified). If it is static/regime-agnostic, your recommendations must stay within rebalancing back to the portfolio's own stated target allocations shown above — do NOT recommend new sector, style, or duration tilts driven by today's regime call (e.g. "shift into small-cap/value," "avoid mega-cap"), since that contradicts the framework's own design philosophy of not needing to correctly guess the regime. Judge holding composition on its own terms from what's actually listed above (e.g. a broad total-market fund like VTI or ITOT is not a "mega-cap" or "duration" bet — it's simply unstyled market-cap-weighted exposure) rather than speculating about what a bucket might contain. If the framework is tactical/regime-responsive, regime-driven tilts — including within a single sleeve — are appropriate and expected.
 
 Structure your answer in two parts, separated by a blank line:
 (1) A paragraph assessing this portfolio's health: is its current allocation appropriate given its stated strategy AND the macro backdrop above? Where is it well-positioned, and where is it exposed? If it has no stated strategy, note that explicitly and assess purely against the macro backdrop.
@@ -150,7 +162,7 @@ async function analyzeOnePortfolio(
 
     const { data: holdings } = await sb
       .from("holdings_valued")
-      .select("id,symbol,asset_type,current_value,cost_basis,net_gain,total_dividends,total_interest,total_fees,simulator_key")
+      .select("id,symbol,name,asset_type,current_value,cost_basis,net_gain,total_dividends,total_interest,total_fees,simulator_key")
       .in("id", holdingIds);
     if (!holdings?.length) return { portfolioId: portfolio.id, ok: false, error: "no valued holdings" };
 
