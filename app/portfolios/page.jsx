@@ -374,7 +374,7 @@ export default function PortfoliosPage() {
                         )}
                       </p>
                     ) : (
-                      <p className="text-xs text-paper-dim italic">Not yet activated — the daily job will set an initial target on its next run.</p>
+                      <p className="text-xs text-paper-dim italic">Not yet activated — waiting for the Forward Signal to clear the 60% confidence floor before adopting a starting target. Can sit here a while if the signal stays low-conviction.</p>
                     )}
                     {regimeShifts.length > 0 && (
                       <div className="mt-2 pt-2 border-t border-ink-line/50 space-y-1">
@@ -740,11 +740,11 @@ export default function PortfoliosPage() {
                   <option value="">Auto-detect from strategy text (default)</option>
                   <option value="static">Static — regime-agnostic (e.g. All Weather, risk parity)</option>
                   <option value="tactical">Tactical — discretionary regime-responsive tilts</option>
-                  <option value="regime_driven">Regime-driven — target allocations auto-follow Dalio's quadrant</option>
+                  <option value="regime_driven">Regime-driven — target allocations auto-follow the Forward Signal</option>
                 </select>
                 <p className="text-[10px] text-paper-dim/60 mt-1">
                   {form.strategy_framework === "regime_driven"
-                    ? "Target Allocations below are managed automatically once saved — a daily job shifts them to match the confirmed macro regime (30-day confirmation window to avoid whipsaw). Manual edits below will be overwritten."
+                    ? "Target Allocations below are managed automatically once saved — a daily job tracks the Forward Signal (6-18mo leading-indicator composite) and shifts targets only once a new regime has held 30 consecutive days AND Forward Signal confidence is at least 60% (avoids both whipsaw and low-conviction commitments). Manual edits below will be overwritten."
                     : "Determines how Daily Analysis reasons about rebalancing vs. tactical tilts. Leave on auto-detect unless you want it locked explicitly."}
                 </p>
               </div>

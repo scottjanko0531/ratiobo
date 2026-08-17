@@ -850,6 +850,8 @@ Deno.serve(async (req: Request) => {
       alignment: divergence ? "divergent" : "aligned",
       structural_regime: regimeLabel,
       market_regime: marketLabel,
+      forward_key: fwdKey,
+      forward_confidence: fwdConf,
       market_snapshot: marketSnapshot,
       generated_at: new Date().toISOString(),
     };

@@ -21,9 +21,6 @@ const REGIME_LABELS: Record<string, string> = {
   fg_ri: "Stagflation",
   fg_fi: "Deflationary Bust",
 };
-const LABEL_TO_KEY: Record<string, string> = Object.fromEntries(
-  Object.entries(REGIME_LABELS).map(([k, v]) => [v, k]),
-);
 
 // Mirrors lib/simulatorKeys.js's REGIME_DEFAULT_WEIGHTS exactly — the same weights
 // already used to drive the Simulator's per-regime suggestions, now reused to
@@ -36,10 +33,19 @@ const REGIME_DEFAULT_WEIGHTS: Record<string, Record<string, number>> = {
 };
 
 // Regime shifts must persist for this many days before a regime-driven portfolio's
-// target_allocations actually moves — the whole point is to avoid whipsawing a real
-// portfolio's targets on a noisy week, since the structural regime itself can wobble
-// even though it's already the slowest-moving of the three signals the app computes.
+// target_allocations actually moves — avoids whipsawing a real portfolio's targets
+// on a noisy week.
 const CONFIRMATION_DAYS = 30;
+
+// Driven by the Forward Signal (6-18mo leading-indicator composite) rather than the
+// structural or market-implied regime: both of those share the same maximally-lagging
+// 3-year-trailing GDP test for their growth axis, which combined with a 30-day
+// confirmation window would make this feature barely distinguishable from a static
+// portfolio. Forward Signal is more responsive and, uniquely among the three, comes
+// with its own confidence score — used below as a hard floor. Below this floor the
+// signal is "moderate" at best on the app's own confidenceQualifier scale, not the
+// "unambiguous" bar Clio's own portfolio framework requires before tilting.
+const CONFIDENCE_FLOOR = 60;
 
 interface RegimePortfolio {
   id: string; portfolio_name: string;
@@ -61,10 +67,15 @@ Deno.serve(async (req: Request) => {
     const todayStr = today.toISOString().slice(0, 10);
 
     // This can run before a human has visited /macro today — ensure Clio's regime
-    // analysis exists, same guard analyze-portfolio-health uses.
-    const { data: todayRegime } = await sb.from("dalio_regime_analysis").select("analysis_date,structural_regime").eq("analysis_date", todayStr).maybeSingle();
-    let structuralLabel = todayRegime?.structural_regime as string | undefined;
-    if (!structuralLabel) {
+    // analysis (which now also persists forward_key/forward_confidence) exists.
+    const { data: todayRegime } = await sb
+      .from("dalio_regime_analysis")
+      .select("analysis_date,forward_key,forward_confidence")
+      .eq("analysis_date", todayStr)
+      .maybeSingle();
+    let liveKey = todayRegime?.forward_key as string | null | undefined;
+    let liveConfidence = todayRegime?.forward_confidence as number | null | undefined;
+    if (liveKey === undefined) {
       try {
         const res = await fetch(`${SUPABASE_URL}/functions/v1/get-regime-analysis`, {
           method: "GET",
@@ -72,14 +83,11 @@ Deno.serve(async (req: Request) => {
         });
         if (res.ok) {
           const j = await res.json();
-          structuralLabel = j?.structural_regime;
+          liveKey = j?.forward_key ?? null;
+          liveConfidence = j?.forward_confidence ?? null;
         }
       } catch (e) { console.error("[regime-targets] triggering get-regime-analysis:", e); }
     }
-    if (!structuralLabel || !LABEL_TO_KEY[structuralLabel]) {
-      return json({ error: "structural regime unavailable today", structuralLabel }, 500);
-    }
-    const liveKey = LABEL_TO_KEY[structuralLabel];
 
     const { data: portfolios } = await sb
       .from("portfolios")
@@ -87,15 +95,18 @@ Deno.serve(async (req: Request) => {
       .eq("strategy_framework", "regime_driven");
 
     const results: { portfolioId: string; action: string }[] = [];
+    const meetsFloor = !!liveKey && liveConfidence != null && liveConfidence >= CONFIDENCE_FLOOR;
 
     for (const pf of (portfolios ?? []) as RegimePortfolio[]) {
-      const targets = REGIME_DEFAULT_WEIGHTS[liveKey];
-
-      // First-ever activation: adopt the current regime immediately as the baseline,
-      // no 30-day wait — there's nothing to whipsaw away from yet.
+      // First-ever activation requires a qualifying (>= floor) reading too — no point
+      // adopting a low-conviction baseline. Stays unactivated until one comes along.
       if (!pf.current_regime_key) {
+        if (!meetsFloor) {
+          results.push({ portfolioId: pf.id, action: `awaiting_qualifying_signal (${liveConfidence ?? "n/a"}%)` });
+          continue;
+        }
         await sb.from("portfolios").update({
-          target_allocations: targets,
+          target_allocations: REGIME_DEFAULT_WEIGHTS[liveKey!],
           current_regime_key: liveKey,
           regime_confirmed_since: todayStr,
           pending_regime_key: null,
@@ -104,13 +115,20 @@ Deno.serve(async (req: Request) => {
         }).eq("id", pf.id);
         await sb.from("portfolio_regime_shifts").insert({
           portfolio_id: pf.id, from_key: null, to_key: liveKey,
-          from_label: null, to_label: REGIME_LABELS[liveKey],
+          from_label: null, to_label: REGIME_LABELS[liveKey!],
         });
         results.push({ portfolioId: pf.id, action: "activated" });
         continue;
       }
 
-      // Live regime matches the already-active target — nothing to do. If a
+      // No qualifying signal today at all — leave whatever's pending untouched
+      // (neither advances nor resets; see the pending-branch comment below for why).
+      if (!meetsFloor) {
+        results.push({ portfolioId: pf.id, action: `no_qualifying_signal (${liveConfidence ?? "n/a"}%)` });
+        continue;
+      }
+
+      // Live signal matches the already-active target — nothing to do. If a
       // different candidate had been pending, it reverted before confirming, so
       // clear it rather than let a flicker count toward the next confirmation.
       if (liveKey === pf.current_regime_key) {
@@ -123,14 +141,17 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      // Live regime differs from the active target and matches what's already
-      // pending — check whether it's been persistent long enough to commit.
+      // Live signal differs from the active target and matches what's already
+      // pending — check whether it's been persistent AND still qualifies today.
+      // Requiring the floor again here (not just when the clock started) means a
+      // candidate that looked confident 29 days ago but has since decayed into a
+      // toss-up won't quietly commit just because the calendar hit 30 days.
       if (liveKey === pf.pending_regime_key && pf.pending_regime_since) {
         const daysPending = daysBetween(pf.pending_regime_since, today);
         if (daysPending >= CONFIRMATION_DAYS) {
           const fromKey = pf.current_regime_key;
           await sb.from("portfolios").update({
-            target_allocations: targets,
+            target_allocations: REGIME_DEFAULT_WEIGHTS[liveKey],
             current_regime_key: liveKey,
             regime_confirmed_since: todayStr,
             pending_regime_key: null,
@@ -149,12 +170,12 @@ Deno.serve(async (req: Request) => {
       }
 
       // New candidate different from both the active target and whatever was
-      // pending before — start (or restart) the confirmation clock.
+      // pending before, and it clears the confidence floor — start the clock.
       await sb.from("portfolios").update({ pending_regime_key: liveKey, pending_regime_since: todayStr }).eq("id", pf.id);
       results.push({ portfolioId: pf.id, action: "pending_started" });
     }
 
-    return json({ liveRegimeKey: liveKey, structuralLabel, processed: results.length, results });
+    return json({ liveKey: liveKey ?? null, liveConfidence: liveConfidence ?? null, meetsFloor, processed: results.length, results });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
