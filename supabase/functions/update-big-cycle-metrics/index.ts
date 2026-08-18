@@ -362,7 +362,7 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
     const { data } = await sb
       .from("macro_indicators")
       .select("name, current_value, status")
-      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread", "Fed SOMA Long-Duration Holdings (Δ)", "Foreign Official Share of UST Holdings (YoY Δ)"]);
+      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread", "Fed SOMA Long-Duration Holdings (Δ)", "Foreign Official Share of UST Holdings (YoY Δ)", "Treasury Convenience Yield (10Y)", "Foreign Official Custody Holdings"]);
     const byName = new Map((data ?? []).map((r: { name: string }) => [r.name, r]));
 
     const totalDebt = byName.get("Total Debt / GDP") as { current_value: number; status: string } | undefined;
@@ -420,15 +420,38 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
       });
     }
 
+    const convenienceYield = byName.get("Treasury Convenience Yield (10Y)") as { current_value: number; status: string } | undefined;
+    if (convenienceYield?.current_value != null) {
+      const v = Number(convenienceYield.current_value);
+      const status = MACRO_STATUS_MAP[convenienceYield.status] ?? null;
+      updates.push({
+        key: "convenience_yield_10y", value_numeric: v, value_display: `${v >= 0 ? "+" : ""}${v.toFixed(1)}bp`,
+        status, status_label: status === "bad" ? "Subsidy inverted" : status === "warn" ? "Watch" : "Privilege intact",
+        note_suffix: "10Y SOFR swap rate minus 10Y Treasury yield — the market-priced nonpecuniary premium the world pays to hold Treasuries; positive means the US borrows below the true risk-free rate, negative means the subsidy has inverted. Not yet used to classify the MP-stage itself — this is a single market price, not yet a validated trend. Cross-referenced from Macro's Sovereign Risk panel.",
+      });
+    }
+
+    const custody = byName.get("Foreign Official Custody Holdings") as { current_value: number; status: string } | undefined;
+    if (custody?.current_value != null) {
+      const v = Number(custody.current_value);
+      const status = MACRO_STATUS_MAP[custody.status] ?? null;
+      updates.push({
+        key: "foreign_custody_holdings", value_numeric: v, value_display: `${v >= 0 ? "+" : ""}$${v.toFixed(0)}B`,
+        status, status_label: status === "bad" ? "Custody falling" : status === "warn" ? "Watch" : "Custody stable/rising",
+        note_suffix: "52-week change in marketable Treasuries held in custody at the NY Fed for foreign official accounts — a weekly, ~1-day-lag leading indicator for the Foreign Official Share of UST Holdings card above, which runs on TIC data with a ~2-month lag. Does not tie to that card's level (custody covers only FRBNY-held securities); track the trend, not the level. Cross-referenced from Macro.",
+      });
+    }
+
     const { data: gaugeRow } = await sb
       .from("dalio_gauge_readings")
-      .select("year, gauge1, gauge5")
+      .select("year, gauge1, gauge5, gauge7")
       .order("year", { ascending: false })
       .limit(1)
       .maybeSingle();
     if (gaugeRow) {
       const g1 = gaugeRow.gauge1 != null ? Number(gaugeRow.gauge1) : null;
       const g5 = gaugeRow.gauge5 != null ? Number(gaugeRow.gauge5) : null;
+      const g7 = gaugeRow.gauge7 != null ? Number(gaugeRow.gauge7) : null;
       // Mirrors the exact band thresholds/labels from debtSustAssessment() and
       // reserveConfAssessment() in components/DalioGauges.jsx — must stay in sync
       // with that file so the same z-score never shows two different verdicts.
@@ -440,6 +463,16 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
         return { status: "good" as const, label: "Sustainable" };
       };
       const reserveConfAssessment = (g: number) => {
+        if (g > 1.5) return { status: "bad" as const, label: "Critical" };
+        if (g > 1.0) return { status: "bad" as const, label: "Elevated Risk" };
+        if (g > 0.25) return { status: "warn" as const, label: "Watch" };
+        if (g > -0.25) return { status: "good" as const, label: "Neutral" };
+        return { status: "good" as const, label: "Low Risk" };
+      };
+      // Mirrors privilegeErosionAssessment() in components/DalioGauges.jsx —
+      // same reasoning as the two assessments above: keep in sync so the same
+      // z-score never shows two different verdicts across pages.
+      const privilegeErosionAssessment = (g: number) => {
         if (g > 1.5) return { status: "bad" as const, label: "Critical" };
         if (g > 1.0) return { status: "bad" as const, label: "Elevated Risk" };
         if (g > 0.25) return { status: "warn" as const, label: "Watch" };
@@ -460,6 +493,14 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
           key: "reserve_confidence_gauge", value_numeric: g5, value_display: `${g5 >= 0 ? "+" : ""}${g5.toFixed(2)}`,
           status: a.status, status_label: a.label,
           note_suffix: `${gaugeRow.year} composite z-score (CB gold buying + declining USD reserve share, annual). See Macro dashboard, Gauge 5 — Reserve Confidence Risk.`,
+        });
+      }
+      if (g7 != null) {
+        const a = privilegeErosionAssessment(g7);
+        updates.push({
+          key: "privilege_erosion_gauge", value_numeric: g7, value_display: `${g7 >= 0 ? "+" : ""}${g7.toFixed(2)}`,
+          status: a.status, status_label: a.label,
+          note_suffix: `${gaugeRow.year} grouped composite z-score (convenience yield + foreign demand + gold/real-yield regime tell, updated daily). See Macro dashboard, Gauge 7 — Privilege Erosion.`,
         });
       }
     }
