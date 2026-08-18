@@ -5,7 +5,7 @@ import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
 import DalioGauges from "../../components/DalioGauges";
 import {
-  ComposedChart, Line, Bar, Cell, XAxis, YAxis, CartesianGrid,
+  ComposedChart, Line, Bar, Area, Cell, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import {
@@ -29,6 +29,18 @@ const LAYER_NAMES = {
   3: "Business Cycle",
   4: "Tail Risk",
 };
+
+// Cards that live under layer 1/2 in the data model (for cross-referencing
+// and regime-signal reuse) but are pulled out of the generic byLayer grids
+// and shown together in the dedicated Sovereign Risk section instead, per
+// the Macro Measurement Upgrade Spec.
+const SOVEREIGN_RISK_NAMES = [
+  "Treasury Convenience Yield (10Y)",
+  "Foreign Official Custody Holdings",
+  "Indirect Bidder Share (10Y/30Y)",
+  "Gold / Real Yield Correlation (90d)",
+  "Stock/Bond Correlation (90d)",
+];
 
 const KEY_LABEL = Object.fromEntries(SIMULATOR_KEYS.map((s) => [s.key, s.label]));
 
@@ -5084,6 +5096,518 @@ function TicHoldingsDrawer({ open, onClose, ind }) {
   );
 }
 
+// ── Treasury Convenience Yield (10Y) ────────────────────────────────────────
+
+const CY_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">Treasury Convenience Yield</p>
+      <p className="text-paper-dim">10Y SOFR swap rate minus 10Y Treasury yield — the nonpecuniary premium the world pays to hold Treasuries (Krishnamurthy &amp; Vissing-Jorgensen, JPE 2012; the St. Louis Fed uses this same SOFR-based construction). <b>Positive</b> = the US borrows below the true risk-free rate (exorbitant privilege intact). <b>Negative</b> = Treasuries trade cheap to swaps — the subsidy has inverted.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Falsifiability</p>
+      <p className="text-paper-dim">A sustained return above zero would falsify the privilege-erosion thesis this card and Gauge 7 are built around. This is a market price, not a debt ratio — unlike debt/GDP, it can move the other way and prove itself wrong.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Methodology</p>
+      <p className="text-paper-dim">Source: Pensford's public forward-curve data feed (pensford.com/forward-curve) — both legs from the same feed, same dates, to avoid any date-alignment risk. Chatham Financial (this dashboard's first-choice source) publishes a matching feed but is blocked by Cloudflare bot-detection specifically at this project's server infrastructure. 2Y and 5Y are also tracked (see the underlying data) but not shown as their own cards. 30Y is not available from either source — neither carries a 30Y SOFR swap rate — so the CY Slope (30Y−2Y) card from the original spec isn't built.</p>
+    </div>
+    <p className="text-[10px] text-paper-dim/50 italic">Source: Pensford forward-curve data (SOFR swaps + Treasury yields), daily since 2007.</p>
+  </div>
+);
+
+function ConvenienceYieldDrawer({ open, onClose, ind }) {
+  const [rows, setRows] = useState(null);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [showFullHistory, setShowFullHistory] = useState(false);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    supabase
+      .from("convenience_yield_observations")
+      .select("obs_date, swap_rate_pct, treasury_yield_pct, convenience_bp, is_proxy")
+      .eq("tenor_years", 10)
+      .order("obs_date", { ascending: true })
+      .then(({ data }) => setRows(data ?? []))
+      .catch(() => setRows([]));
+  }, [open, rows]);
+
+  const xTicks = useMemo(() => {
+    if (!rows?.length) return [];
+    const step = Math.max(1, Math.floor(rows.length / 10));
+    return rows.filter((_, i) => i % step === 0).map((r) => r.obs_date);
+  }, [rows]);
+
+  const tableRows = useMemo(() => {
+    if (!rows) return [];
+    const sorted = [...rows].sort((a, b) => b.obs_date.localeCompare(a.obs_date));
+    return showFullHistory ? sorted : sorted.slice(0, 60);
+  }, [rows, showFullHistory]);
+
+  const fmtDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" });
+  const fmtBp = (v) => v == null ? "—" : `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(1)}bp`;
+  const bpColor = (v) => v == null ? "text-paper-dim" : Number(v) >= 0 ? "text-gain" : "text-loss";
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div className={`fixed right-0 top-0 h-full w-[780px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}>
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-paper">Treasury Convenience Yield (10Y)</h2>
+              <button
+                onClick={() => setInfoOpen((v) => !v)}
+                className={`w-[18px] h-[18px] rounded-full border text-[10px] font-bold flex items-center justify-center flex-shrink-0 transition-colors ${infoOpen ? "border-brass text-brass bg-brass/10" : "border-paper-dim/40 text-paper-dim hover:border-paper hover:text-paper"}`}
+                title="About this indicator"
+              >
+                i
+              </button>
+            </div>
+            <p className="text-[10px] text-paper-dim mt-0.5">10Y SOFR swap − 10Y Treasury yield · Daily · Pensford</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {ind?.current_value != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${Number(ind.current_value) > 10 ? "text-gain" : Number(ind.current_value) >= -25 ? "text-brass-soft" : "text-loss"}`}>
+                  {Number(ind.current_value) >= 0 ? "+" : ""}{Number(ind.current_value).toFixed(1)}bp
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">Convenience Yield</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        {infoOpen && (
+          <div className="px-5 py-4 border-b border-ink-line bg-ink shrink-0 overflow-y-auto max-h-[45vh]">
+            {CY_INFO}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <ResponsiveContainer width="100%" height={280}>
+                <ComposedChart data={rows} margin={{ top: 5, right: 8, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2f38" vertical={false} />
+                  <XAxis dataKey="obs_date" ticks={xTicks} tickFormatter={fmtDate} tick={{ fontSize: 10, fill: "#8a8f98" }} axisLine={{ stroke: "#2a2f38" }} tickLine={false} />
+                  <YAxis yAxisId="left" tick={{ fontSize: 10, fill: "#8a8f98" }} axisLine={{ stroke: "#2a2f38" }} tickLine={false} tickFormatter={(v) => `${v}%`} />
+                  <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: "#8a8f98" }} axisLine={{ stroke: "#2a2f38" }} tickLine={false} tickFormatter={(v) => `${v}bp`} />
+                  <ReferenceLine yAxisId="right" y={0} stroke="#8a8f98" strokeOpacity={0.5} />
+                  <Tooltip
+                    labelFormatter={fmtDate}
+                    formatter={(v, name) => [name === "Spread (right)" ? fmtBp(v) : `${Number(v).toFixed(2)}%`, name]}
+                    contentStyle={{ background: "#1a1d24", border: "1px solid #2a2f38", borderRadius: 6, fontSize: 11 }}
+                  />
+                  <Area yAxisId="right" type="monotone" dataKey="convenience_bp" name="Spread (right)" stroke="#7030A0" fill="#7030A0" fillOpacity={0.15} strokeWidth={1} />
+                  <Line yAxisId="left" type="monotone" dataKey="swap_rate_pct" name="SOFR Swap" stroke="#4A9EFF" strokeWidth={1.5} dot={false} connectNulls />
+                  <Line yAxisId="left" type="monotone" dataKey="treasury_yield_pct" name="Treasury Yield" stroke="#E0635C" strokeWidth={1.5} dot={false} connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div className="flex flex-wrap items-center gap-4 mt-3 text-[10px] text-paper-dim/70">
+                <span className="flex items-center gap-1.5"><span className="inline-block w-5 h-[2px] rounded-sm" style={{ backgroundColor: "#4A9EFF" }} />SOFR Swap</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-5 h-[2px] rounded-sm" style={{ backgroundColor: "#E0635C" }} />Treasury Yield</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#7030A0", opacity: 0.3 }} />Spread = Convenience Yield (right axis)</span>
+              </div>
+            </div>
+          )}
+
+          {tableRows.length > 0 && (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="label text-[10px]">Daily Detail{showFullHistory ? "" : " · last 60 days"}</p>
+                <button onClick={() => setShowFullHistory((v) => !v)} className="text-[10px] text-brass-soft hover:text-brass transition-colors">
+                  {showFullHistory ? "Show last 60 days" : "Show full history"}
+                </button>
+              </div>
+              <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
+                <table className="w-full text-[11px] min-w-[560px]">
+                  <thead className="sticky top-0 bg-ink-soft">
+                    <tr className="text-paper-dim text-[10px]">
+                      <th className="text-left pb-2 font-medium pr-2">Date</th>
+                      <th className="text-right pb-2 font-medium px-2">SOFR Swap</th>
+                      <th className="text-right pb-2 font-medium px-2">Treasury Yield</th>
+                      <th className="text-right pb-2 font-medium pl-2">Convenience Yield</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows.map((r) => (
+                      <tr key={r.obs_date} className="border-t border-ink-line/50">
+                        <td className="py-1.5 pr-2 text-paper-dim whitespace-nowrap">{fmtDate(r.obs_date)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper-dim">{Number(r.swap_rate_pct).toFixed(3)}%</td>
+                        <td className="py-1.5 px-2 text-right num text-paper-dim">{Number(r.treasury_yield_pct).toFixed(3)}%</td>
+                        <td className={`py-1.5 pl-2 text-right num font-semibold ${bpColor(r.convenience_bp)}`}>{fmtBp(r.convenience_bp)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60 leading-relaxed">
+            Source: Pensford forward-curve data feed. Daily, no material publication lag.
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Foreign Official Custody Holdings ───────────────────────────────────────
+
+const CUSTODY_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">Foreign Official Custody Holdings</p>
+      <p className="text-paper-dim">Marketable Treasuries held in custody at the NY Fed for foreign official and international accounts — weekly Wednesday level from the Fed H.4.1 release, ~1-day lag. A leading indicator for the Foreign Official Share of UST Holdings card, which runs on TIC data with a ~2-month publication lag.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Do not reconcile the level</p>
+      <p className="text-paper-dim">Custody holdings will never tie to TIC foreign official holdings — custody only captures securities held at FRBNY, not the whole foreign official universe. Track the 13-week and 52-week rate of change; the trend is the signal, not the level.</p>
+    </div>
+    <p className="text-[10px] text-paper-dim/50 italic">Source: FRED WMTSECL1 (H.4.1 release). Not WMTSECL — that series was discontinued in 2012.</p>
+  </div>
+);
+
+function CustodyDrawer({ open, onClose, ind }) {
+  const [rows, setRows] = useState(null);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [showFullHistory, setShowFullHistory] = useState(false);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    supabase
+      .from("foreign_custody_holdings")
+      .select("obs_date, treasury_bn, change_13w_bn, change_52w_bn")
+      .order("obs_date", { ascending: true })
+      .then(({ data }) => setRows(data ?? []))
+      .catch(() => setRows([]));
+  }, [open, rows]);
+
+  const xTicks = useMemo(() => {
+    if (!rows?.length) return [];
+    const step = Math.max(1, Math.floor(rows.length / 10));
+    return rows.filter((_, i) => i % step === 0).map((r) => r.obs_date);
+  }, [rows]);
+
+  const tableRows = useMemo(() => {
+    if (!rows) return [];
+    const sorted = [...rows].sort((a, b) => b.obs_date.localeCompare(a.obs_date));
+    return showFullHistory ? sorted : sorted.slice(0, 26);
+  }, [rows, showFullHistory]);
+
+  const fmtDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" });
+  const fmtBn = (v) => v == null ? "—" : `$${Number(v).toFixed(0)}B`;
+  const fmtDeltaBn = (v) => v == null ? "—" : `${Number(v) >= 0 ? "+" : ""}$${Number(v).toFixed(1)}B`;
+  const deltaColor = (v) => v == null ? "text-paper-dim" : Number(v) >= 0 ? "text-gain" : "text-loss";
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div className={`fixed right-0 top-0 h-full w-[780px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}>
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-paper">Foreign Official Custody Holdings</h2>
+              <button
+                onClick={() => setInfoOpen((v) => !v)}
+                className={`w-[18px] h-[18px] rounded-full border text-[10px] font-bold flex items-center justify-center flex-shrink-0 transition-colors ${infoOpen ? "border-brass text-brass bg-brass/10" : "border-paper-dim/40 text-paper-dim hover:border-paper hover:text-paper"}`}
+                title="About this indicator"
+              >
+                i
+              </button>
+            </div>
+            <p className="text-[10px] text-paper-dim mt-0.5">FRBNY custody, Treasuries · Weekly · FRED WMTSECL1</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {ind?.current_value != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${Number(ind.current_value) > 50 ? "text-gain" : Number(ind.current_value) >= -50 ? "text-brass-soft" : "text-loss"}`}>
+                  {Number(ind.current_value) >= 0 ? "+" : ""}${Number(ind.current_value).toFixed(0)}B
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">52-Week Δ</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        {infoOpen && (
+          <div className="px-5 py-4 border-b border-ink-line bg-ink shrink-0 overflow-y-auto max-h-[45vh]">
+            {CUSTODY_INFO}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <ResponsiveContainer width="100%" height={280}>
+                <ComposedChart data={rows} margin={{ top: 5, right: 8, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2f38" vertical={false} />
+                  <XAxis dataKey="obs_date" ticks={xTicks} tickFormatter={fmtDate} tick={{ fontSize: 10, fill: "#8a8f98" }} axisLine={{ stroke: "#2a2f38" }} tickLine={false} />
+                  <YAxis yAxisId="left" tick={{ fontSize: 10, fill: "#8a8f98" }} axisLine={{ stroke: "#2a2f38" }} tickLine={false} tickFormatter={(v) => `$${v}B`} />
+                  <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: "#8a8f98" }} axisLine={{ stroke: "#2a2f38" }} tickLine={false} tickFormatter={(v) => `$${v}B`} />
+                  <ReferenceLine yAxisId="right" y={0} stroke="#8a8f98" strokeOpacity={0.5} />
+                  <Tooltip
+                    labelFormatter={fmtDate}
+                    formatter={(v, name) => [name === "Level (left)" ? fmtBn(v) : fmtDeltaBn(v), name]}
+                    contentStyle={{ background: "#1a1d24", border: "1px solid #2a2f38", borderRadius: 6, fontSize: 11 }}
+                  />
+                  <Bar yAxisId="right" dataKey="change_52w_bn" name="52w Δ" maxBarSize={4}>
+                    {rows.map((r, i) => (
+                      <Cell key={i} fill={r.change_52w_bn == null ? "transparent" : r.change_52w_bn >= 0 ? "#3FB984" : "#E0635C"} fillOpacity={0.5} />
+                    ))}
+                  </Bar>
+                  <Line yAxisId="left" type="monotone" dataKey="treasury_bn" name="Level (left)" stroke="#7030A0" strokeWidth={1.5} dot={false} connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div className="flex flex-wrap items-center gap-4 mt-3 text-[10px] text-paper-dim/70">
+                <span className="flex items-center gap-1.5"><span className="inline-block w-5 h-[2px] rounded-sm" style={{ backgroundColor: "#7030A0" }} />Custody level (left axis)</span>
+                <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#3FB984", opacity: 0.5 }} />52w Δ rising (right)</span>
+                <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: "#E0635C", opacity: 0.5 }} />52w Δ falling (right)</span>
+              </div>
+            </div>
+          )}
+
+          {tableRows.length > 0 && (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="label text-[10px]">Weekly Detail{showFullHistory ? "" : " · last 26 weeks"}</p>
+                <button onClick={() => setShowFullHistory((v) => !v)} className="text-[10px] text-brass-soft hover:text-brass transition-colors">
+                  {showFullHistory ? "Show last 26 weeks" : "Show full history"}
+                </button>
+              </div>
+              <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
+                <table className="w-full text-[11px] min-w-[560px]">
+                  <thead className="sticky top-0 bg-ink-soft">
+                    <tr className="text-paper-dim text-[10px]">
+                      <th className="text-left pb-2 font-medium pr-2">Week</th>
+                      <th className="text-right pb-2 font-medium px-2">Level</th>
+                      <th className="text-right pb-2 font-medium px-2">13w Δ</th>
+                      <th className="text-right pb-2 font-medium pl-2">52w Δ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows.map((r) => (
+                      <tr key={r.obs_date} className="border-t border-ink-line/50">
+                        <td className="py-1.5 pr-2 text-paper-dim whitespace-nowrap">{fmtDate(r.obs_date)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper font-semibold">{fmtBn(r.treasury_bn)}</td>
+                        <td className={`py-1.5 px-2 text-right num ${deltaColor(r.change_13w_bn)}`}>{fmtDeltaBn(r.change_13w_bn)}</td>
+                        <td className={`py-1.5 pl-2 text-right num font-semibold ${deltaColor(r.change_52w_bn)}`}>{fmtDeltaBn(r.change_52w_bn)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60 leading-relaxed">
+            Source: Federal Reserve Bank of New York / H.4.1 release, via FRED (WMTSECL1). Weekly, Wednesday level.
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Indirect Bidder Share (Auction Internals) ───────────────────────────────
+
+const INDIRECT_BIDDER_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">Indirect Bidder Share</p>
+      <p className="text-paper-dim">Share of accepted bids from indirect bidders at 10Y and 30Y Treasury auctions — the standard proxy for foreign official and central-bank demand. A falling share means primary dealers are absorbing more of the supply, the price-insensitive-to-price-sensitive substitution this panel exists to track. Shown as a trailing 6-auction average per tenor, then averaged across 10Y and 30Y.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Proxy caveats</p>
+      <p className="text-paper-dim">Indirect bidders are a proxy for foreign official demand, not a direct measurement — the category includes any bidder submitting through a primary dealer, broader than just central banks. Dispersion (high yield minus average/median yield, shown in the table) is a bid-dispersion proxy, <b>not the auction tail</b> — a true tail needs the when-issued yield at the bid deadline, which this data source does not carry.</p>
+    </div>
+    <p className="text-[10px] text-paper-dim/50 italic">Source: US Department of the Treasury, Fiscal Data API (auctions_query). This also now sources the Treasury Bid-to-Cover card, replacing its prior TreasuryDirect path — cross-checked to match exactly on the same auction.</p>
+  </div>
+);
+
+function IndirectBidderDrawer({ open, onClose, ind }) {
+  const [rows, setRows] = useState(null);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [showFullHistory, setShowFullHistory] = useState(false);
+
+  useEffect(() => {
+    if (!open || rows !== null) return;
+    supabase
+      .from("treasury_auction_results")
+      .select("auction_date, security_term, indirect_share_pct, dealer_share_pct, bid_to_cover_ratio, dispersion_bp")
+      .in("security_term", ["10-Year", "30-Year"])
+      .not("indirect_share_pct", "is", null)
+      .order("auction_date", { ascending: true })
+      .then(({ data }) => setRows(data ?? []))
+      .catch(() => setRows([]));
+  }, [open, rows]);
+
+  // Trailing 6-auction average per term, computed separately (spec: "do not
+  // pool tenors"), then merged onto one chart series per term.
+  const chartData = useMemo(() => {
+    if (!rows) return [];
+    const byTerm = { "10-Year": [], "30-Year": [] };
+    for (const r of rows) byTerm[r.security_term]?.push(r);
+    const avg6 = (arr) => arr.map((r, i) => {
+      const w = arr.slice(Math.max(0, i - 5), i + 1);
+      return { auction_date: r.auction_date, avg: w.reduce((s, x) => s + Number(x.indirect_share_pct), 0) / w.length };
+    });
+    const a10 = avg6(byTerm["10-Year"]);
+    const a30 = avg6(byTerm["30-Year"]);
+    const byDate = new Map();
+    for (const r of a10) byDate.set(r.auction_date, { auction_date: r.auction_date, avg10: r.avg });
+    for (const r of a30) {
+      const existing = byDate.get(r.auction_date) ?? { auction_date: r.auction_date };
+      existing.avg30 = r.avg;
+      byDate.set(r.auction_date, existing);
+    }
+    return [...byDate.values()].sort((a, b) => a.auction_date.localeCompare(b.auction_date));
+  }, [rows]);
+
+  const tableRows = useMemo(() => {
+    if (!rows) return [];
+    const sorted = [...rows].sort((a, b) => b.auction_date.localeCompare(a.auction_date));
+    return showFullHistory ? sorted : sorted.slice(0, 24);
+  }, [rows, showFullHistory]);
+
+  const fmtDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" });
+  const fmtPct = (v) => v == null ? "—" : `${Number(v).toFixed(1)}%`;
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div className={`fixed right-0 top-0 h-full w-[780px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}>
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-paper">Indirect Bidder Share (10Y/30Y)</h2>
+              <button
+                onClick={() => setInfoOpen((v) => !v)}
+                className={`w-[18px] h-[18px] rounded-full border text-[10px] font-bold flex items-center justify-center flex-shrink-0 transition-colors ${infoOpen ? "border-brass text-brass bg-brass/10" : "border-paper-dim/40 text-paper-dim hover:border-paper hover:text-paper"}`}
+                title="About this indicator"
+              >
+                i
+              </button>
+            </div>
+            <p className="text-[10px] text-paper-dim mt-0.5">Trailing 6-auction average · Treasury Fiscal Data API</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {ind?.current_value != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${Number(ind.current_value) > 65 ? "text-gain" : Number(ind.current_value) >= 55 ? "text-brass-soft" : "text-loss"}`}>
+                  {Number(ind.current_value).toFixed(1)}%
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">10Y/30Y avg</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        {infoOpen && (
+          <div className="px-5 py-4 border-b border-ink-line bg-ink shrink-0 overflow-y-auto max-h-[45vh]">
+            {INDIRECT_BIDDER_INFO}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <ResponsiveContainer width="100%" height={280}>
+                <ComposedChart data={chartData} margin={{ top: 5, right: 8, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2f38" vertical={false} />
+                  <XAxis dataKey="auction_date" tickFormatter={fmtDate} tick={{ fontSize: 10, fill: "#8a8f98" }} axisLine={{ stroke: "#2a2f38" }} tickLine={false} minTickGap={40} />
+                  <YAxis tick={{ fontSize: 10, fill: "#8a8f98" }} axisLine={{ stroke: "#2a2f38" }} tickLine={false} tickFormatter={(v) => `${v}%`} domain={[30, 90]} />
+                  <ReferenceLine y={65} stroke="#3FB984" strokeOpacity={0.3} strokeDasharray="3 3" />
+                  <ReferenceLine y={55} stroke="#E0635C" strokeOpacity={0.3} strokeDasharray="3 3" />
+                  <Tooltip
+                    labelFormatter={fmtDate}
+                    formatter={(v, name) => [fmtPct(v), name]}
+                    contentStyle={{ background: "#1a1d24", border: "1px solid #2a2f38", borderRadius: 6, fontSize: 11 }}
+                  />
+                  <Line type="monotone" dataKey="avg10" name="10Y (6-auction avg)" stroke="#4A9EFF" strokeWidth={1.5} dot={false} connectNulls />
+                  <Line type="monotone" dataKey="avg30" name="30Y (6-auction avg)" stroke="#E0A85C" strokeWidth={1.5} dot={false} connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div className="flex flex-wrap items-center gap-4 mt-3 text-[10px] text-paper-dim/70">
+                <span className="flex items-center gap-1.5"><span className="inline-block w-5 h-[2px] rounded-sm" style={{ backgroundColor: "#4A9EFF" }} />10Y</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-5 h-[2px] rounded-sm" style={{ backgroundColor: "#E0A85C" }} />30Y</span>
+                <span className="text-paper-dim/50">Dashed: healthy ≥65% (green) / danger &lt;55% (red)</span>
+              </div>
+            </div>
+          )}
+
+          {tableRows.length > 0 && (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="label text-[10px]">Auction Detail{showFullHistory ? "" : " · last 24"}</p>
+                <button onClick={() => setShowFullHistory((v) => !v)} className="text-[10px] text-brass-soft hover:text-brass transition-colors">
+                  {showFullHistory ? "Show last 24" : "Show full history"}
+                </button>
+              </div>
+              <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
+                <table className="w-full text-[11px] min-w-[620px]">
+                  <thead className="sticky top-0 bg-ink-soft">
+                    <tr className="text-paper-dim text-[10px]">
+                      <th className="text-left pb-2 font-medium pr-2">Date</th>
+                      <th className="text-left pb-2 font-medium px-2">Term</th>
+                      <th className="text-right pb-2 font-medium px-2">Indirect</th>
+                      <th className="text-right pb-2 font-medium px-2">Dealer</th>
+                      <th className="text-right pb-2 font-medium px-2">Bid/Cover</th>
+                      <th className="text-right pb-2 font-medium pl-2">Dispersion (proxy)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows.map((r) => (
+                      <tr key={`${r.auction_date}-${r.security_term}`} className="border-t border-ink-line/50">
+                        <td className="py-1.5 pr-2 text-paper-dim whitespace-nowrap">{fmtDate(r.auction_date)}</td>
+                        <td className="py-1.5 px-2 text-paper-dim">{r.security_term}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper font-semibold">{fmtPct(r.indirect_share_pct)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper-dim">{fmtPct(r.dealer_share_pct)}</td>
+                        <td className="py-1.5 px-2 text-right num text-paper-dim">{r.bid_to_cover_ratio != null ? Number(r.bid_to_cover_ratio).toFixed(2) : "—"}</td>
+                        <td className="py-1.5 pl-2 text-right num text-paper-dim">{r.dispersion_bp != null ? `${Number(r.dispersion_bp).toFixed(1)}bp` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-paper-dim/60 leading-relaxed">
+            Source: US Department of the Treasury, Fiscal Data API (auctions_query). Dispersion = high yield − average/median yield, a bid-dispersion proxy, not the true auction tail.
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // Distinguishes model-synthesized commentary (this card) from the sourced
 // FRED/BLS/World Gold Council gauges elsewhere on the page — same visual
 // authority otherwise made it easy to mistake one for the other.
@@ -5272,6 +5796,9 @@ export default function MacroDashboard() {
   const [liquidityDrawerOpen, setLiquidityDrawerOpen] = useState(false);
   const [somaDrawerOpen, setSomaDrawerOpen] = useState(false);
   const [ticDrawerOpen, setTicDrawerOpen] = useState(false);
+  const [cyDrawerOpen, setCyDrawerOpen] = useState(false);
+  const [custodyDrawerOpen, setCustodyDrawerOpen] = useState(false);
+  const [indirectBidderDrawerOpen, setIndirectBidderDrawerOpen] = useState(false);
   const [regimeHistory, setRegimeHistory] = useState([]);
 
   const fetchIndicators = useCallback(async () => {
@@ -5337,9 +5864,12 @@ export default function MacroDashboard() {
   }
 
   const byLayer = [1, 2, 3, 4].reduce((acc, l) => {
-    acc[l] = (indicators ?? []).filter((i) => i.layer === l);
+    acc[l] = (indicators ?? []).filter((i) => i.layer === l && !SOVEREIGN_RISK_NAMES.includes(i.name));
     return acc;
   }, {});
+  const sovereignRiskIndicators = (indicators ?? [])
+    .filter((i) => SOVEREIGN_RISK_NAMES.includes(i.name))
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
 
   const counts = (indicators ?? []).reduce(
     (acc, i) => { acc[i.status ?? "unknown"] = (acc[i.status ?? "unknown"] ?? 0) + 1; return acc; },
@@ -5480,6 +6010,43 @@ export default function MacroDashboard() {
             </div>
           ))}
 
+          {/* Sovereign Risk — Market-Priced (Macro Measurement Upgrade Spec, Phase 1) */}
+          <div className="mb-10">
+            <div className="flex items-center gap-3 mb-3">
+              <span className="w-6 h-6 rounded-full bg-ink-soft flex items-center justify-center text-xs font-bold text-paper-dim">
+                7
+              </span>
+              <div>
+                <h2 className="text-sm font-semibold text-paper-dim uppercase tracking-wider">
+                  Sovereign Risk — Market-Priced
+                </h2>
+                <p className="label text-[10px] mt-0.5">Falsifiable, market-priced instruments for privilege erosion — distinct from the level-ratio cards above</p>
+              </div>
+            </div>
+
+            <DalioGauges gaugeKeys={["gauge7"]} />
+
+            {sovereignRiskIndicators.length === 0 ? (
+              <p className="text-paper-dim text-sm ml-9">No data yet.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                {sovereignRiskIndicators.map((ind) => (
+                  <IndicatorCard
+                    key={ind.id}
+                    ind={ind}
+                    onSave={fetchIndicators}
+                    onClick={
+                        ind.name === "Treasury Convenience Yield (10Y)" ? () => setCyDrawerOpen(true)
+                        : ind.name === "Foreign Official Custody Holdings" ? () => setCustodyDrawerOpen(true)
+                        : ind.name === "Indirect Bidder Share (10Y/30Y)" ? () => setIndirectBidderDrawerOpen(true)
+                        : undefined
+                      }
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Three Forces — long-cycle historical chart */}
           <div className="mb-10">
             <div className="flex items-center gap-3 mb-4">
@@ -5566,6 +6133,21 @@ export default function MacroDashboard() {
         open={ticDrawerOpen}
         onClose={() => setTicDrawerOpen(false)}
         ind={indicators?.find((i) => i.name === "Foreign Official Share of UST Holdings (YoY Δ)")}
+      />
+      <ConvenienceYieldDrawer
+        open={cyDrawerOpen}
+        onClose={() => setCyDrawerOpen(false)}
+        ind={indicators?.find((i) => i.name === "Treasury Convenience Yield (10Y)")}
+      />
+      <CustodyDrawer
+        open={custodyDrawerOpen}
+        onClose={() => setCustodyDrawerOpen(false)}
+        ind={indicators?.find((i) => i.name === "Foreign Official Custody Holdings")}
+      />
+      <IndirectBidderDrawer
+        open={indirectBidderDrawerOpen}
+        onClose={() => setIndirectBidderDrawerOpen(false)}
+        ind={indicators?.find((i) => i.name === "Indirect Bidder Share (10Y/30Y)")}
       />
     </Shell>
   );

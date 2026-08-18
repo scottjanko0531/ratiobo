@@ -152,7 +152,13 @@ interface Indicator {
     | "supabase_liquidity"
     | "supabase_bigcycle_xref"
     | "supabase_soma_duration"
-    | "supabase_tic_official_share";
+    | "supabase_tic_official_share"
+    | "supabase_convenience_yield"
+    | "supabase_custody"
+    | "supabase_indirect_bidder"
+    | "supabase_gold_real_corr"
+    | "supabase_stock_bond_corr"
+    | "supabase_bid_to_cover";
   series?: string;
   series2?: string;
   zscore?: boolean;
@@ -221,8 +227,8 @@ const INDICATORS: Indicator[] = [
     name: "Treasury Bid-to-Cover",
     layer: 1, layer_name: "Long-term Debt Cycle",
     description: "10-Year Treasury note auction bid-to-cover ratio — demand for US government debt; below 2.0 signals weakening appetite from investors",
-    fred_series_id: null, unit: "ratio", data_source: "treasurydirect", sort_order: 95,
-    type: "treasurydirect",
+    fred_series_id: null, unit: "ratio", data_source: "supabase", sort_order: 95,
+    type: "supabase_bid_to_cover",
     statusFn: v => v >= 2.5 ? "healthy" : v >= 2.0 ? "watch" : "danger",
   },
   {
@@ -256,6 +262,38 @@ const INDICATORS: Indicator[] = [
     fred_series_id: null, unit: "pts YoY", data_source: "supabase", sort_order: 99,
     type: "supabase_tic_official_share",
     statusFn: v => v <= -3 ? "danger" : v <= -1 ? "watch" : "healthy",
+  },
+  {
+    name: "Treasury Convenience Yield (10Y)",
+    layer: 1, layer_name: "Long-term Debt Cycle",
+    description: "10Y SOFR swap rate minus 10Y Treasury yield — the nonpecuniary premium the world pays to hold Treasuries (Krishnamurthy & Vissing-Jorgensen 2012). Positive = the US borrows below the risk-free rate (exorbitant privilege intact). Negative = Treasuries trade cheap to swaps; the subsidy has inverted. A sustained return above zero would falsify the privilege-erosion thesis.",
+    fred_series_id: null, unit: "bp", data_source: "supabase", sort_order: 100, series: "10",
+    type: "supabase_convenience_yield",
+    statusFn: v => v > 10 ? "healthy" : v >= -25 ? "watch" : "danger",
+  },
+  {
+    name: "Foreign Official Custody Holdings",
+    layer: 1, layer_name: "Long-term Debt Cycle",
+    description: "Marketable Treasuries held in custody at the NY Fed for foreign official and international accounts — weekly, ~1-day lag, a leading indicator for the Foreign Official Share of UST Holdings card (which runs on TIC data, ~2-month lag). Custody holdings will not tie to that card's level — it covers only FRBNY-held securities, not the whole foreign official universe. Track the trend, not the level. A sustained rise would indicate central banks re-engaging with Treasuries via this channel.",
+    fred_series_id: "WMTSECL1", unit: "$B", data_source: "fred", sort_order: 103,
+    type: "supabase_custody",
+    statusFn: v => v > 50 ? "healthy" : v >= -50 ? "watch" : "danger",
+  },
+  {
+    name: "Indirect Bidder Share (10Y/30Y)",
+    layer: 1, layer_name: "Long-term Debt Cycle",
+    description: "Trailing 6-auction average share of accepted bids from indirect bidders — the standard proxy for foreign official and central-bank auction demand — on 10Y and 30Y Treasury auctions (averaged; the long end is where the signal lives). A falling share means primary dealers are absorbing more supply, the price-insensitive-to-price-sensitive substitution this panel exists to track. A sustained rise back above 65% would falsify a weakening-demand thesis.",
+    fred_series_id: null, unit: "%", data_source: "treasurydirect", sort_order: 104,
+    type: "supabase_indirect_bidder",
+    statusFn: v => v > 65 ? "healthy" : v >= 55 ? "watch" : "danger",
+  },
+  {
+    name: "Gold / Real Yield Correlation (90d)",
+    layer: 1, layer_name: "Long-term Debt Cycle",
+    description: "Rolling 90-day correlation of daily changes in the gold price and the 10Y TIPS real yield. Normally strongly negative — the real yield is gold's opportunity cost. A sustained flip toward positive means gold has stopped trading as a rate-sensitive asset and started trading as a substitute for the long bond — the cleanest single discriminator between cyclically high yields and a reserve-asset regime change. A return to sustained negative correlation would falsify a regime-change reading.",
+    fred_series_id: null, unit: "corr", data_source: "supabase", sort_order: 105,
+    type: "supabase_gold_real_corr",
+    statusFn: v => v < -0.3 ? "healthy" : v <= 0.2 ? "watch" : "danger",
   },
   {
     name: "Silver Price",
@@ -354,6 +392,14 @@ const INDICATORS: Indicator[] = [
     fred_series_id: null, unit: "%", data_source: "supabase", sort_order: 17,
     type: "supabase_bigcycle_xref",
     statusFn: v => v < 6 ? "healthy" : v < 9 ? "watch" : "danger",
+  },
+  {
+    name: "Stock/Bond Correlation (90d)",
+    layer: 2, layer_name: "Short-Term Debt Cycle",
+    description: "Rolling 90-day correlation of daily returns between SPY and TLT — the one instrument on this dashboard that connects the macro panel to the portfolio directly. Negative = Treasuries hedge equities, the standard diversification assumption holds. A sustained flip positive means you're in an inflation/fiscal-dominated regime and any allocation model assuming negative correlation understates portfolio risk. A return to sustained negative correlation would falsify that reading.",
+    fred_series_id: null, unit: "corr", data_source: "supabase", sort_order: 50,
+    type: "supabase_stock_bond_corr",
+    statusFn: v => v < -0.2 ? "healthy" : v <= 0.2 ? "watch" : "danger",
   },
   {
     name: "Conference Board LEI",
@@ -691,17 +737,23 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         current = obs1[0] - obs2[0]; previous = obs1[1] - obs2[1];
         break;
       }
-      case "treasurydirect": {
-        const url = "https://www.treasurydirect.gov/TA_WS/securities/auctioned?type=Note&term=10-Year&pagenum=0&pagesize=8&format=json";
-        const tdCtrl = new AbortController();
-        const tdTid = setTimeout(() => tdCtrl.abort(), 10000);
-        let res: Response;
-        try { res = await fetch(url, { signal: tdCtrl.signal }); } finally { clearTimeout(tdTid); }
-        if (!res.ok) throw new Error(`TreasuryDirect: HTTP ${res.status}`);
-        const auctions = await res.json() as { bidToCoverRatio?: string }[];
-        const valid = auctions.filter(a => a.bidToCoverRatio && parseFloat(a.bidToCoverRatio!) > 0);
-        if (valid.length < 2) throw new Error("Not enough auction data");
-        current = parseFloat(valid[0].bidToCoverRatio!); previous = parseFloat(valid[1].bidToCoverRatio!);
+      case "supabase_bid_to_cover": {
+        // Now sourced from treasury_auction_results (Treasury Fiscal Data API,
+        // via ingest-auction-results) instead of a separate TreasuryDirect
+        // call, so bid-to-cover and bidder composition (Indirect Bidder Share
+        // card) come from one consistent record. Cross-checked at build time
+        // to match TreasuryDirect's own bid-to-cover value exactly on the
+        // same auction.
+        const { data: rows, error: btcErr } = await supabase
+          .from("treasury_auction_results")
+          .select("auction_date, bid_to_cover_ratio")
+          .eq("security_term", "10-Year")
+          .not("bid_to_cover_ratio", "is", null)
+          .order("auction_date", { ascending: false })
+          .limit(2);
+        if (btcErr || !rows || rows.length < 2) return null;
+        current = Number(rows[0].bid_to_cover_ratio);
+        previous = Number(rows[1].bid_to_cover_ratio);
         break;
       }
       case "supabase_debt_cycle": {
@@ -948,6 +1000,109 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
           latest_share_pct: Math.round(shares[0].share * 100) / 100,
           as_of_month: shares[0].month,
           yoy_change_pts: current,
+        };
+        break;
+      }
+      case "supabase_convenience_yield": {
+        const tenor = Number(ind.series);
+        const { data: rows, error: cyErr } = await supabase
+          .from("convenience_yield_observations")
+          .select("obs_date, convenience_bp, swap_rate_pct, treasury_yield_pct, is_proxy, source")
+          .eq("tenor_years", tenor)
+          .order("obs_date", { ascending: false })
+          .limit(400); // Pensford's feed carries a row per calendar day (weekends included, forward-filled), not just trading days — 400 safely spans 12 months back for the change_12m_bp metadata
+        if (cyErr || !rows || rows.length < 2) return null;
+        current = Number(rows[0].convenience_bp);
+        previous = Number(rows[1].convenience_bp);
+        const oneYearAgo = new Date(rows[0].obs_date + "T00:00:00Z");
+        oneYearAgo.setUTCFullYear(oneYearAgo.getUTCFullYear() - 1);
+        const cutoff = oneYearAgo.toISOString().slice(0, 10);
+        const yearAgo = rows.find((r) => r.obs_date <= cutoff);
+        metadata = {
+          as_of_date: rows[0].obs_date,
+          swap_rate_pct: Number(rows[0].swap_rate_pct),
+          treasury_yield_pct: Number(rows[0].treasury_yield_pct),
+          is_proxy: rows[0].is_proxy,
+          source: rows[0].source,
+          change_12m_bp: yearAgo ? Math.round((current - Number(yearAgo.convenience_bp)) * 100) / 100 : null,
+        };
+        break;
+      }
+      case "supabase_custody": {
+        const { data: rows, error: custErr } = await supabase
+          .from("foreign_custody_holdings")
+          .select("obs_date, treasury_bn, change_13w_bn, change_52w_bn")
+          .order("obs_date", { ascending: false })
+          .limit(2);
+        if (custErr || !rows || rows.length < 1 || rows[0].change_52w_bn == null) return null;
+        current = Number(rows[0].change_52w_bn);
+        previous = rows.length >= 2 && rows[1].change_52w_bn != null ? Number(rows[1].change_52w_bn) : current;
+        metadata = {
+          as_of_date: rows[0].obs_date,
+          latest_level_bn: Number(rows[0].treasury_bn),
+          change_13w_bn: rows[0].change_13w_bn != null ? Number(rows[0].change_13w_bn) : null,
+          change_52w_bn: current,
+        };
+        break;
+      }
+      case "supabase_indirect_bidder": {
+        const { data: rows, error: auErr } = await supabase
+          .from("treasury_auction_results")
+          .select("auction_date, security_term, indirect_share_pct")
+          .in("security_term", ["10-Year", "30-Year"])
+          .not("indirect_share_pct", "is", null)
+          .order("auction_date", { ascending: false })
+          .limit(24); // plenty to find 6 of each term
+        if (auErr || !rows || !rows.length) return null;
+        const avgOf = (term: string, offset: number) => {
+          const vals = rows.filter((r) => r.security_term === term).slice(offset, offset + 6).map((r) => Number(r.indirect_share_pct));
+          return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
+        };
+        const avg10 = avgOf("10-Year", 0), avg30 = avgOf("30-Year", 0);
+        const parts = [avg10, avg30].filter((v): v is number => v != null);
+        if (!parts.length) return null;
+        current = Math.round((parts.reduce((s, v) => s + v, 0) / parts.length) * 100) / 100;
+        const prevAvg10 = avgOf("10-Year", 1), prevAvg30 = avgOf("30-Year", 1);
+        const prevParts = [prevAvg10, prevAvg30].filter((v): v is number => v != null);
+        previous = prevParts.length ? Math.round((prevParts.reduce((s, v) => s + v, 0) / prevParts.length) * 100) / 100 : current;
+        metadata = {
+          avg_10y_6auction_pct: avg10 != null ? Math.round(avg10 * 100) / 100 : null,
+          avg_30y_6auction_pct: avg30 != null ? Math.round(avg30 * 100) / 100 : null,
+          latest_auction_date: rows[0].auction_date,
+        };
+        break;
+      }
+      case "supabase_gold_real_corr": {
+        const { data: rows, error: corrErr } = await supabase
+          .from("gold_rate_correlation")
+          .select("obs_date, corr_90d, corr_30d, corr_180d")
+          .not("corr_90d", "is", null)
+          .order("obs_date", { ascending: false })
+          .limit(2);
+        if (corrErr || !rows || !rows.length) return null;
+        current = Number(rows[0].corr_90d);
+        previous = rows.length >= 2 && rows[1].corr_90d != null ? Number(rows[1].corr_90d) : current;
+        metadata = {
+          as_of_date: rows[0].obs_date,
+          corr_30d: rows[0].corr_30d != null ? Number(rows[0].corr_30d) : null,
+          corr_180d: rows[0].corr_180d != null ? Number(rows[0].corr_180d) : null,
+        };
+        break;
+      }
+      case "supabase_stock_bond_corr": {
+        const { data: rows, error: sbErr } = await supabase
+          .from("stock_bond_correlation")
+          .select("obs_date, corr_90d, corr_30d, corr_180d")
+          .not("corr_90d", "is", null)
+          .order("obs_date", { ascending: false })
+          .limit(2);
+        if (sbErr || !rows || !rows.length) return null;
+        current = Number(rows[0].corr_90d);
+        previous = rows.length >= 2 && rows[1].corr_90d != null ? Number(rows[1].corr_90d) : current;
+        metadata = {
+          as_of_date: rows[0].obs_date,
+          corr_30d: rows[0].corr_30d != null ? Number(rows[0].corr_30d) : null,
+          corr_180d: rows[0].corr_180d != null ? Number(rows[0].corr_180d) : null,
         };
         break;
       }
@@ -1864,6 +2019,107 @@ async function updateConsumerExpectations(): Promise<void> {
   } catch (e) { console.error("[consumer_exp]", e); }
 }
 
+// Sovereign Risk panel notification rules that need custom logic beyond the
+// generic status-band-crossing detector in generateNotifications() (which
+// already covers all 5 new indicator cards automatically, since it iterates
+// macro_snapshots generically by indicator name).
+async function generateSovereignRiskNotifications(): Promise<void> {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const notifs: Record<string, unknown>[] = [];
+
+    // 10Y convenience yield moves >= 5bp in a day -> medium
+    {
+      const { data: rows } = await supabase.from("convenience_yield_observations")
+        .select("obs_date, convenience_bp").eq("tenor_years", 10).order("obs_date", { ascending: false }).limit(2);
+      if (rows && rows.length === 2) {
+        const delta = Number(rows[0].convenience_bp) - Number(rows[1].convenience_bp);
+        if (Math.abs(delta) >= 5) {
+          notifs.push({
+            category: "indicator", type: "value_change", importance: "medium",
+            title: `Treasury Convenience Yield (10Y) moved ${delta >= 0 ? "+" : ""}${delta.toFixed(1)}bp`,
+            description: `${Number(rows[1].convenience_bp).toFixed(1)}bp → ${Number(rows[0].convenience_bp).toFixed(1)}bp`,
+            metadata: { indicator: "Treasury Convenience Yield (10Y)", delta_bp: delta },
+            dedup_key: `cy10_daily_move:${rows[0].obs_date}`,
+          });
+        }
+      }
+    }
+
+    // Persistence-based regime-flip triggers: correlation crosses 0 upward
+    // and HOLDS for N days. Dedup key is scoped to the date the streak first
+    // became eligible, so it fires once per genuine crossing, not once per
+    // day the streak continues.
+    async function checkCorrCrossing(table: string, label: string, holdDays: number, dedupPrefix: string, extraTitle: string) {
+      const { data: rows } = await supabase.from(table).select("obs_date, corr_90d")
+        .not("corr_90d", "is", null).order("obs_date", { ascending: false }).limit(holdDays + 1);
+      if (!rows || rows.length < holdDays + 1) return;
+      const streak = rows.slice(0, holdDays);
+      const dayBefore = rows[holdDays];
+      const streakAllPositive = streak.every((r) => Number(r.corr_90d) > 0);
+      const wasNegativeBefore = Number(dayBefore.corr_90d) <= 0;
+      if (streakAllPositive && wasNegativeBefore) {
+        const crossingDate = streak[streak.length - 1].obs_date; // the day the streak actually started
+        notifs.push({
+          category: "indicator", type: "regime_signal", importance: "high",
+          title: `${label} turned positive and held ${holdDays} days`,
+          description: extraTitle,
+          metadata: { table, hold_days: holdDays, latest_corr_90d: Number(rows[0].corr_90d) },
+          dedup_key: `${dedupPrefix}_cross:${crossingDate}`,
+        });
+      }
+    }
+    await checkCorrCrossing("gold_rate_correlation", "Gold / Real-Yield Correlation (90d)", 5, "gold_real_corr",
+      "Gold has stopped trading as a rate-sensitive asset and started trading as a long-bond substitute — a reserve-asset regime signal.");
+    await checkCorrCrossing("stock_bond_correlation", "Stock/Bond Correlation (90d)", 10, "stock_bond_corr",
+      "Treasuries have stopped hedging equities — any allocation model assuming negative correlation now understates portfolio risk.");
+
+    // Indirect bidder share prints below 50% on a single 10Y/30Y auction
+    // (single-auction trigger — the 6-auction average card is too slow for this)
+    {
+      const { data: rows } = await supabase.from("treasury_auction_results")
+        .select("auction_date, security_term, indirect_share_pct")
+        .in("security_term", ["10-Year", "30-Year"]).not("indirect_share_pct", "is", null)
+        .order("auction_date", { ascending: false }).limit(2);
+      for (const r of rows ?? []) {
+        if (Number(r.indirect_share_pct) < 50) {
+          notifs.push({
+            category: "indicator", type: "status_change", importance: "high",
+            title: `${r.security_term} auction indirect bidder share printed below 50%`,
+            description: `${Number(r.indirect_share_pct).toFixed(1)}% on ${r.auction_date}`,
+            metadata: { security_term: r.security_term, auction_date: r.auction_date, indirect_share_pct: Number(r.indirect_share_pct) },
+            dedup_key: `indirect_bidder_low:${r.security_term}:${r.auction_date}`,
+          });
+        }
+      }
+    }
+
+    // Foreign custody holdings fall for 4 consecutive weeks (level, not the
+    // 52w-change metric the card itself displays)
+    {
+      const { data: rows } = await supabase.from("foreign_custody_holdings")
+        .select("obs_date, treasury_bn").order("obs_date", { ascending: false }).limit(5);
+      if (rows && rows.length === 5) {
+        const declining = rows.every((r, i) => i === 0 || Number(r.treasury_bn) < Number(rows[i - 1].treasury_bn));
+        if (declining) {
+          notifs.push({
+            category: "indicator", type: "value_change", importance: "medium",
+            title: "Foreign official custody holdings fell for 4 consecutive weeks",
+            description: `$${Number(rows[4].treasury_bn).toFixed(0)}B → $${Number(rows[0].treasury_bn).toFixed(0)}B`,
+            metadata: { start_bn: Number(rows[4].treasury_bn), end_bn: Number(rows[0].treasury_bn) },
+            dedup_key: `custody_4wk_decline:${rows[0].obs_date}`,
+          });
+        }
+      }
+    }
+
+    if (notifs.length) {
+      const { error } = await supabase.from("notifications").upsert(notifs, { onConflict: "dedup_key", ignoreDuplicates: true });
+      if (error) console.error("[sovereign_risk_notify] upsert:", error);
+    }
+  } catch (e) { console.error("[sovereign_risk_notify]", e); }
+}
+
 async function generateNotifications(): Promise<void> {
   try {
     const today = new Date().toISOString().slice(0, 10);
@@ -1958,6 +2214,7 @@ Deno.serve(async (req: Request) => {
     await computeGauge6();
     await updateConsumerExpectations();
     await generateNotifications();
+    await generateSovereignRiskNotifications();
   })());
   return new Response(
     JSON.stringify({

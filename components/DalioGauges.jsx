@@ -38,6 +38,11 @@ const GAUGE_META = [
     label: "Dollar Confidence Divergence",
     desc: "30Y yield rising without dollar support — debt-worry signal",
   },
+  {
+    key: "gauge7",
+    label: "Privilege Erosion",
+    desc: "Convenience yield · foreign demand · gold/real-yield regime tell (market-priced, grouped)",
+  },
 ];
 
 const RISK_RANGES = [
@@ -2005,6 +2010,208 @@ function SpeedometerGauge({ value, label, desc, year, onClick, statusLabelOverri
   );
 }
 
+// ── Gauge 7: Privilege Erosion ────────────────────────────────────────────
+// Grouped composite: mean(z(-CY10), mean(z(-official_share), z(-custody_52w),
+// z(-indirect_share)), z(gold_real_yield_corr90), z(term_premium)). CY Slope
+// (30Y-2Y) is omitted — no reachable 30Y SOFR swap source exists (Chatham is
+// Cloudflare-blocked from this project's edge functions; Pensford's feed
+// tops out at 10YR). Demand-side components are grouped into one slot since
+// they all measure foreign official demand from different angles and would
+// otherwise triple-count.
+function privilegeErosionAssessment(gauge7) {
+  if (gauge7 == null) return null;
+  if (gauge7 > 1.5) return {
+    label: "Critical",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "Convenience yield, foreign demand, and the gold/real-yield regime tell are all pointing the same direction at a historically extreme level. The market-priced signals corroborate what the level-ratio cards on this dashboard only gesture at: the Treasury's funding privilege is under genuine, active strain.",
+  };
+  if (gauge7 > 1.0) return {
+    label: "Elevated Risk",
+    color: "text-loss", border: "border-loss/20", bg: "bg-loss/5",
+    text: "Multiple market-priced privilege signals are reading elevated together — convenience yield deeply negative, foreign demand indicators softening, and/or gold trading more like a long-bond substitute than a rate-sensitive asset. Not yet at extremes, but the directional consistency across independently-priced instruments is itself a signal.",
+  };
+  if (gauge7 > 0.25) return {
+    label: "Watch",
+    color: "text-brass-soft", border: "border-brass/20", bg: "bg-brass/5",
+    text: "Early signs of privilege erosion across the market-priced component instruments — not severe enough to indicate a genuine funding-cost problem yet, but worth monitoring for acceleration, particularly if the components start moving together rather than offsetting.",
+  };
+  if (gauge7 > -0.25) return {
+    label: "Neutral",
+    color: "text-paper", border: "border-ink-line", bg: "bg-ink/40",
+    text: "Convenience yield, foreign demand, and the gold/real-yield correlation are near their own historical norms. No significant market-priced signal of an eroding Treasury funding subsidy at this level.",
+  };
+  return {
+    label: "Low Risk",
+    color: "text-gain", border: "border-gain/20", bg: "bg-gain/5",
+    text: "Market-priced privilege signals are running below their historical average level of concern — convenience yield less negative than typical, foreign demand steady or improving, gold trading with its normal negative real-yield relationship. The Treasury's funding subsidy shows no market-priced sign of erosion at this level.",
+  };
+}
+
+const PRIVILEGE_EROSION_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">Gauge 7 — Privilege Erosion</p>
+      <p className="text-paper-dim">A composite of market-priced (not level-ratio) signals for whether the US Treasury's funding subsidy — the "exorbitant privilege" of borrowing below the true risk-free rate — is eroding. Unlike debt/GDP or interest/GDP, every input here is a market price that can falsify itself: it can move back the other way if the thesis is wrong, rather than mechanically trending with the debt stock.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Composition (grouped weighting)</p>
+      <p className="text-paper-dim">mean( z(−Convenience Yield 10Y), mean(z(−Official Share), z(−Custody 52w Δ), z(−Indirect Bidder Share)), z(Gold/Real-Yield Corr 90d), z(10Y Term Premium) ). The three demand-side components (official share, custody holdings, indirect bidder share) are grouped into a single slot rather than averaged in individually — they're all measuring foreign official demand from different angles and would otherwise be triple-counted. A pairwise correlation diagnostic is logged on every computation specifically to catch this kind of redundancy if it creeps in elsewhere.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Known gap: no CY Slope (30Y−2Y)</p>
+      <p className="text-paper-dim">The spec's highest-return component — the convenience-yield term structure — needs a 30Y SOFR swap rate, and no reachable free source carries one: Chatham Financial has it but is blocked by Cloudflare bot-detection at this project's server infrastructure, and Pensford's feed (used for the 10Y convenience yield card) only goes out to 10YR. This gauge averages 4 components instead of 5 until a 30Y source is found.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Falsifiability</p>
+      <p className="text-paper-dim">A sustained return of the 10Y convenience yield above zero, foreign demand indicators stabilizing or improving, and gold resuming its normal negative correlation with real yields would falsify a privilege-erosion reading — this gauge is built to be able to say "the thesis was wrong," not just to trend downward with the debt stock.</p>
+    </div>
+    <p className="text-[10px] text-paper-dim/50 italic">Sources: Pensford (SOFR swaps + Treasury yields), FRED (WMTSECL1 custody, THREEFYTP10 term premium), Treasury Fiscal Data (auction internals), Treasury TIC (official share), gold_daily_prices + FRED DFII10 (gold/real-yield correlation).</p>
+  </div>
+);
+
+function PrivilegeErosionDrawer({ open, onClose, latestGauge }) {
+  const [history, setHistory] = useState(null);
+  const [components, setComponents] = useState(null);
+  const [infoOpen, setInfoOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open || history !== null) return;
+    Promise.all([
+      supabase.from("gauge_daily_snapshots").select("snapshot_date, value").eq("gauge_key", "gauge7").order("snapshot_date"),
+      supabase.from("dalio_gauge_readings").select("year, z_conv_yield, z_official_share, z_custody, z_indirect_bidder, z_gold_real_corr, z_term_premium").order("year", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("gauge7_component_correlations").select("max_abs_pair_corr, flagged, computed_at").order("computed_at", { ascending: false }).limit(1).maybeSingle(),
+    ]).then(([snaps, zRow, corrRow]) => {
+      setHistory(snaps.data ?? []);
+      setComponents({ z: zRow.data ?? null, corr: corrRow.data ?? null });
+    });
+  }, [open, history]);
+
+  const assessed = privilegeErosionAssessment(latestGauge);
+  const zRows = components?.z ? [
+    { label: "Convenience Yield (10Y)", value: components.z.z_conv_yield, note: "negated: falling CY = risk up" },
+    { label: "Official Share", value: components.z.z_official_share, note: "negated, grouped" },
+    { label: "Custody 52w Δ", value: components.z.z_custody, note: "negated, grouped" },
+    { label: "Indirect Bidder Share", value: components.z.z_indirect_bidder, note: "negated, grouped" },
+    { label: "Gold/Real-Yield Corr (90d)", value: components.z.z_gold_real_corr, note: "not negated" },
+    { label: "10Y Term Premium", value: components.z.z_term_premium, note: "not negated" },
+  ] : [];
+  const fmtZ = (v) => v == null ? "—" : `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(2)}`;
+  const fmtDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" });
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div className={`fixed right-0 top-0 h-full w-[780px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}>
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-paper">Gauge 7 — Privilege Erosion</h2>
+              <button
+                onClick={() => setInfoOpen((v) => !v)}
+                className={`w-[18px] h-[18px] rounded-full border text-[10px] font-bold flex items-center justify-center flex-shrink-0 transition-colors ${infoOpen ? "border-brass text-brass bg-brass/10" : "border-paper-dim/40 text-paper-dim hover:border-paper hover:text-paper"}`}
+                title="About this gauge"
+              >
+                i
+              </button>
+            </div>
+            <p className="text-[10px] text-paper-dim mt-0.5">Market-priced sovereign privilege composite · grouped weighting</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {latestGauge != null && (
+              <div className="text-right">
+                <p className={`num text-xl font-bold leading-none ${assessed?.color ?? "text-paper"}`}>
+                  {latestGauge >= 0 ? "+" : ""}{Number(latestGauge).toFixed(2)}
+                </p>
+                <p className="text-[10px] text-paper-dim mt-0.5">{assessed?.label ?? "—"}</p>
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        {infoOpen && (
+          <div className="px-5 py-4 border-b border-ink-line bg-ink shrink-0 overflow-y-auto max-h-[45vh]">
+            {PRIVILEGE_EROSION_INFO}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          {assessed && (
+            <div className={`card p-4 border ${assessed.border} ${assessed.bg}`}>
+              <p className="label text-[10px] mb-2">Current Assessment</p>
+              <p className={`text-xs font-semibold mb-2 ${assessed.color}`}>{assessed.label}</p>
+              <p className="text-[11px] text-paper-dim leading-relaxed">{assessed.text}</p>
+            </div>
+          )}
+
+          {history === null ? (
+            <div className="h-48 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : history.length > 1 ? (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Daily Reading{history.length < 14 ? " (history still accumulating)" : ""}</p>
+              <ResponsiveContainer width="100%" height={220}>
+                <ComposedChart data={history} margin={{ top: 5, right: 8, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2f38" vertical={false} />
+                  <XAxis dataKey="snapshot_date" tickFormatter={fmtDate} tick={{ fontSize: 10, fill: "#8a8f98" }} axisLine={{ stroke: "#2a2f38" }} tickLine={false} />
+                  <YAxis tick={{ fontSize: 10, fill: "#8a8f98" }} axisLine={{ stroke: "#2a2f38" }} tickLine={false} />
+                  <ReferenceLine y={0} stroke="#8a8f98" strokeOpacity={0.5} />
+                  <ReferenceLine y={1} stroke="#E0635C" strokeOpacity={0.3} strokeDasharray="3 3" />
+                  <ReferenceLine y={-1} stroke="#3FB984" strokeOpacity={0.3} strokeDasharray="3 3" />
+                  <Tooltip
+                    labelFormatter={fmtDate}
+                    formatter={(v) => [Number(v).toFixed(3), "Gauge 7"]}
+                    contentStyle={{ background: "#1a1d24", border: "1px solid #2a2f38", borderRadius: 6, fontSize: 11 }}
+                  />
+                  <Line type="monotone" dataKey="value" name="Gauge 7" stroke="#7030A0" strokeWidth={2} dot={false} connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <p className="text-paper-dim text-xs">Daily history starts accumulating from today — check back after a few runs for a trend line.</p>
+          )}
+
+          {zRows.length > 0 && (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">Component Z-Scores (latest)</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="text-paper-dim text-[10px]">
+                      <th className="text-left pb-2 font-medium">Component</th>
+                      <th className="text-right pb-2 font-medium">Z-Score</th>
+                      <th className="text-left pb-2 pl-4 font-medium">Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {zRows.map((r) => (
+                      <tr key={r.label} className="border-t border-ink-line/50">
+                        <td className="py-1.5 text-paper-dim">{r.label}</td>
+                        <td className={`py-1.5 text-right num font-semibold ${r.value == null ? "text-paper-dim" : Number(r.value) >= 1 ? "text-loss" : Number(r.value) <= -1 ? "text-gain" : "text-brass-soft"}`}>{fmtZ(r.value)}</td>
+                        <td className="py-1.5 pl-4 text-paper-dim/70 text-[10px]">{r.note}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {components?.corr && (
+                <p className="text-[10px] text-paper-dim/70 mt-3 pt-3 border-t border-ink-line/50">
+                  Component redundancy check: max pairwise correlation {Number(components.corr.max_abs_pair_corr).toFixed(2)}
+                  {components.corr.flagged ? " — flagged (>0.85, components are double-counting)" : " (below the 0.85 double-counting threshold)"}.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function PlusIcon() {
   return (
     <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -2024,6 +2231,7 @@ export default function DalioGauges({ gaugeKeys } = {}) {
   const [incomeAffordOpen, setIncomeAffordOpen] = useState(false);
   const [reserveConfOpen, setReserveConfOpen] = useState(false);
   const [dollarDivOpen, setDollarDivOpen] = useState(false);
+  const [privilegeErosionOpen, setPrivilegeErosionOpen] = useState(false);
   const [pipelineData, setPipelineData] = useState(null);
   const [pipelineOpen, setPipelineOpen] = useState(false);
   const [newYear, setNewYear] = useState("");
@@ -2050,7 +2258,7 @@ export default function DalioGauges({ gaugeKeys } = {}) {
   async function fetchReadings() {
     const { data } = await supabase
       .from("dalio_gauge_readings")
-      .select("year,gauge1,gauge2,gauge3,gauge4,gauge5,gauge6")
+      .select("year,gauge1,gauge2,gauge3,gauge4,gauge5,gauge6,gauge7")
       .order("year", { ascending: false })
       .limit(5);
 
@@ -2059,7 +2267,7 @@ export default function DalioGauges({ gaugeKeys } = {}) {
     // Most-recent non-null value per gauge
     const result = {};
     for (const row of data) {
-      for (const g of ["gauge1", "gauge2", "gauge3", "gauge4", "gauge5", "gauge6"]) {
+      for (const g of ["gauge1", "gauge2", "gauge3", "gauge4", "gauge5", "gauge6", "gauge7"]) {
         if (result[g] == null && row[g] != null) {
           result[g] = { value: Number(row[g]), year: row.year };
         }
@@ -2118,6 +2326,7 @@ export default function DalioGauges({ gaugeKeys } = {}) {
           : key === "gauge4" ? (incomeAffordAssessment(val)?.label ?? null)
           : key === "gauge5" ? (reserveConfAssessment(val)?.label ?? null)
           : key === "gauge6" ? (dollarDivAssessment(val)?.label ?? null)
+          : key === "gauge7" ? (privilegeErosionAssessment(val)?.label ?? null)
           : null;
           let pipelineAnnotation = null;
           if (key === "gauge3" && pipelineData?.compositeZ != null) {
@@ -2144,6 +2353,7 @@ export default function DalioGauges({ gaugeKeys } = {}) {
               : key === "gauge4" ? () => setIncomeAffordOpen(true)
               : key === "gauge5" ? () => setReserveConfOpen(true)
               : key === "gauge6" ? () => setDollarDivOpen(true)
+              : key === "gauge7" ? () => setPrivilegeErosionOpen(true)
               : undefined
               }
             />
@@ -2183,6 +2393,11 @@ export default function DalioGauges({ gaugeKeys } = {}) {
         open={dollarDivOpen}
         onClose={() => setDollarDivOpen(false)}
         latestGauge={latest?.gauge6?.value ?? null}
+      />
+      <PrivilegeErosionDrawer
+        open={privilegeErosionOpen}
+        onClose={() => setPrivilegeErosionOpen(false)}
+        latestGauge={latest?.gauge7?.value ?? null}
       />
       <PipelineDrawer
         open={pipelineOpen}
