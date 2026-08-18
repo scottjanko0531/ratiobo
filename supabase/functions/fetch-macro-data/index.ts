@@ -605,16 +605,20 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         break;
       }
       case "level_with_3m": {
-        // Fetch 2 obs for current/previous display, plus 4 monthly obs for 3M % change.
+        // Fetch 2 obs for current/previous display, plus monthly obs for 3M % change.
         // Uses monthly aggregation for daily series (e.g. WTI); works as-is for monthly.
+        // Requests extra months as a buffer: FRED includes the current, still-in-progress
+        // month as "." until it closes, and a bare limit of 4 with no headroom means that
+        // single filtered-out row silently drops the count below 4 and kills change3m_pct
+        // for the back half of any given month (same reasoning as fetchFred's +8 buffer).
         const [lvl, monthly] = await Promise.all([
           fetchFred(ind.series!, 2),
-          fetchFredObsMonthly(ind.series!, 4),
+          fetchFredObsMonthly(ind.series!, 8),
         ]);
         if (lvl.length < 2) return null;
         current = lvl[0]; previous = lvl[1];
         if (monthly.length >= 4) {
-          // monthly is desc: [0] = most recent, [3] = 3 months ago
+          // monthly is desc: [0] = most recent complete month, [3] = 3 months before that
           const pct = Math.round((monthly[0].value / monthly[3].value - 1) * 10000) / 100;
           metadata = { change3m_pct: pct };
         }
