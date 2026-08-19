@@ -1666,24 +1666,30 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
             </p>
             <div className="grid grid-cols-2 gap-3 mb-3">
               {[
-                { title: "Growth Momentum", sigs: fwd.growth.signals, dir: fwd.gDir, upLabel: "Expanding", downLabel: "Contracting" },
-                { title: "Inflation Momentum", sigs: fwd.infl.signals, dir: fwd.iDir, upLabel: "Rising", downLabel: "Falling" },
-              ].map(({ title, sigs, dir, upLabel, downLabel }) => (
+                { title: "Growth Momentum", sigs: fwd.growth.signals, dir: fwd.gDir, score: fwd.growth.score, upLabel: "Expanding", downLabel: "Contracting" },
+                { title: "Inflation Momentum", sigs: fwd.infl.signals, dir: fwd.iDir, score: fwd.infl.score, upLabel: "Rising", downLabel: "Falling" },
+              ].map(({ title, sigs, dir, score, upLabel, downLabel }) => (
                 <div key={title} className="bg-ink-soft rounded-lg p-3">
                   <p className="label text-[10px] mb-2">{title}</p>
                   <div className="space-y-1 mb-2">
                     {sigs.map(s => (
-                      <div key={s.label} className="flex items-center justify-between">
-                        <span className="text-[10px] text-paper-dim">{s.label}</span>
-                        <span className={`text-[10px] font-medium ${s.vote > 0 ? "text-gain" : s.vote < 0 ? "text-loss" : "text-paper-dim"}`}>
-                          {s.vote == null ? "—" : s.vote > 0 ? "↑" : s.vote < 0 ? "↓" : "→"}
+                      <div key={s.label} className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] text-paper-dim truncate">{s.label}</span>
+                        <span className="flex items-center gap-1.5 shrink-0">
+                          <span className="num text-[9px] text-paper-dim/50">w{s.w.toFixed(2)}</span>
+                          <span className={`text-[10px] font-medium ${s.vote > 0 ? "text-gain" : s.vote < 0 ? "text-loss" : "text-paper-dim"}`}>
+                            {s.vote == null ? "—" : s.vote > 0 ? "↑" : s.vote < 0 ? "↓" : "→"}
+                          </span>
                         </span>
                       </div>
                     ))}
                   </div>
-                  <div className="pt-2 border-t border-ink-line">
+                  <div className="pt-2 border-t border-ink-line flex items-center justify-between">
                     <span className={`text-xs font-semibold ${dir === "up" ? "text-gain" : dir === "down" ? "text-loss" : "text-paper-dim"}`}>
                       {dir === "up" ? `↑ ${upLabel}` : dir === "down" ? `↓ ${downLabel}` : "→ Neutral"}
+                    </span>
+                    <span className="num text-[10px] text-paper-dim">
+                      score {score == null ? "—" : `${score >= 0 ? "+" : ""}${score.toFixed(2)}`}
                     </span>
                   </div>
                 </div>
@@ -3306,9 +3312,28 @@ const LEI_RANGES = [
   { label: "All", months: 9999 },
 ];
 
+const LEI_INFO = (
+  <div className="space-y-4 text-[11px] leading-relaxed">
+    <div>
+      <p className="text-paper font-semibold mb-1">Conference Board LEI</p>
+      <p className="text-paper-dim">The Leading Economic Index is a composite of 10 forward-looking components — average weekly manufacturing hours, initial jobless claims, ISM new orders, manufacturers' new orders, building permits, stock prices (S&amp;P 500), the leading credit index, the interest rate spread, and consumer expectations — combined into a single index designed to move ahead of turning points in the broader economy, before they show up in GDP or employment data.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Reading it</p>
+      <p className="text-paper-dim">The headline number tracked here is the month-over-month % change. A single negative month is common noise and not by itself a recession signal — the Conference Board's own rule of thumb is <b>3 consecutive monthly declines</b>, or a meaningfully negative 6-month annualized rate, before treating it as a genuine deceleration signal.</p>
+    </div>
+    <div>
+      <p className="text-paper font-semibold mb-1">Thresholds</p>
+      <p className="text-paper-dim">Card status and the Forward Signal vote both use the same bands (coincidentally aligned, not derived from one another — they're separate pieces of code): <b>&gt; 0%</b> healthy / up · <b>-0.3% to 0%</b> watch / neutral · <b>&lt; -0.3%</b> danger / down. The -0.3 floor is a deadband — small negative prints within it are treated as noise rather than a real signal, consistent with the "3 consecutive declines" convention above.</p>
+    </div>
+    <p className="text-[10px] text-paper-dim/50 italic">Source: The Conference Board, Leading Economic Index for the U.S.</p>
+  </div>
+);
+
 function LeiDrawer({ open, onClose, ind }) {
   const [rows, setRows] = useState(null);
   const [range, setRange] = useState("5Y");
+  const [infoOpen, setInfoOpen] = useState(false);
 
   useEffect(() => {
     if (!open || rows !== null) return;
@@ -3363,7 +3388,16 @@ function LeiDrawer({ open, onClose, ind }) {
       >
         <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
           <div>
-            <h2 className="text-sm font-semibold text-paper">Conference Board LEI</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-paper">Conference Board LEI</h2>
+              <button
+                onClick={() => setInfoOpen((v) => !v)}
+                className={`w-[18px] h-[18px] rounded-full border text-[10px] font-bold flex items-center justify-center flex-shrink-0 transition-colors ${infoOpen ? "border-brass text-brass bg-brass/10" : "border-paper-dim/40 text-paper-dim hover:border-paper hover:text-paper"}`}
+                title="About this indicator"
+              >
+                i
+              </button>
+            </div>
             <p className="text-[10px] text-paper-dim mt-0.5">Leading Economic Index · MoM % change · 3 consecutive declines = recession signal</p>
           </div>
           <div className="flex items-start gap-4 shrink-0">
@@ -3380,6 +3414,12 @@ function LeiDrawer({ open, onClose, ind }) {
             </button>
           </div>
         </div>
+
+        {infoOpen && (
+          <div className="px-5 py-4 border-b border-ink-line bg-ink shrink-0 overflow-y-auto max-h-[45vh]">
+            {LEI_INFO}
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
           <div className="flex items-center gap-1">
