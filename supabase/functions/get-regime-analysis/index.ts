@@ -341,7 +341,7 @@ type Getter = (name: string) => number | null;
 
 function computeLiveRegimeKeys(
   get: Getter, getPrev: Getter, getMeta3m: Getter,
-): { structuralKey: string | null; marketKey: string | null; fwdKey: string | null; fwdConf: number | null } {
+): { structuralKey: string | null; marketKey: string | null; fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number } {
   const gdpYoy = get("Real GDP Growth");
   const cpiYoy = get("CPI (YoY)");
   const gdp3y = get("GDP Growth (3Y Avg)");
@@ -372,6 +372,9 @@ function computeLiveRegimeKeys(
     { name: "US Total Liquidity Composite", w: 0.15, vote: v => v > 0 ? 1 : v > -3 ? 0 : -1 },
     // Consumer spending, ~2/3 of GDP by expenditure (banding matches the card's own thresholds)
     { name: "Retail Sales (YoY)", w: 0.15, vote: v => v >= 2 ? 1 : v >= 0 ? 0 : -1 },
+    // Above/below-trend growth LEVEL (Investment Clock's own growth-axis definition),
+    // distinct from the momentum signals above. Quarterly — lower weight, slow-moving anchor
+    { name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
   ];
   const I: Sig[] = [
     { name: "CPI (YoY)",                       w: 0.20, useDir: true,   vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
@@ -381,6 +384,12 @@ function computeLiveRegimeKeys(
     { name: "Copper Price",                    w: 0.15, usePct3m: true, vote: v => v > 5   ? 1 : v >= -5 ? 0 : -1 },
     { name: "WTI Crude Oil",                   w: 0.10, usePct3m: true, vote: v => v > 5   ? 1 : v >= -5 ? 0 : -1 },
     { name: "M2 Growth (YoY)",                 w: 0.10,                 vote: v => v > 8   ? 1 : v >= 3  ? 0 : -1 },
+    // Leads realized inflation by ~6-12mo (Merrill Lynch Investment Clock) — tight
+    // capacity is genuinely forward-looking, unlike CPI/PPI trend which are coincident
+    { name: "Capacity Utilization", w: 0.15, vote: v => v > 80 ? 1 : v >= 74 ? 0 : -1 },
+    // Dollar strength lags into LOWER future inflation (~2mo, cheaper imports) — vote
+    // is inverted relative to a normal "rising = inflationary" reading
+    { name: "DXY", w: 0.10, usePct3m: true, vote: v => v > 5 ? -1 : v < -5 ? 1 : 0 },
   ];
   const getDirPct = (name: string): number | null => {
     const curr = get(name), prev = getPrev(name);
@@ -425,7 +434,26 @@ function computeLiveRegimeKeys(
     fwdConf = gConf != null && iConf != null ? Math.round((gConf + iConf) / 2) : null;
   }
 
-  return { structuralKey, marketKey, fwdKey, fwdConf };
+  // Vol-regime cross-check: VIX/MOVE are countercyclical (rise in downturns,
+  // fall in expansions) — ties to the GROWTH direction specifically, kept in
+  // sync with the identical logic in app/macro/page.jsx's computeForwardSignal.
+  let fwdConfVolMod = 0;
+  if (fwdKey && gDir) {
+    const vixChg = getMeta3m("VIX");
+    const moveChg = getMeta3m("MOVE Index");
+    const trends = [vixChg, moveChg].filter((v): v is number => v != null);
+    if (trends.length) {
+      const avgTrend = trends.reduce((s, v) => s + v, 0) / trends.length;
+      if (avgTrend > 5 || avgTrend < -5) {
+        const volRising = avgTrend > 5;
+        const confirms = (gDir === "down" && volRising) || (gDir === "up" && !volRising);
+        fwdConfVolMod = confirms ? 5 : -8;
+      }
+    }
+    if (fwdConf != null) fwdConf = Math.max(0, Math.min(100, fwdConf + fwdConfVolMod));
+  }
+
+  return { structuralKey, marketKey, fwdKey, fwdConf, fwdConfVolMod };
 }
 
 // ── Reference block shared by the main prompt and the consistency checker ──────

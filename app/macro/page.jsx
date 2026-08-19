@@ -349,6 +349,9 @@ const FWD_GROWTH_SIGNALS = [
   { label: "Liquidity",         name: "US Total Liquidity Composite", w: 0.15, vote: v => v > 0 ? 1 : v > -3 ? 0 : -1 },
   // Consumer spending, ~2/3 of GDP by expenditure (banding matches the card's own thresholds)
   { label: "Retail Sales",      name: "Retail Sales (YoY)", w: 0.15, vote: v => v >= 2 ? 1 : v >= 0 ? 0 : -1 },
+  // Above/below-trend growth LEVEL (Investment Clock's own growth-axis definition),
+  // distinct from the momentum signals above. Quarterly — lower weight, slow-moving anchor
+  { label: "Output Gap",        name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
 ];
 const FWD_INFL_SIGNALS = [
   // Direction-of-change signals capture disinflation momentum even when levels are still elevated
@@ -360,6 +363,12 @@ const FWD_INFL_SIGNALS = [
   { label: "Copper 3M",         name: "Copper Price",   w: 0.15, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
   { label: "WTI 3M",            name: "WTI Crude Oil",  w: 0.10, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
   { label: "M2 Growth",         name: "M2 Growth (YoY)",w: 0.10, vote: v => v > 8   ? 1 : v >= 3   ? 0 : -1 },
+  // Leads realized inflation by ~6-12mo (Merrill Lynch Investment Clock) — tight
+  // capacity is genuinely forward-looking, unlike CPI/PPI trend which are coincident
+  { label: "Capacity Utilization", name: "Capacity Utilization", w: 0.15, vote: v => v > 80 ? 1 : v >= 74 ? 0 : -1 },
+  // Dollar strength lags into LOWER future inflation (~2mo, cheaper imports) — vote
+  // is inverted relative to a normal "rising = inflationary" reading
+  { label: "Dollar (3M, lagged)", name: "DXY", w: 0.10, getPct3m: true, vote: v => v > 5 ? -1 : v < -5 ? 1 : 0 },
 ];
 
 function computeForwardSignal(indicators) {
@@ -417,10 +426,30 @@ function computeForwardSignal(indicators) {
   };
   const gConf = consensus(growth.signals, gDir);
   const iConf = consensus(infl.signals, iDir);
-  const confidence = forwardKey && gConf != null && iConf != null
+  const baseConfidence = forwardKey && gConf != null && iConf != null
     ? Math.round((gConf + iConf) / 2)
     : null;
-  return { growth, infl, gDir, iDir, forwardKey, confidence };
+  // Vol-regime cross-check: VIX/MOVE are famously countercyclical (rise in
+  // downturns, fall in expansions) — a well-established relationship, unlike
+  // more speculative per-quadrant vol claims. Ties to the GROWTH direction
+  // specifically, not the full quadrant. Confirming vol behavior gives a small
+  // confidence boost; contradicting behavior (vol falling while growth signals
+  // say "down", or rising while they say "up") is treated as a bigger red flag,
+  // since it suggests the growth read may be about to reverse.
+  const volMod = (() => {
+    if (!gDir || gDir === "neutral") return 0;
+    const vixChg = getPct3m("VIX");
+    const moveChg = getPct3m("MOVE Index");
+    const trends = [vixChg, moveChg].filter(v => v != null);
+    if (!trends.length) return 0;
+    const avgTrend = trends.reduce((s, v) => s + v, 0) / trends.length;
+    if (avgTrend <= 5 && avgTrend >= -5) return 0; // roughly flat, no signal
+    const volRising = avgTrend > 5;
+    const confirms = (gDir === "down" && volRising) || (gDir === "up" && !volRising);
+    return confirms ? 5 : -8;
+  })();
+  const confidence = baseConfidence != null ? Math.max(0, Math.min(100, baseConfidence + volMod)) : null;
+  return { growth, infl, gDir, iDir, forwardKey, confidence, baseConfidence, volMod };
 }
 
 // ── Daily Macro Summary ───────────────────────────────────────────────────────
@@ -1050,6 +1079,31 @@ function EconCalendar() {
   );
 }
 
+// Local-extrema peak/trough detection with a minimum-prominence deadband, so
+// quarter-to-quarter noise in GDP/CPI YoY doesn't register as a false cyclical
+// turn. A point qualifies as a peak/trough only if it's the highest/lowest
+// value within `window` quarters on both sides AND the swing versus the
+// nearest opposing extreme within that window clears `minProminence` points —
+// same spirit as scipy's find_peaks prominence filter, no library needed.
+function findPeaksTroughs(series, minProminence = 0.5, window = 2) {
+  const peaks = [];
+  const troughs = [];
+  for (let i = window; i < series.length - window; i++) {
+    const v = series[i].value;
+    const left = series.slice(i - window, i).map((s) => s.value);
+    const right = series.slice(i + 1, i + 1 + window).map((s) => s.value);
+    if (left.every((x) => x <= v) && right.every((x) => x <= v)) {
+      const localMin = Math.min(...left, ...right);
+      if (v - localMin >= minProminence) peaks.push(series[i]);
+    }
+    if (left.every((x) => x >= v) && right.every((x) => x >= v)) {
+      const localMax = Math.max(...left, ...right);
+      if (localMax - v >= minProminence) troughs.push(series[i]);
+    }
+  }
+  return { peaks, troughs };
+}
+
 function RegimeHistoryChart({ data }) {
   const [tooltip, setTooltip] = useState(null);
 
@@ -1059,6 +1113,29 @@ function RegimeHistoryChart({ data }) {
   const concordance = sorted.filter(r => r.structural_key === r.market_key).length / sorted.length;
   const divergences = sorted.filter(r => r.structural_key !== r.market_key);
   const CELL_W = 10;
+
+  // Cycle-phase context: where are we relative to the last growth/inflation
+  // turning point, on top of the static quadrant classification above.
+  const growthSeries = sorted.filter(r => r.gdp_yoy != null).map(r => ({ date: r.period_date, value: Number(r.gdp_yoy) }));
+  const inflSeries = sorted.filter(r => r.cpi_yoy != null).map(r => ({ date: r.period_date, value: Number(r.cpi_yoy) }));
+  const growthTurns = findPeaksTroughs(growthSeries);
+  const inflTurns = findPeaksTroughs(inflSeries);
+  const quartersSince = (dateA, dateB) => {
+    const [ya, ma] = dateA.split("-").map(Number), [yb, mb] = dateB.split("-").map(Number);
+    return Math.round(((yb - ya) * 12 + (mb - ma)) / 3);
+  };
+  const lastTurn = (turns, latestDate) => {
+    const all = [...turns.peaks.map(t => ({ ...t, type: "peak" })), ...turns.troughs.map(t => ({ ...t, type: "trough" }))]
+      .sort((a, b) => b.date.localeCompare(a.date));
+    return all[0] ? { ...all[0], quartersSince: quartersSince(all[0].date, latestDate) } : null;
+  };
+  const latestDate = sorted[sorted.length - 1].period_date;
+  const lastGrowthTurn = growthSeries.length ? lastTurn(growthTurns, latestDate) : null;
+  const lastInflTurn = inflSeries.length ? lastTurn(inflTurns, latestDate) : null;
+  const turnMarkerType = new Map([
+    ...growthTurns.peaks.map(t => [t.date, "peak"]),
+    ...growthTurns.troughs.map(t => [t.date, "trough"]),
+  ]);
 
   const rows = [
     { key: "structural_key", label: "Structural" },
@@ -1085,7 +1162,24 @@ function RegimeHistoryChart({ data }) {
         <span className="text-paper-dim">
           {sorted[0].period_date.slice(0, 4)}–{sorted[sorted.length - 1].period_date.slice(0, 4)}
         </span>
+        {lastGrowthTurn && (
+          <span className="text-paper-dim">
+            Growth cycle:{" "}
+            <span className="num text-paper">{lastGrowthTurn.quartersSince}q</span>
+            {" "}since last {lastGrowthTurn.type === "peak" ? "peak ↓" : "trough ↑"}
+          </span>
+        )}
+        {lastInflTurn && (
+          <span className="text-paper-dim">
+            Inflation cycle:{" "}
+            <span className="num text-paper">{lastInflTurn.quartersSince}q</span>
+            {" "}since last {lastInflTurn.type === "peak" ? "peak ↓" : "trough ↑"}
+          </span>
+        )}
       </div>
+      <p className="text-[10px] text-paper-dim/60 mb-3">
+        Cycle-phase context from local-extrema detection on GDP/CPI YoY (min. 0.5pt prominence, ±2 quarter window) — a slower-moving complement to the quadrant classification above, not a substitute for it.
+      </p>
 
       {/* Legend */}
       <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3">
@@ -1108,6 +1202,19 @@ function RegimeHistoryChart({ data }) {
               return (
                 <div key={r.period_date} style={{ width: CELL_W + 1, flexShrink: 0 }}>
                   {isFirst && <span className="text-[9px] text-paper-dim/60 leading-none">{yr.slice(2)}</span>}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Growth cycle turning-point markers */}
+          <div className="flex mb-0.5 ml-[72px]">
+            {sorted.map((r) => {
+              const turnType = turnMarkerType.get(r.period_date);
+              return (
+                <div key={r.period_date} style={{ width: CELL_W + 1, flexShrink: 0 }} className="flex justify-center" title={turnType ? `Growth ${turnType} — ${r.period_date.slice(0, 7)}` : undefined}>
+                  {turnType === "peak" && <span className="text-loss text-[9px] leading-none">▼</span>}
+                  {turnType === "trough" && <span className="text-gain text-[9px] leading-none">▲</span>}
                 </div>
               );
             })}

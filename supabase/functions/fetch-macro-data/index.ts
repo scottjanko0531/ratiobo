@@ -158,7 +158,8 @@ interface Indicator {
     | "supabase_indirect_bidder"
     | "supabase_gold_real_corr"
     | "supabase_stock_bond_corr"
-    | "supabase_bid_to_cover";
+    | "supabase_bid_to_cover"
+    | "output_gap";
   series?: string;
   series2?: string;
   zscore?: boolean;
@@ -418,6 +419,15 @@ const INDICATORS: Indicator[] = [
     statusFn: v => v >= 50 ? "healthy" : v >= 45 ? "watch" : "danger",
   },
   {
+    name: "Output Gap", layer: 3, layer_name: "Business Cycle",
+    description: "Real GDP minus CBO potential GDP, as % of potential — the 'above/below trend' growth-level signal the Investment Clock framework uses to define its growth axis, distinct from the momentum-based growth signals (LEI, yield curve, loan officer survey) elsewhere on this dashboard",
+    fred_series_id: null, unit: "%", data_source: "computed", sort_order: 301,
+    series: "GDPC1", series2: "GDPPOT", type: "output_gap",
+    // Symmetric: a large gap in EITHER direction is concerning — overheating
+    // (inflation risk) or deep slack (recession), not just "negative = safe"
+    statusFn: v => Math.abs(v) > 2.5 ? "danger" : Math.abs(v) > 1 ? "watch" : "healthy",
+  },
+  {
     name: "US Total Liquidity Composite", layer: 3, layer_name: "Business Cycle",
     description: "YoY momentum of Fed net liquidity (balance sheet − TGA − RRP) and private liquidity (repo, commercial paper, M2) — public-data approximation of the Michael Howell / GL Indexes global liquidity framework",
     fred_series_id: null, unit: "%", data_source: "supabase", sort_order: 300,
@@ -527,8 +537,15 @@ const INDICATORS: Indicator[] = [
     name: "VIX", layer: 4, layer_name: "Tail Risk",
     description: "CBOE equity volatility — fear gauge",
     fred_series_id: "VIXCLS", unit: "index", data_source: "fred", sort_order: 29,
-    series: "VIXCLS", type: "level",
+    series: "VIXCLS", type: "level_with_3m",
     statusFn: v => v < 20 ? "healthy" : v < 35 ? "watch" : "danger",
+  },
+  {
+    name: "MOVE Index", layer: 4, layer_name: "Tail Risk",
+    description: "ICE BofA MOVE Index — bond-market volatility, the rates equivalent of VIX. Used alongside VIX as a regime-confidence cross-check on the Forward Signal, not a standalone growth/inflation vote — rising vol (either) in a growth-down quadrant confirms the regime call; rising vol in a growth-up quadrant contradicts it.",
+    fred_series_id: null, unit: "index", data_source: "yahoo", sort_order: 30,
+    series: "^MOVE", type: "yahoo_price_with_3m",
+    statusFn: v => v < 90 ? "healthy" : v < 130 ? "watch" : "danger",
   },
   {
     name: "Consumer Sentiment", layer: 4, layer_name: "Tail Risk",
@@ -794,6 +811,28 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const [walcl, gdp] = await Promise.all([fetchFred(ind.series!, 2), fetchFred(ind.series2!, 2)]);
         if (walcl.length < 2 || gdp.length < 2) return null;
         current = (walcl[0] / 1000) / gdp[0] * 100; previous = (walcl[1] / 1000) / gdp[1] * 100;
+        break;
+      }
+      case "output_gap": {
+        // GDPPOT (CBO potential GDP) is published as a long-horizon projection
+        // extending ~10 years into the future — a naive "most recent N" fetch
+        // grabs future-dated projection rows, not the current quarter. Cap
+        // with observation_end so only realized-to-date quarters come back,
+        // which then align by position with GDPC1's own 2 most recent quarters.
+        const today = new Date().toISOString().slice(0, 10);
+        const [gdpObs, potObs] = await Promise.all([
+          fetchFredObs(ind.series!, 2),
+          fetch(`${FRED}?series_id=${ind.series2}&api_key=${apiKey}&sort_order=desc&observation_end=${today}&limit=2&file_type=json`)
+            .then((r) => r.json())
+            .then((j: { observations: { date: string; value: string }[] }) =>
+              (j.observations ?? []).filter((o) => o.value !== "." && o.value !== "")
+                .map((o) => ({ date: o.date, value: parseFloat(o.value) }))
+                .filter((o) => !isNaN(o.value))
+            ),
+        ]);
+        if (gdpObs.length < 2 || potObs.length < 2) return null;
+        current = (gdpObs[0].value - potObs[0].value) / potObs[0].value * 100;
+        previous = (gdpObs[1].value - potObs[1].value) / potObs[1].value * 100;
         break;
       }
       case "m2_minus_gdp": {
@@ -1293,6 +1332,9 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     { name: "US Total Liquidity Composite", w: 0.15, vote: v => v > 0 ? 1 : v > -3 ? 0 : -1 },
     // Consumer spending, ~2/3 of GDP by expenditure (banding matches the card's own thresholds)
     { name: "Retail Sales (YoY)", w: 0.15, vote: v => v >= 2 ? 1 : v >= 0 ? 0 : -1 },
+    // Above/below-trend growth LEVEL (Investment Clock's own growth-axis definition),
+    // distinct from the momentum signals above. Quarterly — lower weight, slow-moving anchor
+    { name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
   ];
   const I: Sig[] = [
     // Direction signals: CPI/PPI trend captures disinflation momentum even when levels are elevated
@@ -1305,6 +1347,12 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     { name: "Copper Price",                    w: 0.15, usePct3m: true, vote: v => v > 5  ? 1 : v >= -5 ? 0 : -1 },
     { name: "WTI Crude Oil",                   w: 0.10, usePct3m: true, vote: v => v > 5  ? 1 : v >= -5 ? 0 : -1 },
     { name: "M2 Growth (YoY)",                 w: 0.10,                vote: v => v > 8   ? 1 : v >= 3  ? 0 : -1 },
+    // Leads realized inflation by ~6-12mo (Merrill Lynch Investment Clock) — tight
+    // capacity is genuinely forward-looking, unlike CPI/PPI trend which are coincident
+    { name: "Capacity Utilization", w: 0.15, vote: v => v > 80 ? 1 : v >= 74 ? 0 : -1 },
+    // Dollar strength lags into LOWER future inflation (~2mo, cheaper imports) — vote
+    // is inverted relative to a normal "rising = inflationary" reading
+    { name: "DXY", w: 0.10, usePct3m: true, vote: v => v > 5 ? -1 : v < -5 ? 1 : 0 },
   ];
   type ScoreSig = { w: number; vote: number | null };
   const scoreGroup = (sigs: Sig[]): { signals: ScoreSig[]; score: number | null } => {
@@ -1340,7 +1388,24 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
   };
   const gConf = consensus(growth.signals, gDir!);
   const iConf = consensus(infl.signals, iDir!);
-  return { forwardKey, confidence: gConf != null && iConf != null ? Math.round((gConf + iConf) / 2) : null };
+  let confidence = gConf != null && iConf != null ? Math.round((gConf + iConf) / 2) : null;
+  // Vol-regime cross-check: VIX/MOVE are countercyclical (rise in downturns,
+  // fall in expansions) — ties to the GROWTH direction specifically, kept in
+  // sync with the identical logic in app/macro/page.jsx and get-regime-analysis.
+  if (confidence != null) {
+    const vixChg = getPct3m("VIX");
+    const moveChg = getPct3m("MOVE Index");
+    const trends = [vixChg, moveChg].filter((v): v is number => v != null);
+    if (trends.length) {
+      const avgTrend = trends.reduce((s, v) => s + v, 0) / trends.length;
+      if (avgTrend > 5 || avgTrend < -5) {
+        const volRising = avgTrend > 5;
+        const confirms = (gDir === "down" && volRising) || (gDir === "up" && !volRising);
+        confidence = Math.max(0, Math.min(100, confidence + (confirms ? 5 : -8)));
+      }
+    }
+  }
+  return { forwardKey, confidence };
 }
 
 async function backfillForwardSignals(): Promise<void> {

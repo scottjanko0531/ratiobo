@@ -16,7 +16,7 @@ import {
   saveAltAssumption,
 } from "../lib/altAssets";
 import AltConfigPanel from "./AltConfigPanel";
-import { BW_ALLOC, REGIME_DEFAULT_WEIGHTS, getSignalKeys, holdingsToWeights } from "../lib/simulatorKeys";
+import { BW_ALLOC, REGIME_DEFAULT_WEIGHTS, getSignalKeys, getSectorTilts, holdingsToWeights } from "../lib/simulatorKeys";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -758,6 +758,43 @@ export default function RegimeSimulator({ assets, corrMatrix }) {
               {" — "}
               <span className="text-paper-dim">{regime.why}</span>
             </div>
+
+            {/* Sector tilts within the equity sleeve */}
+            {(() => {
+              const { overweight, underweight } = getSectorTilts(activeRegime);
+              return (
+                <div className="mx-5 mb-5">
+                  <p className="label text-[10px] mb-2">Sector Tilts — Within Equities</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-[10px] text-gain mb-1.5">Overweight</p>
+                      <div className="space-y-1">
+                        {overweight.map((s) => (
+                          <div key={s.key} className="flex items-center justify-between text-[11px]">
+                            <span className="text-paper-dim truncate">{s.ticker} · {s.label}</span>
+                            <span className="num text-paper shrink-0 ml-2">{s.weight}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-loss mb-1.5">Underweight</p>
+                      <div className="space-y-1">
+                        {underweight.map((s) => (
+                          <div key={s.key} className="flex items-center justify-between text-[11px]">
+                            <span className="text-paper-dim truncate">{s.ticker} · {s.label}</span>
+                            <span className="num text-paper shrink-0 ml-2">{s.weight}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-paper-dim/50 mt-2 leading-relaxed">
+                    Weights sum to 100% within the equity sleeve — applies on top of the {regime.label} equity allocation above, not in place of it. Business-cycle sector-rotation framework, not backtested against this dashboard's own regime history.
+                  </p>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Projected behavior */}
