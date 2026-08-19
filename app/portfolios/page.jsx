@@ -373,6 +373,8 @@ export default function PortfoliosPage() {
                           </span>
                         )}
                       </p>
+                    ) : (pf.target_allocations && Object.keys(pf.target_allocations).length > 0) ? (
+                      <p className="text-xs text-paper-dim italic">Holding a neutral starting baseline — not yet tilted to a specific regime. Waiting for the Forward Signal to clear the 60% confidence floor before adopting regime-specific weights. Can sit here a while if the signal stays low-conviction.</p>
                     ) : (
                       <p className="text-xs text-paper-dim italic">Not yet activated — waiting for the Forward Signal to clear the 60% confidence floor before adopting a starting target. Can sit here a while if the signal stays low-conviction.</p>
                     )}
