@@ -211,22 +211,30 @@ export default function BigCyclePage() {
   const [stages, setStages] = useState([]);
   const [metrics, setMetrics] = useState([]);
   const [determinants, setDeterminants] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [lastScan, setLastScan] = useState(null);
   const [busy, setBusy] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [reviewingId, setReviewingId] = useState(null);
   const timers = useRef({});
 
   async function load() {
     setBusy(true);
-    const [{ data: c }, { data: s }, { data: m }, { data: d }] = await Promise.all([
+    const [{ data: c }, { data: s }, { data: m }, { data: d }, { data: ev }, { data: sc }] = await Promise.all([
       supabase.from("big_cycle_cycles").select("*").order("sort_order"),
       supabase.from("big_cycle_stages").select("*").order("stage_order"),
       supabase.from("big_cycle_metrics").select("*").order("sort_order"),
       supabase.from("big_cycle_determinants").select("*").order("sort_order"),
+      supabase.from("big_cycle_events").select("*").eq("status", "pending").order("detected_at", { ascending: false }),
+      supabase.from("big_cycle_event_scans").select("*").order("run_at", { ascending: false }).limit(1),
     ]);
     setCycles(c ?? []);
     setStages(s ?? []);
     setMetrics(m ?? []);
     setDeterminants(d ?? []);
+    setEvents(ev ?? []);
+    setLastScan(sc?.[0] ?? null);
     setBusy(false);
   }
 
@@ -239,6 +247,28 @@ export default function BigCyclePage() {
     } catch (_) { /* best-effort */ }
     await load();
     setRefreshing(false);
+  }
+
+  async function runEventScan() {
+    setScanning(true);
+    try {
+      await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/detect-macro-events`, { method: "POST" });
+    } catch (_) { /* best-effort */ }
+    await load();
+    setScanning(false);
+  }
+
+  async function reviewEvent(id, action) {
+    setReviewingId(id);
+    try {
+      await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/apply-macro-event`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ event_id: id, action }),
+      });
+    } catch (_) { /* best-effort */ }
+    await load();
+    setReviewingId(null);
   }
 
   function saveMetric(id, patch) {
@@ -277,11 +307,17 @@ export default function BigCyclePage() {
             <h1 className="text-xl font-semibold">Big Cycle</h1>
             <p className="text-xs text-paper-dim mt-0.5">
               Dalio's three interlocking cycles — debt, internal order, external order · {lastUpdated ? `refreshed ${fmtDateTime(lastUpdated)}` : "not yet refreshed"}
+              {lastScan ? ` · events checked ${fmtDateTime(lastScan.run_at)}` : ""}
             </p>
           </div>
-          <button onClick={runRefreshNow} disabled={refreshing} className="btn text-xs shrink-0 disabled:opacity-50">
-            {refreshing ? "Refreshing…" : "Refresh Now"}
-          </button>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={runEventScan} disabled={scanning} className="btn-ghost text-xs disabled:opacity-50">
+              {scanning ? "Checking… (can take ~1 min)" : "Check for Events"}
+            </button>
+            <button onClick={runRefreshNow} disabled={refreshing} className="btn text-xs disabled:opacity-50">
+              {refreshing ? "Refreshing…" : "Refresh Now"}
+            </button>
+          </div>
         </div>
 
         {busy ? (
@@ -297,6 +333,56 @@ export default function BigCyclePage() {
                 Framework and stage placement are Dalio's — <span className="text-paper">this is a structured lens, not a forecast</span>. Metrics tagged "Manual" below are hand-entered (click the value or note to edit); everything else refreshes automatically. The debt cycle's "current" stage is computed automatically from live thresholds (fed funds level, Fed balance sheet %GDP, deficit %GDP, r − g); internal and external cycle stages are still an editorial judgment call given the metrics below, not an authoritative dating.
               </p>
             </div>
+
+            {events.length > 0 && (
+              <div className="card p-4 mb-6 border-brass/40 bg-brass/10">
+                <p className="label text-[10px] mb-1">Detected Events — Needs Review</p>
+                <p className="text-[10px] text-paper-dim/70 mb-3">
+                  Found by an AI web-search pass, not applied automatically. Confirm to apply the suggested stage (if any); dismiss if it's not material.
+                </p>
+                <div className="space-y-3">
+                  {events.map((ev) => (
+                    <div key={ev.id} className="border border-ink/10 rounded-md p-3 bg-paper/40">
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">
+                            {ev.source_url ? (
+                              <a href={ev.source_url} target="_blank" rel="noreferrer" className="hover:underline">{ev.headline}</a>
+                            ) : ev.headline}
+                          </p>
+                          <p className="text-xs text-paper-dim mt-1">{ev.summary}</p>
+                          <p className="text-[10px] text-paper-dim/60 mt-1">
+                            {ev.source_name ?? "source"} · {fmtDateTime(ev.detected_at)} · confidence: {ev.confidence}
+                          </p>
+                          {ev.suggested_stage && (
+                            <p className="text-[10px] text-brass-soft mt-1">
+                              Suggests debt cycle stage → <span className="font-semibold">{ev.suggested_stage}</span>
+                              {ev.stage_rationale ? `. ${ev.stage_rationale}` : ""}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex gap-2 shrink-0">
+                          <button
+                            onClick={() => reviewEvent(ev.id, "confirm")}
+                            disabled={reviewingId === ev.id}
+                            className="btn text-xs disabled:opacity-50"
+                          >
+                            {ev.suggested_stage ? `Confirm → ${ev.suggested_stage}` : "Confirm"}
+                          </button>
+                          <button
+                            onClick={() => reviewEvent(ev.id, "dismiss")}
+                            disabled={reviewingId === ev.id}
+                            className="btn-ghost text-xs disabled:opacity-50"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {cycles.map((cycle) => (
               <CycleSection
