@@ -8,6 +8,7 @@ import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import NotificationBanner from "../../components/NotificationBanner";
 import TickerBanner from "../../components/TickerBanner";
+import PeriodChangeDrawer from "../../components/PeriodChangeDrawer";
 
 const usd = (n) =>
   n == null
@@ -89,6 +90,7 @@ export default function Dashboard() {
   const [chartPeriod, setChartPeriod] = useState("All");
   const [error, setError] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
+  const [mtdDrawerOpen, setMtdDrawerOpen] = useState(false);
 
   function toggleGroup(code) {
     setCollapsedGroups((prev) => {
@@ -174,7 +176,7 @@ export default function Dashboard() {
   const totalGainPct = totals.basis > 0 ? (totalGain / totals.basis) * 100 : null;
 
   const periodChanges = useMemo(() => {
-    if (!portfolioHistory.length) return { week: null, mtd: null, ytd: null };
+    if (!portfolioHistory.length) return { week: null, mtd: null, ytd: null, mtdRefDate: null };
     const now = new Date();
     // Calendar week (Monday-Sunday), not a rolling trailing-7-days lookback —
     // on a Monday this must resolve to today, so Week Change equals Day Change,
@@ -183,17 +185,20 @@ export default function Dashboard() {
     const weekStart = new Date(now); weekStart.setDate(now.getDate() - daysSinceMonday);
     const mtdStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const ytdStart = new Date(now.getFullYear(), 0, 1);
-    const findValue = (target) => {
+    const findEntry = (target) => {
       const targetStr = target.toISOString().slice(0, 10);
       // Use closest snapshot at or before target; fall back to earliest available
-      return ([...portfolioHistory].reverse().find(e => e.date <= targetStr) ?? portfolioHistory[0])?.value ?? null;
+      return ([...portfolioHistory].reverse().find(e => e.date <= targetStr) ?? portfolioHistory[0]) ?? null;
     };
     const current = totals.value;
-    const wv = findValue(weekStart), mv = findValue(mtdStart), yv = findValue(ytdStart);
+    const we = findEntry(weekStart), me = findEntry(mtdStart), ye = findEntry(ytdStart);
     return {
-      week: wv != null ? current - wv : null,
-      mtd:  mv != null ? current - mv : null,
-      ytd:  yv != null ? current - yv : null,
+      week: we ? current - we.value : null,
+      mtd:  me ? current - me.value : null,
+      ytd:  ye ? current - ye.value : null,
+      // Exposed so the MTD drawer can pull per-holding snapshots for the exact
+      // same reference date this card's total is computed against.
+      mtdRefDate: me ? me.date : null,
     };
   }, [portfolioHistory, totals.value]);
 
@@ -265,7 +270,10 @@ export default function Dashboard() {
           <p className="label mb-1">Week change</p>
           <p className="num text-xl"><GainText value={periodChanges.week} /></p>
         </div>
-        <div className="card p-4">
+        <div
+          className="card p-4 cursor-pointer hover:border-brass/40 transition-colors"
+          onClick={() => setMtdDrawerOpen(true)}
+        >
           <p className="label mb-1">Month to date</p>
           <p className="num text-xl"><GainText value={periodChanges.mtd} /></p>
         </div>
@@ -525,6 +533,16 @@ export default function Dashboard() {
           </tbody>
         </table>
       </div>
+
+      <PeriodChangeDrawer
+        open={mtdDrawerOpen}
+        onClose={() => setMtdDrawerOpen(false)}
+        label="Month to date"
+        total={periodChanges.mtd}
+        refDate={periodChanges.mtdRefDate}
+        rows={rows}
+        assetTypeLabels={assetTypeLabels}
+      />
     </Shell>
     </>
   );
