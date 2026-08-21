@@ -1,6 +1,14 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import * as XLSX from "npm:xlsx";
+import { classifyDebtCycleStageV2, WeeklyPoint } from "../_shared/debtCycleClassifier.ts";
+import {
+  evalMp2OnsetWatch,
+  evalAuctionDemandDeterioration,
+  evalDollarDivergenceWidening,
+  evalFiscalDominanceConfirmed,
+  TripWireResult,
+} from "../_shared/debtCycleTripWires.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -362,7 +370,7 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
     const { data } = await sb
       .from("macro_indicators")
       .select("name, current_value, status")
-      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread", "Fed SOMA Long-Duration Holdings (Δ)", "Foreign Official Share of UST Holdings (YoY Δ)", "Treasury Convenience Yield (10Y)", "Foreign Official Custody Holdings", "Interest Expense % of Federal Revenue", "Treasury Bid-to-Cover", "Indirect Bidder Share (10Y/30Y)"]);
+      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread", "Fed SOMA Long-Duration Holdings (Δ)", "Foreign Official Share of UST Holdings (YoY Δ)", "Treasury Convenience Yield (10Y)", "Foreign Official Custody Holdings", "Interest Expense % of Federal Revenue", "Treasury Bid-to-Cover", "Indirect Bidder Share (10Y/30Y)", "Federal Debt / Tax Revenue"]);
     const byName = new Map((data ?? []).map((r: { name: string }) => [r.name, r]));
 
     const totalDebt = byName.get("Total Debt / GDP") as { current_value: number; status: string } | undefined;
@@ -439,6 +447,17 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
         key: "foreign_custody_holdings", value_numeric: v, value_display: `${v >= 0 ? "+" : ""}$${v.toFixed(0)}B`,
         status, status_label: status === "bad" ? "Custody falling" : status === "warn" ? "Watch" : "Custody stable/rising",
         note_suffix: "52-week change in marketable Treasuries held in custody at the NY Fed for foreign official accounts — a weekly, ~1-day-lag leading indicator for the Foreign Official Share of UST Holdings card above, which runs on TIC data with a ~2-month lag. Does not tie to that card's level (custody covers only FRBNY-held securities); track the trend, not the level. Cross-referenced from Macro.",
+      });
+    }
+
+    const debtTaxRevenue = byName.get("Federal Debt / Tax Revenue") as { current_value: number; status: string } | undefined;
+    if (debtTaxRevenue?.current_value != null) {
+      const v = Number(debtTaxRevenue.current_value);
+      const status = MACRO_STATUS_MAP[debtTaxRevenue.status] ?? null;
+      updates.push({
+        key: "debt_tax_revenue_multiple", value_numeric: v, value_display: `${v.toFixed(2)}x`,
+        status, status_label: status === "bad" ? "High" : status === "warn" ? "Elevated" : "Manageable",
+        note_suffix: "Federal debt as a multiple of annual tax receipts — sovereign repayment capacity, and a Debt Cycle Position Check benchmark comparison point against Dalio's ~6x now / ~7x in 10yr figures. Cross-referenced from Macro.",
       });
     }
 
@@ -549,57 +568,122 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
 
 const DEBT_CYCLE_ID = "da204e3f-ae22-47dd-95bb-2844d4f75685";
 
-// Classifies the debt cycle's current stage (MP1 / MP1 (strained) / MP2 / MP3) from live
-// data instead of a fixed editorial flag. Criteria per Dalio's Principles for Navigating
-// Big Debt Crises, with "MP1 (strained)" as an interim marker for the late-MP1 phase:
-//   MP1              — rates well above zero; deficit not structurally elevated; r <= g.
-//   MP1 (strained)    — rates still well above zero (MP1's tool still works), but the
-//                        deficit is elevated even without a recession, and/or r > g —
-//                        i.e. fiscal dominance building before the tool runs out.
-//   MP2               — rates at/near the zero lower bound — conventional rate cuts are
-//                        exhausted, forcing QE (balance-sheet expansion) as the tool.
-//   MP3               — MP2 conditions (near-zero rates) plus a large, sustained Fed
-//                        balance-sheet footprint AND a very large deficit — the proxy for
-//                        QE no longer reaching the real economy, forcing direct monetary-
-//                        fiscal coordination. This is inherently an approximation: MP3 is
-//                        a policy-regime call (yield-curve control, direct deficit
-//                        financing), not something four thresholds can fully capture.
-function classifyDebtCycleStage(
-  fedFundsMid: number, walclPctGdp: number, deficitAbs: number, rateGrowthSpread: number,
-): string {
-  const nearZero = fedFundsMid < 0.5;
-  const qeFootprintHigh = walclPctGdp >= 30;
-  const deficitElevated = deficitAbs >= 4;
-  const rGreaterG = rateGrowthSpread >= 2;
+// Classifies the debt cycle's current stage (MP1 / MP1 (strained) / MP2 / MP3) using
+// classifyDebtCycleStageV2 (supabase/functions/_shared/debtCycleClassifier.ts), a
+// trend-aware classifier — replaces the old single-snapshot version, which treated one
+// weekly WALCL reading as sufficient evidence of "QE active" and used r-g >= 2 as the
+// strained threshold (inconsistent with Dalio's own stated r > g test). See that file
+// for the full rule set; this function is just the data-fetching/wiring layer.
+function toWeeklyPointSeries(
+  rows: Record<string, unknown>[] | null, dateKey: string, valueKey: string,
+): WeeklyPoint[] {
+  return (rows ?? [])
+    .map((r) => ({ date: String(r[dateKey]), value: Number(r[valueKey]) }))
+    .filter((p) => !isNaN(p.value));
+}
 
-  if (nearZero && qeFootprintHigh && deficitElevated) return "MP3";
-  if (nearZero) return "MP2";
-  if (deficitElevated || rGreaterG) return "MP1 (strained)";
-  return "MP1";
+interface StageUpdateResult {
+  stage: string;
+  conditions: Record<string, boolean>;
+  rawInputs: Record<string, number | null>;
+  trendConfidence: string;
 }
 
 async function updateDebtCycleStage(
-  sb: ReturnType<typeof createClient>, fedFundsMid: number | null, deficitAbs: number | null,
-): Promise<{ stage: string; inputs: Record<string, number> } | null> {
+  sb: ReturnType<typeof createClient>, fedFundsMid: number | null,
+): Promise<StageUpdateResult | null> {
   try {
-    if (fedFundsMid == null || deficitAbs == null) return null;
-    const { data: macroRows } = await sb
-      .from("macro_indicators")
-      .select("name, current_value")
-      .in("name", ["Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread"]);
-    const byName = new Map((macroRows ?? []).map((r: { name: string; current_value: number }) => [r.name, Number(r.current_value)]));
-    const walcl = byName.get("Fed Balance Sheet % GDP");
-    const rateGrowthSpread = byName.get("Rate vs. GDP Growth Spread");
-    if (walcl == null || rateGrowthSpread == null) return null;
+    if (fedFundsMid == null) return null;
 
-    const stage = classifyDebtCycleStage(fedFundsMid, walcl, deficitAbs, rateGrowthSpread);
+    const [{ data: macroRows }, { data: walclSnaps }, { data: somaSnaps }, { data: auctionRows }] = await Promise.all([
+      sb.from("macro_indicators").select("name, current_value")
+        .in("name", ["Interest Expense % of Federal Revenue", "Rate vs. GDP Growth Spread", "Federal Debt / Tax Revenue"]),
+      sb.from("macro_snapshots").select("snapshot_date, value")
+        .eq("indicator_name", "Fed Balance Sheet % GDP").order("snapshot_date", { ascending: false }).limit(60),
+      sb.from("macro_snapshots").select("snapshot_date, value")
+        .eq("indicator_name", "Fed SOMA Long-Duration Holdings (Δ)").order("snapshot_date", { ascending: false }).limit(60),
+      // Combined 10Y/30Y trailing auctions (not per-term-then-averaged like the
+      // Indirect Bidder Share card itself) — a simpler approximation, fine for a
+      // starting-point threshold per the source spec's own framing.
+      sb.from("treasury_auction_results").select("auction_date, indirect_share_pct, bid_to_cover_ratio")
+        .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(6),
+    ]);
+
+    const byName = new Map((macroRows ?? []).map((r: { name: string; current_value: number }) => [r.name, Number(r.current_value)]));
+    const interestExpenseRevenuePct = byName.get("Interest Expense % of Federal Revenue");
+    const rateGrowthSpread = byName.get("Rate vs. GDP Growth Spread");
+    const debtToTaxRevenueX = byName.get("Federal Debt / Tax Revenue") ?? null;
+    if (interestExpenseRevenuePct == null || rateGrowthSpread == null) return null;
+
+    const result = classifyDebtCycleStageV2({
+      fedFundsMid,
+      interestExpenseRevenuePct,
+      rateGrowthSpread,
+      debtToTaxRevenueX,
+      walclPctGdpSeries: toWeeklyPointSeries(walclSnaps, "snapshot_date", "value"),
+      indirectBidderShareSeries: toWeeklyPointSeries(auctionRows, "auction_date", "indirect_share_pct"),
+      bidToCoverSeries: toWeeklyPointSeries(auctionRows, "auction_date", "bid_to_cover_ratio"),
+      somaLongDurationDeltaSeries: toWeeklyPointSeries(somaSnaps, "snapshot_date", "value"),
+    });
 
     await sb.from("big_cycle_stages").update({ is_current: false }).eq("cycle_id", DEBT_CYCLE_ID);
-    const { error } = await sb.from("big_cycle_stages").update({ is_current: true }).eq("cycle_id", DEBT_CYCLE_ID).eq("label", stage);
+    const { error } = await sb.from("big_cycle_stages").update({ is_current: true }).eq("cycle_id", DEBT_CYCLE_ID).eq("label", result.stage);
     if (error) { console.error("[big-cycle] stage write:", error); return null; }
 
-    return { stage, inputs: { fedFundsMid, walclPctGdp: walcl, deficitAbs, rateGrowthSpread } };
+    return {
+      stage: result.stage,
+      conditions: result.conditions,
+      rawInputs: result.rawInputs,
+      trendConfidence: result.trendConfidence,
+    };
   } catch (e) { console.error("[big-cycle] stage classification:", e); return null; }
+}
+
+// Debt Cycle Position Check trip-wires — the doc's four explicitly-named early
+// warning signals (supabase/functions/_shared/debtCycleTripWires.ts). Deliberately
+// distinct from the classifier's own gates above: these fire earlier, on a shorter
+// streak, as an advance-warning layer rather than a confirmed-trend conclusion.
+const TRIP_WIRE_LABELS: Record<string, string> = {
+  mp2_onset_watch: "MP2 onset watch",
+  auction_demand_deterioration: "Auction demand deterioration",
+  dollar_divergence_widening: "Dollar confidence divergence widening",
+  fiscal_dominance_confirmed: "Fiscal-dominance regime confirmed",
+};
+
+async function evaluateTripWires(sb: ReturnType<typeof createClient>): Promise<Record<string, TripWireResult>> {
+  try {
+    const [{ data: walclSnaps }, { data: cpiRow }, { data: auctionRows }, { data: t30ySnaps }, { data: dxyRow }, { data: sbCorrRows }] = await Promise.all([
+      sb.from("macro_snapshots").select("snapshot_date, value")
+        .eq("indicator_name", "Fed Balance Sheet % GDP").order("snapshot_date", { ascending: false }).limit(10),
+      sb.from("macro_indicators").select("current_value").eq("name", "CPI (YoY)").maybeSingle(),
+      sb.from("treasury_auction_results").select("auction_date, indirect_share_pct")
+        .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(6),
+      sb.from("macro_snapshots").select("snapshot_date, value")
+        .eq("indicator_name", "30Y Treasury Yield").order("snapshot_date", { ascending: false }).limit(260),
+      sb.from("macro_indicators").select("metadata").eq("name", "DXY").maybeSingle(),
+      sb.from("stock_bond_correlation").select("obs_date, corr_90d")
+        .not("corr_90d", "is", null).order("obs_date", { ascending: false }).limit(100),
+    ]);
+
+    const cpiYoy = cpiRow?.current_value != null ? Number(cpiRow.current_value) : null;
+    const dxyChange3mPct = (dxyRow?.metadata as { change3m_pct?: number } | undefined)?.change3m_pct ?? null;
+    const auctionShareRows = (auctionRows ?? []).map((r: { auction_date: string; indirect_share_pct: number }) => ({
+      auction_date: r.auction_date, indirect_share_pct: Number(r.indirect_share_pct),
+    }));
+    const sbCorrRowsClean = (sbCorrRows ?? []).map((r: { obs_date: string; corr_90d: number }) => ({
+      obs_date: r.obs_date, corr_90d: Number(r.corr_90d),
+    }));
+
+    return {
+      mp2_onset_watch: evalMp2OnsetWatch(toWeeklyPointSeries(walclSnaps, "snapshot_date", "value"), cpiYoy),
+      auction_demand_deterioration: evalAuctionDemandDeterioration(auctionShareRows, 6),
+      dollar_divergence_widening: evalDollarDivergenceWidening(toWeeklyPointSeries(t30ySnaps, "snapshot_date", "value"), dxyChange3mPct),
+      fiscal_dominance_confirmed: evalFiscalDominanceConfirmed(sbCorrRowsClean),
+    };
+  } catch (e) {
+    console.error("[big-cycle] trip-wire evaluation:", e);
+    return {};
+  }
 }
 
 Deno.serve(async (req: Request) => {
@@ -626,7 +710,46 @@ Deno.serve(async (req: Request) => {
       computeNyFedStudentLoanUpdate(),
     ]);
     const allUpdates = [...fredResult.updates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, ...macroXrefUpdates, redfinUpdate, nyFedUpdate].filter((u): u is Update => u != null);
-    const stageResult = await updateDebtCycleStage(sb, fredResult.fedFundsMid, fredResult.deficitAbs);
+    const stageResult = await updateDebtCycleStage(sb, fredResult.fedFundsMid);
+    const tripWires = await evaluateTripWires(sb);
+
+    if (stageResult) {
+      const { data: priorAudit } = await sb
+        .from("big_cycle_stage_audit_log")
+        .select("stage, trip_wires")
+        .eq("cycle_id", DEBT_CYCLE_ID)
+        .order("run_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const priorTripWires = (priorAudit?.trip_wires ?? {}) as Record<string, { armed?: boolean }>;
+
+      await sb.from("big_cycle_stage_audit_log").insert({
+        cycle_id: DEBT_CYCLE_ID,
+        stage: stageResult.stage,
+        previous_stage: priorAudit?.stage ?? null,
+        conditions: stageResult.conditions,
+        raw_inputs: stageResult.rawInputs,
+        trip_wires: tripWires,
+        trend_confidence: stageResult.trendConfidence,
+      });
+
+      // Only notify on a not-armed -> armed transition, mirroring
+      // generateSovereignRiskNotifications()'s exact pattern (dedup key
+      // scoped to the crossing date, ignoreDuplicates so re-running the
+      // classifier on an already-armed trip-wire is a silent no-op).
+      const notifRows = Object.entries(tripWires)
+        .filter(([key, r]) => r.armed && !priorTripWires[key]?.armed)
+        .map(([key, r]) => ({
+          category: "debt_cycle", type: "trip_wire", importance: "high",
+          title: `Trip-wire fired: ${TRIP_WIRE_LABELS[key] ?? key}`,
+          description: JSON.stringify(r.values),
+          metadata: { trip_wire_key: key, values: r.values },
+          dedup_key: `debt_cycle_tw_${key}:${r.sinceDate}`,
+        }));
+      if (notifRows.length) {
+        await sb.from("notifications").upsert(notifRows, { onConflict: "dedup_key", ignoreDuplicates: true });
+      }
+    }
 
     const today = new Date().toISOString().slice(0, 10);
     const now = new Date().toISOString();
@@ -666,7 +789,7 @@ Deno.serve(async (req: Request) => {
       }).eq("name", determinantName);
     }
 
-    return json({ updated, skipped, total: allUpdates.length, debtCycleStage: stageResult, timestamp: now });
+    return json({ updated, skipped, total: allUpdates.length, debtCycleStage: stageResult, tripWires, timestamp: now });
   } catch (e) {
     return json({ error: String(e) }, 500);
   }

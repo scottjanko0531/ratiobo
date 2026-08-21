@@ -4,6 +4,7 @@ import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
 import DalioGauges from "../../components/DalioGauges";
+import ProvenanceBadge from "../../components/ProvenanceBadge";
 import {
   ComposedChart, Line, Bar, Area, Cell, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine,
@@ -15,10 +16,12 @@ import {
   REGIME_RETURNS,
   SUGGESTED_FUNDS,
   BW_ALLOC,
+  ILLIQUID_KEYS,
   detectRegimeKey,
   resolveSimulatorKey,
   getSignalKeys,
   toIntWeights,
+  computeAllocationDeltas,
 } from "../../lib/simulatorKeys";
 import { getAssetData } from "../../lib/data/assetReturns";
 import { applyNaiveRiskParity, solveTrueRiskParity } from "../../lib/riskParity";
@@ -43,8 +46,6 @@ const SOVEREIGN_RISK_NAMES = [
 ];
 
 const KEY_LABEL = Object.fromEntries(SIMULATOR_KEYS.map((s) => [s.key, s.label]));
-
-const ILLIQUID_KEYS = new Set(["alt_re", "alt_loan", "alt_pp", "alt_other"]);
 
 const STATUS_STYLE = {
   healthy: { text: "text-gain", bg: "bg-gain/10", border: "border-gain/20" },
@@ -1406,19 +1407,13 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
     ? computeSuggestedPcts(prevRegimeKey, allocMethod, assetData)
     : null;
 
-  // Group holdings by resolved simulator key
-  const byKey = {};
-  let grandTotal = 0;
-  for (const h of holdings ?? []) {
-    const val = Number(h.current_value ?? 0);
-    if (val <= 0) continue;
-    const key = resolveSimulatorKey(h);
-    if (!key) continue;
-    if (!byKey[key]) byKey[key] = { holdings: [], total: 0 };
-    byKey[key].holdings.push(h);
-    byKey[key].total += val;
-    grandTotal += val;
-  }
+  // Actual-vs-suggested allocation delta math lives in lib/simulatorKeys.js
+  // (computeAllocationDeltas) so it's shared with the Debt Cycle Position
+  // Check panel instead of duplicated. suggestedPcts is already gated on
+  // regimeKey at its own definition above.
+  const { byKey, grandTotal, actionRows, buyRows } = computeAllocationDeltas(
+    holdings, suggestedPcts, { illiquidKeys: ILLIQUID_KEYS }
+  );
 
   const pct = (val) => (grandTotal > 0 ? Math.round((val / grandTotal) * 100) : 0);
 
@@ -1447,49 +1442,6 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
   const outsideRaw = outsideBuckets.reduce((s, b) => s + (byKey[b.key]?.total ?? 0), 0);
   const outsidePct = grandTotal > 0 ? Math.round((outsideRaw / grandTotal) * 100) : 0;
   const hasPortfolio = holdings && holdings.length > 0;
-
-  // Portfolio action rows: for each holding, compute add/sell delta vs. suggested allocation.
-  // Delta is distributed proportionally across holdings sharing the same bucket.
-  const actionRows = hasPortfolio && regimeKey && grandTotal > 0
-    ? (holdings ?? []).flatMap((h) => {
-        const key = resolveSimulatorKey(h);
-        if (!key) return [];
-        const currentVal = Number(h.current_value ?? 0);
-        if (currentVal <= 0) return [];
-        const currentPct = (currentVal / grandTotal) * 100;
-        const bucketTargetPct = suggestedPcts[key] ?? 0;
-        const bucketTotal = byKey[key]?.total ?? 0;
-        const holdingShare = bucketTotal > 0 ? currentVal / bucketTotal : 1;
-        const holdingTargetPct = bucketTargetPct * holdingShare;
-        const targetVal = (holdingTargetPct / 100) * grandTotal;
-        const deltaVal = targetVal - currentVal;
-        const isIlliquid = ILLIQUID_KEYS.has(key);
-        return [{
-          symbol: h.symbol ?? h.name ?? "—",
-          name: h.name,
-          currentVal,
-          currentPct,
-          newPct: holdingTargetPct,
-          newVal: isIlliquid && deltaVal < 0 ? currentVal : targetVal,
-          deltaVal,
-          isIlliquid,
-          key,
-        }];
-      }).sort((a, b) => Math.abs(b.deltaVal) - Math.abs(a.deltaVal))
-    : [];
-
-  // New buy recommendations: buckets with a target weight but no existing holdings
-  const buyRows = hasPortfolio && regimeKey && grandTotal > 0
-    ? Object.entries(suggestedPcts)
-        .filter(([k, pct]) => pct > 0 && !byKey[k])
-        .map(([k, pct]) => ({
-          key: k,
-          label: KEY_LABEL[k] ?? k,
-          targetPct: pct,
-          targetVal: (pct / 100) * grandTotal,
-        }))
-        .sort((a, b) => b.targetPct - a.targetPct)
-    : [];
 
   return (
     <div className="card p-5 mb-6">
@@ -5752,20 +5704,6 @@ function IndirectBidderDrawer({ open, onClose, ind }) {
         </div>
       </div>
     </>
-  );
-}
-
-// Distinguishes model-synthesized commentary (this card) from the sourced
-// FRED/BLS/World Gold Council gauges elsewhere on the page — same visual
-// authority otherwise made it easy to mistake one for the other.
-function ProvenanceBadge() {
-  return (
-    <span
-      className="text-[9px] font-medium px-1.5 py-0.5 rounded border border-brass/30 text-brass-soft bg-brass/5 shrink-0"
-      title="This commentary is generated and interpreted by an AI model from the page's live data — it is cross-checked against the gauges above for internal consistency, but it is not itself a sourced data feed like the indicators on this page."
-    >
-      Model-synthesized
-    </span>
   );
 }
 

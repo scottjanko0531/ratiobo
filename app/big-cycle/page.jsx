@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Shell from "../../components/Shell";
+import DebtCyclePositionCheck from "../../components/DebtCyclePositionCheck";
 import { supabase } from "../../lib/supabase";
 
 const STATUS_META = {
@@ -394,6 +395,8 @@ export default function BigCyclePage() {
                 onSaveMetric={saveMetric}
               />
             ))}
+
+            <DebtCyclePositionCheck metrics={metrics} />
 
             <div className="card p-5">
               <p className="label text-[10px] mb-1">National Power Determinants</p>
