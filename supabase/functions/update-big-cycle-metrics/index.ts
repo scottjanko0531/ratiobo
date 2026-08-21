@@ -230,6 +230,57 @@ async function computeNyFedStudentLoanUpdate(): Promise<Update | null> {
   return null;
 }
 
+// US Capitol Police publish an annual "Threat Assessment Cases" press release
+// at a predictable per-year URL, no API, no auth. The case count sits in the
+// first paragraph ("In {year}, the USCP's Threat Assessment Section (TAS)
+// investigated {N} concerning statements, behaviors, and communications...").
+// Released ~late January covering the prior calendar year, so this tries the
+// current year first and steps back until a real release resolves — same
+// pattern as computeNyFedStudentLoanUpdate above. Direction (rising/stable/
+// declining) is computed against whatever value is already stored for this
+// metric, since that's last year's figure until this overwrites it.
+async function computeThreatsAgainstCongressUpdate(sb: ReturnType<typeof createClient>): Promise<Update | null> {
+  const now = new Date();
+  let year = now.getUTCFullYear();
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const url = `https://www.uscp.gov/media-center/press-releases/uscp-threat-assessment-cases-${year}`;
+    try {
+      const res = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" },
+      });
+      if (res.ok) {
+        const html = await res.text();
+        const m = html.match(/In\s+(\d{4}),\s+the\s+USCP.s\s+Threat\s+Assessment\s+Section\s+\(TAS\)\s+investigated\s+([\d,]+)\s+concerning\s+statements/i);
+        if (m) {
+          const caseYear = parseInt(m[1], 10);
+          const count = parseInt(m[2].replace(/,/g, ""), 10);
+          if (!isFinite(count) || count <= 0) { year--; continue; }
+
+          const { data: priorRow } = await sb
+            .from("big_cycle_metrics")
+            .select("value_numeric")
+            .eq("key", "threats_against_congress")
+            .maybeSingle();
+          const prior = priorRow?.value_numeric != null ? Number(priorRow.value_numeric) : null;
+          const pctChange = prior && prior > 0 ? ((count - prior) / prior) * 100 : null;
+
+          return {
+            key: "threats_against_congress",
+            value_numeric: count,
+            value_display: `${count.toLocaleString()}/yr`,
+            status: pctChange != null && pctChange > 15 ? "bad" : pctChange != null && pctChange > 0 ? "warn" : "good",
+            status_label: pctChange == null ? "Reported" : pctChange > 15 ? "Sharp rise" : pctChange > 0 ? "Rising" : pctChange < -5 ? "Declining" : "Stable",
+            note_suffix: `${caseYear} USCP Threat Assessment Section case count${pctChange != null ? ` (${pctChange >= 0 ? "+" : ""}${pctChange.toFixed(0)}% vs. prior year)` : ""} — concerning statements, behaviors, and communications against Members of Congress, their families, staff, and the Capitol Complex.`,
+          };
+        }
+      }
+    } catch (e) { console.error(`[big-cycle] USCP threat assessment (${year}):`, e); }
+    year--;
+  }
+  return null;
+}
+
 async function computeTreasuryUpdate(): Promise<Update | null> {
   try {
     // Treasury publishes on business days only — 22 records ≈ one calendar month.
@@ -695,11 +746,11 @@ Deno.serve(async (req: Request) => {
     const { data: metrics, error: mErr } = await sb
       .from("big_cycle_metrics")
       .select("id,key,refresh_method,fred_series_id")
-      .in("refresh_method", ["api_fred", "api_treasury", "api_imf", "api_cofer", "csv_voteview", "api_macro_xref", "api_redfin", "api_nyfed"]);
+      .in("refresh_method", ["api_fred", "api_treasury", "api_imf", "api_cofer", "csv_voteview", "api_macro_xref", "api_redfin", "api_nyfed", "api_uscp"]);
     if (mErr || !metrics) return json({ error: mErr?.message ?? "no metrics" }, 500);
     const byKey = new Map((metrics as MetricRow[]).map((m) => [m.key, m]));
 
-    const [fredResult, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, macroXrefUpdates, redfinUpdate, nyFedUpdate] = await Promise.all([
+    const [fredResult, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, macroXrefUpdates, redfinUpdate, nyFedUpdate, threatsUpdate] = await Promise.all([
       computeFredUpdates(),
       computeTreasuryUpdate(),
       computeImfUpdate(),
@@ -708,8 +759,9 @@ Deno.serve(async (req: Request) => {
       computeMacroCrossRefUpdates(sb),
       computeRedfinHomePriceUpdate(),
       computeNyFedStudentLoanUpdate(),
+      computeThreatsAgainstCongressUpdate(sb),
     ]);
-    const allUpdates = [...fredResult.updates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, ...macroXrefUpdates, redfinUpdate, nyFedUpdate].filter((u): u is Update => u != null);
+    const allUpdates = [...fredResult.updates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, ...macroXrefUpdates, redfinUpdate, nyFedUpdate, threatsUpdate].filter((u): u is Update => u != null);
     const stageResult = await updateDebtCycleStage(sb, fredResult.fedFundsMid);
     const tripWires = await evaluateTripWires(sb);
 
