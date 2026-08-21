@@ -137,6 +137,7 @@ interface Indicator {
     | "supabase_debt_cycle"
     | "debt_tax_ratio"
     | "interest_gdp_pct"
+    | "interest_revenue_pct"
     | "level_minus_yoy_quarterly"
     | "level_minus_yoy_monthly"
     | "walcl_pct_gdp"
@@ -191,6 +192,14 @@ const INDICATORS: Indicator[] = [
     fred_series_id: null, unit: "%", data_source: "computed", sort_order: 3,
     series: "A091RC1Q027SBEA", series2: "GDP", type: "interest_gdp_pct",
     statusFn: v => v < 2 ? "healthy" : v < 4 ? "watch" : "danger",
+  },
+  {
+    name: "Interest Expense % of Federal Revenue",
+    layer: 1, layer_name: "Long-term Debt Cycle",
+    description: "Federal interest payments as % of federal tax receipts — Dalio's classic debt-service-relative-to-revenue test (\"plaque in the circulatory system\"): how much of what the government collects is already spoken for by servicing debt already issued, before a dollar of new borrowing.",
+    fred_series_id: null, unit: "%", data_source: "computed", sort_order: 8,
+    series: "A091RC1Q027SBEA", series2: "FYFR", type: "interest_revenue_pct",
+    statusFn: v => v < 10 ? "healthy" : v < 20 ? "watch" : "danger",
   },
   {
     name: "Rate vs. GDP Growth Spread",
@@ -789,6 +798,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const [interest, gdp] = await Promise.all([fetchFred(ind.series!, 2), fetchFred(ind.series2!, 2)]);
         if (interest.length < 2 || gdp.length < 2) return null;
         current = interest[0] / gdp[0] * 100; previous = interest[1] / gdp[1] * 100;
+        break;
+      }
+      case "interest_revenue_pct": {
+        // A091RC1Q027SBEA is Billions $ (SAAR, quarterly); FYFR is Millions $
+        // (annual) — same mismatch debt_tax_ratio's GFDEBTN/FYFR pair avoids by
+        // both already being in Millions. Scale interest to Millions first.
+        const [interest, revenue] = await Promise.all([fetchFred(ind.series!, 2), fetchFred(ind.series2!, 2)]);
+        if (interest.length < 2 || revenue.length < 2) return null;
+        current = (interest[0] * 1000) / revenue[0] * 100; previous = (interest[1] * 1000) / revenue[1] * 100;
         break;
       }
       case "level_minus_yoy_quarterly": {

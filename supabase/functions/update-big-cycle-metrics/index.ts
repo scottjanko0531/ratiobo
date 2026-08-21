@@ -362,7 +362,7 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
     const { data } = await sb
       .from("macro_indicators")
       .select("name, current_value, status")
-      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread", "Fed SOMA Long-Duration Holdings (Δ)", "Foreign Official Share of UST Holdings (YoY Δ)", "Treasury Convenience Yield (10Y)", "Foreign Official Custody Holdings"]);
+      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread", "Fed SOMA Long-Duration Holdings (Δ)", "Foreign Official Share of UST Holdings (YoY Δ)", "Treasury Convenience Yield (10Y)", "Foreign Official Custody Holdings", "Interest Expense % of Federal Revenue", "Treasury Bid-to-Cover", "Indirect Bidder Share (10Y/30Y)"]);
     const byName = new Map((data ?? []).map((r: { name: string }) => [r.name, r]));
 
     const totalDebt = byName.get("Total Debt / GDP") as { current_value: number; status: string } | undefined;
@@ -439,6 +439,45 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
         key: "foreign_custody_holdings", value_numeric: v, value_display: `${v >= 0 ? "+" : ""}$${v.toFixed(0)}B`,
         status, status_label: status === "bad" ? "Custody falling" : status === "warn" ? "Watch" : "Custody stable/rising",
         note_suffix: "52-week change in marketable Treasuries held in custody at the NY Fed for foreign official accounts — a weekly, ~1-day-lag leading indicator for the Foreign Official Share of UST Holdings card above, which runs on TIC data with a ~2-month lag. Does not tie to that card's level (custody covers only FRBNY-held securities); track the trend, not the level. Cross-referenced from Macro.",
+      });
+    }
+
+    // The three classic Dalio big-debt-cycle monitors: (1) debt service vs.
+    // revenue — "plaque in the circulatory system"; (2) auction supply vs.
+    // demand — "plaque breaking off"; (3) the Fed printing to cover the
+    // shortfall — already covered above via fed_balance_sheet_gdp /
+    // soma_long_duration_delta. All three now sit explicitly on this panel
+    // instead of #1 and #2 being inferred from adjacent proxies.
+    const interestRevenue = byName.get("Interest Expense % of Federal Revenue") as { current_value: number; status: string } | undefined;
+    if (interestRevenue?.current_value != null) {
+      const v = Number(interestRevenue.current_value);
+      const status = MACRO_STATUS_MAP[interestRevenue.status] ?? null;
+      updates.push({
+        key: "interest_expense_revenue_pct", value_numeric: v, value_display: pct1(v),
+        status, status_label: status === "bad" ? "Debt service straining revenue" : status === "warn" ? "Watch" : "Manageable",
+        note_suffix: "Federal interest payments as % of federal tax receipts — Dalio's debt-service-relative-to-revenue test (\"plaque in the circulatory system\"): how much of what the government collects is already spoken for by servicing debt already issued. Cross-referenced from Macro.",
+      });
+    }
+
+    const bidToCover = byName.get("Treasury Bid-to-Cover") as { current_value: number; status: string } | undefined;
+    if (bidToCover?.current_value != null) {
+      const v = Number(bidToCover.current_value);
+      const status = MACRO_STATUS_MAP[bidToCover.status] ?? null;
+      updates.push({
+        key: "treasury_bid_to_cover", value_numeric: v, value_display: v.toFixed(2),
+        status, status_label: status === "bad" ? "Weak demand" : status === "warn" ? "Watch" : "Adequate demand",
+        note_suffix: "10-Year Treasury auction bid-to-cover ratio — direct read on demand for new government debt relative to the amount being sold. Dalio's \"selling vs. demand\" test (\"plaque breaking off\"). Cross-referenced from Macro.",
+      });
+    }
+
+    const indirectBidder = byName.get("Indirect Bidder Share (10Y/30Y)") as { current_value: number; status: string } | undefined;
+    if (indirectBidder?.current_value != null) {
+      const v = Number(indirectBidder.current_value);
+      const status = MACRO_STATUS_MAP[indirectBidder.status] ?? null;
+      updates.push({
+        key: "indirect_bidder_share", value_numeric: v, value_display: `${v.toFixed(1)}%`,
+        status, status_label: status === "bad" ? "Dealers absorbing supply" : status === "warn" ? "Watch" : "Price-insensitive demand holding",
+        note_suffix: "Trailing 6-auction average share of accepted bids from indirect bidders on 10Y/30Y Treasury auctions — the standard proxy for foreign official and price-insensitive demand; a falling share means primary dealers must absorb more supply. Cross-referenced from Macro.",
       });
     }
 
