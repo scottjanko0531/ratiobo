@@ -230,18 +230,31 @@ async function computeNyFedStudentLoanUpdate(): Promise<Update | null> {
   return null;
 }
 
-// US Capitol Police publish an annual "Threat Assessment Cases" press release
-// at a predictable per-year URL, no API, no auth. The case count sits in the
-// first paragraph ("In {year}, the USCP's Threat Assessment Section (TAS)
-// investigated {N} concerning statements, behaviors, and communications...").
-// Released ~late January covering the prior calendar year, so this tries the
-// current year first and steps back until a real release resolves — same
-// pattern as computeNyFedStudentLoanUpdate above.
+// "Threats Against Public Officials" combines two disjoint sources (per
+// confirmation, Princeton's incident set does not include USCP-reported
+// Congress incidents, so the two are additive without double-counting):
+//   - US Capitol Police (source_type "Capitol Police"): Congress-specific,
+//     scraped live every run from USCP's predictable annual press-release
+//     URL, no API/auth. Released ~late January covering the prior calendar
+//     year, so this tries the current year first and steps back until a
+//     real release resolves — same pattern as computeNyFedStudentLoanUpdate.
+//   - Princeton's Threats and Harassment Dataset (source_type "Princeton
+//     THD"): broader (judicial, school, election, and other public
+//     officials), static — seeded from a one-off spreadsheet export, not
+//     auto-refreshed, and only updated when someone re-runs that migration
+//     with a newer export.
 //
-// Every parsed year is upserted into big_cycle_metric_history (seeded back to
-// 2017 — see 20260823_threats_against_congress_history.sql; USCP's own
-// archive and general search turned up nothing reliable before that), which
-// backs two derived reads instead of a bare YoY delta against last year:
+// Every USCP-parsed year is upserted into big_cycle_metric_history (seeded
+// back to 2017 for Capitol Police, 2022 for Princeton THD — see
+// 20260823_threats_against_congress_history.sql and
+// 20260823_princeton_thd_public_officials.sql; nothing reliable was found
+// before either start year). A year only enters the combined index/z-score
+// series once USCP has reported it — USCP always reports a just-closed
+// calendar year, so its presence is the "this year is closed" gate, keeping
+// a still-partial current-year Princeton count (e.g. 73 incidents through
+// only part of 2026) from being combined and read as a real full-year total.
+// For each closed year, this backs two derived reads instead of a bare YoY
+// delta against last year:
 //   - an index vs. the earliest confirmed year (2017 = 100)
 //   - a leave-one-out z-score of this year's YoY % change against the mean/
 //     stdev of every *prior* YoY % change, so a big jump doesn't get muted by
@@ -267,26 +280,34 @@ async function computeThreatsAgainstCongressUpdate(sb: ReturnType<typeof createC
           if (!isFinite(count) || count <= 0) { year--; continue; }
 
           await sb.from("big_cycle_metric_history").upsert(
-            { metric_key: "threats_against_congress", year: caseYear, value_numeric: count },
-            { onConflict: "metric_key,year" },
+            { metric_key: "threats_against_congress", year: caseYear, value_numeric: count, source_type: "Capitol Police" },
+            { onConflict: "metric_key,year,source_type" },
           );
 
           const { data: historyRows } = await sb
             .from("big_cycle_metric_history")
-            .select("year, value_numeric")
+            .select("year, value_numeric, source_type")
             .eq("metric_key", "threats_against_congress")
             .order("year", { ascending: true });
-          const history = (historyRows ?? []).map((r: { year: number; value_numeric: number }) => ({
-            year: Number(r.year), value: Number(r.value_numeric),
+          const rows = (historyRows ?? []).map((r: { year: number; value_numeric: number; source_type: string }) => ({
+            year: Number(r.year), value: Number(r.value_numeric), source: r.source_type,
           }));
 
-          const baseYearRow = history[0];
-          const indexVal = baseYearRow && baseYearRow.value > 0 ? (count / baseYearRow.value) * 100 : null;
+          const closedYears = [...new Set(rows.filter((r) => r.source === "Capitol Police").map((r) => r.year))].sort((a, b) => a - b);
+          const combined = closedYears.map((y) => ({
+            year: y,
+            value: rows.filter((r) => r.year === y).reduce((s, r) => s + r.value, 0),
+          }));
+          const latestCombined = combined.find((c) => c.year === caseYear)!;
+          const princetonComponent = rows.find((r) => r.year === caseYear && r.source === "Princeton THD")?.value ?? null;
+
+          const baseYearRow = combined[0];
+          const indexVal = baseYearRow && baseYearRow.value > 0 ? (latestCombined.value / baseYearRow.value) * 100 : null;
 
           const yoyChanges: number[] = [];
-          for (let i = 1; i < history.length; i++) {
-            const prevVal = history[i - 1].value;
-            if (prevVal > 0) yoyChanges.push(((history[i].value - prevVal) / prevVal) * 100);
+          for (let i = 1; i < combined.length; i++) {
+            const prevVal = combined[i - 1].value;
+            if (prevVal > 0) yoyChanges.push(((combined[i].value - prevVal) / prevVal) * 100);
           }
           const latestYoY = yoyChanges.length ? yoyChanges[yoyChanges.length - 1] : null;
           const baselineYoY = yoyChanges.slice(0, -1);
@@ -309,17 +330,20 @@ async function computeThreatsAgainstCongressUpdate(sb: ReturnType<typeof createC
             z <= -0.5 ? (rising ? "Decelerating" : "Declining") :
             rising ? "Trend-consistent rise" : "Trend-consistent decline";
 
+          const componentsPart = princetonComponent != null
+            ? ` Capitol Police ${count.toLocaleString()} + Princeton THD ${princetonComponent.toLocaleString()} = ${latestCombined.value.toLocaleString()} combined.`
+            : ` Capitol Police ${count.toLocaleString()} (no Princeton THD figure yet for ${caseYear}).`;
           const indexPart = indexVal != null ? ` Index ${indexVal.toFixed(0)} (${baseYearRow.year}=100).` : "";
           const yoyPart = latestYoY != null ? ` YoY ${latestYoY >= 0 ? "+" : ""}${latestYoY.toFixed(1)}%` : "";
           const zPart = z != null ? ` (z=${z >= 0 ? "+" : ""}${z.toFixed(2)} vs. ${baselineYoY.length}-yr avg YoY change)` : "";
 
           return {
             key: "threats_against_congress",
-            value_numeric: count,
-            value_display: `${count.toLocaleString()}/yr`,
+            value_numeric: latestCombined.value,
+            value_display: `${latestCombined.value.toLocaleString()}/yr`,
             status,
             status_label,
-            note_suffix: `${caseYear} USCP Threat Assessment Section case count.${indexPart}${yoyPart}${zPart} — concerning statements, behaviors, and communications against Members of Congress, their families, staff, and the Capitol Complex.`,
+            note_suffix: `${caseYear} combined total.${componentsPart}${indexPart}${yoyPart}${zPart} — threats and harassment against Members of Congress and other public officials (judicial, school, election, elected/appointed officials).`,
           };
         }
       }
