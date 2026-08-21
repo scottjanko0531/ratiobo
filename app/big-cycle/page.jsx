@@ -385,7 +385,7 @@ export default function BigCyclePage() {
               </div>
             )}
 
-            {cycles.map((cycle) => (
+            {cycles.filter((c) => c.slug === "debt").map((cycle) => (
               <CycleSection
                 key={cycle.id}
                 cycle={cycle}
@@ -397,6 +397,17 @@ export default function BigCyclePage() {
             ))}
 
             <DebtCyclePositionCheck metrics={metrics} />
+
+            {cycles.filter((c) => c.slug !== "debt").map((cycle) => (
+              <CycleSection
+                key={cycle.id}
+                cycle={cycle}
+                stages={stages.filter((s) => s.cycle_id === cycle.id)}
+                metrics={metrics.filter((m) => m.cycle_id === cycle.id)}
+                editableKeys={editableMetricKeys}
+                onSaveMetric={saveMetric}
+              />
+            ))}
 
             <div className="card p-5">
               <p className="label text-[10px] mb-1">National Power Determinants</p>
