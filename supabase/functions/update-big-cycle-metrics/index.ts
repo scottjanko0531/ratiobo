@@ -236,9 +236,18 @@ async function computeNyFedStudentLoanUpdate(): Promise<Update | null> {
 // investigated {N} concerning statements, behaviors, and communications...").
 // Released ~late January covering the prior calendar year, so this tries the
 // current year first and steps back until a real release resolves — same
-// pattern as computeNyFedStudentLoanUpdate above. Direction (rising/stable/
-// declining) is computed against whatever value is already stored for this
-// metric, since that's last year's figure until this overwrites it.
+// pattern as computeNyFedStudentLoanUpdate above.
+//
+// Every parsed year is upserted into big_cycle_metric_history (seeded back to
+// 2017 — see 20260823_threats_against_congress_history.sql; USCP's own
+// archive and general search turned up nothing reliable before that), which
+// backs two derived reads instead of a bare YoY delta against last year:
+//   - an index vs. the earliest confirmed year (2017 = 100)
+//   - a leave-one-out z-score of this year's YoY % change against the mean/
+//     stdev of every *prior* YoY % change, so a big jump doesn't get muted by
+//     pulling its own baseline toward itself. This answers "is this year's
+//     jump unusually large for this series" rather than just "is the level
+//     historically high," which is guaranteed to trend up regardless.
 async function computeThreatsAgainstCongressUpdate(sb: ReturnType<typeof createClient>): Promise<Update | null> {
   const now = new Date();
   let year = now.getUTCFullYear();
@@ -257,21 +266,60 @@ async function computeThreatsAgainstCongressUpdate(sb: ReturnType<typeof createC
           const count = parseInt(m[2].replace(/,/g, ""), 10);
           if (!isFinite(count) || count <= 0) { year--; continue; }
 
-          const { data: priorRow } = await sb
-            .from("big_cycle_metrics")
-            .select("value_numeric")
-            .eq("key", "threats_against_congress")
-            .maybeSingle();
-          const prior = priorRow?.value_numeric != null ? Number(priorRow.value_numeric) : null;
-          const pctChange = prior && prior > 0 ? ((count - prior) / prior) * 100 : null;
+          await sb.from("big_cycle_metric_history").upsert(
+            { metric_key: "threats_against_congress", year: caseYear, value_numeric: count },
+            { onConflict: "metric_key,year" },
+          );
+
+          const { data: historyRows } = await sb
+            .from("big_cycle_metric_history")
+            .select("year, value_numeric")
+            .eq("metric_key", "threats_against_congress")
+            .order("year", { ascending: true });
+          const history = (historyRows ?? []).map((r: { year: number; value_numeric: number }) => ({
+            year: Number(r.year), value: Number(r.value_numeric),
+          }));
+
+          const baseYearRow = history[0];
+          const indexVal = baseYearRow && baseYearRow.value > 0 ? (count / baseYearRow.value) * 100 : null;
+
+          const yoyChanges: number[] = [];
+          for (let i = 1; i < history.length; i++) {
+            const prevVal = history[i - 1].value;
+            if (prevVal > 0) yoyChanges.push(((history[i].value - prevVal) / prevVal) * 100);
+          }
+          const latestYoY = yoyChanges.length ? yoyChanges[yoyChanges.length - 1] : null;
+          const baselineYoY = yoyChanges.slice(0, -1);
+
+          let z: number | null = null;
+          if (latestYoY != null && baselineYoY.length >= 2) {
+            const mean = baselineYoY.reduce((s, v) => s + v, 0) / baselineYoY.length;
+            const variance = baselineYoY.reduce((s, v) => s + (v - mean) ** 2, 0) / (baselineYoY.length - 1);
+            const stdev = Math.sqrt(variance);
+            if (stdev > 0) z = (latestYoY - mean) / stdev;
+          }
+
+          const rising = latestYoY != null && latestYoY > 0;
+          const status: Update["status"] = z != null && z >= 1.5 ? "bad" : rising ? "warn" : "good";
+          const status_label =
+            z == null ? "Reported" :
+            z >= 1.5 ? "Sharp acceleration" :
+            z >= 0.5 ? "Accelerating" :
+            z <= -1.5 ? "Sharp reversal" :
+            z <= -0.5 ? (rising ? "Decelerating" : "Declining") :
+            rising ? "Trend-consistent rise" : "Trend-consistent decline";
+
+          const indexPart = indexVal != null ? ` Index ${indexVal.toFixed(0)} (${baseYearRow.year}=100).` : "";
+          const yoyPart = latestYoY != null ? ` YoY ${latestYoY >= 0 ? "+" : ""}${latestYoY.toFixed(1)}%` : "";
+          const zPart = z != null ? ` (z=${z >= 0 ? "+" : ""}${z.toFixed(2)} vs. ${baselineYoY.length}-yr avg YoY change)` : "";
 
           return {
             key: "threats_against_congress",
             value_numeric: count,
             value_display: `${count.toLocaleString()}/yr`,
-            status: pctChange != null && pctChange > 15 ? "bad" : pctChange != null && pctChange > 0 ? "warn" : "good",
-            status_label: pctChange == null ? "Reported" : pctChange > 15 ? "Sharp rise" : pctChange > 0 ? "Rising" : pctChange < -5 ? "Declining" : "Stable",
-            note_suffix: `${caseYear} USCP Threat Assessment Section case count${pctChange != null ? ` (${pctChange >= 0 ? "+" : ""}${pctChange.toFixed(0)}% vs. prior year)` : ""} — concerning statements, behaviors, and communications against Members of Congress, their families, staff, and the Capitol Complex.`,
+            status,
+            status_label,
+            note_suffix: `${caseYear} USCP Threat Assessment Section case count.${indexPart}${yoyPart}${zPart} — concerning statements, behaviors, and communications against Members of Congress, their families, staff, and the Capitol Complex.`,
           };
         }
       }
