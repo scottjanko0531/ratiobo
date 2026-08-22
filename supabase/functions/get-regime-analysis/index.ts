@@ -110,6 +110,32 @@ async function fetchMacroVoices(): Promise<NewsItem | null> {
   return null;
 }
 
+async function fetchRssQuery(query: string): Promise<NewsItem[]> {
+  const url = "https://news.google.com/rss/search?q=" + encodeURIComponent(query) + "&hl=en-US&gl=US&ceid=US:en";
+  try {
+    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; RSS/2.0 reader)" } });
+    if (!res.ok) return [];
+    const xml = await res.text();
+    const items: NewsItem[] = [];
+    let pos = 0;
+    while (true) {
+      const s = xml.indexOf("<item>", pos);
+      if (s === -1) break;
+      const e = xml.indexOf("</item>", s);
+      if (e === -1) break;
+      const block = xml.slice(s + 6, e);
+      pos = e + 7;
+      const raw = getText(block, "title");
+      const pubDate = getText(block, "pubDate");
+      const source = getSource(block);
+      if (!raw) continue;
+      const ts = pubDate ? new Date(pubDate).getTime() : 0;
+      items.push({ headline: cleanTitle(raw, source), source, publishedAt: isNaN(ts) ? 0 : Math.floor(ts / 1000) });
+    }
+    return items;
+  } catch { return []; }
+}
+
 async function fetchTopNews(limit = 5): Promise<NewsItem[]> {
   const queries = [
     "Federal Reserve inflation interest rates",
@@ -119,29 +145,7 @@ async function fetchTopNews(limit = 5): Promise<NewsItem[]> {
     "Treasury bonds yield curve",
   ];
   try {
-    const results = await Promise.all(queries.map(async (q) => {
-      const url = "https://news.google.com/rss/search?q=" + encodeURIComponent(q) + "&hl=en-US&gl=US&ceid=US:en";
-      const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; RSS/2.0 reader)" } });
-      if (!res.ok) return [] as NewsItem[];
-      const xml = await res.text();
-      const items: NewsItem[] = [];
-      let pos = 0;
-      while (true) {
-        const s = xml.indexOf("<item>", pos);
-        if (s === -1) break;
-        const e = xml.indexOf("</item>", s);
-        if (e === -1) break;
-        const block = xml.slice(s + 6, e);
-        pos = e + 7;
-        const raw = getText(block, "title");
-        const pubDate = getText(block, "pubDate");
-        const source = getSource(block);
-        if (!raw) continue;
-        const ts = pubDate ? new Date(pubDate).getTime() : 0;
-        items.push({ headline: cleanTitle(raw, source), source, publishedAt: isNaN(ts) ? 0 : Math.floor(ts / 1000) });
-      }
-      return items;
-    }));
+    const results = await Promise.all(queries.map(fetchRssQuery));
     const seen = new Set<string>();
     const all: NewsItem[] = [];
     for (const items of results) {
@@ -151,6 +155,29 @@ async function fetchTopNews(limit = 5): Promise<NewsItem[]> {
     }
     return all.sort((a, b) => b.publishedAt - a.publishedAt).slice(0, limit);
   } catch { return []; }
+}
+
+// Yield curve control, money supply (M2), and QE/balance-sheet news publish
+// far less often than generic Fed/CPI/GDP headlines, so they'd rarely survive
+// fetchTopNews' global top-N recency cutoff on their own merits even when
+// something genuinely newsworthy just happened (e.g. a fresh YCC program
+// announcement). Each topic below is fetched separately and its single most
+// recent headline is force-included regardless of rank — same guaranteed-
+// inclusion pattern as the MacroVoices episode — so Clio never misses a live
+// development on one of these debt-cycle-relevant topics just because that
+// week's Fed-speak coverage was more numerous.
+const WATCHED_TOPIC_QUERIES = [
+  "yield curve control Treasury Federal Reserve",
+  "M2 money supply growth Federal Reserve",
+  "quantitative easing Federal Reserve balance sheet",
+];
+
+async function fetchWatchedTopics(): Promise<NewsItem[]> {
+  const results = await Promise.all(WATCHED_TOPIC_QUERIES.map(async (query) => {
+    const items = await fetchRssQuery(query);
+    return items.sort((a, b) => b.publishedAt - a.publishedAt)[0] ?? null;
+  }));
+  return results.filter((r): r is NewsItem => r !== null);
 }
 
 // ── Market snapshot ───────────────────────────────────────────────────────────
@@ -670,6 +697,7 @@ Respond with ONLY raw JSON, no markdown fences: {"consistent": true|false, "issu
 // ── News musing ───────────────────────────────────────────────────────────────
 async function generateNewsMusing(params: {
   headlines: NewsItem[];
+  watchedHeadlines: NewsItem[];
   regimeLabel: string;
   momentumRegime: string;
   marketLabel: string | null;
@@ -677,7 +705,7 @@ async function generateNewsMusing(params: {
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY || params.headlines.length === 0) return null;
   try {
-    const { headlines, regimeLabel, momentumRegime, marketLabel, fedOdds } = params;
+    const { headlines, watchedHeadlines, regimeLabel, momentumRegime, marketLabel, fedOdds } = params;
     const mvEpisode = headlines.find(h => h.source === "MacroVoices");
     const newsLines = headlines
       .map((h, i) => `${i + 1}. "${h.headline}"${h.source ? ` — ${h.source}` : ""}`)
@@ -697,6 +725,15 @@ async function generateNewsMusing(params: {
   Headlines above are dated ${headlineWindow} — REQUIRED: explicitly reconcile headline sentiment against these priced odds, and name both dates so staleness is visible. If headline tone (e.g. hawkish Fed-speaker rhetoric) points a different direction than the priced odds, say so directly — do not silently pick the headline-implied direction as your conclusion. If they agree, say that too.`
       : `\nMarket-implied Fed odds were not available for this run — do not assert a directional conclusion about Fed policy odds (hike/hold/cut) from headline tone alone; frame any policy-direction read explicitly as headline sentiment, not priced probability.`;
 
+    // Watched topics (yield curve control, M2 money supply, quantitative easing)
+    // are force-included above regardless of recency rank precisely because
+    // they're leading debt-cycle signals RatioBo tracks closely — surface that
+    // explicitly rather than letting one get folded anonymously into "growth
+    // and inflation news" the way a generic CPI headline would be.
+    const watchedInstruction = watchedHeadlines.length > 0
+      ? `\nREQUIRED: the following headline(s) were specifically sourced because they concern yield curve control, money supply (M2) growth, or quantitative easing/Fed balance sheet policy — debt-cycle signals RatioBo tracks closely. Explicitly address their significance for the current regime and for the BW Modified real-assets sleeve (gold, TIPS, commodities), even if brief:\n${watchedHeadlines.map((h) => `  - "${h.headline}"${h.source ? ` — ${h.source}` : ""}`).join("\n")}`
+      : "";
+
     const prompt = `You are Clio, macro analyst at RatioBo. Write 2 sharp paragraphs (under 180 words total), plain prose only. Do not use any markdown syntax: no #, no **, no bullet or numbered lists, no title line.
 
 Current regime signals:
@@ -708,6 +745,7 @@ Top macro headlines (last 24–48 hours):
 ${newsLines}
 ${mvInstruction}
 ${fedOddsBlock}
+${watchedInstruction}
 
 Assess: (1) What macro narrative are these headlines collectively signaling — growth, inflation, credit stress, risk-on, or risk-off? (2) Does that narrative align with or diverge from the regime signals above and the priced Fed odds, and what (if anything) should a BW Modified portfolio holder do differently in response?`;
 
@@ -754,17 +792,23 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const [{ data: macroRows }, marketSnapshot, topNews, mvItem, supplyChain, yieldCurve, fedOdds, liquidity] = await Promise.all([
+    const [{ data: macroRows }, marketSnapshot, topNews, mvItem, watchedTopics, supplyChain, yieldCurve, fedOdds, liquidity] = await Promise.all([
       sb.from("macro_indicators").select("name,current_value,previous_value,status,metadata"),
       getMarketSnapshot(),
       fetchTopNews(5),
       fetchMacroVoices(),
+      fetchWatchedTopics(),
       getSupplyChainRisks(sb),
       getYieldCurveState(),
       getFedRateOdds(),
       getLiquiditySnapshot(sb),
     ]);
-    const headlines: NewsItem[] = mvItem ? [mvItem, ...topNews] : topNews;
+    const dedupedWatched = watchedTopics.filter((w) => !topNews.some((t) => t.headline === w.headline));
+    const headlines: NewsItem[] = [
+      ...(mvItem ? [mvItem] : []),
+      ...dedupedWatched,
+      ...topNews,
+    ];
 
     const get = (name: string) => {
       const i = (macroRows ?? []).find((x: { name: string; current_value: number | null }) => x.name === name);
@@ -834,7 +878,7 @@ Deno.serve(async (req: Request) => {
 
     const [analysisFirstPass, newsMusing] = await Promise.all([
       generateAnalysis(analysisParams),
-      generateNewsMusing({ headlines, regimeLabel, momentumRegime, marketLabel, fedOdds }),
+      generateNewsMusing({ headlines, watchedHeadlines: dedupedWatched, regimeLabel, momentumRegime, marketLabel, fedOdds }),
     ]);
 
     if (!analysisFirstPass) {
