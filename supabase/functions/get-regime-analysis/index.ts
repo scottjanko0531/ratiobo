@@ -367,7 +367,7 @@ function detectRegimeKeyLive(gdpYoy: number, cpiYoy: number, gdp3y: number, cpi3
 type Getter = (name: string) => number | null;
 
 function computeLiveRegimeKeys(
-  get: Getter, getPrev: Getter, getMeta3m: Getter,
+  get: Getter, getMeta3m: Getter, getPP3m: Getter,
 ): { structuralKey: string | null; marketKey: string | null; fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number } {
   const gdpYoy = get("Real GDP Growth");
   const cpiYoy = get("CPI (YoY)");
@@ -387,7 +387,7 @@ function computeLiveRegimeKeys(
       })()
     : null;
 
-  type Sig = { name: string; w: number; useDir?: boolean; usePct3m?: boolean; vote: (v: number) => number };
+  type Sig = { name: string; w: number; usePct3m?: boolean; usePP3m?: boolean; vote: (v: number) => number };
   const G: Sig[] = [
     { name: "2yr/10yr Yield Spread",  w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
     { name: "3mo/10yr Yield Spread",  w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
@@ -404,8 +404,13 @@ function computeLiveRegimeKeys(
     { name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
   ];
   const I: Sig[] = [
-    { name: "CPI (YoY)",                       w: 0.20, useDir: true,   vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
-    { name: "PPI (YoY)",                       w: 0.10, useDir: true,   vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
+    // 3-month pp-change signals, in raw percentage points (not relative % —
+    // these are already rates, so a relative-%-change would invert sensitivity:
+    // the same absolute pp move reads as huge when the rate is low, trivial
+    // when it's high). PPI's threshold is wider since it's the noisier series
+    // (also why it's weighted lower here).
+    { name: "CPI (YoY)",                       w: 0.20, usePP3m: true,   vote: v => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
+    { name: "PPI (YoY)",                       w: 0.10, usePP3m: true,   vote: v => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
     { name: "10Y Breakeven Inflation",         w: 0.20,                 vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
     { name: "Consumer Inflation Expectations", w: 0.15,                 vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
     { name: "Copper Price",                    w: 0.15, usePct3m: true, vote: v => v > 5   ? 1 : v >= -5 ? 0 : -1 },
@@ -418,15 +423,11 @@ function computeLiveRegimeKeys(
     // is inverted relative to a normal "rising = inflationary" reading
     { name: "DXY", w: 0.10, usePct3m: true, vote: v => v > 5 ? -1 : v < -5 ? 1 : 0 },
   ];
-  const getDirPct = (name: string): number | null => {
-    const curr = get(name), prev = getPrev(name);
-    return curr != null && prev != null && prev !== 0 ? (curr - prev) / Math.abs(prev) * 100 : null;
-  };
   type Scored = { w: number; vote: number | null };
   const scoreGroup = (sigs: Sig[]): { signals: Scored[]; score: number | null } => {
     let weighted = 0, totalW = 0;
     const signals = sigs.map((s) => {
-      const val = s.useDir ? getDirPct(s.name) : s.usePct3m ? getMeta3m(s.name) : get(s.name);
+      const val = s.usePct3m ? getMeta3m(s.name) : s.usePP3m ? getPP3m(s.name) : get(s.name);
       if (val == null) return { w: s.w, vote: null };
       const v = s.vote(val);
       weighted += v * s.w; totalW += s.w;
@@ -827,6 +828,11 @@ Deno.serve(async (req: Request) => {
       const v = i?.metadata?.change3m_pct;
       return typeof v === "number" ? v : null;
     };
+    const getPP3m = (name: string): number | null => {
+      const i = (macroRows ?? []).find((x: { name: string; metadata: Record<string, unknown> | null }) => x.name === name);
+      const v = i?.metadata?.change3m_pp;
+      return typeof v === "number" ? v : null;
+    };
     const creditIndicatorNames = ["HY Credit Spread (OAS)", "IG Credit Spread (OAS)", "Sr Loan Officer Survey", "C&I Loan Growth (YoY)"];
     const credit: CreditIndicator[] = creditIndicatorNames.map((name) => ({ name, value: get(name), status: getStatus(name) }));
 
@@ -837,7 +843,7 @@ Deno.serve(async (req: Request) => {
     // its nightly update silently failed to run for that day. Computing live
     // means Clio's narrative can never drift from what the Forward Signal tile
     // on the same page shows, regardless of whether the nightly job succeeded.
-    const { structuralKey, marketKey, fwdKey, fwdConf } = computeLiveRegimeKeys(get, getPrev, getMeta3m);
+    const { structuralKey, marketKey, fwdKey, fwdConf } = computeLiveRegimeKeys(get, getMeta3m, getPP3m);
     const regimeLabel = structuralKey ? (REGIME_LABELS[structuralKey] ?? structuralKey) : "Unknown";
     const marketLabel = marketKey ? (REGIME_LABELS[marketKey] ?? marketKey) : null;
     const fwdLabel = fwdKey ? (REGIME_LABELS[fwdKey] ?? fwdKey) : null;

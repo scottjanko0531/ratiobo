@@ -147,6 +147,7 @@ interface Indicator {
     | "silver_3m_avg"
     | "cb_gold_imf"
     | "level_with_3m"
+    | "yoy_monthly_with_3m"
     | "yahoo_price_with_3m"
     | "supabase_lei"
     | "supabase_ism"
@@ -468,7 +469,7 @@ const INDICATORS: Indicator[] = [
     name: "CPI (YoY)", layer: 3, layer_name: "Business Cycle",
     description: "Headline consumer inflation — price stability",
     fred_series_id: "CPIAUCSL", unit: "%", data_source: "fred", sort_order: 18,
-    series: "CPIAUCSL", type: "yoy_monthly",
+    series: "CPIAUCSL", type: "yoy_monthly_with_3m",
     statusFn: v => v >= 1 && v <= 3 ? "healthy" : v <= 5 ? "watch" : "danger",
   },
   {
@@ -503,7 +504,7 @@ const INDICATORS: Indicator[] = [
     name: "PPI (YoY)", layer: 3, layer_name: "Business Cycle",
     description: "Producer price inflation — upstream inflation pipeline",
     fred_series_id: "PPIACO", unit: "%", data_source: "fred", sort_order: 24,
-    series: "PPIACO", type: "yoy_monthly",
+    series: "PPIACO", type: "yoy_monthly_with_3m",
     statusFn: v => v >= 0 && v <= 3 ? "healthy" : v <= 6 ? "watch" : "danger",
   },
   {
@@ -701,6 +702,27 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const yoy = yoyPair(obs);
         if (!yoy) return null;
         current = yoy.current; previous = yoy.previous;
+        break;
+      }
+      case "yoy_monthly_with_3m": {
+        // Same as yoy_monthly, plus a percentage-POINT change in the YoY rate
+        // itself over the last 3 months (obs[0] vs obs[3]) — for rate series
+        // like CPI/PPI YoY, this is the momentum measure that actually behaves
+        // sensibly. A relative-%-change-of-the-rate (as change3m_pct would give
+        // for a price level) inverts sensitivity here: the same absolute pp
+        // move reads as a huge swing when the YoY rate is low and a trivial one
+        // when it's high, exactly backwards from what a momentum signal wants.
+        const obs = await fetchFredObs(ind.series!, 26);
+        const yoy = yoyPair(obs);
+        if (!yoy) return null;
+        current = yoy.current; previous = yoy.previous;
+        if (obs.length >= 4) {
+          const ya3 = findYearAgo(obs, obs[3].date);
+          if (ya3) {
+            const yoy3mAgo = (obs[3].value / ya3.value - 1) * 100;
+            metadata = { change3m_pp: Math.round((yoy.current - yoy3mAgo) * 100) / 100 };
+          }
+        }
         break;
       }
       case "yoy_monthly_agg": {
@@ -1325,20 +1347,21 @@ async function backfillRegimeHistory(): Promise<void> {
 
 function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null; confidence: number | null } {
   const get = (name: string) => { const r = rows.find(r => r.name === name); return r?.current_value != null ? Number(r.current_value) : null; };
-  // Direction of change: % change from previous_value to current_value
-  const getDir = (name: string) => {
-    const r = rows.find(r => r.name === name);
-    if (r?.current_value == null || r?.previous_value == null) return null;
-    const curr = Number(r.current_value), prev = Number(r.previous_value);
-    return prev ? (curr - prev) / Math.abs(prev) * 100 : null;
-  };
   // 3-month % change stored in metadata by level_with_3m processor
   const getPct3m = (name: string) => {
     const r = rows.find(r => r.name === name);
     const v = (r?.metadata as Record<string, unknown> | undefined)?.change3m_pct;
     return v != null ? Number(v) : null;
   };
-  type Sig = { name: string; w: number; vote: (v: number) => number; useDir?: boolean; usePct3m?: boolean };
+  // 3-month percentage-POINT change in a YoY rate, stored in metadata by the
+  // yoy_monthly_with_3m processor (CPI/PPI) — distinct from getPct3m above,
+  // which is a relative % change appropriate for price LEVELS, not rates.
+  const getPP3m = (name: string) => {
+    const r = rows.find(r => r.name === name);
+    const v = (r?.metadata as Record<string, unknown> | undefined)?.change3m_pp;
+    return v != null ? Number(v) : null;
+  };
+  type Sig = { name: string; w: number; vote: (v: number) => number; usePct3m?: boolean; usePP3m?: boolean };
   const G: Sig[] = [
     { name: "2yr/10yr Yield Spread",  w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
     { name: "3mo/10yr Yield Spread",  w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
@@ -1355,9 +1378,13 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     { name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
   ];
   const I: Sig[] = [
-    // Direction signals: CPI/PPI trend captures disinflation momentum even when levels are elevated
-    { name: "CPI (YoY)",                       w: 0.20, useDir: true,  vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
-    { name: "PPI (YoY)",                       w: 0.10, useDir: true,  vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
+    // 3-month pp-change signals: CPI/PPI trend captures disinflation momentum
+    // even when levels are elevated. Thresholds are in raw percentage points
+    // (not relative %), since these are already rates — PPI's is wider than
+    // CPI's because PPI is the structurally noisier series (also why it's
+    // weighted lower here).
+    { name: "CPI (YoY)",                       w: 0.20, usePP3m: true,  vote: v => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
+    { name: "PPI (YoY)",                       w: 0.10, usePP3m: true,  vote: v => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
     { name: "10Y Breakeven Inflation",         w: 0.20,                vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
     // Threshold raised: readings below 5.5% may reflect tariff shock, not structural demand inflation
     { name: "Consumer Inflation Expectations", w: 0.15,                vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
@@ -1376,7 +1403,7 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
   const scoreGroup = (sigs: Sig[]): { signals: ScoreSig[]; score: number | null } => {
     let weighted = 0, totalW = 0;
     const signals: ScoreSig[] = sigs.map(s => {
-      const val = s.useDir ? getDir(s.name) : s.usePct3m ? getPct3m(s.name) : get(s.name);
+      const val = s.usePct3m ? getPct3m(s.name) : s.usePP3m ? getPP3m(s.name) : get(s.name);
       if (val == null) return { w: s.w, vote: null };
       const v = s.vote(val);
       weighted += v * s.w; totalW += s.w;

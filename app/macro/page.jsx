@@ -355,9 +355,13 @@ const FWD_GROWTH_SIGNALS = [
   { label: "Output Gap",        name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
 ];
 const FWD_INFL_SIGNALS = [
-  // Direction-of-change signals capture disinflation momentum even when levels are still elevated
-  { label: "CPI Trend",         name: "CPI (YoY)",      w: 0.20, getDir: true,   vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
-  { label: "PPI Trend",         name: "PPI (YoY)",      w: 0.10, getDir: true,   vote: v => v < -5  ? -1 : v > 5  ? 1 : 0 },
+  // 3-month pp-change signals, in raw percentage points (not relative % — CPI/PPI
+  // YoY are already rates, so a relative-%-change would invert sensitivity: the
+  // same absolute pp move reads huge when the rate is low, trivial when it's
+  // high). PPI's threshold is wider since it's the noisier series (also why
+  // it's weighted lower here).
+  { label: "CPI Trend",         name: "CPI (YoY)",      w: 0.20, getPP3m: true,  vote: v => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
+  { label: "PPI Trend",         name: "PPI (YoY)",      w: 0.10, getPP3m: true,  vote: v => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
   { label: "10Y Breakeven",     name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
   // Threshold raised: readings below 5.5% may reflect one-time tariff shock, not structural inflation
   { label: "Infl Expectations", name: "Consumer Inflation Expectations", w: 0.15, vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
@@ -381,16 +385,16 @@ function computeForwardSignal(indicators) {
     const ind = indicators.find(i => i.name === name);
     return ind?.metadata?.change3m_pct != null ? Number(ind.metadata.change3m_pct) : null;
   };
-  const getDir = (name) => {
+  // 3-month percentage-POINT change in a YoY rate (CPI/PPI) — distinct from
+  // getPct3m above, which is a relative % change appropriate for price LEVELS.
+  const getPP3m = (name) => {
     const ind = indicators.find(i => i.name === name);
-    if (ind?.current_value == null || ind?.previous_value == null) return null;
-    const curr = Number(ind.current_value), prev = Number(ind.previous_value);
-    return prev ? (curr - prev) / Math.abs(prev) * 100 : null;
+    return ind?.metadata?.change3m_pp != null ? Number(ind.metadata.change3m_pp) : null;
   };
   const scoreGroup = (sigs) => {
     let weighted = 0, totalW = 0;
     const scored = sigs.map(s => {
-      const val = s.getDir ? getDir(s.name) : s.getPct3m ? getPct3m(s.name) : get(s.name);
+      const val = s.getPct3m ? getPct3m(s.name) : s.getPP3m ? getPP3m(s.name) : get(s.name);
       if (val == null) return { ...s, val: null, vote: null };
       const v = s.vote(val);
       weighted += v * s.w;
