@@ -14,6 +14,9 @@ const supabase = createClient(
 const RF_ANN = 0.04;
 const r4 = (n: number) => Math.round(n * 10000) / 10000;
 
+const FRED = "https://api.stlouisfed.org/fred/series/observations";
+const FRED_KEY = Deno.env.get("FRED_API_KEY")!;
+
 // ── Yahoo Finance monthly fetch ───────────────────────────────────────────────
 async function fetchMonthly(ticker: string): Promise<Map<string, number>> {
   const enc = encodeURIComponent(ticker);
@@ -150,6 +153,156 @@ function runBacktest(
   return out;
 }
 
+// ── Regime-driven dynamic-weight backtest ──────────────────────────────────────
+// Reconstructs, for each calendar year, which of the four structural regimes
+// (same GDP-YoY-vs-3Y-avg / CPI-YoY-vs-3Y-avg test used live by get-regime-
+// analysis.ts's detectRegimeKeyLive and lib/simulatorKeys.js's detectRegimeKey)
+// was in effect, then holds that year's REGIME_DEFAULT_WEIGHTS allocation,
+// rebalancing annually — same cadence as the three static portfolios above.
+//
+// This is NOT a replay of the live regime_driven portfolio's actual activation
+// logic (30-day confirmation + 60% Forward Signal confidence floor): Forward
+// Signal confidence was never stored historically, so it can't be reconstructed.
+// What's modeled here is simpler and more optimistic: "always held that year's
+// structurally-classified regime weights," not the live feature's whipsaw-
+// avoidance behavior.
+const REGIME_LABELS: Record<string, string> = {
+  rg_fi: "Disinflationary Boom", rg_ri: "Reflation", fg_ri: "Stagflation", fg_fi: "Deflationary Bust",
+};
+
+// Percent form, asset-class keyed — identical to lib/simulatorKeys.js's
+// REGIME_DEFAULT_WEIGHTS, kept in sync manually. Used for the transparency
+// table the frontend renders, not for the backtest math itself.
+const REGIME_DEFAULT_WEIGHTS_PCT: Record<string, Record<string, number>> = {
+  rg_fi: { eq: 35, intl: 15, em: 10, nb: 20, tip: 5, com: 5, gld: 5, cash: 5 },
+  rg_ri: { eq: 20, intl: 10, em: 20, nb: 0, tip: 15, com: 20, gld: 10, cash: 5 },
+  fg_ri: { eq: 5, intl: 5, em: 0, nb: 0, tip: 20, com: 30, gld: 30, cash: 10 },
+  fg_fi: { eq: 5, intl: 5, em: 0, nb: 65, tip: 0, com: 0, gld: 15, cash: 10 },
+};
+
+// Fractional (0-1), ticker-keyed — same 8 tickers bw_modified already backtests
+// with (eq→VTI, intl→VXUS, em→VWO, nb→TLT, tip→SCHP, com→DBC, gld→GLD, cash→SHY),
+// so this shares bw_modified's exact date-availability window, no new proxy gaps.
+const REGIME_TICKER_WEIGHTS: Record<string, Record<string, number>> = {
+  rg_fi: { VTI: 0.35, VXUS: 0.15, VWO: 0.10, TLT: 0.20, SCHP: 0.05, DBC: 0.05, GLD: 0.05, SHY: 0.05 },
+  rg_ri: { VTI: 0.20, VXUS: 0.10, VWO: 0.20, TLT: 0.00, SCHP: 0.15, DBC: 0.20, GLD: 0.10, SHY: 0.05 },
+  fg_ri: { VTI: 0.05, VXUS: 0.05, VWO: 0.00, TLT: 0.00, SCHP: 0.20, DBC: 0.30, GLD: 0.30, SHY: 0.10 },
+  fg_fi: { VTI: 0.05, VXUS: 0.05, VWO: 0.00, TLT: 0.65, SCHP: 0.00, DBC: 0.00, GLD: 0.15, SHY: 0.10 },
+};
+const REGIME_TICKERS = ["VTI", "VXUS", "VWO", "TLT", "SCHP", "DBC", "GLD", "SHY"];
+
+interface FredObs { date: string; value: number }
+
+async function fetchFredSeries(seriesId: string): Promise<FredObs[]> {
+  const url = `${FRED}?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json&sort_order=asc&observation_start=1990-01-01`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`FRED ${seriesId}: HTTP ${res.status}`);
+  const j = await res.json();
+  const obs = (j.observations ?? []) as { date: string; value: string }[];
+  return obs.map((o) => ({ date: o.date, value: parseFloat(o.value) })).filter((o) => !isNaN(o.value));
+}
+
+function yoy(obs: FredObs[], lag: number): FredObs[] {
+  const out: FredObs[] = [];
+  for (let i = lag; i < obs.length; i++) {
+    const prev = obs[i - lag].value;
+    if (prev !== 0) out.push({ date: obs[i].date, value: (obs[i].value / prev - 1) * 100 });
+  }
+  return out;
+}
+
+function trailingAvg(series: FredObs[], n: number): FredObs[] {
+  const out: FredObs[] = [];
+  for (let i = n - 1; i < series.length; i++) {
+    const window = series.slice(i - n + 1, i + 1);
+    out.push({ date: series[i].date, value: window.reduce((s, o) => s + o.value, 0) / window.length });
+  }
+  return out;
+}
+
+function latestOnOrBefore(series: FredObs[], cutoff: string): FredObs | null {
+  let result: FredObs | null = null;
+  for (const o of series) { if (o.date <= cutoff) result = o; else break; }
+  return result;
+}
+
+function detectRegimeKey(gdpYoy: number, cpiYoy: number, gdp3y: number, cpi3y: number): string {
+  const growing = gdpYoy > gdp3y;
+  const rising = cpiYoy > cpi3y;
+  if (growing && !rising) return "rg_fi";
+  if (growing && rising) return "rg_ri";
+  if (!growing && rising) return "fg_ri";
+  return "fg_fi";
+}
+
+// Point-in-time by design: each year Y's weights are chosen from GDP/CPI data
+// dated on or before September 30 of year Y-1 — a buffer past BEA/BLS release
+// lags so this never "knows" data a January 1 rebalance couldn't actually have
+// seen. Avoids look-ahead bias.
+async function buildYearlyRegimeWeights(
+  startYear: number, endYear: number,
+): Promise<{ year: number; regimeKey: string; weights: Record<string, number> }[]> {
+  const [gdpRaw, cpiRaw] = await Promise.all([fetchFredSeries("GDPC1"), fetchFredSeries("CPIAUCSL")]);
+  const gdpYoy = yoy(gdpRaw, 4);   // GDPC1 is quarterly
+  const cpiYoy = yoy(cpiRaw, 12);  // CPIAUCSL is monthly
+  const gdp3y = trailingAvg(gdpYoy, 12); // 12 quarters = 3 years
+  const cpi3y = trailingAvg(cpiYoy, 36); // 36 months = 3 years
+
+  const out: { year: number; regimeKey: string; weights: Record<string, number> }[] = [];
+  for (let year = startYear; year <= endYear; year++) {
+    const cutoff = `${year - 1}-09-30`;
+    const g = latestOnOrBefore(gdpYoy, cutoff);
+    const g3 = latestOnOrBefore(gdp3y, cutoff);
+    const c = latestOnOrBefore(cpiYoy, cutoff);
+    const c3 = latestOnOrBefore(cpi3y, cutoff);
+    if (!g || !g3 || !c || !c3) continue;
+    const regimeKey = detectRegimeKey(g.value, c.value, g3.value, c3.value);
+    out.push({ year, regimeKey, weights: REGIME_TICKER_WEIGHTS[regimeKey] });
+  }
+  return out;
+}
+
+// Same annual-rebalance mechanics as runBacktest above, except the weight
+// vector applied at each year's rebalance is looked up dynamically instead of
+// being fixed for the whole run.
+function runBacktestDynamic(
+  yearWeights: Map<number, Record<string, number>>,
+  tickers: string[],
+  returns: Record<string, Map<string, number>>,
+  dates: string[],
+): { date: string; value: number }[] {
+  const knownYears = [...yearWeights.keys()].sort((a, b) => a - b);
+  const weightsForYear = (y: number): Record<string, number> => {
+    if (yearWeights.has(y)) return yearWeights.get(y)!;
+    const fallback = knownYears.find((yy) => yy >= y) ?? knownYears[knownYears.length - 1];
+    return yearWeights.get(fallback) ?? {};
+  };
+
+  let curYear = -1;
+  let curW: number[] = [];
+  let value = 1.0;
+  const out: { date: string; value: number }[] = [];
+
+  for (let i = 0; i < dates.length; i++) {
+    const d = dates[i];
+    const year = parseInt(d.slice(0, 4));
+    if (year !== curYear) {
+      const w = weightsForYear(year);
+      curW = tickers.map((t) => w[t] ?? 0);
+      curYear = year;
+    }
+
+    const assetRets = tickers.map((t) => returns[t]?.get(d) ?? 0);
+    value *= 1 + assetRets.reduce((s, r, j) => s + curW[j] * r, 0);
+
+    const drifted = curW.map((w, j) => w * (1 + assetRets[j]));
+    const total = drifted.reduce((s, v) => s + v, 0);
+    curW = total > 0 ? drifted.map((w) => w / total) : curW;
+    out.push({ date: d, value });
+  }
+  return out;
+}
+
 // ── Performance metrics ───────────────────────────────────────────────────────
 function computeMetrics(values: { date: string; value: number }[]) {
   if (values.length < 13) return null;
@@ -218,10 +371,14 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    // Fetch all tickers in parallel
+    // Fetch all tickers in parallel, alongside the FRED series the regime
+    // classification needs — independent data sources, no reason to serialize.
     const TICKERS = ["VTI","IJS","GLD","TLT","SHY","DBC","DBMF","VXUS","VWO","SCHP",
                      "VTSMX","VISVX","GC=F","VUSTX","VFISX","PCRIX","VGTSX","VEIEX","VIPSX"];
-    const settled = await Promise.allSettled(TICKERS.map(t => fetchMonthly(t)));
+    const [settled, regimeYearWeights] = await Promise.all([
+      Promise.allSettled(TICKERS.map(t => fetchMonthly(t))),
+      buildYearlyRegimeWeights(1999, new Date().getUTCFullYear() + 1),
+    ]);
     const rets: Record<string, Map<string, number>> = {};
     const errors: string[] = [];
     for (let i = 0; i < TICKERS.length; i++) {
@@ -279,13 +436,25 @@ Deno.serve(async (req: Request) => {
         weights: { VTI:0.20, VXUS:0.08, VWO:0.05, TLT:0.20, SCHP:0.20, DBC:0.12, GLD:0.12, SHY:0.03 } },
     ];
 
-    const portfolioResults = PORTFOLIOS.map(p => {
+    const staticResults = PORTFOLIOS.map(p => {
       const keys = Object.keys(p.weights);
       const dates = commonFor(keys);
       const values = runBacktest(p.weights, asset, dates);
       const metrics = computeMetrics(values);
       return { ...p, metrics, monthly_values: values };
     });
+
+    // Regime-driven: dynamic weights, same 8 tickers (and thus same date
+    // window) as bw_modified — see runBacktestDynamic / buildYearlyRegimeWeights.
+    const regimeYearWeightsMap = new Map(regimeYearWeights.map(r => [r.year, r.weights]));
+    const regimeDates = commonFor(REGIME_TICKERS);
+    const regimeValues = runBacktestDynamic(regimeYearWeightsMap, REGIME_TICKERS, asset, regimeDates);
+    const regimeResult = {
+      key: "regime_driven", name: "Regime-Driven (structural)",
+      metrics: computeMetrics(regimeValues), monthly_values: regimeValues,
+    };
+
+    const portfolioResults = [...staticResults, regimeResult];
 
     // Stress periods for DBMF
     const STRESS = [
@@ -333,15 +502,27 @@ Deno.serve(async (req: Request) => {
     const windowStart = commonDatesAll[0];
     const windowEnd   = commonDatesAll[commonDatesAll.length - 1];
 
+    // Transparency table for the frontend: which regime applied each year of
+    // the actual backtest window, and what each of the four possible target
+    // allocations looks like (asset-class %, not the ticker-fractional form
+    // used internally for the return math).
+    const regimeDrivenHistory = regimeYearWeights
+      .filter(r => r.year >= parseInt(windowStart.slice(0, 4)) && r.year <= parseInt(windowEnd.slice(0, 4)))
+      .map(r => ({
+        year: r.year, regime_key: r.regimeKey, regime_label: REGIME_LABELS[r.regimeKey],
+        weights_pct: REGIME_DEFAULT_WEIGHTS_PCT[r.regimeKey],
+      }));
+
     const output = {
       portfolios:    portfolioResults.map(p => ({ ...p, monthly_values: undefined })),  // strip large array
       portfolio_curves: portfolioResults.map(p => ({ key: p.key, monthly_values: p.monthly_values })),
       stress_periods: stressResults,
       decade_returns: decadeResults,
+      regime_driven_history: regimeDrivenHistory,
       window_start:   windowStart,
       window_end:     windowEnd,
       computed_at:    new Date().toISOString(),
-      proxies:        "VTSMX→VTI, VISVX→IJS, GC=F→GLD, VUSTX→TLT, VFISX→SHY, PCRIX→DBC, VGTSX→VXUS, VEIEX→VWO, VIPSX→SCHP; DBMF pre-2019 = 12M TSMOM factor (scaled to 11.2% vol, −0.85% fee)",
+      proxies:        "VTSMX→VTI, VISVX→IJS, GC=F→GLD, VUSTX→TLT, VFISX→SHY, PCRIX→DBC, VGTSX→VXUS, VEIEX→VWO, VIPSX→SCHP; DBMF pre-2019 = 12M TSMOM factor (scaled to 11.2% vol, −0.85% fee). Regime-Driven: annually rebalanced to that year's structurally-classified regime (GDP YoY vs. 3Y avg, CPI YoY vs. 3Y avg, using data known by Sep 30 of the prior year) — models 'always held the structural regime's target weights,' not the live portfolio feature's 30-day-confirmation/60%-confidence activation logic, which needs historical Forward Signal confidence data that was never stored.",
       fetch_errors:   errors,
     };
 

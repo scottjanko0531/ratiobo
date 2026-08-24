@@ -11,9 +11,18 @@ const pctS = (v, digits = 1) => v == null ? "—" : `${v >= 0 ? "+" : ""}${(v * 
 const f2   = (v) => v == null ? "—" : v.toFixed(2);
 
 const PORTFOLIO_COLORS = {
-  standard_gb: { label: "Standard GB",            th: "text-paper",     badge: "bg-ink-soft text-paper-dim border-ink-line" },
-  hedged_gb:   { label: "Hedged GB (+DBMF)",       th: "text-brass-soft", badge: "bg-brass/10 text-brass-soft border-brass/30" },
-  bw_modified: { label: "BW All Weather Mod.",     th: "text-sky",        badge: "bg-sky/10 text-sky border-sky/30" },
+  standard_gb:    { label: "Standard GB",            th: "text-paper",     badge: "bg-ink-soft text-paper-dim border-ink-line" },
+  hedged_gb:      { label: "Hedged GB (+DBMF)",       th: "text-brass-soft", badge: "bg-brass/10 text-brass-soft border-brass/30" },
+  bw_modified:    { label: "BW All Weather Mod.",     th: "text-sky",        badge: "bg-sky/10 text-sky border-sky/30" },
+  regime_driven:  { label: "Regime-Driven",           th: "text-gain",       badge: "bg-gain/10 text-gain border-gain/30" },
+};
+
+const REGIME_LABELS = {
+  rg_fi: "Disinflationary Boom", rg_ri: "Reflation", fg_ri: "Stagflation", fg_fi: "Deflationary Bust",
+};
+const ASSET_CLASS_LABELS = {
+  eq: "US Equities", intl: "International", em: "EM Equities", nb: "Nominal Bonds",
+  tip: "TIPS", com: "Commodities", gld: "Gold", cash: "Cash",
 };
 
 const METRIC_ROWS = [
@@ -230,6 +239,50 @@ function StressTable({ stressPeriods, portfolioKeys }) {
   );
 }
 
+// Regime-Driven doesn't have one fixed weight vector — it switches between the
+// four structural regimes' target allocations year to year, so it needs its
+// own card instead of WeightsCard's flat ticker:weight bar list.
+function RegimeDrivenCard({ history }) {
+  const color = PORTFOLIO_COLORS.regime_driven;
+  const uniqueRegimes = [];
+  const seen = new Set();
+  for (const r of history ?? []) {
+    if (!seen.has(r.regime_key)) { seen.add(r.regime_key); uniqueRegimes.push(r); }
+  }
+  const yearCounts = {};
+  for (const r of history ?? []) yearCounts[r.regime_key] = (yearCounts[r.regime_key] ?? 0) + 1;
+
+  return (
+    <div className="rounded-lg border border-ink-line bg-ink-soft/40 p-4 sm:col-span-2 lg:col-span-3">
+      <p className={`text-xs font-medium mb-1 ${color?.th}`}>{color?.label}</p>
+      <p className="text-[11px] text-paper-dim/70 mb-3">
+        Switches annually to that year's structurally-classified regime (GDP YoY vs. 3Y avg, CPI YoY vs. 3Y avg) —
+        not a live replay of the actual portfolio feature's 30-day-confirmation logic. See Methodology below.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {uniqueRegimes.map((r) => (
+          <div key={r.regime_key}>
+            <p className="text-[11px] text-paper-dim mb-1.5">
+              {r.regime_label} <span className="text-paper-dim/50">({yearCounts[r.regime_key]} yrs)</span>
+            </p>
+            <div className="space-y-1">
+              {Object.entries(r.weights_pct).filter(([, w]) => w > 0).map(([key, w]) => (
+                <div key={key} className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-paper-dim w-16 truncate">{ASSET_CLASS_LABELS[key] ?? key}</span>
+                  <div className="flex-1 bg-ink-line rounded-full h-1 overflow-hidden">
+                    <div className="h-full rounded-full bg-gain/60" style={{ width: `${w}%` }} />
+                  </div>
+                  <span className="text-[10px] text-paper-dim font-mono w-6 text-right">{w}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function WeightsCard({ portfolioKey, weights }) {
   const color = PORTFOLIO_COLORS[portfolioKey];
   return (
@@ -298,7 +351,7 @@ export default function BacktestingPage() {
     }
   }
 
-  const portfolioKeys = ["standard_gb", "hedged_gb", "bw_modified"];
+  const portfolioKeys = ["standard_gb", "hedged_gb", "bw_modified", "regime_driven"];
 
   return (
     <Shell>
@@ -374,9 +427,12 @@ export default function BacktestingPage() {
           <section>
             <h2 className="text-sm font-medium text-paper-dim uppercase tracking-wider mb-3">Allocations</h2>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {portfolioKeys.map(k => (
+              {portfolioKeys.filter(k => k !== "regime_driven").map(k => (
                 <WeightsCard key={k} portfolioKey={k} weights={PORTFOLIO_WEIGHTS[k]} />
               ))}
+              {data.regime_driven_history?.length > 0 && (
+                <RegimeDrivenCard history={data.regime_driven_history} />
+              )}
             </div>
           </section>
 
