@@ -148,6 +148,12 @@ export default function SupplyChainPage() {
                         <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
                           <div><span className="text-paper-dim">Concentration </span><span className="text-paper">{item.concentration}</span></div>
                           <div><span className="text-paper-dim">Threat </span><span className="text-paper">{item.primary_threat}</span></div>
+                          {item.tariff_cpi_impact_pp != null && (
+                            <div className="col-span-2">
+                              <span className="text-paper-dim">Est. CPI impact </span>
+                              <span className="text-paper">{item.tariff_cpi_impact_pp >= 0 ? "+" : ""}{Number(item.tariff_cpi_impact_pp).toFixed(2)}pp</span>
+                            </div>
+                          )}
                         </div>
                       </button>
                     );

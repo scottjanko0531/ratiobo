@@ -374,6 +374,11 @@ const FWD_INFL_SIGNALS = [
   // Dollar strength lags into LOWER future inflation (~2mo, cheaper imports) — vote
   // is inverted relative to a normal "rising = inflationary" reading
   { label: "Dollar (3M, lagged)", name: "DXY", w: 0.10, getPct3m: true, vote: v => v > 5 ? -1 : v < -5 ? 1 : 0 },
+  // Escalation/de-escalation in tariff-driven CPI pressure over 3 months — reuses
+  // the same pp-delta momentum pattern as CPI/PPI above, since a static tariff
+  // LEVEL doesn't tell you whether pressure is building or easing. Composite is
+  // written by update-supply-chain-risk's Tariffs section (Canada/China/Mexico/EU).
+  { label: "Tariff Trend", name: "Tariff Inflation Impact", w: 0.10, getPP3m: true, vote: v => v > 0.15 ? 1 : v < -0.15 ? -1 : 0 },
 ];
 
 function computeForwardSignal(indicators) {

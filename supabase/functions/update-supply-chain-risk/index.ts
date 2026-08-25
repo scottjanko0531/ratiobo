@@ -69,7 +69,13 @@ interface Assessment {
   alternatives: string;
   recent_signal: string;
   source_note: string;
+  tariff_cpi_impact_pp?: number | null;
 }
+
+// Items whose current-US-tariff CPI contribution we also ask Claude to estimate.
+// Kept as an explicit key list (not inferred from category) so the aggregation
+// step below is robust to a category rename.
+const TARIFF_KEYS = ["tariff_china", "tariff_canada", "tariff_mexico", "tariff_eu"];
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
@@ -82,10 +88,14 @@ function buildPrompt(items: Item[], chinaWatch: ChinaWatchRead | null): string {
   const chinaWatchNote = chinaWatch && items.some((i) => i.china_exposed)
     ? `\n\nItems marked [CHINA-EXPOSED] are also tracked against RatioBo's China Watch model, currently reading: Structural Pressure Index ${chinaWatch.spi}/100 (${chinaWatch.bandLabel}), Taiwan scenario odds — blockade ${chinaWatch.blockade}%, invasion ${chinaWatch.invasion}%. For these items only, explicitly weigh this China/Taiwan structural-risk backdrop in your assessment (concentration/primary_threat/summary should reference it where relevant) — a China-Taiwan crisis would directly disrupt these specific chokepoints. Do not mention China Watch for items not marked [CHINA-EXPOSED].`
     : "";
+  const tariffItems = items.filter((i) => TARIFF_KEYS.includes(i.key));
+  const tariffNote = tariffItems.length
+    ? `\n\nItems ${tariffItems.map((i) => i.key).join(", ")} track US tariffs currently imposed on that country/bloc specifically (not general supply-chain concentration risk). For these items only, research the currently-imposed US tariff rates and scope (which import categories, effective ad-valorem rate, any recent escalation/rollback/exemption), and additionally estimate "tariff_cpi_impact_pp" — your best estimate of that jurisdiction's tariffs' CURRENT contribution to US headline CPI YoY, in percentage points (e.g. 0.15 means +0.15pp), grounded in the tariff's import coverage and that country's share of US imports. This is a genuine numeric estimate, not a risk score — it should be near 0 if tariffs on that country are minimal or fully absorbed/exempted, and can be negative only if a prior tariff was fully rolled back and is now net-disinflationary versus 3 months ago (rare; usually 0 or positive). Omit "tariff_cpi_impact_pp" (or set null) for all items NOT in this list.`
+    : "";
   return `You are a supply-chain risk analyst updating a daily-tracked dashboard. Use web search to find CURRENT information (recent weeks/months, not stale memorized facts) for each of these ${items.length} tracked risk items.
 
 Items to assess:
-${roster}${chinaWatchNote}
+${roster}${chinaWatchNote}${tariffNote}
 
 For EACH item, research: how concentrated the supply is in a single country/company/chokepoint, the primary threat right now, viable alternatives, and any recent (last few weeks) news signal.
 
@@ -106,6 +116,7 @@ Return an object per item with these exact fields:
 - "alternatives": one short phrase on what mitigates this, if anything
 - "recent_signal": one short phrase citing a specific recent development
 - "source_note": one short phrase naming what kind of source grounds this assessment (e.g. "Reuters shipping-transit reporting", "IMF/WTO export-control filings", "company earnings + trade press") — be specific about source type, not just "web search"
+- "tariff_cpi_impact_pp": number or null — ONLY for the tariff-tracking items named above; null for every other item
 
 Respond with ONLY a raw JSON array of ${items.length} objects, one per item above, in the same order given. No markdown code fences, no prose before or after, no trailing commas.`;
 }
@@ -160,6 +171,71 @@ async function runClaude(items: Item[], chinaWatch: ChinaWatchRead | null): Prom
   }
 }
 
+// Aggregates the 4 tariff items' tariff_cpi_impact_pp into one composite macro
+// indicator ("Tariff Inflation Impact"), written directly into macro_indicators
+// the same way updateConsumerExpectations() does in fetch-macro-data/index.ts —
+// this indicator has no FRED series, so it bypasses that file's INDICATORS/
+// processIndicator switch entirely. Also writes a same-day macro_snapshots row
+// so the 3-month pp-delta (change3m_pp) can be computed on future runs using
+// the exact same metadata field CPI/PPI already populate — meaning the Forward
+// Signal's existing usePP3m/getPP3m machinery picks this up with zero new code
+// in any of the three vote files.
+async function updateTariffInflationImpact(
+  sb: ReturnType<typeof createClient>, assessments: Assessment[], today: string, now: string,
+): Promise<void> {
+  try {
+    const byKey = new Map(assessments.map((a) => [a.key, a]));
+    let composite = 0;
+    const missing: string[] = [];
+    for (const key of TARIFF_KEYS) {
+      const v = byKey.get(key)?.tariff_cpi_impact_pp;
+      if (v == null) missing.push(key);
+      else composite += Number(v);
+    }
+    if (missing.length) console.error("[tariff_impact] missing tariff_cpi_impact_pp for:", missing.join(", "));
+    composite = Math.round(composite * 100) / 100;
+
+    const { data: prevRows } = await sb
+      .from("macro_snapshots")
+      .select("snapshot_date, value")
+      .eq("indicator_name", "Tariff Inflation Impact")
+      .lt("snapshot_date", today)
+      .order("snapshot_date", { ascending: false })
+      .limit(1);
+    const previousValue = prevRows?.[0]?.value != null ? Number(prevRows[0].value) : null;
+
+    const cutoff90 = new Date(today + "T00:00:00Z");
+    cutoff90.setUTCDate(cutoff90.getUTCDate() - 90);
+    const { data: agoRows } = await sb
+      .from("macro_snapshots")
+      .select("snapshot_date, value")
+      .eq("indicator_name", "Tariff Inflation Impact")
+      .lte("snapshot_date", cutoff90.toISOString().slice(0, 10))
+      .order("snapshot_date", { ascending: false })
+      .limit(1);
+    const value3mAgo = agoRows?.[0]?.value != null ? Number(agoRows[0].value) : null;
+    const metadata = value3mAgo != null ? { change3m_pp: Math.round((composite - value3mAgo) * 100) / 100 } : undefined;
+
+    const status = composite < 0.10 ? "healthy" : composite < 0.30 ? "watch" : "danger";
+
+    const { error: indErr } = await sb.from("macro_indicators").upsert({
+      name: "Tariff Inflation Impact", layer: 3, layer_name: "Business Cycle",
+      description: "Estimated contribution of US tariffs on Canada/China/Mexico/EU to headline CPI YoY",
+      fred_series_id: null, unit: "pp", data_source: "supabase", sort_order: 29,
+      current_value: composite, previous_value: previousValue,
+      change_value: previousValue != null ? Math.round((composite - previousValue) * 100) / 100 : null,
+      status, last_fetched_at: now, updated_at: now,
+      ...(metadata ? { metadata } : {}),
+    }, { onConflict: "name" });
+    if (indErr) { console.error("[tariff_impact] macro_indicators upsert:", indErr); return; }
+
+    const { error: snapErr } = await sb.from("macro_snapshots").upsert({
+      indicator_name: "Tariff Inflation Impact", snapshot_date: today, value: composite, status,
+    }, { onConflict: "indicator_name,snapshot_date" });
+    if (snapErr) console.error("[tariff_impact] macro_snapshots upsert:", snapErr);
+  } catch (e) { console.error("[tariff_impact]", e); }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -212,6 +288,7 @@ Deno.serve(async (req: Request) => {
         recent_signal: a.recent_signal ?? null, updated_at: now,
         china_watch_adjustment: cwAdjustment, china_watch_spi: cwSpi,
         risk_type: a.risk_type ?? null, source_note: a.source_note ?? null,
+        tariff_cpi_impact_pp: a.tariff_cpi_impact_pp ?? null,
       }).eq("id", item.id);
       if (updErr) { console.error(`[supply-chain] update ${a.key}:`, updErr); skipped.push(a.key); continue; }
 
@@ -222,11 +299,14 @@ Deno.serve(async (req: Request) => {
         recent_signal: a.recent_signal ?? null,
         china_watch_adjustment: cwAdjustment, china_watch_spi: cwSpi,
         risk_type: a.risk_type ?? null, source_note: a.source_note ?? null,
+        tariff_cpi_impact_pp: a.tariff_cpi_impact_pp ?? null,
       }, { onConflict: "item_id,snapshot_date" });
       if (snapErr) { console.error(`[supply-chain] snapshot ${a.key}:`, snapErr); continue; }
 
       updated++;
     }
+
+    await updateTariffInflationImpact(sb, assessments, today, now);
 
     return json({ updated, skipped, total: items.length, timestamp: now });
   } catch (e) {
