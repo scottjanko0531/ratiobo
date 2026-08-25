@@ -38,6 +38,10 @@ function MonthlyGainTooltip({ active, payload }) {
         <span className="text-[#A8ADB8]">Value</span>
         <span className="text-[#F6F4EE] font-medium">{usd(entry.value)}</span>
       </div>
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-[#A8ADB8]">Cost Basis</span>
+        <span className="text-[#F6F4EE] font-medium">{usd(entry.costBasis)}</span>
+      </div>
     </div>
   );
 }
@@ -181,38 +185,45 @@ export default function PortfoliosPage() {
 
   // Full per-holding snapshot history for the open portfolio, fetched on demand
   // (not part of the page's initial load, which only pulls today's row) — feeds
-  // the monthly gain/loss chart below.
+  // the monthly gain/loss chart below. cost_basis is pulled alongside market_value
+  // so contributions/withdrawals can be netted out (see monthlyGainLoss).
   const [monthlySnapHistory, setMonthlySnapHistory] = useState([]);
   useEffect(() => {
     const ids = viewingPortfolio ? (phMap[viewingPortfolio.id] ?? []) : [];
     if (ids.length === 0) { setMonthlySnapHistory([]); return; }
     supabase
       .from("portfolio_snapshots")
-      .select("holding_id, snapshot_date, market_value")
+      .select("holding_id, snapshot_date, market_value, cost_basis")
       .in("holding_id", ids)
       .order("snapshot_date")
       .then(({ data }) => setMonthlySnapHistory(data ?? []));
   }, [viewingPortfolio?.id, phMap]);
 
-  // Month-end (or as-of-today for the current in-progress month) portfolio value
-  // checkpoints, diffed month over month for a gain/loss series. This is a value-
-  // delta proxy (like the existing Day/Mo/Qtr/YTD Chg columns), not a cash-flow-
-  // netted true return — deposits/withdrawals within a month will show up in the
-  // bar for that month same as market moves.
+  // Month-end (or as-of-today for the current in-progress month) investment gain
+  // checkpoints, diffed month over month for a gain/loss series. Investment gain
+  // at a checkpoint = value - cost basis (unrealized P&L), not raw value — since
+  // cost basis moves in lockstep with value on a pure contribution/withdrawal
+  // (same $ added/removed from both), diffing this nets deposits/transfers out of
+  // the bar, leaving only actual investment performance for that month.
   const monthlyGainLoss = useMemo(() => {
     if (monthlySnapHistory.length === 0) return [];
     const byHolding = {};
     for (const r of monthlySnapHistory) (byHolding[r.holding_id] ??= []).push(r);
     for (const arr of Object.values(byHolding)) arr.sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date));
 
-    const valueAt = (asOf) => {
+    const sumFieldAt = (field, asOf) => {
       let total = 0, found = 0;
       for (const arr of Object.values(byHolding)) {
         let v = null;
-        for (const r of arr) { if (r.snapshot_date <= asOf) v = Number(r.market_value ?? 0); else break; }
+        for (const r of arr) { if (r.snapshot_date <= asOf) v = Number(r[field] ?? 0); else break; }
         if (v != null) { total += v; found++; }
       }
       return found > 0 ? total : null;
+    };
+    const netAt = (asOf) => {
+      const value = sumFieldAt("market_value", asOf);
+      const costBasis = sumFieldAt("cost_basis", asOf);
+      return { value, costBasis, net: value != null && costBasis != null ? value - costBasis : null };
     };
 
     const minDate = new Date(monthlySnapHistory.reduce((min, r) => r.snapshot_date < min ? r.snapshot_date : min, monthlySnapHistory[0].snapshot_date));
@@ -231,10 +242,10 @@ export default function PortfoliosPage() {
     }
 
     return checkpoints.map((c, i) => {
-      const value = valueAt(c.asOf);
-      const prevValue = i === 0 ? null : valueAt(checkpoints[i - 1].asOf);
-      const gain = value != null && prevValue != null ? value - prevValue : null;
-      return { label: c.label, value, gain };
+      const cur = netAt(c.asOf);
+      const prev = i === 0 ? null : netAt(checkpoints[i - 1].asOf);
+      const gain = cur.net != null && prev?.net != null ? cur.net - prev.net : null;
+      return { label: c.label, value: cur.value, costBasis: cur.costBasis, gain };
     });
   }, [monthlySnapHistory]);
 
@@ -523,7 +534,7 @@ export default function PortfoliosPage() {
 
                 {/* Gains/Losses by Month */}
                 <div className="px-5 py-4 border-b border-ink-line">
-                  <p className="label text-[10px] mb-3">Gains / Losses by Month</p>
+                  <p className="label text-[10px] mb-3">Investment Gains / Losses by Month</p>
                   {monthlyGainLoss.filter((m) => m.gain != null).length === 0 ? (
                     <div className="flex items-center justify-center h-[160px]">
                       <p className="text-paper-dim text-sm text-center">
