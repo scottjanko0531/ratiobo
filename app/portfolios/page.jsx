@@ -185,10 +185,16 @@ export default function PortfoliosPage() {
       for (const h of hs) { if (snapMap[h.id] != null) { prev += snapMap[h.id]; found++; } }
       return found > 0 ? totalValue - prev : null;
     })();
+    const dayChgPrev = dayChg != null ? totalValue - dayChg : null;
+    const dayChgPct = dayChg != null && dayChgPrev > 0 ? (dayChg / dayChgPrev) * 100 : null;
+
+    // ROI: gain on current value, distinct from returnPct (gain on cost basis) —
+    // same convention as app/holdings/page.jsx's "Gain %" vs "ROI %" split.
+    const roiPct = totalValue > 0 ? (totalGain / totalValue) * 100 : null;
 
     return {
-      totalValue, costBasis, totalGain, returnPct, count: hs.length,
-      dayChg, monthChg: periodChg(periodSnaps.month), qtrChg: periodChg(periodSnaps.qtr), ytdChg: periodChg(periodSnaps.year),
+      totalValue, costBasis, totalGain, returnPct, roiPct, count: hs.length,
+      dayChg, dayChgPct, monthChg: periodChg(periodSnaps.month), qtrChg: periodChg(periodSnaps.qtr), ytdChg: periodChg(periodSnaps.year),
     };
   }
 
@@ -301,13 +307,25 @@ export default function PortfoliosPage() {
                       <p className="label text-[10px]">Total Gain</p>
                       <p className={`num text-sm font-medium ${s.count > 0 ? gainCls(s.totalGain) : "text-paper-dim"}`}>
                         {s.count > 0 ? `${s.totalGain > 0 ? "+" : ""}${usd(s.totalGain)}` : "—"}
+                        {s.count > 0 && s.returnPct != null && (
+                          <span className="text-[10px] font-normal ml-1">({fmtPct(s.returnPct)})</span>
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="label text-[10px]">ROI</p>
+                      <p className={`num text-sm font-medium ${s.count > 0 ? gainCls(s.roiPct) : "text-paper-dim"}`}>
+                        {s.count > 0 ? fmtPct(s.roiPct) : "—"}
                       </p>
                     </div>
                     {s.dayChg != null && (
-                      <div className="col-span-2">
+                      <div>
                         <p className="label text-[10px]">Day Chg</p>
                         <p className={`num text-xs ${gainCls(s.dayChg)}`}>
                           {s.dayChg > 0 ? "+" : ""}{usd(s.dayChg)}
+                          {s.dayChgPct != null && (
+                            <span className="text-[10px] ml-1">({fmtPct(s.dayChgPct)})</span>
+                          )}
                         </p>
                       </div>
                     )}
