@@ -422,11 +422,13 @@ function computeLiveRegimeKeys(
     // Dollar strength lags into LOWER future inflation (~2mo, cheaper imports) — vote
     // is inverted relative to a normal "rising = inflationary" reading
     { name: "DXY", w: 0.10, usePct3m: true, vote: v => v > 5 ? -1 : v < -5 ? 1 : 0 },
-    // Escalation/de-escalation in tariff-driven CPI pressure over 3 months — reuses
-    // the same pp-delta momentum pattern as CPI/PPI above, since a static tariff
-    // LEVEL doesn't tell you whether pressure is building or easing. Composite is
-    // written by update-supply-chain-risk's Tariffs section (Canada/China/Mexico/EU).
-    { name: "Tariff Inflation Impact", w: 0.10, usePP3m: true, vote: v => v > 0.15 ? 1 : v < -0.15 ? -1 : 0 },
+    // Unlike CPI/PPI, this has no FRED backfill — macro_snapshots only starts
+    // accumulating from launch, so its 3-month trend (change3m_pp) can't exist
+    // for ~90 days and would vote null the whole time. Votes on the current
+    // LEVEL instead (how much tariffs are adding to CPI right now), which is
+    // itself informative from day one — thresholds match the danger/watch/
+    // healthy bands update-supply-chain-risk already derives for this composite.
+    { name: "Tariff Inflation Impact", w: 0.10, vote: v => v > 0.30 ? 1 : v > 0.10 ? 0 : -1 },
   ];
   type Scored = { w: number; vote: number | null };
   const scoreGroup = (sigs: Sig[]): { signals: Scored[]; score: number | null } => {
