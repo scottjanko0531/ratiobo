@@ -1,5 +1,8 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import {
+  ResponsiveContainer, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+} from "recharts";
 import Shell from "../../components/Shell";
 import { supabase } from "../../lib/supabase";
 import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META } from "../../lib/simulatorKeys";
@@ -18,6 +21,26 @@ const fmtPct = (v, digits = 2) => {
 
 const gainCls = (v) =>
   v == null ? "text-paper-dim" : Number(v) > 0 ? "text-gain" : Number(v) < 0 ? "text-loss" : "text-paper-dim";
+
+function MonthlyGainTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const entry = payload[0]?.payload;
+  if (entry?.gain == null) return null;
+  const color = entry.gain >= 0 ? "#3FB984" : "#E0635C";
+  return (
+    <div className="bg-[#1B212B] border border-[#2A3240] rounded-lg px-3 py-2 text-xs shadow-lg space-y-1">
+      <div className="text-[#A8ADB8] mb-0.5">{entry.label}</div>
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-[#A8ADB8]">Gain/Loss</span>
+        <span className="font-medium" style={{ color }}>{entry.gain > 0 ? "+" : ""}{usd(entry.gain)}</span>
+      </div>
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-[#A8ADB8]">Value</span>
+        <span className="text-[#F6F4EE] font-medium">{usd(entry.value)}</span>
+      </div>
+    </div>
+  );
+}
 
 export default function PortfoliosPage() {
   const [portfolios, setPortfolios]           = useState([]);
@@ -155,6 +178,65 @@ export default function PortfoliosPage() {
       .order("shifted_at", { ascending: false })
       .then(({ data }) => setRegimeShifts(data ?? []));
   }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework]);
+
+  // Full per-holding snapshot history for the open portfolio, fetched on demand
+  // (not part of the page's initial load, which only pulls today's row) — feeds
+  // the monthly gain/loss chart below.
+  const [monthlySnapHistory, setMonthlySnapHistory] = useState([]);
+  useEffect(() => {
+    const ids = viewingPortfolio ? (phMap[viewingPortfolio.id] ?? []) : [];
+    if (ids.length === 0) { setMonthlySnapHistory([]); return; }
+    supabase
+      .from("portfolio_snapshots")
+      .select("holding_id, snapshot_date, market_value")
+      .in("holding_id", ids)
+      .order("snapshot_date")
+      .then(({ data }) => setMonthlySnapHistory(data ?? []));
+  }, [viewingPortfolio?.id, phMap]);
+
+  // Month-end (or as-of-today for the current in-progress month) portfolio value
+  // checkpoints, diffed month over month for a gain/loss series. This is a value-
+  // delta proxy (like the existing Day/Mo/Qtr/YTD Chg columns), not a cash-flow-
+  // netted true return — deposits/withdrawals within a month will show up in the
+  // bar for that month same as market moves.
+  const monthlyGainLoss = useMemo(() => {
+    if (monthlySnapHistory.length === 0) return [];
+    const byHolding = {};
+    for (const r of monthlySnapHistory) (byHolding[r.holding_id] ??= []).push(r);
+    for (const arr of Object.values(byHolding)) arr.sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date));
+
+    const valueAt = (asOf) => {
+      let total = 0, found = 0;
+      for (const arr of Object.values(byHolding)) {
+        let v = null;
+        for (const r of arr) { if (r.snapshot_date <= asOf) v = Number(r.market_value ?? 0); else break; }
+        if (v != null) { total += v; found++; }
+      }
+      return found > 0 ? total : null;
+    };
+
+    const minDate = new Date(monthlySnapHistory.reduce((min, r) => r.snapshot_date < min ? r.snapshot_date : min, monthlySnapHistory[0].snapshot_date));
+    const today = new Date();
+    const checkpoints = [];
+    let cursor = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
+    const lastMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    while (cursor <= lastMonth) {
+      const y = cursor.getFullYear(), m = cursor.getMonth();
+      const isCurrentMonth = y === today.getFullYear() && m === today.getMonth();
+      const asOf = isCurrentMonth
+        ? today.toISOString().slice(0, 10)
+        : new Date(y, m + 1, 0).toISOString().slice(0, 10);
+      checkpoints.push({ label: cursor.toLocaleDateString("en-US", { month: "short", year: "2-digit" }), asOf });
+      cursor = new Date(y, m + 1, 1);
+    }
+
+    return checkpoints.map((c, i) => {
+      const value = valueAt(c.asOf);
+      const prevValue = i === 0 ? null : valueAt(checkpoints[i - 1].asOf);
+      const gain = value != null && prevValue != null ? value - prevValue : null;
+      return { label: c.label, value, gain };
+    });
+  }, [monthlySnapHistory]);
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
   const holdingsFor = useCallback((pfId) => {
@@ -437,6 +519,53 @@ export default function PortfoliosPage() {
                       )}
                     </div>
                   ))}
+                </div>
+
+                {/* Gains/Losses by Month */}
+                <div className="px-5 py-4 border-b border-ink-line">
+                  <p className="label text-[10px] mb-3">Gains / Losses by Month</p>
+                  {monthlyGainLoss.filter((m) => m.gain != null).length === 0 ? (
+                    <div className="flex items-center justify-center h-[160px]">
+                      <p className="text-paper-dim text-sm text-center">
+                        {monthlySnapHistory.length === 0 ? "No snapshot history yet." : "Collecting data — check back next month."}
+                      </p>
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height={180}>
+                      <BarChart data={monthlyGainLoss} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                        <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                        <XAxis
+                          dataKey="label"
+                          tick={{ fill: "#A8ADB8", fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                        />
+                        <YAxis
+                          tick={{ fill: "#A8ADB8", fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                          width={68}
+                          tickFormatter={(v) => {
+                            const abs = Math.abs(v);
+                            const sign = v > 0 ? "+" : v < 0 ? "-" : "";
+                            if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+                            if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(0)}K`;
+                            return `${sign}$${abs.toFixed(0)}`;
+                          }}
+                        />
+                        <Tooltip content={<MonthlyGainTooltip />} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
+                        <Bar dataKey="gain" maxBarSize={40} radius={[2, 2, 0, 0]}>
+                          {monthlyGainLoss.map((entry, i) => (
+                            <Cell
+                              key={i}
+                              fill={entry.gain == null ? "transparent" : entry.gain >= 0 ? "#3FB984" : "#E0635C"}
+                              fillOpacity={0.7}
+                            />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
                 </div>
 
                 {/* Daily Analysis */}
