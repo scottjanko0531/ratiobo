@@ -1327,7 +1327,7 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
   const ism        = indicators.find((i) => i.name === "ISM Manufacturing PMI" || i.name === "ISM New Orders");
   const breakeven  = indicators.find((i) => i.name === "10Y Breakeven Inflation");
   const gdp3yAvg   = indicators.find((i) => i.name === "GDP Growth (3Y Avg)");
-  const cpi3yAvg   = indicators.find((i) => i.name === "CPI Growth (3Y Avg)");
+  const cpi3yAvg   = indicators.find((i) => i.name === "CPI Growth (3M Avg)");
 
   const breakevenVal = breakeven?.current_value != null ? Number(breakeven.current_value) : 2.5;
   const gdp3yAvgVal  = gdp3yAvg?.current_value  != null ? Number(gdp3yAvg.current_value)  : 0;

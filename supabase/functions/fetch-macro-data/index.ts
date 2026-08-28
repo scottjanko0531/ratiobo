@@ -129,7 +129,7 @@ interface Indicator {
     | "yoy_monthly_agg"
     | "yoy_quarterly"
     | "gdp_3yr_avg"
-    | "cpi_3yr_avg"
+    | "cpi_3m_avg"
     | "mom_change"
     | "mom_pct"
     | "computed"
@@ -536,10 +536,10 @@ const INDICATORS: Indicator[] = [
     statusFn: v => v >= 1.5 && v <= 2.5 ? "healthy" : v <= 3.5 ? "watch" : "danger",
   },
   {
-    name: "CPI Growth (3Y Avg)", layer: 3, layer_name: "Business Cycle",
-    description: "3-year trailing average of CPI YoY inflation — trend baseline for regime detection",
+    name: "CPI Growth (3M Avg)", layer: 3, layer_name: "Business Cycle",
+    description: "3-month trailing average of CPI YoY inflation — trend baseline for regime detection. Was a 3-year average, but that stayed contaminated by the 2021-22 inflation spike for years after CPI normalized, pinning the structural regime on \"disinflating\" long after inflation was actually reaccelerating.",
     fred_series_id: "CPIAUCSL", unit: "%", data_source: "fred", sort_order: 285,
-    series: "CPIAUCSL", type: "cpi_3yr_avg",
+    series: "CPIAUCSL", type: "cpi_3m_avg",
     statusFn: v => v >= 1 && v <= 2.5 ? "healthy" : v <= 4 ? "watch" : "danger",
   },
   // ── LAYER 4: Tail Risk ──
@@ -753,15 +753,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         previous = avg12prev.reduce((a, b) => a + b, 0) / avg12prev.length;
         break;
       }
-      case "cpi_3yr_avg": {
-        const obs = await fetchFredObs(ind.series!, 50);
-        if (obs.length < 14) return null;
+      case "cpi_3m_avg": {
+        const obs = await fetchFredObs(ind.series!, 16);
+        if (obs.length < 15) return null;
         const yoyRates: number[] = [];
-        for (let i = 0; i < 36 && i + 12 < obs.length; i++) {
+        for (let i = 0; i < 4 && i + 12 < obs.length; i++) {
           yoyRates.push((obs[i].value / obs[i + 12].value - 1) * 100);
         }
         if (yoyRates.length < 4) return null;
-        const window = Math.min(36, yoyRates.length);
+        const window = 3;
         current  = yoyRates.slice(0, window).reduce((a, b) => a + b, 0) / window;
         previous = yoyRates.slice(1, window + 1).reduce((a, b) => a + b, 0) / window;
         break;
@@ -1312,6 +1312,16 @@ async function backfillRegimeHistory(): Promise<void> {
       if (qCpi.length === 0) continue;
       const cpiYoy = qCpi.reduce((s, m) => s + m.yoy, 0) / qCpi.length;
 
+      // NOTE: this quarterly backfill's own "cpiYoy" above is already an average
+      // of the 3 months inside this quarter — a genuine 3-MONTH trailing window
+      // here would land on those same 3 months and always equal cpiYoy exactly,
+      // making the "rising" test degenerate (cpiYoy > cpiYoy is never true). The
+      // live path (updateCurrentRegimeHistory + the "CPI Growth (3M Avg)"
+      // indicator) doesn't have this problem since its "current" reading is a
+      // single latest month, not a quarter-average — so it keeps the 3-year
+      // window here, where it's at least a distinct, non-degenerate baseline.
+      // This function only runs once against a fully empty table (see guard
+      // above) so it isn't reachable on the already-populated table anyway.
       const endMn = gq.year * 12 + (gq.quarter * 3 - 1);
       const cpi3ySlice = cpiYoySeries.filter(m => { const mn = m.year * 12 + m.month; return mn >= endMn - 35 && mn <= endMn; });
       if (cpi3ySlice.length < 24) continue;
@@ -1601,7 +1611,7 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const cpiRow  = processedRows.find(r => r.name === "CPI (YoY)");
     const breRow  = processedRows.find(r => r.name === "10Y Breakeven Inflation");
     const gdp3yRow = processedRows.find(r => r.name === "GDP Growth (3Y Avg)");
-    const cpi3yRow = processedRows.find(r => r.name === "CPI Growth (3Y Avg)");
+    const cpi3yRow = processedRows.find(r => r.name === "CPI Growth (3M Avg)");
     if (!gdpRow || !cpiRow) return;
 
     // Consumer Inflation Expectations is not in processedRows (it's written by updateConsumerExpectations
