@@ -369,20 +369,25 @@ type Getter = (name: string) => number | null;
 function computeLiveRegimeKeys(
   get: Getter, getMeta3m: Getter, getPP3m: Getter,
 ): { structuralKey: string | null; marketKey: string | null; fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number } {
-  const gdpYoy = get("Real GDP Growth");
-  const cpiYoy = get("CPI (YoY)");
-  const gdp3y = get("GDP Growth (Prior Qtr)");
-  const cpi3y = get("CPI Growth (3M Avg)");
+  // Fast/slow moving-average crossover, not raw-reading-vs-baseline: a
+  // regime flip only fires when the fast line actually crosses the slow
+  // line, which requires a real, sustained shift rather than one noisy
+  // print. GDP: 2-quarter avg (fast) vs 4-quarter avg (slow). CPI: 3-month
+  // avg (fast) vs 9-month avg (slow).
+  const gdpFast = get("GDP Growth (2Q Avg)");
+  const gdpSlow = get("GDP Growth (4Q Avg)");
+  const cpiFast = get("CPI Growth (3M Avg)");
+  const cpiSlow = get("CPI Growth (9M Avg)");
   const breakeven = get("10Y Breakeven Inflation");
 
-  const structuralKey = gdpYoy != null && cpiYoy != null
-    ? detectRegimeKeyLive(gdpYoy, cpiYoy, gdp3y ?? 0, cpi3y ?? cpiYoy)
+  const structuralKey = gdpFast != null && cpiFast != null
+    ? detectRegimeKeyLive(gdpFast, cpiFast, gdpSlow ?? 0, cpiSlow ?? cpiFast)
     : null;
 
-  const marketKey = gdpYoy != null && gdp3y != null
+  const marketKey = gdpFast != null && gdpSlow != null
     ? (() => {
         const mktInflUp = (breakeven ?? 2.5) > 2.5;
-        const mktGrowthUp = gdpYoy > gdp3y;
+        const mktGrowthUp = gdpFast > gdpSlow;
         return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })()
     : null;

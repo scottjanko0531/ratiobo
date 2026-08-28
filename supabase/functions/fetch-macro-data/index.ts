@@ -128,8 +128,10 @@ interface Indicator {
     | "yoy_monthly"
     | "yoy_monthly_agg"
     | "yoy_quarterly"
-    | "gdp_prior_qtr"
+    | "gdp_2q_avg"
+    | "gdp_4q_avg"
     | "cpi_3m_avg"
+    | "cpi_9m_avg"
     | "mom_change"
     | "mom_pct"
     | "computed"
@@ -452,10 +454,17 @@ const INDICATORS: Indicator[] = [
     statusFn: v => v >= 2 ? "healthy" : v >= 0 ? "watch" : "danger",
   },
   {
-    name: "GDP Growth (Prior Qtr)", layer: 3, layer_name: "Business Cycle",
-    description: "Prior quarter's real GDP YoY — momentum baseline for regime detection. Was a 3-year trailing average, but GDP only prints once a quarter, so a multi-year trend stayed stale relative to the current reading; comparing against the immediately preceding quarter is the natural non-degenerate momentum test at GDP's native cadence (same idea as CPI's 3-month trailing average).",
+    name: "GDP Growth (2Q Avg)", layer: 3, layer_name: "Business Cycle",
+    description: "2-quarter trailing average of real GDP YoY growth — the fast line in a fast/slow moving-average crossover for regime detection (paired with GDP Growth (4Q Avg) as the slow line). A single prior-quarter comparison whipsawed too readily on ordinary GDP noise (inventory/trade one-offs); averaging the two most recent quarters damps that without reintroducing the staleness of a multi-year average.",
     fred_series_id: "GDPC1", unit: "%", data_source: "fred", sort_order: 165,
-    series: "GDPC1", type: "gdp_prior_qtr",
+    series: "GDPC1", type: "gdp_2q_avg",
+    statusFn: v => v >= 2 ? "healthy" : v >= 0 ? "watch" : "danger",
+  },
+  {
+    name: "GDP Growth (4Q Avg)", layer: 3, layer_name: "Business Cycle",
+    description: "4-quarter trailing average of real GDP YoY growth — the slow line in the fast/slow crossover (paired with GDP Growth (2Q Avg)). A regime flip only fires when the 2-quarter line crosses this 4-quarter line, requiring a real, sustained shift rather than one noisy print.",
+    fred_series_id: "GDPC1", unit: "%", data_source: "fred", sort_order: 166,
+    series: "GDPC1", type: "gdp_4q_avg",
     statusFn: v => v >= 2 ? "healthy" : v >= 0 ? "watch" : "danger",
   },
   {
@@ -537,9 +546,16 @@ const INDICATORS: Indicator[] = [
   },
   {
     name: "CPI Growth (3M Avg)", layer: 3, layer_name: "Business Cycle",
-    description: "3-month trailing average of CPI YoY inflation — trend baseline for regime detection. Was a 3-year average, but that stayed contaminated by the 2021-22 inflation spike for years after CPI normalized, pinning the structural regime on \"disinflating\" long after inflation was actually reaccelerating.",
+    description: "3-month trailing average of CPI YoY inflation — the fast line in a fast/slow moving-average crossover for regime detection (paired with CPI Growth (9M Avg) as the slow line). Was a 3-year average, but that stayed contaminated by the 2021-22 inflation spike for years after CPI normalized.",
     fred_series_id: "CPIAUCSL", unit: "%", data_source: "fred", sort_order: 285,
     series: "CPIAUCSL", type: "cpi_3m_avg",
+    statusFn: v => v >= 1 && v <= 2.5 ? "healthy" : v <= 4 ? "watch" : "danger",
+  },
+  {
+    name: "CPI Growth (9M Avg)", layer: 3, layer_name: "Business Cycle",
+    description: "9-month trailing average of CPI YoY inflation — the slow line in the fast/slow crossover (paired with CPI Growth (3M Avg)). A regime flip only fires when the 3-month line crosses this 9-month line, requiring inflation's trend to genuinely shift and persist, not just one hot or cool print.",
+    fred_series_id: "CPIAUCSL", unit: "%", data_source: "fred", sort_order: 286,
+    series: "CPIAUCSL", type: "cpi_9m_avg",
     statusFn: v => v >= 1 && v <= 2.5 ? "healthy" : v <= 4 ? "watch" : "danger",
   },
   // ── LAYER 4: Tail Risk ──
@@ -739,20 +755,34 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         current = yoy.current; previous = yoy.previous;
         break;
       }
-      case "gdp_prior_qtr": {
-        // This indicator's job is to BE the momentum baseline compared against
-        // the live "Real GDP Growth" reading, so its own "current_value" is the
-        // PRIOR quarter's YoY (yoyRates[0] is this quarter, matching "Real GDP
-        // Growth" itself — yoyRates[1] is one quarter back, the baseline).
+      case "gdp_2q_avg": {
+        // Fast line of the GDP crossover: average of the 2 most recent
+        // quarterly YoY readings.
         const obs = await fetchFredObs(ind.series!, 12);
         if (obs.length < 7) return null;
         const yoyRates: number[] = [];
         for (let i = 0; i < 3 && i + 4 < obs.length; i++) {
           yoyRates.push((obs[i].value / obs[i + 4].value - 1) * 100);
         }
-        if (yoyRates.length < 2) return null;
-        current  = yoyRates[1];
-        previous = yoyRates.length >= 3 ? yoyRates[2] : yoyRates[1];
+        if (yoyRates.length < 3) return null;
+        const window = 2;
+        current  = yoyRates.slice(0, window).reduce((a, b) => a + b, 0) / window;
+        previous = yoyRates.slice(1, window + 1).reduce((a, b) => a + b, 0) / window;
+        break;
+      }
+      case "gdp_4q_avg": {
+        // Slow line of the GDP crossover: average of the 4 most recent
+        // quarterly YoY readings.
+        const obs = await fetchFredObs(ind.series!, 12);
+        if (obs.length < 9) return null;
+        const yoyRates: number[] = [];
+        for (let i = 0; i < 5 && i + 4 < obs.length; i++) {
+          yoyRates.push((obs[i].value / obs[i + 4].value - 1) * 100);
+        }
+        if (yoyRates.length < 5) return null;
+        const window = 4;
+        current  = yoyRates.slice(0, window).reduce((a, b) => a + b, 0) / window;
+        previous = yoyRates.slice(1, window + 1).reduce((a, b) => a + b, 0) / window;
         break;
       }
       case "cpi_3m_avg": {
@@ -764,6 +794,19 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         }
         if (yoyRates.length < 4) return null;
         const window = 3;
+        current  = yoyRates.slice(0, window).reduce((a, b) => a + b, 0) / window;
+        previous = yoyRates.slice(1, window + 1).reduce((a, b) => a + b, 0) / window;
+        break;
+      }
+      case "cpi_9m_avg": {
+        const obs = await fetchFredObs(ind.series!, 24);
+        if (obs.length < 22) return null;
+        const yoyRates: number[] = [];
+        for (let i = 0; i < 10 && i + 12 < obs.length; i++) {
+          yoyRates.push((obs[i].value / obs[i + 12].value - 1) * 100);
+        }
+        if (yoyRates.length < 10) return null;
+        const window = 9;
         current  = yoyRates.slice(0, window).reduce((a, b) => a + b, 0) / window;
         previous = yoyRates.slice(1, window + 1).reduce((a, b) => a + b, 0) / window;
         break;
@@ -1306,31 +1349,26 @@ async function backfillRegimeHistory(): Promise<void> {
     const now = new Date().toISOString();
     const historyRows: Record<string, unknown>[] = [];
 
-    for (let qi = 12; qi < gdpYoySeries.length; qi++) {
+    for (let qi = 15; qi < gdpYoySeries.length; qi++) {
       const gq = gdpYoySeries[qi];
-      // Prior quarter's YoY as the momentum baseline — GDP genuinely has one
-      // distinct reading per quarter here (unlike CPI above), so this is a
-      // real, non-degenerate comparison, not a multi-year trailing average.
-      const gdp3y = gdpYoySeries[qi - 1].yoy;
+      // GDP fast/slow crossover: 2-quarter avg vs 4-quarter avg, same as the
+      // live path (see "GDP Growth (2Q/4Q Avg)" indicators).
+      const gdpFast = (gdpYoySeries[qi].yoy + gdpYoySeries[qi - 1].yoy) / 2;
+      const gdpSlow = gdpYoySeries.slice(qi - 3, qi + 1).reduce((s, r) => s + r.yoy, 0) / 4;
 
       const qCpi = cpiYoySeries.filter(m => m.year === gq.year && m.month >= (gq.quarter - 1) * 3 && m.month < gq.quarter * 3);
       if (qCpi.length === 0) continue;
-      const cpiYoy = qCpi.reduce((s, m) => s + m.yoy, 0) / qCpi.length;
+      // This quarter's own within-quarter average already IS a ~3-month
+      // average — the fast line of the CPI crossover, same role as the live
+      // "CPI Growth (3M Avg)" indicator.
+      const cpiFast = qCpi.reduce((s, m) => s + m.yoy, 0) / qCpi.length;
 
-      // NOTE: this quarterly backfill's own "cpiYoy" above is already an average
-      // of the 3 months inside this quarter — a genuine 3-MONTH trailing window
-      // here would land on those same 3 months and always equal cpiYoy exactly,
-      // making the "rising" test degenerate (cpiYoy > cpiYoy is never true). The
-      // live path (updateCurrentRegimeHistory + the "CPI Growth (3M Avg)"
-      // indicator) doesn't have this problem since its "current" reading is a
-      // single latest month, not a quarter-average — so it keeps the 3-year
-      // window here, where it's at least a distinct, non-degenerate baseline.
-      // This function only runs once against a fully empty table (see guard
-      // above) so it isn't reachable on the already-populated table anyway.
+      // CPI slow line: trailing 9-month average, spanning 3 quarters — not
+      // degenerate against cpiFast since it covers 2 additional quarters.
       const endMn = gq.year * 12 + (gq.quarter * 3 - 1);
-      const cpi3ySlice = cpiYoySeries.filter(m => { const mn = m.year * 12 + m.month; return mn >= endMn - 35 && mn <= endMn; });
-      if (cpi3ySlice.length < 24) continue;
-      const cpi3y = cpi3ySlice.reduce((s, m) => s + m.yoy, 0) / cpi3ySlice.length;
+      const cpiSlowSlice = cpiYoySeries.filter(m => { const mn = m.year * 12 + m.month; return mn >= endMn - 8 && mn <= endMn; });
+      if (cpiSlowSlice.length < 7) continue;
+      const cpiSlow = cpiSlowSlice.reduce((s, m) => s + m.yoy, 0) / cpiSlowSlice.length;
 
       let breSum = 0, breCount = 0;
       for (let m = 0; m < 3; m++) {
@@ -1343,11 +1381,11 @@ async function backfillRegimeHistory(): Promise<void> {
 
       historyRows.push({
         period_date: periodDate,
-        gdp_yoy: r2(gq.yoy), cpi_yoy: r2(cpiYoy),
+        gdp_yoy: r2(gq.yoy), cpi_yoy: r2(cpiFast),
         breakeven: breakeven != null ? r2(breakeven) : null,
-        gdp_3y_avg: r2(gdp3y), cpi_3y_avg: r2(cpi3y),
-        structural_key: detectRegimeKey(gq.yoy, cpiYoy, gdp3y, cpi3y),
-        market_key: detectRegimeKey(gq.yoy, cpiYoy, gdp3y, breakeven ?? cpi3y),
+        gdp_3y_avg: r2(gdpSlow), cpi_3y_avg: r2(cpiSlow),
+        structural_key: detectRegimeKey(gdpFast, cpiFast, gdpSlow, cpiSlow),
+        market_key: detectRegimeKey(gdpFast, cpiFast, gdpSlow, breakeven ?? cpiSlow),
         forward_key: null, forward_confidence: null, updated_at: now,
       });
     }
@@ -1615,8 +1653,10 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const gdpRow  = processedRows.find(r => r.name === "Real GDP Growth");
     const cpiRow  = processedRows.find(r => r.name === "CPI (YoY)");
     const breRow  = processedRows.find(r => r.name === "10Y Breakeven Inflation");
-    const gdp3yRow = processedRows.find(r => r.name === "GDP Growth (Prior Qtr)");
-    const cpi3yRow = processedRows.find(r => r.name === "CPI Growth (3M Avg)");
+    const gdpFastRow = processedRows.find(r => r.name === "GDP Growth (2Q Avg)");
+    const gdpSlowRow = processedRows.find(r => r.name === "GDP Growth (4Q Avg)");
+    const cpiFastRow = processedRows.find(r => r.name === "CPI Growth (3M Avg)");
+    const cpiSlowRow = processedRows.find(r => r.name === "CPI Growth (9M Avg)");
     if (!gdpRow || !cpiRow) return;
 
     // Consumer Inflation Expectations is not in processedRows (it's written by updateConsumerExpectations
@@ -1632,11 +1672,19 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       if (ceRow) rowsForSignal.push(ceRow as unknown as ProcessedRow);
     }
 
+    // gdpYoy/cpiYoy (raw single-period readings) are stored for display/history
+    // only — the regime CALL itself now comes from the fast/slow MA crossover
+    // below, not from comparing the raw reading against a baseline. A single
+    // noisy print could flip the old current-vs-baseline test; requiring the
+    // fast line to actually cross the slow line demands a real, sustained
+    // shift instead.
     const gdpYoy = Number(gdpRow.current_value);
     const cpiYoy = Number(cpiRow.current_value);
-    const bre    = breRow   ? Number(breRow.current_value)   : null;
-    const gdp3y  = gdp3yRow ? Number(gdp3yRow.current_value) : 0;
-    const cpi3y  = cpi3yRow ? Number(cpi3yRow.current_value) : cpiYoy;
+    const bre     = breRow     ? Number(breRow.current_value)     : null;
+    const gdpFast = gdpFastRow ? Number(gdpFastRow.current_value) : gdpYoy;
+    const gdpSlow = gdpSlowRow ? Number(gdpSlowRow.current_value) : 0;
+    const cpiFast = cpiFastRow ? Number(cpiFastRow.current_value) : cpiYoy;
+    const cpiSlow = cpiSlowRow ? Number(cpiSlowRow.current_value) : cpiYoy;
 
     const now = new Date();
     const q = Math.floor(now.getUTCMonth() / 3);
@@ -1648,13 +1696,17 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       period_date: periodDate,
       gdp_yoy: r2(gdpYoy), cpi_yoy: r2(cpiYoy),
       breakeven: bre != null ? r2(bre) : null,
-      gdp_3y_avg: r2(gdp3y), cpi_3y_avg: r2(cpi3y),
-      structural_key: detectRegimeKey(gdpYoy, cpiYoy, gdp3y, cpi3y),
+      // Columns keep their original names but now hold the slow-line (4Q/9M
+      // avg) side of the crossover, not a 3-year average or a single prior
+      // period — see detectRegimeKey's call below for the actual fast/slow pair.
+      gdp_3y_avg: r2(gdpSlow), cpi_3y_avg: r2(cpiSlow),
+      structural_key: detectRegimeKey(gdpFast, cpiFast, gdpSlow, cpiSlow),
       // Market regime: use breakeven vs 2.5% threshold — is market pricing sustained inflation?
       // cpiYoy > breakeven means markets expect disinflation, not that inflation is surprising upside.
+      // Growth leg reuses the same fast/slow crossover as the structural regime.
       market_key: (() => {
         const mktInflUp = (bre ?? 2.5) > 2.5;
-        const mktGrowthUp = gdpYoy > gdp3y;
+        const mktGrowthUp = gdpFast > gdpSlow;
         return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })(),
       forward_key: forwardKey,

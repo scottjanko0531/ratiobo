@@ -155,8 +155,8 @@ function runBacktest(
 
 // ── Regime-driven dynamic-weight backtest ──────────────────────────────────────
 // Reconstructs, for each calendar year, which of the four structural regimes
-// (same GDP-YoY-vs-prior-quarter / CPI-YoY-vs-3-month-avg momentum test used
-// live by get-regime-analysis.ts's detectRegimeKeyLive and fetch-macro-data's
+// (same GDP 2Q/4Q-avg and CPI 3M/9M-avg fast/slow crossover used live by
+// get-regime-analysis.ts's detectRegimeKeyLive and fetch-macro-data's
 // detectRegimeKey) was in effect, then holds that year's REGIME_DEFAULT_WEIGHTS
 // allocation, rebalancing annually — same cadence as the three static
 // portfolios above.
@@ -221,20 +221,6 @@ function trailingAvg(series: FredObs[], n: number): FredObs[] {
   return out;
 }
 
-// Pairs each point with the value from `lag` periods earlier, dated at the
-// CURRENT point's date — used for GDP's "prior quarter" baseline. GDPC1 only
-// prints once a quarter, so a multi-year trailing average stays stale
-// relative to the current reading; comparing against the immediately
-// preceding quarter is the non-degenerate momentum test at GDP's native
-// cadence (mirrors the CPI 3-month-avg baseline below).
-function laggedSeries(series: FredObs[], lag: number): FredObs[] {
-  const out: FredObs[] = [];
-  for (let i = lag; i < series.length; i++) {
-    out.push({ date: series[i].date, value: series[i - lag].value });
-  }
-  return out;
-}
-
 function latestOnOrBefore(series: FredObs[], cutoff: string): FredObs | null {
   let result: FredObs | null = null;
   for (const o of series) { if (o.date <= cutoff) result = o; else break; }
@@ -260,18 +246,25 @@ async function buildYearlyRegimeWeights(
   const [gdpRaw, cpiRaw] = await Promise.all([fetchFredSeries("GDPC1"), fetchFredSeries("CPIAUCSL")]);
   const gdpYoy = yoy(gdpRaw, 4);   // GDPC1 is quarterly
   const cpiYoy = yoy(cpiRaw, 12);  // CPIAUCSL is monthly
-  const gdp3y = laggedSeries(gdpYoy, 1); // prior quarter's YoY
-  const cpi3y = trailingAvg(cpiYoy, 3);  // trailing 3-month avg of YoY
+  // Fast/slow moving-average crossover, not raw-reading-vs-baseline: a regime
+  // flip only fires when the fast line actually crosses the slow line, which
+  // requires a real, sustained shift rather than one noisy print. GDP: 2Q avg
+  // (fast) vs 4Q avg (slow), GDP's native cadence. CPI: 3-month avg (fast) vs
+  // 9-month avg (slow), matching the live "CPI Growth (3M/9M Avg)" indicators.
+  const gdpFast = trailingAvg(gdpYoy, 2);
+  const gdpSlow = trailingAvg(gdpYoy, 4);
+  const cpiFast = trailingAvg(cpiYoy, 3);
+  const cpiSlow = trailingAvg(cpiYoy, 9);
 
   const out: { year: number; regimeKey: string; weights: Record<string, number> }[] = [];
   for (let year = startYear; year <= endYear; year++) {
     const cutoff = `${year - 1}-09-30`;
-    const g = latestOnOrBefore(gdpYoy, cutoff);
-    const g3 = latestOnOrBefore(gdp3y, cutoff);
-    const c = latestOnOrBefore(cpiYoy, cutoff);
-    const c3 = latestOnOrBefore(cpi3y, cutoff);
-    if (!g || !g3 || !c || !c3) continue;
-    const regimeKey = detectRegimeKey(g.value, c.value, g3.value, c3.value);
+    const gf = latestOnOrBefore(gdpFast, cutoff);
+    const gs = latestOnOrBefore(gdpSlow, cutoff);
+    const cf = latestOnOrBefore(cpiFast, cutoff);
+    const cs = latestOnOrBefore(cpiSlow, cutoff);
+    if (!gf || !gs || !cf || !cs) continue;
+    const regimeKey = detectRegimeKey(gf.value, cf.value, gs.value, cs.value);
     out.push({ year, regimeKey, weights: REGIME_TICKER_WEIGHTS[regimeKey] });
   }
   return out;
@@ -537,7 +530,7 @@ Deno.serve(async (req: Request) => {
       window_start:   windowStart,
       window_end:     windowEnd,
       computed_at:    new Date().toISOString(),
-      proxies:        "VTSMX→VTI, VISVX→IJS, GC=F→GLD, VUSTX→TLT, VFISX→SHY, PCRIX→DBC, VGTSX→VXUS, VEIEX→VWO, VIPSX→SCHP; DBMF pre-2019 = 12M TSMOM factor (scaled to 11.2% vol, −0.85% fee). Regime-Driven: annually rebalanced to that year's structurally-classified regime (GDP YoY vs. prior quarter, CPI YoY vs. 3-month trailing avg, using data known by Sep 30 of the prior year) — models 'always held the structural regime's target weights,' not the live portfolio feature's 30-day-confirmation/60%-confidence activation logic, which needs historical Forward Signal confidence data that was never stored.",
+      proxies:        "VTSMX→VTI, VISVX→IJS, GC=F→GLD, VUSTX→TLT, VFISX→SHY, PCRIX→DBC, VGTSX→VXUS, VEIEX→VWO, VIPSX→SCHP; DBMF pre-2019 = 12M TSMOM factor (scaled to 11.2% vol, −0.85% fee). Regime-Driven: annually rebalanced to that year's structurally-classified regime (GDP 2Q avg vs. 4Q avg, CPI 3-month avg vs. 9-month avg, fast/slow crossover, using data known by Sep 30 of the prior year) — models 'always held the structural regime's target weights,' not the live portfolio feature's 30-day-confirmation/60%-confidence activation logic, which needs historical Forward Signal confidence data that was never stored.",
       fetch_errors:   errors,
     };
 
