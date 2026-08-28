@@ -155,10 +155,11 @@ function runBacktest(
 
 // ── Regime-driven dynamic-weight backtest ──────────────────────────────────────
 // Reconstructs, for each calendar year, which of the four structural regimes
-// (same GDP-YoY-vs-3Y-avg / CPI-YoY-vs-3Y-avg test used live by get-regime-
-// analysis.ts's detectRegimeKeyLive and lib/simulatorKeys.js's detectRegimeKey)
-// was in effect, then holds that year's REGIME_DEFAULT_WEIGHTS allocation,
-// rebalancing annually — same cadence as the three static portfolios above.
+// (same GDP-YoY-vs-prior-quarter / CPI-YoY-vs-3-month-avg momentum test used
+// live by get-regime-analysis.ts's detectRegimeKeyLive and fetch-macro-data's
+// detectRegimeKey) was in effect, then holds that year's REGIME_DEFAULT_WEIGHTS
+// allocation, rebalancing annually — same cadence as the three static
+// portfolios above.
 //
 // This is NOT a replay of the live regime_driven portfolio's actual activation
 // logic (30-day confirmation + 60% Forward Signal confidence floor): Forward
@@ -220,6 +221,20 @@ function trailingAvg(series: FredObs[], n: number): FredObs[] {
   return out;
 }
 
+// Pairs each point with the value from `lag` periods earlier, dated at the
+// CURRENT point's date — used for GDP's "prior quarter" baseline. GDPC1 only
+// prints once a quarter, so a multi-year trailing average stays stale
+// relative to the current reading; comparing against the immediately
+// preceding quarter is the non-degenerate momentum test at GDP's native
+// cadence (mirrors the CPI 3-month-avg baseline below).
+function laggedSeries(series: FredObs[], lag: number): FredObs[] {
+  const out: FredObs[] = [];
+  for (let i = lag; i < series.length; i++) {
+    out.push({ date: series[i].date, value: series[i - lag].value });
+  }
+  return out;
+}
+
 function latestOnOrBefore(series: FredObs[], cutoff: string): FredObs | null {
   let result: FredObs | null = null;
   for (const o of series) { if (o.date <= cutoff) result = o; else break; }
@@ -245,8 +260,8 @@ async function buildYearlyRegimeWeights(
   const [gdpRaw, cpiRaw] = await Promise.all([fetchFredSeries("GDPC1"), fetchFredSeries("CPIAUCSL")]);
   const gdpYoy = yoy(gdpRaw, 4);   // GDPC1 is quarterly
   const cpiYoy = yoy(cpiRaw, 12);  // CPIAUCSL is monthly
-  const gdp3y = trailingAvg(gdpYoy, 12); // 12 quarters = 3 years
-  const cpi3y = trailingAvg(cpiYoy, 36); // 36 months = 3 years
+  const gdp3y = laggedSeries(gdpYoy, 1); // prior quarter's YoY
+  const cpi3y = trailingAvg(cpiYoy, 3);  // trailing 3-month avg of YoY
 
   const out: { year: number; regimeKey: string; weights: Record<string, number> }[] = [];
   for (let year = startYear; year <= endYear; year++) {
@@ -522,7 +537,7 @@ Deno.serve(async (req: Request) => {
       window_start:   windowStart,
       window_end:     windowEnd,
       computed_at:    new Date().toISOString(),
-      proxies:        "VTSMX→VTI, VISVX→IJS, GC=F→GLD, VUSTX→TLT, VFISX→SHY, PCRIX→DBC, VGTSX→VXUS, VEIEX→VWO, VIPSX→SCHP; DBMF pre-2019 = 12M TSMOM factor (scaled to 11.2% vol, −0.85% fee). Regime-Driven: annually rebalanced to that year's structurally-classified regime (GDP YoY vs. 3Y avg, CPI YoY vs. 3Y avg, using data known by Sep 30 of the prior year) — models 'always held the structural regime's target weights,' not the live portfolio feature's 30-day-confirmation/60%-confidence activation logic, which needs historical Forward Signal confidence data that was never stored.",
+      proxies:        "VTSMX→VTI, VISVX→IJS, GC=F→GLD, VUSTX→TLT, VFISX→SHY, PCRIX→DBC, VGTSX→VXUS, VEIEX→VWO, VIPSX→SCHP; DBMF pre-2019 = 12M TSMOM factor (scaled to 11.2% vol, −0.85% fee). Regime-Driven: annually rebalanced to that year's structurally-classified regime (GDP YoY vs. prior quarter, CPI YoY vs. 3-month trailing avg, using data known by Sep 30 of the prior year) — models 'always held the structural regime's target weights,' not the live portfolio feature's 30-day-confirmation/60%-confidence activation logic, which needs historical Forward Signal confidence data that was never stored.",
       fetch_errors:   errors,
     };
 
