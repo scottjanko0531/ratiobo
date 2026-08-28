@@ -81,6 +81,21 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
 
+// The roster is scored in fixed-size batches, run concurrently, rather than one
+// single Claude call across every item — a single 18-item call started hitting
+// Supabase's ~150s edge function idle timeout with zero DB writes on failure
+// (the whole assessment array has to come back before any item gets updated).
+// Batching keeps each individual Claude call's wall-clock time roughly constant
+// as the roster grows, since new items just mean more concurrent batches, not a
+// slower single call — and running them concurrently (not sequentially) means
+// total time stays close to one batch's time, not the sum of all of them.
+const BATCH_SIZE = 6;
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
 function buildPrompt(items: Item[], chinaWatch: ChinaWatchRead | null): string {
   const roster = items
     .map((i) => `${i.key}: ${i.name} — ${i.category}${i.china_exposed ? " [CHINA-EXPOSED]" : ""}`)
@@ -256,8 +271,11 @@ Deno.serve(async (req: Request) => {
       .select("pillar_id,pillar_group,score");
     const chinaWatch = computeChinaWatch((chinaWatchIndicators ?? []) as { pillar_group: string; pillar_id: string; score: number }[]);
 
-    const assessments = await runClaude(items as Item[], chinaWatch);
-    if (!assessments) return json({ error: "assessment generation failed" }, 500);
+    const batches = chunk(items as Item[], BATCH_SIZE);
+    const batchResults = await Promise.all(batches.map((batch) => runClaude(batch, chinaWatch)));
+    const failedBatches = batchResults.filter((r) => r === null).length;
+    const assessments = batchResults.flatMap((r) => r ?? []);
+    if (assessments.length === 0) return json({ error: "assessment generation failed", failedBatches, totalBatches: batches.length }, 500);
 
     const byKey = new Map((items as Item[]).map((i) => [i.key, i]));
     const today = new Date().toISOString().slice(0, 10);
@@ -308,7 +326,7 @@ Deno.serve(async (req: Request) => {
 
     await updateTariffInflationImpact(sb, assessments, today, now);
 
-    return json({ updated, skipped, total: items.length, timestamp: now });
+    return json({ updated, skipped, total: items.length, batches: batches.length, failedBatches, timestamp: now });
   } catch (e) {
     return json({ error: String(e) }, 500);
   }
