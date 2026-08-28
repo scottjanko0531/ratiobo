@@ -128,7 +128,7 @@ interface Indicator {
     | "yoy_monthly"
     | "yoy_monthly_agg"
     | "yoy_quarterly"
-    | "gdp_3yr_avg"
+    | "gdp_prior_qtr"
     | "cpi_3m_avg"
     | "mom_change"
     | "mom_pct"
@@ -452,10 +452,10 @@ const INDICATORS: Indicator[] = [
     statusFn: v => v >= 2 ? "healthy" : v >= 0 ? "watch" : "danger",
   },
   {
-    name: "GDP Growth (3Y Avg)", layer: 3, layer_name: "Business Cycle",
-    description: "3-year trailing average of real GDP YoY growth — trend baseline for regime detection",
+    name: "GDP Growth (Prior Qtr)", layer: 3, layer_name: "Business Cycle",
+    description: "Prior quarter's real GDP YoY — momentum baseline for regime detection. Was a 3-year trailing average, but GDP only prints once a quarter, so a multi-year trend stayed stale relative to the current reading; comparing against the immediately preceding quarter is the natural non-degenerate momentum test at GDP's native cadence (same idea as CPI's 3-month trailing average).",
     fred_series_id: "GDPC1", unit: "%", data_source: "fred", sort_order: 165,
-    series: "GDPC1", type: "gdp_3yr_avg",
+    series: "GDPC1", type: "gdp_prior_qtr",
     statusFn: v => v >= 2 ? "healthy" : v >= 0 ? "watch" : "danger",
   },
   {
@@ -739,18 +739,20 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         current = yoy.current; previous = yoy.previous;
         break;
       }
-      case "gdp_3yr_avg": {
-        const obs = await fetchFredObs(ind.series!, 20);
-        if (obs.length < 17) return null;
+      case "gdp_prior_qtr": {
+        // This indicator's job is to BE the momentum baseline compared against
+        // the live "Real GDP Growth" reading, so its own "current_value" is the
+        // PRIOR quarter's YoY (yoyRates[0] is this quarter, matching "Real GDP
+        // Growth" itself — yoyRates[1] is one quarter back, the baseline).
+        const obs = await fetchFredObs(ind.series!, 12);
+        if (obs.length < 7) return null;
         const yoyRates: number[] = [];
-        for (let i = 0; i < 13 && i + 4 < obs.length; i++) {
+        for (let i = 0; i < 3 && i + 4 < obs.length; i++) {
           yoyRates.push((obs[i].value / obs[i + 4].value - 1) * 100);
         }
-        if (yoyRates.length < 4) return null;
-        const avg12 = yoyRates.slice(0, 12);
-        const avg12prev = yoyRates.slice(1, 13);
-        current  = avg12.reduce((a, b) => a + b, 0) / avg12.length;
-        previous = avg12prev.reduce((a, b) => a + b, 0) / avg12prev.length;
+        if (yoyRates.length < 2) return null;
+        current  = yoyRates[1];
+        previous = yoyRates.length >= 3 ? yoyRates[2] : yoyRates[1];
         break;
       }
       case "cpi_3m_avg": {
@@ -1306,7 +1308,10 @@ async function backfillRegimeHistory(): Promise<void> {
 
     for (let qi = 12; qi < gdpYoySeries.length; qi++) {
       const gq = gdpYoySeries[qi];
-      const gdp3y = gdpYoySeries.slice(qi - 11, qi + 1).reduce((s, r) => s + r.yoy, 0) / 12;
+      // Prior quarter's YoY as the momentum baseline — GDP genuinely has one
+      // distinct reading per quarter here (unlike CPI above), so this is a
+      // real, non-degenerate comparison, not a multi-year trailing average.
+      const gdp3y = gdpYoySeries[qi - 1].yoy;
 
       const qCpi = cpiYoySeries.filter(m => m.year === gq.year && m.month >= (gq.quarter - 1) * 3 && m.month < gq.quarter * 3);
       if (qCpi.length === 0) continue;
@@ -1610,7 +1615,7 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const gdpRow  = processedRows.find(r => r.name === "Real GDP Growth");
     const cpiRow  = processedRows.find(r => r.name === "CPI (YoY)");
     const breRow  = processedRows.find(r => r.name === "10Y Breakeven Inflation");
-    const gdp3yRow = processedRows.find(r => r.name === "GDP Growth (3Y Avg)");
+    const gdp3yRow = processedRows.find(r => r.name === "GDP Growth (Prior Qtr)");
     const cpi3yRow = processedRows.find(r => r.name === "CPI Growth (3M Avg)");
     if (!gdpRow || !cpiRow) return;
 

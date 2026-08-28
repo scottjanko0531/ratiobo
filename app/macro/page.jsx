@@ -476,7 +476,7 @@ function MacroSummary({ indicators, latestQuadrant }) {
   const coreCpi    = get("Core CPI (YoY)");
   const ppi        = get("PPI (YoY)");
   const breakeven  = get("10Y Breakeven Inflation");
-  const gdp3yAvg   = get("GDP Growth (3Y Avg)") ?? 0;
+  const gdp3yAvg   = get("GDP Growth (Prior Qtr)") ?? 0;
   const unrate     = get("Unemployment Rate");
   const t10y2y     = get("2yr/10yr Yield Spread");
   const t10y3m     = get("3mo/10yr Yield Spread");
@@ -510,8 +510,8 @@ function MacroSummary({ indicators, latestQuadrant }) {
   const gdpTrend = prevGdp != null && gdp != null ? (gdp > prevGdp + 0.05 ? " and accelerating" : gdp < prevGdp - 0.05 ? " but decelerating" : "") : "";
   const growthStr =
     gdp == null ? "Growth data unavailable." :
-    gdp > 2.5   ? `Growth is strong — Real GDP at +${gdp.toFixed(1)}%${gdpTrend}${gdp3yAvg ? `, above the ${gdp3yAvg.toFixed(1)}% trend` : ""}.` :
-    gdp > 0.5   ? `Growth is modest — Real GDP at +${gdp.toFixed(1)}%${gdpTrend}${growthAboveTrend ? ", above trend" : ", below trend"}.` :
+    gdp > 2.5   ? `Growth is strong — Real GDP at +${gdp.toFixed(1)}%${gdpTrend}${gdp3yAvg ? `, above the prior quarter's ${gdp3yAvg.toFixed(1)}%` : ""}.` :
+    gdp > 0.5   ? `Growth is modest — Real GDP at +${gdp.toFixed(1)}%${gdpTrend}${growthAboveTrend ? ", above the prior quarter" : ", below the prior quarter"}.` :
     gdp > 0     ? `Growth is stalling — Real GDP at +${gdp.toFixed(1)}%${gdpTrend}.` :
                   `Economy is contracting — Real GDP at ${gdp.toFixed(1)}%${gdpTrend}.`;
 
@@ -1326,7 +1326,7 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
   const cpi        = indicators.find((i) => i.name === "CPI (YoY)");
   const ism        = indicators.find((i) => i.name === "ISM Manufacturing PMI" || i.name === "ISM New Orders");
   const breakeven  = indicators.find((i) => i.name === "10Y Breakeven Inflation");
-  const gdp3yAvg   = indicators.find((i) => i.name === "GDP Growth (3Y Avg)");
+  const gdp3yAvg   = indicators.find((i) => i.name === "GDP Growth (Prior Qtr)");
   const cpi3yAvg   = indicators.find((i) => i.name === "CPI Growth (3M Avg)");
 
   const breakevenVal = breakeven?.current_value != null ? Number(breakeven.current_value) : 2.5;
@@ -1361,12 +1361,15 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
     : null;
   const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
 
-  // Structural regime: is the 3-yr trailing trend expansionary and above the Fed's 2% target?
-  // Mirrors the Market Expectations lens above, but built from the Structural column's own
-  // cells (3Y avg level vs. 0% / 2%) instead of the primary momentum-based regimeKey.
-  const structuralRegimeKey = gdp3yAvg?.current_value != null
+  // Structural regime: is GDP accelerating vs. the prior quarter, and is CPI's
+  // 3-month trend above the Fed's 2% target? Both baselines were previously
+  // multi-year trailing averages, which stayed stale for a long time relative
+  // to the current reading (CPI's especially, dragging the 2021-22 spike
+  // through the window for years); now both compare the current reading
+  // against its own most recent short-run baseline instead.
+  const structuralRegimeKey = gdp?.current_value != null && gdp3yAvg?.current_value != null
     ? (() => {
-        const growthUp = gdp3yAvgVal > 0;
+        const growthUp = Number(gdp.current_value) > gdp3yAvgVal;
         const inflUp   = cpi3yAvgVal != null && cpi3yAvgVal > 2;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -1467,7 +1470,7 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
               <p className="text-paper-dim text-sm mt-1">{regime.desc}</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {/* GDP: actual vs 3-year trend */}
+              {/* GDP: actual vs prior quarter */}
               <div className="bg-ink-soft rounded-lg px-3 py-1.5">
                 <p className="label text-[10px]">GDP Growth</p>
                 <p className="num text-sm">{formatValue(gdp?.current_value, "%")}</p>
@@ -1477,7 +1480,7 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                       ? <span className="text-gain">↑</span>
                       : <span className="text-loss">↓</span>
                     }{" "}
-                    trend {gdp3yAvgVal.toFixed(1)}%
+                    prior qtr {gdp3yAvgVal.toFixed(1)}%
                   </p>
                 )}
               </div>
@@ -1513,7 +1516,7 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                 <div className="px-3 py-2" />
                 <div className="px-3 py-2 border-l border-ink-line">
                   <p className="label text-[10px]">Structural</p>
-                  <p className="text-[10px] text-paper-dim">3-year trailing averages</p>
+                  <p className="text-[10px] text-paper-dim">Short-run momentum baselines</p>
                 </div>
                 <div className="px-3 py-2 border-l border-ink-line">
                   <p className="label text-[10px]">Market Expectations</p>
@@ -1528,24 +1531,24 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                   <p className="num text-sm">{formatValue(gdp?.current_value, "%")}</p>
                 </div>
                 <div className="px-3 py-3 border-l border-ink-line">
-                  <p className="text-[10px] text-paper-dim mb-1">3Y avg — is trend positive?</p>
+                  <p className="text-[10px] text-paper-dim mb-1">Prior qtr — was growth positive?</p>
                   {gdp3yAvg?.current_value != null ? (
                     <>
                       <p className={`font-medium ${gdp3yAvgVal > 0 ? "text-gain" : "text-loss"}`}>
                         {gdp3yAvgVal > 0 ? "↑ Expanding" : "↓ Contracting"}
                       </p>
-                      <p className="num text-[11px] text-paper-dim mt-0.5">{gdp3yAvgVal.toFixed(2)}% 3Y avg</p>
+                      <p className="num text-[11px] text-paper-dim mt-0.5">{gdp3yAvgVal.toFixed(2)}% prior qtr</p>
                     </>
                   ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
                 </div>
                 <div className="px-3 py-3 border-l border-ink-line">
-                  <p className="text-[10px] text-paper-dim mb-1">Current vs 3Y trend — surprise?</p>
+                  <p className="text-[10px] text-paper-dim mb-1">Current vs prior qtr — accelerating?</p>
                   {gdp?.current_value != null && gdp3yAvg?.current_value != null ? (
                     <>
                       <p className={`font-medium ${Number(gdp.current_value) > gdp3yAvgVal ? "text-gain" : "text-loss"}`}>
-                        {Number(gdp.current_value) > gdp3yAvgVal ? "↑ Above trend" : "↓ Below trend"}
+                        {Number(gdp.current_value) > gdp3yAvgVal ? "↑ Above prior qtr" : "↓ Below prior qtr"}
                       </p>
-                      <p className="num text-[11px] text-paper-dim mt-0.5">trend {gdp3yAvgVal.toFixed(2)}%</p>
+                      <p className="num text-[11px] text-paper-dim mt-0.5">prior qtr {gdp3yAvgVal.toFixed(2)}%</p>
                     </>
                   ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
                 </div>
@@ -1558,13 +1561,13 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
                   <p className="num text-sm">{formatValue(cpi?.current_value, "%")}</p>
                 </div>
                 <div className="px-3 py-3 border-l border-ink-line">
-                  <p className="text-[10px] text-paper-dim mb-1">CPI 3Y avg — above 2% target?</p>
+                  <p className="text-[10px] text-paper-dim mb-1">CPI 3M avg — above 2% target?</p>
                   {cpi3yAvgVal != null ? (
                     <>
                       <p className={`font-medium ${cpi3yAvgVal > 2 ? "text-loss" : "text-gain"}`}>
                         {cpi3yAvgVal > 2 ? "↑ Above target" : "↓ Contained"}
                       </p>
-                      <p className="num text-[11px] text-paper-dim mt-0.5">{cpi3yAvgVal.toFixed(2)}% 3Y avg</p>
+                      <p className="num text-[11px] text-paper-dim mt-0.5">{cpi3yAvgVal.toFixed(2)}% 3M avg</p>
                     </>
                   ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
                 </div>

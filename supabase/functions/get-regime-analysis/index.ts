@@ -371,7 +371,7 @@ function computeLiveRegimeKeys(
 ): { structuralKey: string | null; marketKey: string | null; fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number } {
   const gdpYoy = get("Real GDP Growth");
   const cpiYoy = get("CPI (YoY)");
-  const gdp3y = get("GDP Growth (3Y Avg)");
+  const gdp3y = get("GDP Growth (Prior Qtr)");
   const cpi3y = get("CPI Growth (3M Avg)");
   const breakeven = get("10Y Breakeven Inflation");
 
