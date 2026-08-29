@@ -757,12 +757,19 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
       }
       case "gdp_2q_avg": {
         // Fast line of the GDP crossover: average of the 2 most recent
-        // quarterly YoY readings.
-        const obs = await fetchFredObs(ind.series!, 12);
-        if (obs.length < 7) return null;
+        // quarterly YoY readings. Date-matched year-ago lookup (via
+        // findYearAgo), not a fixed positional offset — a positional offset
+        // silently misaligns every downstream comparison if the source
+        // series ever has a gap (see cpi_3m_avg/cpi_9m_avg below, where this
+        // bit CPIAUCSL's missing October 2025 print).
+        const obs = await fetchFredObs(ind.series!, 16);
+        if (obs.length < 9) return null;
         const yoyRates: number[] = [];
-        for (let i = 0; i < 3 && i + 4 < obs.length; i++) {
-          yoyRates.push((obs[i].value / obs[i + 4].value - 1) * 100);
+        for (const o of obs) {
+          const ya = findYearAgo(obs, o.date);
+          if (!ya) continue;
+          yoyRates.push((o.value / ya.value - 1) * 100);
+          if (yoyRates.length >= 3) break;
         }
         if (yoyRates.length < 3) return null;
         const window = 2;
@@ -772,12 +779,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
       }
       case "gdp_4q_avg": {
         // Slow line of the GDP crossover: average of the 4 most recent
-        // quarterly YoY readings.
-        const obs = await fetchFredObs(ind.series!, 12);
+        // quarterly YoY readings. Date-matched, see gdp_2q_avg above.
+        const obs = await fetchFredObs(ind.series!, 16);
         if (obs.length < 9) return null;
         const yoyRates: number[] = [];
-        for (let i = 0; i < 5 && i + 4 < obs.length; i++) {
-          yoyRates.push((obs[i].value / obs[i + 4].value - 1) * 100);
+        for (const o of obs) {
+          const ya = findYearAgo(obs, o.date);
+          if (!ya) continue;
+          yoyRates.push((o.value / ya.value - 1) * 100);
+          if (yoyRates.length >= 5) break;
         }
         if (yoyRates.length < 5) return null;
         const window = 4;
@@ -786,11 +796,18 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         break;
       }
       case "cpi_3m_avg": {
-        const obs = await fetchFredObs(ind.series!, 16);
-        if (obs.length < 15) return null;
+        // Date-matched year-ago lookup, not a fixed positional offset (see
+        // note on gdp_2q_avg) — CPIAUCSL has a real gap at October 2025
+        // (BLS/shutdown-related), which broke the old obs[i+12] positional
+        // math for any window whose 12-month lookback spanned that gap.
+        const obs = await fetchFredObs(ind.series!, 20);
+        if (obs.length < 16) return null;
         const yoyRates: number[] = [];
-        for (let i = 0; i < 4 && i + 12 < obs.length; i++) {
-          yoyRates.push((obs[i].value / obs[i + 12].value - 1) * 100);
+        for (const o of obs) {
+          const ya = findYearAgo(obs, o.date);
+          if (!ya) continue;
+          yoyRates.push((o.value / ya.value - 1) * 100);
+          if (yoyRates.length >= 4) break;
         }
         if (yoyRates.length < 4) return null;
         const window = 3;
@@ -799,11 +816,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         break;
       }
       case "cpi_9m_avg": {
-        const obs = await fetchFredObs(ind.series!, 24);
+        // Date-matched, see cpi_3m_avg above.
+        const obs = await fetchFredObs(ind.series!, 26);
         if (obs.length < 22) return null;
         const yoyRates: number[] = [];
-        for (let i = 0; i < 10 && i + 12 < obs.length; i++) {
-          yoyRates.push((obs[i].value / obs[i + 12].value - 1) * 100);
+        for (const o of obs) {
+          const ya = findYearAgo(obs, o.date);
+          if (!ya) continue;
+          yoyRates.push((o.value / ya.value - 1) * 100);
+          if (yoyRates.length >= 10) break;
         }
         if (yoyRates.length < 10) return null;
         const window = 9;

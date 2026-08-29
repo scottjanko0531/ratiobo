@@ -203,11 +203,20 @@ async function fetchFredSeries(seriesId: string): Promise<FredObs[]> {
   return obs.map((o) => ({ date: o.date, value: parseFloat(o.value) })).filter((o) => !isNaN(o.value));
 }
 
-function yoy(obs: FredObs[], lag: number): FredObs[] {
+// Date-matched (same calendar month, one year earlier), not a fixed positional
+// offset — a positional lag silently misaligns every comparison downstream of
+// any gap in the source series (e.g. CPIAUCSL's missing October 2025 print),
+// off-by-one-ing the "12 months back" lookup into an actual 11- or 13-month
+// comparison. Works for both quarterly (GDPC1) and monthly (CPIAUCSL) series
+// since both land on the 1st of a month either way.
+function yoy(obs: FredObs[]): FredObs[] {
+  const byDate = new Map(obs.map((o) => [o.date, o.value]));
   const out: FredObs[] = [];
-  for (let i = lag; i < obs.length; i++) {
-    const prev = obs[i - lag].value;
-    if (prev !== 0) out.push({ date: obs[i].date, value: (obs[i].value / prev - 1) * 100 });
+  for (const o of obs) {
+    const d = new Date(o.date);
+    const yaKey = new Date(Date.UTC(d.getUTCFullYear() - 1, d.getUTCMonth(), 1)).toISOString().slice(0, 10);
+    const prev = byDate.get(yaKey);
+    if (prev != null && prev !== 0) out.push({ date: o.date, value: (o.value / prev - 1) * 100 });
   }
   return out;
 }
@@ -244,8 +253,8 @@ async function buildYearlyRegimeWeights(
   startYear: number, endYear: number,
 ): Promise<{ year: number; regimeKey: string; weights: Record<string, number> }[]> {
   const [gdpRaw, cpiRaw] = await Promise.all([fetchFredSeries("GDPC1"), fetchFredSeries("CPIAUCSL")]);
-  const gdpYoy = yoy(gdpRaw, 4);   // GDPC1 is quarterly
-  const cpiYoy = yoy(cpiRaw, 12);  // CPIAUCSL is monthly
+  const gdpYoy = yoy(gdpRaw);
+  const cpiYoy = yoy(cpiRaw);
   // Fast/slow moving-average crossover, not raw-reading-vs-baseline: a regime
   // flip only fires when the fast line actually crosses the slow line, which
   // requires a real, sustained shift rather than one noisy print. GDP: 2Q avg
