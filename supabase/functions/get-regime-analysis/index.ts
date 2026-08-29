@@ -533,6 +533,7 @@ async function generateAnalysis(params: {
   yieldCurveState: YieldCurveState;
   credit: CreditIndicator[];
   liquidity: LiquidityIndicator;
+  today: string;
   correction?: string; // set on the one-shot retry after a failed consistency check
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY) return null;
@@ -541,8 +542,9 @@ async function generateAnalysis(params: {
       regimeLabel, marketLabel, fwdLabel, fwdConf, divergence,
       gdp, cpi, ppi, t10y2y, lei, breakeven,
       prevGdp, prevCpi, prevPpi, prevLei, prevBe,
-      marketSnapshot, supplyChain, yieldCurveState, credit, liquidity, correction,
+      marketSnapshot, supplyChain, yieldCurveState, credit, liquidity, today, correction,
     } = params;
+    const todayFormatted = new Date(today + "T00:00:00Z").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
     const qualifier = confidenceQualifier(fwdConf);
 
@@ -590,6 +592,8 @@ async function generateAnalysis(params: {
     const momentumDiverges = momentumRegime !== regimeLabel;
 
     const prompt = `You are Clio, macro analyst at RatioBo, using the Dalio/Bridgewater four-quadrant framework. Write direct, sharp analysis — no hedging language, no fluff, under 400 words total. No markdown headers, no bold, no title line.
+
+TODAY'S DATE: ${todayFormatted}. Use this as the actual current date for any date references, year mentions, or forward-looking horizons — do not default to your training-data cutoff or any other year.
 ${correction ? `\nCORRECTION REQUIRED — your previous draft was flagged for these factual/consistency problems; fix all of them in this rewrite:\n${correction}\n` : ""}
 PORTFOLIO FRAMEWORK — BW Modified (structural base, always held):
   US Equities 20% · International 8% · EM 5% · Nominal Bonds 20% · TIPS 20% · Commodities 12% · Gold 12% · Cash 3%
@@ -715,10 +719,12 @@ async function generateNewsMusing(params: {
   momentumRegime: string;
   marketLabel: string | null;
   fedOdds: FedOdds | null;
+  today: string;
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY || params.headlines.length === 0) return null;
   try {
-    const { headlines, watchedHeadlines, regimeLabel, momentumRegime, marketLabel, fedOdds } = params;
+    const { headlines, watchedHeadlines, regimeLabel, momentumRegime, marketLabel, fedOdds, today } = params;
+    const todayFormatted = new Date(today + "T00:00:00Z").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
     const mvEpisode = headlines.find(h => h.source === "MacroVoices");
     const newsLines = headlines
       .map((h, i) => `${i + 1}. "${h.headline}"${h.source ? ` — ${h.source}` : ""}`)
@@ -748,6 +754,8 @@ async function generateNewsMusing(params: {
       : "";
 
     const prompt = `You are Clio, macro analyst at RatioBo. Write 2 sharp paragraphs (under 180 words total), plain prose only. Do not use any markdown syntax: no #, no **, no bullet or numbered lists, no title line.
+
+TODAY'S DATE: ${todayFormatted}. Use this as the actual current date for any date references, year mentions, or forward-looking horizons — do not default to your training-data cutoff or any other year.
 
 Current regime signals:
   Structural: ${regimeLabel}
@@ -892,11 +900,12 @@ Deno.serve(async (req: Request) => {
       yieldCurveState: yieldCurve.state,
       credit,
       liquidity,
+      today,
     };
 
     const [analysisFirstPass, newsMusing] = await Promise.all([
       generateAnalysis(analysisParams),
-      generateNewsMusing({ headlines, watchedHeadlines: dedupedWatched, regimeLabel, momentumRegime, marketLabel, fedOdds }),
+      generateNewsMusing({ headlines, watchedHeadlines: dedupedWatched, regimeLabel, momentumRegime, marketLabel, fedOdds, today }),
     ]);
 
     if (!analysisFirstPass) {
