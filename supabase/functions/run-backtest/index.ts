@@ -236,8 +236,13 @@ function latestOnOrBefore(series: FredObs[], cutoff: string): FredObs | null {
   return result;
 }
 
+// Kept in sync with fetch-macro-data/get-regime-analysis's identical constants/formula.
+const POTENTIAL_GDP_GROWTH = 1.9;
+const GROWTH_MIN_GAP = 0.15;
+const POTENTIAL_FLOOR_FRACTION = 0.85;
+
 function detectRegimeKey(gdpYoy: number, cpiYoy: number, gdp3y: number, cpi3y: number): string {
-  const growing = gdpYoy > gdp3y;
+  const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP) && (gdpYoy > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION);
   const rising = cpiYoy > cpi3y;
   if (growing && !rising) return "rg_fi";
   if (growing && rising) return "rg_ri";

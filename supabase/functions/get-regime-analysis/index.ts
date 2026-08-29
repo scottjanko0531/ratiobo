@@ -355,8 +355,15 @@ async function getFedRateOdds(): Promise<FedOdds | null> {
 // agree by construction. Computed here from the same macro_indicators snapshot
 // this request already fetched, rather than trusting the once-nightly
 // macro_regime_history cache, which was found to silently go a full day stale.
+// Kept in sync with fetch-macro-data's identical constants/formula.
+const POTENTIAL_GDP_GROWTH = 1.9;
+const GROWTH_MIN_GAP = 0.15;
+const POTENTIAL_FLOOR_FRACTION = 0.85;
+// The Fed's actual inflation mandate, not an arbitrary round number.
+const FED_INFLATION_TARGET = 2.0;
+
 function detectRegimeKeyLive(gdpYoy: number, cpiYoy: number, gdp3y: number, cpi3y: number): string {
-  const growing = gdpYoy > gdp3y;
+  const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP) && (gdpYoy > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION);
   const rising = cpiYoy > cpi3y;
   if (growing && !rising) return "rg_fi";
   if (growing && rising) return "rg_ri";
@@ -368,6 +375,7 @@ type Getter = (name: string) => number | null;
 
 function computeLiveRegimeKeys(
   get: Getter, getMeta3m: Getter, getPP3m: Getter,
+  getShortPct: Getter, getVolShock: (name: string) => boolean,
 ): { structuralKey: string | null; marketKey: string | null; fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number } {
   // Fast/slow moving-average crossover, not raw-reading-vs-baseline: a
   // regime flip only fires when the fast line actually crosses the slow
@@ -386,13 +394,16 @@ function computeLiveRegimeKeys(
 
   const marketKey = gdpFast != null && gdpSlow != null
     ? (() => {
-        const mktInflUp = (breakeven ?? 2.5) > 2.5;
-        const mktGrowthUp = gdpFast > gdpSlow;
+        const mktInflUp = (breakeven ?? FED_INFLATION_TARGET) > FED_INFLATION_TARGET;
+        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP) && (gdpFast > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION);
         return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })()
     : null;
 
-  type Sig = { name: string; w: number; usePct3m?: boolean; usePP3m?: boolean; vote: (v: number) => number };
+  type Sig = {
+    name: string; w: number; usePct3m?: boolean; usePP3m?: boolean; useShortPct?: boolean;
+    shockGate?: boolean; sourceName?: string; vote: (v: number) => number;
+  };
   const G: Sig[] = [
     { name: "2yr/10yr Yield Spread",  w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
     { name: "3mo/10yr Yield Spread",  w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
@@ -407,6 +418,16 @@ function computeLiveRegimeKeys(
     // Above/below-trend growth LEVEL (Investment Clock's own growth-axis definition),
     // distinct from the momentum signals above. Quarterly — lower weight, slow-moving anchor
     { name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
+    // Labor data — previously absent from the growth axis entirely (credit
+    // and GDP data are lagging confirmations of a growth turn; payrolls and
+    // claims lead it). Weighted comparably to the credit signals above, not
+    // as a minor addendum. Kept in sync with fetch-macro-data's identical G array.
+    { name: "Payrolls (3M Avg)", w: 0.20, vote: v => v > 100 ? 1 : v >= 0 ? 0 : -1 },
+    { name: "Unemployment Rate Trend", w: 0.15, vote: v => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
+    // Weekly, ~1-week lag — the fastest-reacting growth signal in this
+    // composite, standing in for the ISM employment sub-index (not available
+    // for free scraping).
+    { name: "Initial Jobless Claims Trend", w: 0.15, vote: v => v < 0 ? 1 : v <= 5 ? 0 : -1 },
   ];
   const I: Sig[] = [
     // 3-month pp-change signals, in raw percentage points (not relative % —
@@ -416,10 +437,12 @@ function computeLiveRegimeKeys(
     // (also why it's weighted lower here).
     { name: "CPI (YoY)",                       w: 0.20, usePP3m: true,   vote: v => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
     { name: "PPI (YoY)",                       w: 0.10, usePP3m: true,   vote: v => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
-    { name: "10Y Breakeven Inflation",         w: 0.20,                 vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
+    { name: "10Y Breakeven Inflation",         w: 0.20,                 vote: v => v > FED_INFLATION_TARGET ? 1 : v >= 1.5 ? 0 : -1 },
     { name: "Consumer Inflation Expectations", w: 0.15,                 vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
     { name: "Copper Price",                    w: 0.15, usePct3m: true, vote: v => v > 5   ? 1 : v >= -5 ? 0 : -1 },
     { name: "WTI Crude Oil",                   w: 0.10, usePct3m: true, vote: v => v > 5   ? 1 : v >= -5 ? 0 : -1 },
+    // Explicit shock override — see fetch-macro-data's identical entry.
+    { name: "WTI Crude Oil (Shock)", sourceName: "WTI Crude Oil", w: 0.15, useShortPct: true, shockGate: true, vote: v => v > 10 ? 1 : v < -10 ? -1 : 0 },
     { name: "M2 Growth (YoY)",                 w: 0.10,                 vote: v => v > 8   ? 1 : v >= 3  ? 0 : -1 },
     // Leads realized inflation by ~6-12mo (Merrill Lynch Investment Clock) — tight
     // capacity is genuinely forward-looking, unlike CPI/PPI trend which are coincident
@@ -439,7 +462,9 @@ function computeLiveRegimeKeys(
   const scoreGroup = (sigs: Sig[]): { signals: Scored[]; score: number | null } => {
     let weighted = 0, totalW = 0;
     const signals = sigs.map((s) => {
-      const val = s.usePct3m ? getMeta3m(s.name) : s.usePP3m ? getPP3m(s.name) : get(s.name);
+      const source = s.sourceName ?? s.name;
+      if (s.shockGate && !getVolShock(source)) return { w: s.w, vote: null };
+      const val = s.useShortPct ? getShortPct(source) : s.usePct3m ? getMeta3m(source) : s.usePP3m ? getPP3m(source) : get(source);
       if (val == null) return { w: s.w, vote: null };
       const v = s.vote(val);
       weighted += v * s.w; totalW += s.w;
@@ -449,7 +474,7 @@ function computeLiveRegimeKeys(
   };
   const growth = scoreGroup(G);
   const infl = scoreGroup(I);
-  const THRESH = 0.05;
+  const THRESH = 0.10; // dead band — see #8 in the regime-calc work order
   const dir = (s: number | null) => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
   const rawGDir = dir(growth.score);
   const rawIDir = dir(infl.score);
@@ -853,6 +878,15 @@ Deno.serve(async (req: Request) => {
       const v = i?.metadata?.change3m_pp;
       return typeof v === "number" ? v : null;
     };
+    const getShortPct = (name: string): number | null => {
+      const i = (macroRows ?? []).find((x: { name: string; metadata: Record<string, unknown> | null }) => x.name === name);
+      const v = i?.metadata?.change_short_pct;
+      return typeof v === "number" ? v : null;
+    };
+    const getVolShock = (name: string): boolean => {
+      const i = (macroRows ?? []).find((x: { name: string; metadata: Record<string, unknown> | null }) => x.name === name);
+      return !!i?.metadata?.vol_shock;
+    };
     const creditIndicatorNames = ["HY Credit Spread (OAS)", "IG Credit Spread (OAS)", "Sr Loan Officer Survey", "C&I Loan Growth (YoY)"];
     const credit: CreditIndicator[] = creditIndicatorNames.map((name) => ({ name, value: get(name), status: getStatus(name) }));
 
@@ -863,7 +897,7 @@ Deno.serve(async (req: Request) => {
     // its nightly update silently failed to run for that day. Computing live
     // means Clio's narrative can never drift from what the Forward Signal tile
     // on the same page shows, regardless of whether the nightly job succeeded.
-    const { structuralKey, marketKey, fwdKey, fwdConf } = computeLiveRegimeKeys(get, getMeta3m, getPP3m);
+    const { structuralKey, marketKey, fwdKey, fwdConf } = computeLiveRegimeKeys(get, getMeta3m, getPP3m, getShortPct, getVolShock);
     const regimeLabel = structuralKey ? (REGIME_LABELS[structuralKey] ?? structuralKey) : "Unknown";
     const marketLabel = marketKey ? (REGIME_LABELS[marketKey] ?? marketKey) : null;
     const fwdLabel = fwdKey ? (REGIME_LABELS[fwdKey] ?? fwdKey) : null;

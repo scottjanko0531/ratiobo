@@ -134,6 +134,9 @@ interface Indicator {
     | "cpi_9m_avg"
     | "mom_change"
     | "mom_pct"
+    | "payrolls_3m_avg"
+    | "unemployment_trend"
+    | "jobless_claims_trend"
     | "computed"
     | "treasurydirect"
     | "supabase_debt_cycle"
@@ -149,6 +152,7 @@ interface Indicator {
     | "silver_3m_avg"
     | "cb_gold_imf"
     | "level_with_3m"
+    | "level_with_shock"
     | "yoy_monthly_with_3m"
     | "yahoo_price_with_3m"
     | "supabase_lei"
@@ -475,6 +479,27 @@ const INDICATORS: Indicator[] = [
     statusFn: v => v < 5 ? "healthy" : v < 7 ? "watch" : "danger",
   },
   {
+    name: "Unemployment Rate Trend", layer: 3, layer_name: "Business Cycle",
+    description: "Current unemployment rate minus its own 6-month trailing average — a rising deviation means the labor market is deteriorating relative to its recent trend, a leading growth-axis signal credit and GDP data only confirm months later.",
+    fred_series_id: "UNRATE", unit: "pp", data_source: "fred", sort_order: 175,
+    series: "UNRATE", type: "unemployment_trend",
+    statusFn: v => v < 0 ? "healthy" : v <= 0.1 ? "watch" : "danger",
+  },
+  {
+    name: "Payrolls (3M Avg)", layer: 3, layer_name: "Business Cycle",
+    description: "3-month trailing average of monthly nonfarm payroll change — smooths the single-month print used by \"Nonfarm Payrolls (MoM)\" so one noisy report (or a batch of downward revisions) doesn't dominate the growth-axis read.",
+    fred_series_id: "PAYEMS", unit: "K", data_source: "fred", sort_order: 176,
+    series: "PAYEMS", type: "payrolls_3m_avg",
+    statusFn: v => v > 100 ? "healthy" : v >= 0 ? "watch" : "danger",
+  },
+  {
+    name: "Initial Jobless Claims Trend", layer: 3, layer_name: "Business Cycle",
+    description: "% change in the 4-week average of initial unemployment claims vs. the prior 4-week average — the fastest-moving labor series available (weekly, ~1-week lag), substituting for an ISM employment sub-index that isn't published for free scraping.",
+    fred_series_id: "ICSA", unit: "%", data_source: "fred", sort_order: 177,
+    series: "ICSA", type: "jobless_claims_trend",
+    statusFn: v => v < 0 ? "healthy" : v <= 5 ? "watch" : "danger",
+  },
+  {
     name: "CPI (YoY)", layer: 3, layer_name: "Business Cycle",
     description: "Headline consumer inflation — price stability",
     fred_series_id: "CPIAUCSL", unit: "%", data_source: "fred", sort_order: 18,
@@ -625,9 +650,9 @@ const INDICATORS: Indicator[] = [
   // ── LAYER 3 additions: Oil, Energy, Copper ──
   {
     name: "WTI Crude Oil", layer: 3, layer_name: "Business Cycle",
-    description: "West Texas Intermediate spot price — energy cost signal; >20% spike in 30 days is a regime trigger",
+    description: "West Texas Intermediate spot price — energy cost signal; >20% spike in 30 days is a regime trigger. Carries a short-window (~3-week) momentum term and a realized-volatility shock flag alongside the 3-month trend, since a 3-month average structurally lags a shock that's only weeks old (e.g. a Strait of Hormuz-style supply event).",
     fred_series_id: "DCOILWTICO", unit: "$/bbl", data_source: "fred", sort_order: 290,
-    series: "DCOILWTICO", type: "level_with_3m",
+    series: "DCOILWTICO", type: "level_with_shock",
     statusFn: v => v < 70 ? "healthy" : v < 90 ? "watch" : "danger",
   },
   {
@@ -713,6 +738,42 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         }
         break;
       }
+      case "level_with_shock": {
+        // Same current/previous + 3-month trend as level_with_3m, plus two
+        // fast-reacting terms a 3-month average structurally can't capture:
+        // a ~3-week (15 trading day) momentum reading, and a realized-vol
+        // flag (20-day annualized) marking when the series is in genuine
+        // shock territory, not just its normal chop.
+        const [lvl, monthly, daily] = await Promise.all([
+          fetchFred(ind.series!, 2),
+          fetchFredObsMonthly(ind.series!, 8),
+          fetchFredObs(ind.series!, 40),
+        ]);
+        if (lvl.length < 2) return null;
+        current = lvl[0]; previous = lvl[1];
+        const meta: Record<string, unknown> = {};
+        if (daily.length >= 1) meta.reference_period = daily[0].date;
+        if (monthly.length >= 4) {
+          meta.change3m_pct = Math.round((monthly[0].value / monthly[3].value - 1) * 10000) / 100;
+        }
+        if (daily.length >= 16) {
+          meta.change_short_pct = Math.round((daily[0].value / daily[15].value - 1) * 10000) / 100;
+        }
+        if (daily.length >= 21) {
+          const rets: number[] = [];
+          for (let i = 0; i < 20; i++) rets.push(daily[i].value / daily[i + 1].value - 1);
+          const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+          const variance = rets.reduce((s, r) => s + (r - mean) ** 2, 0) / rets.length;
+          const annualizedVolPct = Math.sqrt(variance) * Math.sqrt(252) * 100;
+          meta.realized_vol_annualized_pct = Math.round(annualizedVolPct * 10) / 10;
+          // WTI's typical annualized vol runs ~30-40%; 55%+ marks a genuine
+          // shock, not routine chop — the explicit override gate for the I
+          // array's shock-only signal.
+          meta.vol_shock = annualizedVolPct > 55;
+        }
+        metadata = Object.keys(meta).length ? meta : undefined;
+        break;
+      }
       case "yoy_monthly": {
         const obs = await fetchFredObs(ind.series!, 26);
         const yoy = yoyPair(obs);
@@ -732,11 +793,17 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const yoy = yoyPair(obs);
         if (!yoy) return null;
         current = yoy.current; previous = yoy.previous;
+        // reference_period: the FRED observation date this reading actually
+        // corresponds to, so the UI can distinguish "current as of the latest
+        // release" from a value that's a month or two stale relative to a
+        // different vintage shown elsewhere (see #6/#10 in the regime-calc
+        // work order — a CPI-vintage mismatch was mistaken for a data error).
+        metadata = { reference_period: obs[0].date };
         if (obs.length >= 4) {
           const ya3 = findYearAgo(obs, obs[3].date);
           if (ya3) {
             const yoy3mAgo = (obs[3].value / ya3.value - 1) * 100;
-            metadata = { change3m_pp: Math.round((yoy.current - yoy3mAgo) * 100) / 100 };
+            metadata.change3m_pp = Math.round((yoy.current - yoy3mAgo) * 100) / 100;
           }
         }
         break;
@@ -753,6 +820,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const yoy = yoyPair(obs);
         if (!yoy) return null;
         current = yoy.current; previous = yoy.previous;
+        metadata = { reference_period: obs[0].date };
         break;
       }
       case "gdp_2q_avg": {
@@ -775,6 +843,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const window = 2;
         current  = yoyRates.slice(0, window).reduce((a, b) => a + b, 0) / window;
         previous = yoyRates.slice(1, window + 1).reduce((a, b) => a + b, 0) / window;
+        metadata = { reference_period: obs[0].date };
         break;
       }
       case "gdp_4q_avg": {
@@ -793,6 +862,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const window = 4;
         current  = yoyRates.slice(0, window).reduce((a, b) => a + b, 0) / window;
         previous = yoyRates.slice(1, window + 1).reduce((a, b) => a + b, 0) / window;
+        metadata = { reference_period: obs[0].date };
         break;
       }
       case "cpi_3m_avg": {
@@ -813,6 +883,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const window = 3;
         current  = yoyRates.slice(0, window).reduce((a, b) => a + b, 0) / window;
         previous = yoyRates.slice(1, window + 1).reduce((a, b) => a + b, 0) / window;
+        metadata = { reference_period: obs[0].date };
         break;
       }
       case "cpi_9m_avg": {
@@ -830,6 +901,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const window = 9;
         current  = yoyRates.slice(0, window).reduce((a, b) => a + b, 0) / window;
         previous = yoyRates.slice(1, window + 1).reduce((a, b) => a + b, 0) / window;
+        metadata = { reference_period: obs[0].date };
         break;
       }
       case "mom_change": {
@@ -843,6 +915,51 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         if (obs.length < 3 || obs[1] === 0 || obs[2] === 0) return null;
         current  = (obs[0] / obs[1] - 1) * 100;
         previous = (obs[1] / obs[2] - 1) * 100;
+        break;
+      }
+      case "payrolls_3m_avg": {
+        // Monthly job change is level[i] - level[i+1]; average the 3 most
+        // recent monthly changes rather than voting on a single print, which
+        // a batch of downward revisions (or one weak/strong outlier month)
+        // can swing sharply on its own.
+        const obs = await fetchFredObs(ind.series!, 6);
+        if (obs.length < 6) return null;
+        const changes: number[] = [];
+        for (let i = 0; i < 5; i++) changes.push(obs[i].value - obs[i + 1].value);
+        const window = 3;
+        current  = changes.slice(0, window).reduce((a, b) => a + b, 0) / window;
+        previous = changes.slice(1, window + 1).reduce((a, b) => a + b, 0) / window;
+        metadata = { reference_period: obs[0].date };
+        break;
+      }
+      case "unemployment_trend": {
+        // Deviation of the current reading from its own trailing 6-month
+        // average, in percentage points — positive means unemployment is
+        // running above its recent trend (labor market weakening).
+        const obs = await fetchFredObs(ind.series!, 8);
+        if (obs.length < 8) return null;
+        const window = 6;
+        const trail0 = obs.slice(1, window + 1).reduce((a, b) => a + b.value, 0) / window;
+        const trail1 = obs.slice(2, window + 2).reduce((a, b) => a + b.value, 0) / window;
+        current  = obs[0].value - trail0;
+        previous = obs[1].value - trail1;
+        metadata = { reference_period: obs[0].date };
+        break;
+      }
+      case "jobless_claims_trend": {
+        // % change in the trailing 4-week average vs. the prior 4-week
+        // average — smooths weekly claims noise while staying much faster
+        // than a monthly payrolls print.
+        const obs = await fetchFredObs(ind.series!, 12);
+        if (obs.length < 12) return null;
+        const avgOf = (arr: { value: number }[]) => arr.reduce((a, b) => a + b.value, 0) / arr.length;
+        const latest4 = avgOf(obs.slice(0, 4));
+        const prior4  = avgOf(obs.slice(4, 8));
+        const priorPrior4 = avgOf(obs.slice(8, 12));
+        if (prior4 <= 0 || priorPrior4 <= 0) return null;
+        current  = (latest4 / prior4 - 1) * 100;
+        previous = (prior4 / priorPrior4 - 1) * 100;
+        metadata = { latest_4wk_avg: Math.round(latest4), reference_period: obs[0].date };
         break;
       }
       case "computed": {
@@ -1036,7 +1153,10 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         if (leiErr || !leiRows || leiRows.length < 2) return null;
         current  = Number(leiRows[0].mom_pct);
         previous = Number(leiRows[1].mom_pct);
-        metadata = { level: Number(leiRows[0].level), period: leiRows[0].period_date };
+        // is_nowcast: LEI is a composite index published by the Conference
+        // Board, not a hard government release like GDP/CPI/payrolls — flag
+        // it distinctly per #6 in the regime-calc work order.
+        metadata = { level: Number(leiRows[0].level), reference_period: leiRows[0].period_date, is_nowcast: true };
         break;
       }
       case "supabase_ism": {
@@ -1049,7 +1169,12 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         if (ismErr || !ismRows || ismRows.length < 2) return null;
         current  = Number(ismRows[0].pmi);
         previous = Number(ismRows[1].pmi);
-        metadata = { new_orders: ismRows[0].new_orders != null ? Number(ismRows[0].new_orders) : null, period: ismRows[0].period_date };
+        // is_nowcast: ISM PMI is a survey-based diffusion index (a nowcast of
+        // manufacturing activity), not a hard government release.
+        metadata = {
+          new_orders: ismRows[0].new_orders != null ? Number(ismRows[0].new_orders) : null,
+          reference_period: ismRows[0].period_date, is_nowcast: true,
+        };
         break;
       }
       case "supabase_liquidity": {
@@ -1303,8 +1428,23 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
   }
 }
 
+// CBO's rough current estimate of potential real GDP growth (~1.8–2.0%);
+// update periodically as CBO revises its own estimate. A crossover barely
+// above the slow line no longer counts as "growing" on its own — it must
+// also clear a minimum gap AND not be running meaningfully below potential,
+// so a decelerating-but-technically-positive read (e.g. 2.39% vs 2.28%, the
+// live case that motivated this) correctly resolves to the growth-down side
+// of the quadrant instead of "Expanding."
+const POTENTIAL_GDP_GROWTH = 1.9;
+const GROWTH_MIN_GAP = 0.15; // pp — fast line must clear the slow line by more than this
+const POTENTIAL_FLOOR_FRACTION = 0.85; // fast line must be at least this fraction of potential
+
+// The Fed's actual inflation mandate, not an arbitrary round number. Kept in
+// sync with the identical constant in lib/simulatorKeys.js/get-regime-analysis.
+const FED_INFLATION_TARGET = 2.0;
+
 function detectRegimeKey(gdpYoy: number, cpiYoy: number, gdp3y: number, inflThreshold: number): string {
-  const growing = gdpYoy > gdp3y;
+  const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP) && (gdpYoy > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION);
   const rising  = cpiYoy > inflThreshold;
   if (growing && !rising) return "rg_fi";
   if (growing && rising)  return "rg_ri";
@@ -1435,7 +1575,25 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     const v = (r?.metadata as Record<string, unknown> | undefined)?.change3m_pp;
     return v != null ? Number(v) : null;
   };
-  type Sig = { name: string; w: number; vote: (v: number) => number; usePct3m?: boolean; usePP3m?: boolean };
+  // ~3-week momentum and the shock-vol flag, stored in metadata by the
+  // level_with_shock processor (WTI) — see #4 in the regime-calc work order.
+  const getShortPct = (name: string) => {
+    const r = rows.find(r => r.name === name);
+    const v = (r?.metadata as Record<string, unknown> | undefined)?.change_short_pct;
+    return v != null ? Number(v) : null;
+  };
+  const getVolShock = (name: string): boolean => {
+    const r = rows.find(r => r.name === name);
+    return !!(r?.metadata as Record<string, unknown> | undefined)?.vol_shock;
+  };
+  type Sig = {
+    name: string; w: number; vote: (v: number) => number;
+    usePct3m?: boolean; usePP3m?: boolean; useShortPct?: boolean;
+    // When set, this signal only participates (and only then does its weight
+    // count) while getVolShock(sourceName ?? name) is true — an explicit
+    // override, not a silent blend into the always-on 3-month term.
+    shockGate?: boolean; sourceName?: string;
+  };
   const G: Sig[] = [
     { name: "2yr/10yr Yield Spread",  w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
     { name: "3mo/10yr Yield Spread",  w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
@@ -1450,6 +1608,21 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     // Above/below-trend growth LEVEL (Investment Clock's own growth-axis definition),
     // distinct from the momentum signals above. Quarterly — lower weight, slow-moving anchor
     { name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
+    // Labor data — previously absent from the growth axis entirely (credit
+    // and GDP data are lagging confirmations of a growth turn; payrolls and
+    // claims lead it). Weighted comparably to the credit signals above, not
+    // as a minor addendum.
+    { name: "Payrolls (3M Avg)", w: 0.20, vote: v => v > 100 ? 1 : v >= 0 ? 0 : -1 },
+    { name: "Unemployment Rate Trend", w: 0.15, vote: v => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
+    // Weekly, ~1-week lag — the fastest-reacting growth signal in this
+    // composite, standing in for the ISM employment sub-index (not available
+    // for free scraping).
+    { name: "Initial Jobless Claims Trend", w: 0.15, vote: v => v < 0 ? 1 : v <= 5 ? 0 : -1 },
+    // NOT implemented: discounting a payrolls print when prior months were
+    // revised down. That needs a per-reference-month value-history table
+    // (nothing today stores "what PAYEMS said for June" as observed on two
+    // different dates, only the latest FRED pull) — a real schema addition,
+    // deliberately deferred rather than approximated.
   ];
   const I: Sig[] = [
     // 3-month pp-change signals: CPI/PPI trend captures disinflation momentum
@@ -1459,12 +1632,17 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     // weighted lower here).
     { name: "CPI (YoY)",                       w: 0.20, usePP3m: true,  vote: v => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
     { name: "PPI (YoY)",                       w: 0.10, usePP3m: true,  vote: v => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
-    { name: "10Y Breakeven Inflation",         w: 0.20,                vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
+    { name: "10Y Breakeven Inflation",         w: 0.20,                vote: v => v > FED_INFLATION_TARGET ? 1 : v >= 1.5 ? 0 : -1 },
     // Threshold raised: readings below 5.5% may reflect tariff shock, not structural demand inflation
     { name: "Consumer Inflation Expectations", w: 0.15,                vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
     // 3M momentum (not absolute level) matches the frontend's getPct3m approach
     { name: "Copper Price",                    w: 0.15, usePct3m: true, vote: v => v > 5  ? 1 : v >= -5 ? 0 : -1 },
     { name: "WTI Crude Oil",                   w: 0.10, usePct3m: true, vote: v => v > 5  ? 1 : v >= -5 ? 0 : -1 },
+    // Explicit shock override: only scores while WTI's realized vol is
+    // flagged (level_with_shock's vol_shock, >55% annualized) — a 3-month
+    // trend structurally lags a shock that's only weeks old. Silent (does
+    // not participate) outside of a shock, not blended into the line above.
+    { name: "WTI Crude Oil (Shock)", sourceName: "WTI Crude Oil", w: 0.15, useShortPct: true, shockGate: true, vote: v => v > 10 ? 1 : v < -10 ? -1 : 0 },
     { name: "M2 Growth (YoY)",                 w: 0.10,                vote: v => v > 8   ? 1 : v >= 3  ? 0 : -1 },
     // Leads realized inflation by ~6-12mo (Merrill Lynch Investment Clock) — tight
     // capacity is genuinely forward-looking, unlike CPI/PPI trend which are coincident
@@ -1484,7 +1662,9 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
   const scoreGroup = (sigs: Sig[]): { signals: ScoreSig[]; score: number | null } => {
     let weighted = 0, totalW = 0;
     const signals: ScoreSig[] = sigs.map(s => {
-      const val = s.usePct3m ? getPct3m(s.name) : s.usePP3m ? getPP3m(s.name) : get(s.name);
+      const source = s.sourceName ?? s.name;
+      if (s.shockGate && !getVolShock(source)) return { w: s.w, vote: null };
+      const val = s.useShortPct ? getShortPct(source) : s.usePct3m ? getPct3m(source) : s.usePP3m ? getPP3m(source) : get(source);
       if (val == null) return { w: s.w, vote: null };
       const v = s.vote(val);
       weighted += v * s.w; totalW += s.w;
@@ -1494,7 +1674,7 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
   };
   const growth = scoreGroup(G);
   const infl   = scoreGroup(I);
-  const THRESH = 0.05;
+  const THRESH = 0.10; // dead band — see #8 in the regime-calc work order
   const dir = (s: number | null) => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
   const rawGDir = dir(growth.score);
   const rawIDir = dir(infl.score);
@@ -1619,7 +1799,7 @@ async function backfillForwardSignals(): Promise<void> {
     ];
     const IS: MapSig[] = [
       { map: mkMich,    w: 0.20, vote: v => v > 4    ? 1 : v >= 2.5 ? 0 : -1 },
-      { map: mkT10yie,  w: 0.20, vote: v => v > 2.5  ? 1 : v >= 1.5 ? 0 : -1 },
+      { map: mkT10yie,  w: 0.20, vote: v => v > FED_INFLATION_TARGET ? 1 : v >= 1.5 ? 0 : -1 },
       { map: mkCopper,  w: 0.15, vote: v => v > 9000 ? 1 : v >= 7000 ? 0 : -1 },
       { map: mkWti,     w: 0.15, vote: v => v > 90   ? 1 : v >= 70  ? 0 : -1 },
       { map: mkSilver,  w: 0.10, vote: v => v > 35   ? 1 : v >= 25  ? 0 : -1 },
@@ -1640,7 +1820,7 @@ async function backfillForwardSignals(): Promise<void> {
     };
     const fwd = (mk: string): { forwardKey: string | null; confidence: number | null } => {
       const g = sg(GS, mk), inf = sg(IS, mk);
-      const THRESH = 0.05;
+      const THRESH = 0.10; // dead band — see #8 in the regime-calc work order
       const dir = (s: number | null) => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
       const rawGd = dir(g.score), rawId = dir(inf.score);
       // fall back to sign when score is in the neutral band
@@ -1722,12 +1902,14 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       // period — see detectRegimeKey's call below for the actual fast/slow pair.
       gdp_3y_avg: r2(gdpSlow), cpi_3y_avg: r2(cpiSlow),
       structural_key: detectRegimeKey(gdpFast, cpiFast, gdpSlow, cpiSlow),
-      // Market regime: use breakeven vs 2.5% threshold — is market pricing sustained inflation?
-      // cpiYoy > breakeven means markets expect disinflation, not that inflation is surprising upside.
-      // Growth leg reuses the same fast/slow crossover as the structural regime.
+      // Market regime: use breakeven vs the Fed's own FED_INFLATION_TARGET
+      // (2%, not an arbitrary 2.5%) — is market pricing sustained inflation
+      // above the Fed's real mandate? cpiYoy > breakeven means markets expect
+      // disinflation, not that inflation is surprising upside. Growth leg
+      // reuses the same fast/slow crossover as the structural regime.
       market_key: (() => {
-        const mktInflUp = (bre ?? 2.5) > 2.5;
-        const mktGrowthUp = gdpFast > gdpSlow;
+        const mktInflUp = (bre ?? FED_INFLATION_TARGET) > FED_INFLATION_TARGET;
+        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP) && (gdpFast > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION);
         return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })(),
       forward_key: forwardKey,
@@ -2370,6 +2552,31 @@ async function generateNotifications(): Promise<void> {
   } catch (e) { console.error("[notify]", e); }
 }
 
+// #10 in the regime-calc work order: a CPI discrepancy (3.3% dashboard vs.
+// 3.4% reported elsewhere) turned out to be a headline-vs-core mismatch, not
+// a data error — but there was no automated check to distinguish the two
+// cases. Core inflation running >3pp away from headline is unusual
+// historically (core typically tracks close to headline, sometimes above
+// it during energy/food-driven headline swings) and worth a flag either way.
+async function checkCpiCoreDivergence(rows: ProcessedRow[]): Promise<void> {
+  try {
+    const headline = rows.find(r => r.name === "CPI (YoY)");
+    const core = rows.find(r => r.name === "Core CPI (YoY)");
+    if (!headline || !core) return;
+    const diff = Number(headline.current_value) - Number(core.current_value);
+    if (Math.abs(diff) <= 3.0) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const { error } = await supabase.from("notifications").upsert({
+      category: "indicator", type: "value_change", importance: "medium",
+      title: `Headline/Core CPI divergence: ${Math.abs(diff).toFixed(1)}pp apart`,
+      description: `Headline CPI ${Number(headline.current_value).toFixed(1)}% vs Core CPI ${Number(core.current_value).toFixed(1)}% — unusually wide for these two series; confirm both are on the same vintage/reference period before treating a card mismatch elsewhere as a bug.`,
+      metadata: { headline_cpi: Number(headline.current_value), core_cpi: Number(core.current_value), diff_pp: Math.round(diff * 100) / 100 },
+      dedup_key: `cpi_core_divergence:${today}`,
+    }, { onConflict: "dedup_key", ignoreDuplicates: true });
+    if (error) console.error("[cpi_core_divergence] upsert:", error);
+  } catch (e) { console.error("[cpi_core_divergence]", e); }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (!apiKey) return new Response(JSON.stringify({ error: "FRED_API_KEY not set" }), { status: 500, headers: { ...CORS, "Content-Type": "application/json" } });
@@ -2420,6 +2627,7 @@ Deno.serve(async (req: Request) => {
     await updateConsumerExpectations();
     await generateNotifications();
     await generateSovereignRiskNotifications();
+    await checkCpiCoreDivergence(rows);
   })());
   return new Response(
     JSON.stringify({
