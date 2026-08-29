@@ -971,17 +971,21 @@ function growthStateLabel(fast, slow) {
   return { label: "→ Decelerating", color: "text-brass-soft" };
 }
 
-// Data vintage: which FRED release period a reading actually corresponds to,
-// and whether it's a hard release vs. a nowcast (LEI/ISM). Scoped to the
-// regime-driving indicators shown in the Regime Signal Comparison / Forward
-// Signal panels, not every indicator card site-wide — see #6 in the
-// regime-calc work order (a CPI vintage mismatch was mistaken for a bug).
+// Data vintage: which FRED release period a reading actually corresponds
+// to, and whether it's a hard government release vs. a survey/composite
+// index (LEI/ISM) — NOT the same as a "nowcast" (a model-based estimate
+// standing in for a not-yet-released hard number, e.g. GDPNow). LEI/ISM
+// are real, finalized monthly releases; mislabeling them "nowcast" would
+// make solid data look provisional, exactly the kind of mislabeling #6
+// was meant to prevent. Scoped to the regime-driving indicators shown in
+// the Regime Signal Comparison / Forward Signal panels and the Daily
+// Macro Summary, not every indicator card site-wide.
 function vintageLabel(ind) {
   const period = ind?.metadata?.reference_period;
   if (!period) return null;
   const d = new Date(period + "T00:00:00Z");
   const formatted = d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
-  return ind.metadata.is_nowcast ? `${formatted} · nowcast` : formatted;
+  return ind.metadata.is_survey ? `${formatted} · survey` : formatted;
 }
 
 // 2-of-3 majority across Structural / Market Expectations / Forward Signal.

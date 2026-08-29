@@ -1165,10 +1165,14 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         if (leiErr || !leiRows || leiRows.length < 2) return null;
         current  = Number(leiRows[0].mom_pct);
         previous = Number(leiRows[1].mom_pct);
-        // is_nowcast: LEI is a composite index published by the Conference
-        // Board, not a hard government release like GDP/CPI/payrolls — flag
-        // it distinctly per #6 in the regime-calc work order.
-        metadata = { level: Number(leiRows[0].level), reference_period: leiRows[0].period_date, is_nowcast: true };
+        // is_survey: LEI is a composite index published by the Conference
+        // Board — a genuine, finalized monthly release, just not a hard
+        // government statistic like GDP/CPI/payrolls. NOT a "nowcast"
+        // (a model-based estimate of a not-yet-released hard number, e.g.
+        // GDPNow) — flagging it that way would mislabel solid data as
+        // provisional. Flagged distinctly per #6 in the regime-calc work
+        // order so the UI can note "survey/composite" vs. "hard release."
+        metadata = { level: Number(leiRows[0].level), reference_period: leiRows[0].period_date, is_survey: true };
         break;
       }
       case "supabase_ism": {
@@ -1181,11 +1185,14 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         if (ismErr || !ismRows || ismRows.length < 2) return null;
         current  = Number(ismRows[0].pmi);
         previous = Number(ismRows[1].pmi);
-        // is_nowcast: ISM PMI is a survey-based diffusion index (a nowcast of
-        // manufacturing activity), not a hard government release.
+        // is_survey: ISM PMI is a survey-based diffusion index — a real,
+        // finalized monthly release from ISM's member survey, not a hard
+        // government release like GDP/CPI, but also not a "nowcast" (a
+        // model-based estimate standing in for a not-yet-released hard
+        // number). See the identical note on supabase_lei above.
         metadata = {
           new_orders: ismRows[0].new_orders != null ? Number(ismRows[0].new_orders) : null,
-          reference_period: ismRows[0].period_date, is_nowcast: true,
+          reference_period: ismRows[0].period_date, is_survey: true,
         };
         break;
       }
