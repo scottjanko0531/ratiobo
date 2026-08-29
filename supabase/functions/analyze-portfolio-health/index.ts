@@ -100,13 +100,15 @@ async function generatePortfolioAnalysis(params: {
   portfolio: Portfolio;
   summary: ReturnType<typeof computePortfolioSummary>;
   dayChg: number | null;
+  today: string;
   structuralRegime: string | null; marketRegime: string | null; forwardConfidence: number | null;
   clioAnalysis: string | null; clioMusing: string | null;
   macroStatusCounts: { healthy: number; watch: number; danger: number };
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY) return null;
   try {
-    const { portfolio, summary, dayChg, structuralRegime, marketRegime, forwardConfidence, clioAnalysis, clioMusing, macroStatusCounts } = params;
+    const { portfolio, summary, dayChg, today, structuralRegime, marketRegime, forwardConfidence, clioAnalysis, clioMusing, macroStatusCounts } = params;
+    const todayFormatted = new Date(today + "T00:00:00Z").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
     const usd = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`;
     const bandPct = portfolio.rebalance_band_pct ?? 5;
@@ -138,6 +140,8 @@ async function generatePortfolioAnalysis(params: {
     );
 
     const prompt = `You are Clio, macro analyst at RatioBo. You already wrote today's regime analysis and news musing (both below). Now assess this ONE portfolio specifically against that backdrop. Write direct, sharp analysis — no hedging language, no fluff, under 350 words total. No markdown headers, no bold, no title line.
+
+TODAY'S DATE: ${todayFormatted}. Use this as the actual current date for any date references, year mentions, or forward-looking horizons (e.g. "into next year," "through 2027") — do not default to your training-data cutoff or any other year.
 
 PORTFOLIO: ${portfolio.portfolio_name}
 ${portfolio.description ? `Description: ${portfolio.description}` : ""}
@@ -229,7 +233,7 @@ async function analyzeOnePortfolio(
     }
 
     const analysis = await generatePortfolioAnalysis({
-      portfolio, summary, dayChg,
+      portfolio, summary, dayChg, today,
       structuralRegime: macroCtx.structuralRegime, marketRegime: macroCtx.marketRegime,
       forwardConfidence: macroCtx.forwardConfidence,
       clioAnalysis: macroCtx.clioAnalysis, clioMusing: macroCtx.clioMusing,
