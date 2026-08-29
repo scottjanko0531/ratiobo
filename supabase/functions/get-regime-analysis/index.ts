@@ -362,8 +362,27 @@ const POTENTIAL_FLOOR_FRACTION = 0.85;
 // The Fed's actual inflation mandate, not an arbitrary round number.
 const FED_INFLATION_TARGET = 2.0;
 
-function detectRegimeKeyLive(gdpYoy: number, cpiYoy: number, gdp3y: number, cpi3y: number): string {
-  const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP) && (gdpYoy > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION);
+// Labor veto for the growth axis (see lib/simulatorKeys.js's
+// isLaborDeteriorating, the canonical copy — kept in sync manually): a GDP
+// crossover that would otherwise read "Expanding" gets pulled down on a
+// 2-of-3 majority of payrolls/unemployment/claims deterioration. Null
+// inputs don't vote; fewer than 2 votes present skips the veto.
+function isLaborDeteriorating(payrolls3mAvg: number | null, unemploymentTrend: number | null, joblessClaimsTrend: number | null): boolean {
+  const votes = [
+    payrolls3mAvg      != null ? payrolls3mAvg < 0        : null,
+    unemploymentTrend  != null ? unemploymentTrend > 0.1  : null,
+    joblessClaimsTrend != null ? joblessClaimsTrend > 0   : null,
+  ].filter((v): v is boolean => v !== null);
+  if (votes.length < 2) return false;
+  return votes.filter(Boolean).length >= 2;
+}
+
+function detectRegimeKeyLive(
+  gdpYoy: number, cpiYoy: number, gdp3y: number, cpi3y: number,
+  laborInputs?: { payrolls3mAvg: number | null; unemploymentTrend: number | null; joblessClaimsTrend: number | null },
+): string {
+  const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP) && (gdpYoy > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION)
+    && !(laborInputs && isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend));
   const rising = cpiYoy > cpi3y;
   if (growing && !rising) return "rg_fi";
   if (growing && rising) return "rg_ri";
@@ -387,15 +406,25 @@ function computeLiveRegimeKeys(
   const cpiFast = get("CPI Growth (3M Avg)");
   const cpiSlow = get("CPI Growth (9M Avg)");
   const breakeven = get("10Y Breakeven Inflation");
+  // Labor veto inputs (see isLaborDeteriorating) — same three indicators
+  // already read into the G array below, reused here so payrolls/
+  // unemployment/claims deterioration can move the Structural/Market
+  // classifiers directly, not just the Forward Signal composite score.
+  const laborInputs = {
+    payrolls3mAvg:      get("Payrolls (3M Avg)"),
+    unemploymentTrend:  get("Unemployment Rate Trend"),
+    joblessClaimsTrend: get("Initial Jobless Claims Trend"),
+  };
 
   const structuralKey = gdpFast != null && cpiFast != null
-    ? detectRegimeKeyLive(gdpFast, cpiFast, gdpSlow ?? 0, cpiSlow ?? cpiFast)
+    ? detectRegimeKeyLive(gdpFast, cpiFast, gdpSlow ?? 0, cpiSlow ?? cpiFast, laborInputs)
     : null;
 
   const marketKey = gdpFast != null && gdpSlow != null
     ? (() => {
         const mktInflUp = (breakeven ?? FED_INFLATION_TARGET) > FED_INFLATION_TARGET;
-        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP) && (gdpFast > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION);
+        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP) && (gdpFast > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION)
+          && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
         return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })()
     : null;

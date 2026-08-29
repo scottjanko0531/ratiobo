@@ -713,6 +713,18 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
     let metadata: Record<string, unknown> | undefined;
     switch (ind.type) {
       case "level": {
+        // 10Y Breakeven Inflation is a regime-driving input (market-
+        // expectations lens) — special-cased to also capture its
+        // reference_period, matching the other ~10 regime indicators (#6 in
+        // the regime-calc work order), rather than widening this to every
+        // "level"-type indicator site-wide.
+        if (ind.name === "10Y Breakeven Inflation") {
+          const obs = await fetchFredObs(ind.series!, 2);
+          if (obs.length < 2) return null;
+          current = obs[0].value; previous = obs[1].value;
+          metadata = { reference_period: obs[0].date };
+          break;
+        }
         const obs = await fetchFred(ind.series!, 2);
         if (obs.length < 2) return null;
         current = obs[0]; previous = obs[1];
@@ -1443,8 +1455,28 @@ const POTENTIAL_FLOOR_FRACTION = 0.85; // fast line must be at least this fracti
 // sync with the identical constant in lib/simulatorKeys.js/get-regime-analysis.
 const FED_INFLATION_TARGET = 2.0;
 
-function detectRegimeKey(gdpYoy: number, cpiYoy: number, gdp3y: number, inflThreshold: number): string {
-  const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP) && (gdpYoy > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION);
+// Labor veto for the growth axis: a GDP crossover that would otherwise read
+// "Expanding" gets pulled down when the labor market is actively cracking,
+// on a 2-of-3 majority of the same thresholds used for those indicators'
+// own status badges elsewhere in this file — see lib/simulatorKeys.js's
+// isLaborDeteriorating (canonical copy; kept in sync manually). Any null
+// input doesn't vote; fewer than 2 votes present skips the veto.
+function isLaborDeteriorating(payrolls3mAvg: number | null, unemploymentTrend: number | null, joblessClaimsTrend: number | null): boolean {
+  const votes = [
+    payrolls3mAvg      != null ? payrolls3mAvg < 0        : null,
+    unemploymentTrend  != null ? unemploymentTrend > 0.1  : null,
+    joblessClaimsTrend != null ? joblessClaimsTrend > 0   : null,
+  ].filter((v): v is boolean => v !== null);
+  if (votes.length < 2) return false;
+  return votes.filter(Boolean).length >= 2;
+}
+
+function detectRegimeKey(
+  gdpYoy: number, cpiYoy: number, gdp3y: number, inflThreshold: number,
+  laborInputs?: { payrolls3mAvg: number | null; unemploymentTrend: number | null; joblessClaimsTrend: number | null },
+): string {
+  const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP) && (gdpYoy > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION)
+    && !(laborInputs && isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend));
   const rising  = cpiYoy > inflThreshold;
   if (growing && !rising) return "rg_fi";
   if (growing && rising)  return "rg_ri";
@@ -1858,6 +1890,9 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const gdpSlowRow = processedRows.find(r => r.name === "GDP Growth (4Q Avg)");
     const cpiFastRow = processedRows.find(r => r.name === "CPI Growth (3M Avg)");
     const cpiSlowRow = processedRows.find(r => r.name === "CPI Growth (9M Avg)");
+    const payrollsRow    = processedRows.find(r => r.name === "Payrolls (3M Avg)");
+    const unrateTrendRow = processedRows.find(r => r.name === "Unemployment Rate Trend");
+    const claimsTrendRow = processedRows.find(r => r.name === "Initial Jobless Claims Trend");
     if (!gdpRow || !cpiRow) return;
 
     // Consumer Inflation Expectations is not in processedRows (it's written by updateConsumerExpectations
@@ -1886,6 +1921,11 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const gdpSlow = gdpSlowRow ? Number(gdpSlowRow.current_value) : 0;
     const cpiFast = cpiFastRow ? Number(cpiFastRow.current_value) : cpiYoy;
     const cpiSlow = cpiSlowRow ? Number(cpiSlowRow.current_value) : cpiYoy;
+    const laborInputs = {
+      payrolls3mAvg:      payrollsRow?.current_value    != null ? Number(payrollsRow.current_value)    : null,
+      unemploymentTrend:  unrateTrendRow?.current_value  != null ? Number(unrateTrendRow.current_value)  : null,
+      joblessClaimsTrend: claimsTrendRow?.current_value  != null ? Number(claimsTrendRow.current_value)  : null,
+    };
 
     const now = new Date();
     const q = Math.floor(now.getUTCMonth() / 3);
@@ -1901,15 +1941,17 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       // avg) side of the crossover, not a 3-year average or a single prior
       // period — see detectRegimeKey's call below for the actual fast/slow pair.
       gdp_3y_avg: r2(gdpSlow), cpi_3y_avg: r2(cpiSlow),
-      structural_key: detectRegimeKey(gdpFast, cpiFast, gdpSlow, cpiSlow),
+      structural_key: detectRegimeKey(gdpFast, cpiFast, gdpSlow, cpiSlow, laborInputs),
       // Market regime: use breakeven vs the Fed's own FED_INFLATION_TARGET
       // (2%, not an arbitrary 2.5%) — is market pricing sustained inflation
       // above the Fed's real mandate? cpiYoy > breakeven means markets expect
       // disinflation, not that inflation is surprising upside. Growth leg
-      // reuses the same fast/slow crossover as the structural regime.
+      // reuses the same fast/slow crossover as the structural regime, plus
+      // the same labor veto (see isLaborDeteriorating).
       market_key: (() => {
         const mktInflUp = (bre ?? FED_INFLATION_TARGET) > FED_INFLATION_TARGET;
-        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP) && (gdpFast > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION);
+        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP) && (gdpFast > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION)
+          && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
         return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })(),
       forward_key: forwardKey,

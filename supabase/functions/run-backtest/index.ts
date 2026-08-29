@@ -241,6 +241,13 @@ const POTENTIAL_GDP_GROWTH = 1.9;
 const GROWTH_MIN_GAP = 0.15;
 const POTENTIAL_FLOOR_FRACTION = 0.85;
 
+// Deliberately excluded from the labor veto that fetch-macro-data/
+// get-regime-analysis apply to their growth axis (see isLaborDeteriorating):
+// this function only has annual GDP/CPI FRED series wired in, with no
+// historical payrolls/unemployment/jobless-claims time series sourced.
+// Backfilling that is a much larger lift (new historical data ingestion) —
+// same kind of scope-out the original regime-calc work order made for the
+// revision-discount term.
 function detectRegimeKey(gdpYoy: number, cpiYoy: number, gdp3y: number, cpi3y: number): string {
   const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP) && (gdpYoy > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION);
   const rising = cpiYoy > cpi3y;

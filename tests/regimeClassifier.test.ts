@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   detectRegimeKey,
   isGrowthExpanding,
+  isLaborDeteriorating,
   POTENTIAL_GDP_GROWTH,
   GROWTH_MIN_GAP,
   POTENTIAL_FLOOR_FRACTION,
@@ -84,5 +85,60 @@ describe("detectRegimeKey — all 4 quadrants are reachable", () => {
       scenarios.map((s) => detectRegimeKey(s.gdp, s.cpi, { breakeven: s.breakeven, gdp3yAvg: s.gdp3yAvg }))
     );
     expect(seen).toEqual(new Set(["rg_fi", "rg_ri", "fg_ri", "fg_fi"]));
+  });
+});
+
+// Regression coverage for the follow-up pass: labor data (payrolls,
+// unemployment trend, jobless claims trend) previously only fed the Forward
+// Signal's composite score — the Structural/Market classifiers ran on GDP
+// alone, so payrolls deterioration couldn't move the headline regime word
+// directly. isLaborDeteriorating + detectRegimeKey's optional labor veto
+// close that gap.
+describe("isLaborDeteriorating", () => {
+  it("is false with no signals present", () => {
+    expect(isLaborDeteriorating(null, null, null)).toBe(false);
+  });
+
+  it("is false with only one signal present (below the 2-vote minimum)", () => {
+    expect(isLaborDeteriorating(-50, null, null)).toBe(false);
+  });
+
+  it("is true on a 2-of-3 majority (payrolls negative + unemployment rising)", () => {
+    expect(isLaborDeteriorating(-50, 0.2, null)).toBe(true);
+  });
+
+  it("is false when only 1-of-3 present signals point to deterioration", () => {
+    expect(isLaborDeteriorating(-50, 0.0, -1.0)).toBe(false);
+  });
+
+  it("is true on a clean 3-of-3", () => {
+    expect(isLaborDeteriorating(-80, 0.3, 2.0)).toBe(true);
+  });
+});
+
+describe("detectRegimeKey — labor veto on the growth axis", () => {
+  it("a marginal GDP crossover that would read Expanding gets pulled down by labor deterioration", () => {
+    // Same GDP/CPI inputs as the rg_ri (Reflation) case above (3.0 vs 2.0,
+    // clears GROWTH_MIN_GAP and the potential floor) — without labor data
+    // this reads rg_ri; with 2-of-3 labor signals deteriorating, it flips to
+    // the growth-down side (fg_ri, Stagflation) instead.
+    const withoutLabor = detectRegimeKey(3.0, 3.5, { breakeven: 2.5, gdp3yAvg: 2.0 });
+    expect(withoutLabor).toBe("rg_ri");
+
+    const withLaborVeto = detectRegimeKey(3.0, 3.5, {
+      breakeven: 2.5, gdp3yAvg: 2.0,
+      payrolls3mAvg: -60, unemploymentTrend: 0.2, joblessClaimsTrend: null,
+    });
+    expect(withLaborVeto).toBe("fg_ri");
+  });
+
+  it("labor strength never manufactures an Expanding read GDP itself doesn't support", () => {
+    // GDP crossover already fails on its own (contracting) — strong labor
+    // data must not flip this to a growth-up quadrant.
+    const key = detectRegimeKey(-1.0, 1.0, {
+      breakeven: 2.5, gdp3yAvg: -0.5,
+      payrolls3mAvg: 200, unemploymentTrend: -0.3, joblessClaimsTrend: -5,
+    });
+    expect(key).toBe("fg_fi");
   });
 });
