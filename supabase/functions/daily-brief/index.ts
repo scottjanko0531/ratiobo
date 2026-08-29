@@ -255,7 +255,9 @@ function buildNarrative(params: {
           hySpread, lei, sloos, inflExp, unrate, debtGdp,
           regimeLabel, fwdLabel, fwdConf, fwdKey } = params;
 
-  const bkv = breakeven ?? 2.5;
+  // FED_INFLATION_TARGET (2%) — the Fed's actual mandate, not the old
+  // arbitrary 2.5% round number. Kept in sync with lib/simulatorKeys.js.
+  const bkv = breakeven ?? 2.0;
   const g3  = gdp3yAvg ?? 0;
 
   const growthStr =
