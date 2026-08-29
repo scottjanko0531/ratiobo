@@ -18,6 +18,10 @@ import {
   BW_ALLOC,
   ILLIQUID_KEYS,
   detectRegimeKey,
+  isGrowthExpanding,
+  POTENTIAL_GDP_GROWTH,
+  POTENTIAL_FLOOR_FRACTION,
+  FED_INFLATION_TARGET,
   resolveSimulatorKey,
   getSignalKeys,
   toIntWeights,
@@ -346,6 +350,11 @@ const FWD_GROWTH_SIGNALS = [
   // Above/below-trend growth LEVEL (Investment Clock's own growth-axis definition),
   // distinct from the momentum signals above. Quarterly — lower weight, slow-moving anchor
   { label: "Output Gap",        name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
+  // Labor data — previously absent from the growth axis entirely. Kept in
+  // sync with the identical G arrays in fetch-macro-data and get-regime-analysis.
+  { label: "Payrolls (3M Avg)", name: "Payrolls (3M Avg)", w: 0.20, vote: v => v > 100 ? 1 : v >= 0 ? 0 : -1 },
+  { label: "Unemployment Trend", name: "Unemployment Rate Trend", w: 0.15, vote: v => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
+  { label: "Jobless Claims",    name: "Initial Jobless Claims Trend", w: 0.15, vote: v => v < 0 ? 1 : v <= 5 ? 0 : -1 },
 ];
 const FWD_INFL_SIGNALS = [
   // 3-month pp-change signals, in raw percentage points (not relative % — CPI/PPI
@@ -355,11 +364,14 @@ const FWD_INFL_SIGNALS = [
   // it's weighted lower here).
   { label: "CPI Trend",         name: "CPI (YoY)",      w: 0.20, getPP3m: true,  vote: v => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
   { label: "PPI Trend",         name: "PPI (YoY)",      w: 0.10, getPP3m: true,  vote: v => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
-  { label: "10Y Breakeven",     name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
+  { label: "10Y Breakeven",     name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > FED_INFLATION_TARGET ? 1 : v >= 1.5 ? 0 : -1 },
   // Threshold raised: readings below 5.5% may reflect one-time tariff shock, not structural inflation
   { label: "Infl Expectations", name: "Consumer Inflation Expectations", w: 0.15, vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
   { label: "Copper 3M",         name: "Copper Price",   w: 0.15, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
   { label: "WTI 3M",            name: "WTI Crude Oil",  w: 0.10, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
+  // Explicit shock override — only scores while WTI's realized vol is
+  // flagged (level_with_shock's vol_shock, >55% annualized); silent otherwise.
+  { label: "WTI Shock", name: "WTI Crude Oil (Shock)", sourceName: "WTI Crude Oil", w: 0.15, useShortPct: true, shockGate: true, vote: v => v > 10 ? 1 : v < -10 ? -1 : 0 },
   { label: "M2 Growth",         name: "M2 Growth (YoY)",w: 0.10, vote: v => v > 8   ? 1 : v >= 3   ? 0 : -1 },
   // Leads realized inflation by ~6-12mo (Merrill Lynch Investment Clock) — tight
   // capacity is genuinely forward-looking, unlike CPI/PPI trend which are coincident
@@ -391,10 +403,23 @@ function computeForwardSignal(indicators) {
     const ind = indicators.find(i => i.name === name);
     return ind?.metadata?.change3m_pp != null ? Number(ind.metadata.change3m_pp) : null;
   };
+  // ~3-week momentum and the shock-vol flag, stored in metadata by
+  // fetch-macro-data's level_with_shock processor (WTI) — see #4 in the
+  // regime-calc work order.
+  const getShortPct = (name) => {
+    const ind = indicators.find(i => i.name === name);
+    return ind?.metadata?.change_short_pct != null ? Number(ind.metadata.change_short_pct) : null;
+  };
+  const getVolShock = (name) => {
+    const ind = indicators.find(i => i.name === name);
+    return !!ind?.metadata?.vol_shock;
+  };
   const scoreGroup = (sigs) => {
     let weighted = 0, totalW = 0;
     const scored = sigs.map(s => {
-      const val = s.getPct3m ? getPct3m(s.name) : s.getPP3m ? getPP3m(s.name) : get(s.name);
+      const source = s.sourceName ?? s.name;
+      if (s.shockGate && !getVolShock(source)) return { ...s, val: null, vote: null };
+      const val = s.useShortPct ? getShortPct(source) : s.getPct3m ? getPct3m(source) : s.getPP3m ? getPP3m(source) : get(source);
       if (val == null) return { ...s, val: null, vote: null };
       const v = s.vote(val);
       weighted += v * s.w;
@@ -405,7 +430,7 @@ function computeForwardSignal(indicators) {
   };
   const growth = scoreGroup(FWD_GROWTH_SIGNALS);
   const infl   = scoreGroup(FWD_INFL_SIGNALS);
-  const THRESH = 0.05;
+  const THRESH = 0.10; // dead band — see #8 in the regime-calc work order
   const dir = s => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
   const rawGDir = dir(growth.score);
   const rawIDir = dir(infl.score);
@@ -454,7 +479,7 @@ function computeForwardSignal(indicators) {
     return confirms ? 5 : -8;
   })();
   const confidence = baseConfidence != null ? Math.max(0, Math.min(100, baseConfidence + volMod)) : null;
-  return { growth, infl, gDir, iDir, forwardKey, confidence, baseConfidence, volMod };
+  return { growth, infl, gDir, iDir, rawGDir, rawIDir, forwardKey, confidence, baseConfidence, volMod };
 }
 
 // ── Daily Macro Summary ───────────────────────────────────────────────────────
@@ -481,7 +506,7 @@ function MacroSummary({ indicators }) {
   const sloos      = get("Sr Loan Officer Survey");
   const debtGdp    = get("Total Debt / GDP");
   const inflExp    = get("Consumer Inflation Expectations");
-  const breakevenVal = breakeven ?? 2.5;
+  const breakevenVal = breakeven ?? FED_INFLATION_TARGET;
 
   // Fast/slow moving-average crossover — same computation as QuadrantCard's
   // Regime Signal Comparison table, so the banner always agrees with it.
@@ -490,7 +515,7 @@ function MacroSummary({ indicators }) {
   // only when the crossover indicators aren't loaded yet.
   const structuralRegimeKey = gdpFastVal != null
     ? (() => {
-        const growthUp = gdpFastVal > gdp3yAvg;
+        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvg);
         const inflUp   = cpiFastVal != null && cpiSlowVal != null && cpiFastVal > cpiSlowVal;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -498,12 +523,28 @@ function MacroSummary({ indicators }) {
         return "fg_fi";
       })()
     : null;
-  const regimeKey = structuralRegimeKey
+  // Same market-expectations leg as QuadrantCard, so this card's headline
+  // resolves via the identical 2-of-3 majority rather than structural alone.
+  const marketRegimeKey = gdpFastVal != null
+    ? (() => {
+        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvg);
+        const inflUp   = breakevenVal > FED_INFLATION_TARGET;
+        if (growthUp && !inflUp) return "rg_fi";
+        if (growthUp && inflUp)  return "rg_ri";
+        if (!growthUp && inflUp) return "fg_ri";
+        return "fg_fi";
+      })()
+    : null;
+  const fwd = computeForwardSignal(indicators);
+  const majorityRegimeKey = resolveHeadlineRegime(structuralRegimeKey, marketRegimeKey, fwd.forwardKey);
+  const isTransitional = structuralRegimeKey != null && marketRegimeKey != null && majorityRegimeKey == null;
+  const incompleteRegimeInputs = getStaleOrMissingRegimeInputs(indicators);
+  const regimeKey = majorityRegimeKey
+    ?? structuralRegimeKey
     ?? (gdp != null && cpi != null
         ? detectRegimeKey(gdp, cpi, { breakeven: breakevenVal, gdp3yAvg })
         : null);
   const regime = regimeKey ? REGIME_META[regimeKey] : null;
-  const fwd = computeForwardSignal(indicators);
   const today = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 
   // ── Momentum helpers ──
@@ -563,8 +604,11 @@ function MacroSummary({ indicators }) {
                   `LEI is negative at ${lei.toFixed(1)}% — leading indicators point to slowdown.`;
 
   // ── Forward signal sentence ──
+  // Notes when the underlying score is actually within the dead band (see
+  // #8) rather than always saying "building"/"fading" — gDir/iDir have
+  // already collapsed a flat score to a sign for the regime-key computation.
   const fwdStr = fwd.forwardKey && fwd.confidence != null
-    ? `Forward signals (${fwd.confidence}% confidence) point toward ${REGIME_LABELS[fwd.forwardKey] ?? fwd.forwardKey} — growth momentum is ${fwd.gDir === "up" ? "building" : "fading"}, inflation pressure is ${fwd.iDir === "up" ? "rising" : "easing"}.`
+    ? `Forward signals (${fwd.confidence}% confidence) point toward ${REGIME_LABELS[fwd.forwardKey] ?? fwd.forwardKey} — growth momentum is ${fwd.rawGDir === "neutral" ? "flat" : fwd.gDir === "up" ? "building" : "fading"}, inflation pressure is ${fwd.rawIDir === "neutral" ? "flat" : fwd.iDir === "up" ? "rising" : "easing"}.`
     : null;
 
   // ── Debt sentence ──
@@ -605,7 +649,19 @@ function MacroSummary({ indicators }) {
           <p className="text-[10px] text-paper-dim/60">{today}</p>
         </div>
         <div className="text-right shrink-0">
-          <p className={`text-sm font-semibold ${regimeTextColor}`}>{regime.label}</p>
+          <div className="flex items-center justify-end gap-1.5">
+            <p className={`text-sm font-semibold ${isTransitional ? "text-brass-soft" : regimeTextColor}`}>
+              {isTransitional ? "Transitional" : regime.label}
+            </p>
+            {incompleteRegimeInputs.length > 0 && (
+              <span
+                className="text-[9px] px-1 py-0.5 rounded bg-loss/15 text-loss border border-loss/30 font-semibold"
+                title={`Missing or stale (>30d) manual input${incompleteRegimeInputs.length !== 1 ? "s" : ""}: ${incompleteRegimeInputs.map((i) => i.name).join(", ")}`}
+              >
+                !
+              </span>
+            )}
+          </div>
           {fwd.forwardKey && fwd.forwardKey !== regimeKey && (
             <p className="text-[10px] text-paper-dim mt-0.5">
               → <span className={REGIME_META[fwd.forwardKey]?.color ?? "text-paper"}>{REGIME_LABELS[fwd.forwardKey]}</span>
@@ -906,6 +962,70 @@ const REGIME_COLORS = {
   fg_fi: "#6b7280",
 };
 const REGIME_SHORT  = { rg_fi: "Boom", rg_ri: "Refl", fg_ri: "Stag", fg_fi: "Bust" };
+
+// Three-way growth-axis read: Expanding requires clearing isGrowthExpanding's
+// magnitude/potential-relative bar; Contracting means outright negative
+// growth; anything in between (including a positive-but-marginal crossover
+// like 2.39% vs 2.28%) reads as Decelerating — the middle state the old
+// binary "is the trend positive" test couldn't express.
+function growthStateLabel(fast, slow) {
+  if (fast <= 0) return { label: "↓ Contracting", color: "text-loss" };
+  if (isGrowthExpanding(fast, slow)) return { label: "↑ Expanding", color: "text-gain" };
+  return { label: "→ Decelerating", color: "text-brass-soft" };
+}
+
+// Data vintage: which FRED release period a reading actually corresponds to,
+// and whether it's a hard release vs. a nowcast (LEI/ISM). Scoped to the
+// regime-driving indicators shown in the Regime Signal Comparison / Forward
+// Signal panels, not every indicator card site-wide — see #6 in the
+// regime-calc work order (a CPI vintage mismatch was mistaken for a bug).
+function vintageLabel(ind) {
+  const period = ind?.metadata?.reference_period;
+  if (!period) return null;
+  const d = new Date(period + "T00:00:00Z");
+  const formatted = d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+  return ind.metadata.is_nowcast ? `${formatted} · nowcast` : formatted;
+}
+
+// 2-of-3 majority across Structural / Market Expectations / Forward Signal.
+// A single confident regime word is only justified when at least 2 of the 3
+// lenses agree — showing "Reflation" when only 1 of 3 actually points there
+// (as happened live) overstates certainty. Returns null when no 2 keys
+// match (3-way split), which the headline renders as "Transitional."
+function resolveHeadlineRegime(structural, market, forward) {
+  const keys = [structural, market, forward].filter(Boolean);
+  const counts = {};
+  for (const k of keys) counts[k] = (counts[k] ?? 0) + 1;
+  const majority = Object.entries(counts).find(([, c]) => c >= 2);
+  return majority ? majority[0] : null;
+}
+
+// Every indicator name that actually feeds the growth/inflation composite
+// scores (derived from the same arrays the scoring itself uses, so this
+// never drifts out of sync with what's really driving the regime call) plus
+// the crossover indicators shown directly in the comparison table.
+const REGIME_INPUT_NAMES = new Set([
+  ...FWD_GROWTH_SIGNALS.map((s) => s.sourceName ?? s.name),
+  ...FWD_INFL_SIGNALS.map((s) => s.sourceName ?? s.name),
+  "GDP Growth (2Q Avg)", "GDP Growth (4Q Avg)",
+  "CPI Growth (3M Avg)", "CPI Growth (9M Avg)",
+]);
+
+// A regime label computed on a missing or stale manual input looks identical
+// to one computed on complete data — the user has no way to know from the
+// headline alone. Returns the list of regime-driving indicators that are
+// manually-sourced AND either unset or older than staleDays, so the headline
+// can flag itself directly rather than relying only on the separate,
+// site-wide "N manual indicators need values" banner.
+function getStaleOrMissingRegimeInputs(indicators, staleDays = 30) {
+  const cutoffMs = Date.now() - staleDays * 24 * 60 * 60 * 1000;
+  return (indicators ?? []).filter((i) => {
+    if (!REGIME_INPUT_NAMES.has(i.name) || !i.is_manual) return false;
+    if (i.current_value == null) return true;
+    const updatedMs = i.updated_at ? new Date(i.updated_at).getTime() : null;
+    return updatedMs != null && updatedMs < cutoffMs;
+  });
+}
 const REGIME_LABELS = {
   rg_fi: "Disinflationary Boom",
   rg_ri: "Reflation",
@@ -1341,7 +1461,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   const cpi3yAvg   = indicators.find((i) => i.name === "CPI Growth (9M Avg)");
   const cpiFastInd = indicators.find((i) => i.name === "CPI Growth (3M Avg)");
 
-  const breakevenVal = breakeven?.current_value != null ? Number(breakeven.current_value) : 2.5;
+  const breakevenVal = breakeven?.current_value != null ? Number(breakeven.current_value) : FED_INFLATION_TARGET;
   const gdp3yAvgVal  = gdp3yAvg?.current_value  != null ? Number(gdp3yAvg.current_value)  : 0;
   const cpi3yAvgVal  = cpi3yAvg?.current_value  != null ? Number(cpi3yAvg.current_value)  : null;
   const gdpFastVal   = gdpFastInd?.current_value != null ? Number(gdpFastInd.current_value) : null;
@@ -1356,7 +1476,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // used to fall back to) could produce.
   const structuralRegimeKey = gdpFastVal != null && gdp3yAvg?.current_value != null
     ? (() => {
-        const growthUp = gdpFastVal > gdp3yAvgVal;
+        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvgVal);
         const inflUp   = cpiFastVal != null && cpi3yAvgVal != null && cpiFastVal > cpi3yAvgVal;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -1366,27 +1486,17 @@ function QuadrantCard({ indicators, holdings, assetData }) {
     : null;
   const structuralMeta = structuralRegimeKey ? REGIME_META[structuralRegimeKey] : null;
 
-  // Drives allocation suggestions, signal keys, and the top banner — same
-  // crossover as structuralRegimeKey above (which also feeds the Regime
-  // Signal Comparison table), so the whole page agrees on one regime read.
-  const regimeKey = structuralRegimeKey
-    ?? (gdp?.current_value != null && cpi?.current_value != null
-        ? detectRegimeKey(Number(gdp.current_value), Number(cpi.current_value), {
-            breakeven: breakevenVal,
-            gdp3yAvg:  gdp3yAvgVal,
-          })
-        : null);
-
-  const regime = regimeKey ? REGIME_META[regimeKey] : null;
-
-  // Market-expectations regime: is the market pricing sustained inflation (breakeven > 2.5%)?
-  // CPI > breakeven means the market expects disinflation, NOT that inflation is surprising upside.
-  // We use breakeven vs 2.5% threshold — below that, markets price inflation "under control."
-  // Growth leg reuses the same fast/slow crossover as the structural regime above.
+  // Market-expectations regime: is the market pricing sustained inflation above
+  // the Fed's own 2% target (FED_INFLATION_TARGET)? CPI > breakeven means the
+  // market expects disinflation, NOT that inflation is surprising upside. The
+  // threshold used to be a hardcoded 2.5% — an arbitrary round number that
+  // called a 2.31% breakeven "below threshold" when it's actually still above
+  // the Fed's real mandate. Growth leg reuses the same fast/slow crossover as
+  // the structural regime above.
   const marketRegimeKey = gdpFastVal != null
     ? (() => {
-        const growthUp = gdpFastVal > (gdp3yAvgVal ?? 0);
-        const inflUp   = breakevenVal > 2.5;
+        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvgVal ?? 0);
+        const inflUp   = breakevenVal > FED_INFLATION_TARGET;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
         if (!growthUp && inflUp) return "fg_ri";
@@ -1396,6 +1506,24 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
 
   const fwd = computeForwardSignal(indicators);
+
+  // Headline/allocation key: 2-of-3 majority across Structural / Market /
+  // Forward when at least 2 are available and 2 agree; otherwise falls back
+  // to the structural read (a stable anchor for portfolio weights even when
+  // the lenses are split) so allocation logic never goes fully unset.
+  const majorityRegimeKey = resolveHeadlineRegime(structuralRegimeKey, marketRegimeKey, fwd.forwardKey);
+  const isTransitional = structuralRegimeKey != null && marketRegimeKey != null && majorityRegimeKey == null;
+  const incompleteRegimeInputs = getStaleOrMissingRegimeInputs(indicators);
+  const regimeKey = majorityRegimeKey
+    ?? structuralRegimeKey
+    ?? (gdp?.current_value != null && cpi?.current_value != null
+        ? detectRegimeKey(Number(gdp.current_value), Number(cpi.current_value), {
+            breakeven: breakevenVal,
+            gdp3yAvg:  gdp3yAvgVal,
+          })
+        : null);
+
+  const regime = regimeKey ? REGIME_META[regimeKey] : null;
 
   const [allocMethod, setAllocMethod] = useState("bw");
   // Regime Signal Comparison table cells open a side-drawer chart of the two
@@ -1489,8 +1617,28 @@ function QuadrantCard({ indicators, holdings, assetData }) {
           {/* Regime label + key indicators */}
           <div className="flex items-start justify-between flex-wrap gap-4">
             <div>
-              <p className={`text-2xl font-bold ${regime.color}`}>{regime.label}</p>
-              <p className="text-paper-dim text-sm mt-1">{regime.desc}</p>
+              <div className="flex items-center gap-2">
+                {isTransitional ? (
+                  <p className="text-2xl font-bold text-brass-soft">Transitional</p>
+                ) : (
+                  <p className={`text-2xl font-bold ${regime.color}`}>{regime.label}</p>
+                )}
+                {incompleteRegimeInputs.length > 0 && (
+                  <span
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-loss/15 text-loss border border-loss/30 font-semibold tracking-wide"
+                    title={`Missing or stale (>30d) manual input${incompleteRegimeInputs.length !== 1 ? "s" : ""}: ${incompleteRegimeInputs.map((i) => i.name).join(", ")}`}
+                  >
+                    Incomplete
+                  </span>
+                )}
+              </div>
+              {isTransitional ? (
+                <p className="text-paper-dim text-sm mt-1">
+                  Lenses diverging — Structural: {structuralMeta?.label ?? "n/a"} · Market: {marketMeta?.label ?? "n/a"} · Forward: {fwd.forwardKey ? (REGIME_META[fwd.forwardKey]?.label ?? "n/a") : "n/a"}
+                </p>
+              ) : (
+                <p className="text-paper-dim text-sm mt-1">{regime.desc}</p>
+              )}
             </div>
             <div className="flex flex-wrap gap-2">
               {/* GDP: actual vs 4-quarter trend */}
@@ -1509,7 +1657,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
               </div>
               {/* CPI: actual vs 10Y breakeven */}
               <div className="bg-ink-soft rounded-lg px-3 py-1.5">
-                <p className="label text-[10px]">CPI YoY</p>
+                <p className="label text-[10px]">Headline CPI YoY</p>
                 <p className="num text-sm">{formatValue(cpi?.current_value, "%")}</p>
                 {breakeven?.current_value != null && (
                   <p className="text-[10px] text-paper-dim mt-0.5">
@@ -1558,17 +1706,23 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                   className="px-3 py-3 border-l border-ink-line cursor-pointer hover:bg-ink/40 transition-colors group"
                 >
                   <p className="text-[10px] text-paper-dim mb-1 flex items-center gap-1">
-                    4Q avg — is trend positive?
+                    Fast vs slow vs potential — trend read
                     <ChartIcon />
                   </p>
-                  {gdp3yAvg?.current_value != null ? (
-                    <>
-                      <p className={`font-medium ${gdp3yAvgVal > 0 ? "text-gain" : "text-loss"}`}>
-                        {gdp3yAvgVal > 0 ? "↑ Expanding" : "↓ Contracting"}
-                      </p>
-                      <p className="num text-[11px] text-paper-dim mt-0.5">{gdp3yAvgVal.toFixed(2)}% (slow line)</p>
-                    </>
-                  ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
+                  {gdpFastVal != null && gdp3yAvg?.current_value != null ? (() => {
+                    const state = growthStateLabel(gdpFastVal, gdp3yAvgVal);
+                    return (
+                      <>
+                        <p className={`font-medium ${state.color}`}>{state.label}</p>
+                        <p className="num text-[11px] text-paper-dim mt-0.5">
+                          {gdpFastVal.toFixed(2)}% vs {gdp3yAvgVal.toFixed(2)}% (min gap 0.15pp, potential floor {(POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION).toFixed(2)}%)
+                        </p>
+                        {vintageLabel(gdpFastInd) && (
+                          <p className="text-[9px] text-paper-dim/50 mt-0.5">as of {vintageLabel(gdpFastInd)}</p>
+                        )}
+                      </>
+                    );
+                  })() : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
                 </div>
                 <div
                   onClick={() => setGdpDrawerOpen(true)}
@@ -1578,21 +1732,22 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     2Q vs 4Q avg — crossover?
                     <ChartIcon />
                   </p>
-                  {gdpFastVal != null && gdp3yAvg?.current_value != null ? (
-                    <>
-                      <p className={`font-medium ${gdpFastVal > gdp3yAvgVal ? "text-gain" : "text-loss"}`}>
-                        {gdpFastVal > gdp3yAvgVal ? "↑ Fast > slow" : "↓ Fast < slow"}
-                      </p>
-                      <p className="num text-[11px] text-paper-dim mt-0.5">{gdpFastVal.toFixed(2)}% vs {gdp3yAvgVal.toFixed(2)}%</p>
-                    </>
-                  ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
+                  {gdpFastVal != null && gdp3yAvg?.current_value != null ? (() => {
+                    const state = growthStateLabel(gdpFastVal, gdp3yAvgVal);
+                    return (
+                      <>
+                        <p className={`font-medium ${state.color}`}>{state.label}</p>
+                        <p className="num text-[11px] text-paper-dim mt-0.5">{gdpFastVal.toFixed(2)}% vs {gdp3yAvgVal.toFixed(2)}%</p>
+                      </>
+                    );
+                  })() : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
                 </div>
               </div>
 
               {/* Inflation row */}
               <div className="grid grid-cols-3 border-b border-ink-line">
                 <div className="px-3 py-3">
-                  <p className="label text-[10px] mb-1">Inflation</p>
+                  <p className="label text-[10px] mb-1">Inflation (Headline CPI)</p>
                   <p className="num text-sm">{formatValue(cpi?.current_value, "%")}</p>
                 </div>
                 <div
@@ -1609,6 +1764,9 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                         {cpiFastVal > cpi3yAvgVal ? "↑ Fast > slow" : "↓ Fast < slow"}
                       </p>
                       <p className="num text-[11px] text-paper-dim mt-0.5">{cpiFastVal.toFixed(2)}% vs {cpi3yAvgVal.toFixed(2)}%</p>
+                      {vintageLabel(cpiFastInd) && (
+                        <p className="text-[9px] text-paper-dim/50 mt-0.5">as of {vintageLabel(cpiFastInd)}</p>
+                      )}
                     </>
                   ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
                 </div>
@@ -1616,16 +1774,16 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                   onClick={() => setInflExpDrawerOpen(true)}
                   className="px-3 py-3 border-l border-ink-line cursor-pointer hover:bg-ink/40 transition-colors group"
                 >
-                  <p className="text-[10px] text-paper-dim mb-1 flex items-center gap-1">
-                    T10YIE — market pricing inflation?
+                  <p className="text-[10px] text-paper-dim mb-1 flex items-center gap-1" title={`vs. the Fed's ${FED_INFLATION_TARGET}% target, not an arbitrary round number`}>
+                    T10YIE vs Fed {FED_INFLATION_TARGET}% target
                     <ChartIcon />
                   </p>
                   {breakeven?.current_value != null ? (
                     <>
-                      <p className={`font-medium ${breakevenVal > 2.5 ? "text-loss" : "text-gain"}`}>
-                        {breakevenVal > 2.5 ? "↑ Pricing inflation" : "↓ Below threshold"}
+                      <p className={`font-medium ${breakevenVal > FED_INFLATION_TARGET ? "text-loss" : "text-gain"}`}>
+                        {breakevenVal > FED_INFLATION_TARGET ? "↑ Pricing above target" : "↓ At/below target"}
                       </p>
-                      <p className="num text-[11px] text-paper-dim mt-0.5">T10YIE {breakevenVal.toFixed(2)}% vs 2.5%</p>
+                      <p className="num text-[11px] text-paper-dim mt-0.5">T10YIE {breakevenVal.toFixed(2)}% vs {FED_INFLATION_TARGET}%</p>
                     </>
                   ) : <p className="text-paper-dim text-[11px]">—</p>}
                 </div>
@@ -1656,16 +1814,22 @@ function QuadrantCard({ indicators, holdings, assetData }) {
 
             </div>
 
-            {/* Agreement / divergence banner */}
+            {/* Agreement / divergence banner — the headline above already shows
+                the full 3-way breakdown when Transitional, so this stays terse
+                and doesn't repeat that detail. */}
             {structuralRegimeKey && marketRegimeKey && (
               <div className={`mt-3 rounded-lg px-3 py-2 text-xs flex items-center gap-2 ${
-                structuralRegimeKey === marketRegimeKey
-                  ? "bg-gain/10 text-gain border border-gain/20"
-                  : "bg-brass/10 text-brass-soft border border-brass/20"
+                isTransitional
+                  ? "bg-loss/10 text-loss border border-loss/20"
+                  : structuralRegimeKey === marketRegimeKey
+                    ? "bg-gain/10 text-gain border border-gain/20"
+                    : "bg-brass/10 text-brass-soft border border-brass/20"
               }`}>
-                {structuralRegimeKey === marketRegimeKey
-                  ? "✓ Both lenses agree — regime signal is clear"
-                  : "⚠ Lenses diverge — markets may be pricing a regime shift"
+                {isTransitional
+                  ? "⚠ No 2-of-3 majority across Structural/Market/Forward — see \"Transitional\" read above"
+                  : structuralRegimeKey === marketRegimeKey
+                    ? "✓ Structural and Market lenses agree — regime signal is clear"
+                    : `⚠ Structural/Market diverge — Forward Signal breaks the tie toward ${regime?.label ?? "n/a"}`
                 }
               </div>
             )}
@@ -1679,8 +1843,14 @@ function QuadrantCard({ indicators, holdings, assetData }) {
             </p>
             <div className="grid grid-cols-2 gap-3 mb-3">
               {[
-                { title: "Growth Momentum", sigs: fwd.growth.signals, dir: fwd.gDir, score: fwd.growth.score, upLabel: "Expanding", downLabel: "Contracting" },
-                { title: "Inflation Momentum", sigs: fwd.infl.signals, dir: fwd.iDir, score: fwd.infl.score, upLabel: "Rising", downLabel: "Falling" },
+                // dir uses the RAW pre-fallback direction (rawGDir/rawIDir),
+                // not gDir/iDir — those already collapse "neutral" to a sign
+                // for the regime-key computation, which made the "Flat /
+                // Uncertain" branch below unreachable before this fix (see #8
+                // in the regime-calc work order: a near-zero composite score
+                // was labeled "Rising," inviting over-reading noise as signal).
+                { title: "Growth Momentum", sigs: fwd.growth.signals, dir: fwd.rawGDir, score: fwd.growth.score, upLabel: "Expanding", downLabel: "Contracting" },
+                { title: "Inflation Momentum", sigs: fwd.infl.signals, dir: fwd.rawIDir, score: fwd.infl.score, upLabel: "Rising", downLabel: "Falling" },
               ].map(({ title, sigs, dir, score, upLabel, downLabel }) => (
                 <div key={title} className="bg-ink-soft rounded-lg p-3">
                   <p className="label text-[10px] mb-2">{title}</p>
@@ -1699,7 +1869,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                   </div>
                   <div className="pt-2 border-t border-ink-line flex items-center justify-between">
                     <span className={`text-xs font-semibold ${dir === "up" ? "text-gain" : dir === "down" ? "text-loss" : "text-paper-dim"}`}>
-                      {dir === "up" ? `↑ ${upLabel}` : dir === "down" ? `↓ ${downLabel}` : "→ Neutral"}
+                      {dir === "up" ? `↑ ${upLabel}` : dir === "down" ? `↓ ${downLabel}` : "→ Flat / Uncertain"}
                     </span>
                     <span className="num text-[10px] text-paper-dim">
                       score {score == null ? "—" : `${score >= 0 ? "+" : ""}${score.toFixed(2)}`}
