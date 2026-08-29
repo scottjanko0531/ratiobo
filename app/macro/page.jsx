@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
@@ -1398,6 +1398,13 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   const fwd = computeForwardSignal(indicators);
 
   const [allocMethod, setAllocMethod] = useState("bw");
+  // Regime Signal Comparison table cells open a side-drawer chart of the two
+  // lines behind that cell's read. Growth's Structural and Market Expectations
+  // cells share one drawer since both derive from the same GDP fast/slow
+  // crossover (there's no independent market-priced growth series to show).
+  const [gdpDrawerOpen, setGdpDrawerOpen] = useState(false);
+  const [cpiCrossoverDrawerOpen, setCpiCrossoverDrawerOpen] = useState(false);
+  const [inflExpDrawerOpen, setInflExpDrawerOpen] = useState(false);
 
   const signalKeys = regimeKey ? getSignalKeys(regimeKey) : [];
   // BW Modified and RP methods show all 8 market assets; Default shows regime-favored only
@@ -1546,8 +1553,14 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                   <p className="label text-[10px] mb-1">Growth</p>
                   <p className="num text-sm">{formatValue(gdp?.current_value, "%")}</p>
                 </div>
-                <div className="px-3 py-3 border-l border-ink-line">
-                  <p className="text-[10px] text-paper-dim mb-1">4Q avg — is trend positive?</p>
+                <div
+                  onClick={() => setGdpDrawerOpen(true)}
+                  className="px-3 py-3 border-l border-ink-line cursor-pointer hover:bg-ink/40 transition-colors group"
+                >
+                  <p className="text-[10px] text-paper-dim mb-1 flex items-center gap-1">
+                    4Q avg — is trend positive?
+                    <ChartIcon />
+                  </p>
                   {gdp3yAvg?.current_value != null ? (
                     <>
                       <p className={`font-medium ${gdp3yAvgVal > 0 ? "text-gain" : "text-loss"}`}>
@@ -1557,8 +1570,14 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     </>
                   ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
                 </div>
-                <div className="px-3 py-3 border-l border-ink-line">
-                  <p className="text-[10px] text-paper-dim mb-1">2Q vs 4Q avg — crossover?</p>
+                <div
+                  onClick={() => setGdpDrawerOpen(true)}
+                  className="px-3 py-3 border-l border-ink-line cursor-pointer hover:bg-ink/40 transition-colors group"
+                >
+                  <p className="text-[10px] text-paper-dim mb-1 flex items-center gap-1">
+                    2Q vs 4Q avg — crossover?
+                    <ChartIcon />
+                  </p>
                   {gdpFastVal != null && gdp3yAvg?.current_value != null ? (
                     <>
                       <p className={`font-medium ${gdpFastVal > gdp3yAvgVal ? "text-gain" : "text-loss"}`}>
@@ -1576,8 +1595,14 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                   <p className="label text-[10px] mb-1">Inflation</p>
                   <p className="num text-sm">{formatValue(cpi?.current_value, "%")}</p>
                 </div>
-                <div className="px-3 py-3 border-l border-ink-line">
-                  <p className="text-[10px] text-paper-dim mb-1">3M vs 9M avg — crossover?</p>
+                <div
+                  onClick={() => setCpiCrossoverDrawerOpen(true)}
+                  className="px-3 py-3 border-l border-ink-line cursor-pointer hover:bg-ink/40 transition-colors group"
+                >
+                  <p className="text-[10px] text-paper-dim mb-1 flex items-center gap-1">
+                    3M vs 9M avg — crossover?
+                    <ChartIcon />
+                  </p>
                   {cpiFastVal != null && cpi3yAvgVal != null ? (
                     <>
                       <p className={`font-medium ${cpiFastVal > cpi3yAvgVal ? "text-loss" : "text-gain"}`}>
@@ -1587,8 +1612,14 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     </>
                   ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
                 </div>
-                <div className="px-3 py-3 border-l border-ink-line">
-                  <p className="text-[10px] text-paper-dim mb-1">T10YIE — market pricing inflation?</p>
+                <div
+                  onClick={() => setInflExpDrawerOpen(true)}
+                  className="px-3 py-3 border-l border-ink-line cursor-pointer hover:bg-ink/40 transition-colors group"
+                >
+                  <p className="text-[10px] text-paper-dim mb-1 flex items-center gap-1">
+                    T10YIE — market pricing inflation?
+                    <ChartIcon />
+                  </p>
                   {breakeven?.current_value != null ? (
                     <>
                       <p className={`font-medium ${breakevenVal > 2.5 ? "text-loss" : "text-gain"}`}>
@@ -1978,6 +2009,40 @@ function QuadrantCard({ indicators, holdings, assetData }) {
             : "Regime unclear — run Refresh Data to populate GDP and CPI."}
         </p>
       )}
+
+      <TwoLineHistoryDrawer
+        open={gdpDrawerOpen}
+        onClose={() => setGdpDrawerOpen(false)}
+        title="Real GDP Growth — Fast vs Slow"
+        subtitle="2-quarter avg (fast) vs 4-quarter avg (slow) · quarterly YoY, FRED GDPC1"
+        fetchUrl={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-gdp-crossover-history`}
+        series={[
+          { key: "fast", label: "2Q Avg (fast)", shortLabel: "2Q", color: "#C9A227" },
+          { key: "slow", label: "4Q Avg (slow)", shortLabel: "4Q", color: "#A8ADB8", dash: "5 3" },
+        ]}
+      />
+      <TwoLineHistoryDrawer
+        open={cpiCrossoverDrawerOpen}
+        onClose={() => setCpiCrossoverDrawerOpen(false)}
+        title="CPI Inflation — Fast vs Slow"
+        subtitle="3-month avg (fast) vs 9-month avg (slow) · monthly YoY, FRED CPIAUCSL"
+        fetchUrl={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-cpi-crossover-history`}
+        series={[
+          { key: "fast", label: "3M Avg (fast)", shortLabel: "3M", color: "#E0635C" },
+          { key: "slow", label: "9M Avg (slow)", shortLabel: "9M", color: "#A8ADB8", dash: "5 3" },
+        ]}
+      />
+      <TwoLineHistoryDrawer
+        open={inflExpDrawerOpen}
+        onClose={() => setInflExpDrawerOpen(false)}
+        title="Realized CPI vs Market-Priced Inflation"
+        subtitle="Headline CPI YoY vs 10Y breakeven (T10YIE) · monthly, FRED"
+        fetchUrl={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-inflation-expectations-history`}
+        series={[
+          { key: "cpiYoy", label: "CPI YoY (realized)", shortLabel: "CPI", color: "#E0635C" },
+          { key: "breakeven", label: "10Y Breakeven (market)", shortLabel: "T10YIE", color: "#3FB984", dash: "5 3" },
+        ]}
+      />
     </div>
   );
 }
@@ -2015,6 +2080,251 @@ function CloseIcon() {
       <line x1="3" y1="3" x2="13" y2="13" />
       <line x1="13" y1="3" x2="3" y2="13" />
     </svg>
+  );
+}
+
+function ChartIcon() {
+  return (
+    <svg className="w-2.5 h-2.5 text-paper-dim/40 group-hover:text-brass-soft transition-colors shrink-0" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 13V9M6 13V6M10 13V3M14 13V8" />
+    </svg>
+  );
+}
+
+const CROSSOVER_PRESETS = [
+  { label: "All",   from: "1948-01", to: "" },
+  { label: "1990–", from: "1990-01", to: "" },
+  { label: "2000–", from: "2000-01", to: "" },
+  { label: "2010–", from: "2010-01", to: "" },
+];
+
+// Reusable side-drawer chart for any "two tracked lines over time" cell —
+// backs the Regime Signal Comparison table's clickable Growth/Inflation cells
+// (fast vs slow crossover lines, or realized vs market-priced inflation).
+function TwoLineHistoryDrawer({ open, onClose, title, subtitle, fetchUrl, series, unit = "%" }) {
+  const [rows, setRows] = useState(null);
+  const [fromDate, setFromDate] = useState("2000-01");
+  const [toDate, setToDate] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setRows(null);
+    fetch(fetchUrl)
+      .then((r) => r.json())
+      .then((data) => setRows(Array.isArray(data) ? data : []))
+      .catch(() => setRows([]));
+  }, [open, fetchUrl]);
+
+  const chartData = useMemo(() => {
+    if (!rows) return [];
+    const from = fromDate ? `${fromDate}-01` : "1900-01-01";
+    const to   = toDate   ? `${toDate}-01`   : "9999-12-01";
+    return rows.filter((r) => r.date >= from && r.date <= to);
+  }, [rows, fromDate, toDate]);
+
+  const xTicks = useMemo(() => {
+    const total = chartData.length;
+    const stepYears = total > 300 ? 10 : total > 150 ? 5 : total > 60 ? 2 : 1;
+    return chartData
+      .filter((r) => {
+        const yr = parseInt(r.date.slice(0, 4));
+        return r.date.slice(5, 7) === "01" && yr % stepYears === 0;
+      })
+      .map((r) => r.date);
+  }, [chartData]);
+
+  const [minVal, maxVal] = useMemo(() => {
+    if (!chartData.length) return [0, 10];
+    const allVals = chartData.flatMap((r) => series.map((s) => r[s.key]).filter((v) => v != null));
+    if (!allVals.length) return [0, 10];
+    return [Math.floor(Math.min(...allVals, 0)), Math.ceil(Math.max(...allVals)) + 1];
+  }, [chartData, series]);
+
+  const latest = rows && rows.length ? rows[rows.length - 1] : null;
+  const summaryRows = useMemo(() => (rows?.length ? rows.slice(-8).reverse() : []), [rows]);
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed right-0 top-0 h-full w-[520px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">{title}</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">{subtitle}</p>
+          </div>
+          <div className="flex items-start gap-4 shrink-0">
+            {latest && (
+              <div className="text-right space-y-0.5">
+                {series.map((s) => (
+                  <p key={s.key} className="num text-sm font-bold leading-tight" style={{ color: s.color }}>
+                    {latest[s.key] != null ? `${latest[s.key].toFixed(2)}${unit}` : "—"}
+                    <span className="text-[9px] text-paper-dim font-normal ml-1">{s.shortLabel ?? s.label}</span>
+                  </p>
+                ))}
+              </div>
+            )}
+            <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 flex-1">
+                <label className="text-[10px] text-paper-dim shrink-0 w-6">From</label>
+                <input
+                  type="month"
+                  value={fromDate}
+                  max={toDate || undefined}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  className="flex-1 bg-ink border border-ink-line rounded px-2 py-1 text-xs text-paper focus:outline-none focus:border-brass/60 [color-scheme:dark]"
+                />
+              </div>
+              <span className="text-paper-dim text-xs shrink-0">→</span>
+              <div className="flex items-center gap-1.5 flex-1">
+                <label className="text-[10px] text-paper-dim shrink-0 w-4">To</label>
+                <input
+                  type="month"
+                  value={toDate}
+                  min={fromDate || undefined}
+                  onChange={(e) => setToDate(e.target.value)}
+                  className="flex-1 bg-ink border border-ink-line rounded px-2 py-1 text-xs text-paper focus:outline-none focus:border-brass/60 [color-scheme:dark] placeholder:text-paper-dim/50"
+                />
+              </div>
+              {toDate && (
+                <button
+                  onClick={() => setToDate("")}
+                  className="text-paper-dim hover:text-paper text-[10px] shrink-0"
+                  title="Clear end date"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-1">
+              {CROSSOVER_PRESETS.map((p) => {
+                const isActive = fromDate === p.from && toDate === p.to;
+                return (
+                  <button
+                    key={p.label}
+                    onClick={() => { setFromDate(p.from); setToDate(p.to); }}
+                    className={`px-3 py-1 rounded-lg text-xs transition-colors ${
+                      isActive
+                        ? "bg-ink text-brass-soft border border-brass/30"
+                        : "text-paper-dim hover:text-paper"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {rows === null ? (
+            <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
+          ) : (
+            <div className="card p-4">
+              <p className="label text-[10px] mb-3">{unit} · monthly</p>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 20, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    type="category"
+                    ticks={xTicks}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => v.slice(0, 4)}
+                    interval={0}
+                  />
+                  <YAxis
+                    domain={[minVal, maxVal]}
+                    tick={{ fill: "#A8ADB8", fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(v) => `${v}${unit}`}
+                    width={40}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "#1A1F29", border: "1px solid #2A3240", borderRadius: 6, fontSize: 11 }}
+                    labelStyle={{ color: "#A8ADB8" }}
+                    formatter={(value, name) => [`${Number(value).toFixed(2)}${unit}`, name]}
+                  />
+                  {series.map((s, i) => (
+                    <Line
+                      key={s.key}
+                      type="monotone"
+                      dataKey={s.key}
+                      name={s.label}
+                      stroke={s.color}
+                      strokeWidth={i === 0 ? 2 : 1.5}
+                      strokeDasharray={s.dash}
+                      dot={false}
+                      connectNulls
+                    />
+                  ))}
+                </ComposedChart>
+              </ResponsiveContainer>
+
+              <div className="flex items-center justify-center gap-5 mt-3 text-[10px] text-paper-dim">
+                {series.map((s) => (
+                  <span key={s.key} className="flex items-center gap-1.5">
+                    {s.dash ? (
+                      <svg width="20" height="4" className="overflow-visible">
+                        <line x1="0" y1="2" x2="20" y2="2" stroke={s.color} strokeWidth="1.5" strokeDasharray={s.dash} />
+                      </svg>
+                    ) : (
+                      <span className="inline-block w-5 h-[2px] rounded" style={{ backgroundColor: s.color }} />
+                    )}
+                    {s.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {rows !== null && summaryRows.length > 0 && (
+            <div>
+              <p className="label text-[10px] mb-2">Recent readings</p>
+              <div className="border border-ink-line rounded-lg overflow-hidden text-xs">
+                <div
+                  className="grid gap-px bg-ink-line"
+                  style={{ gridTemplateColumns: `1fr repeat(${series.length}, 1fr)` }}
+                >
+                  <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim">Date</div>
+                  {series.map((s) => (
+                    <div key={s.key} className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">
+                      {s.shortLabel ?? s.label}
+                    </div>
+                  ))}
+                  {summaryRows.map((r) => (
+                    <Fragment key={r.date}>
+                      <div className="bg-ink px-2 py-1.5 text-paper-dim">
+                        {new Date(r.date + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })}
+                      </div>
+                      {series.map((s) => (
+                        <div key={s.key} className="bg-ink px-2 py-1.5 text-right num" style={{ color: s.color }}>
+                          {r[s.key] != null ? `${r[s.key].toFixed(2)}${unit}` : "—"}
+                        </div>
+                      ))}
+                    </Fragment>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 
