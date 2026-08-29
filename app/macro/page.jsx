@@ -19,6 +19,7 @@ import {
   ILLIQUID_KEYS,
   detectRegimeKey,
   isGrowthExpanding,
+  isLaborDeteriorating,
   POTENTIAL_GDP_GROWTH,
   POTENTIAL_FLOOR_FRACTION,
   FED_INFLATION_TARGET,
@@ -508,6 +509,15 @@ function MacroSummary({ indicators }) {
   const inflExp    = get("Consumer Inflation Expectations");
   const breakevenVal = breakeven ?? FED_INFLATION_TARGET;
 
+  // Labor veto inputs for the growth axis (see isLaborDeteriorating) — a
+  // GDP crossover that would otherwise read "Expanding" gets pulled down
+  // when payrolls/unemployment/claims are cracking, so labor deterioration
+  // can move the headline read directly, not just the Forward Signal score.
+  const payrolls3mAvg      = get("Payrolls (3M Avg)");
+  const unemploymentTrend  = get("Unemployment Rate Trend");
+  const joblessClaimsTrend = get("Initial Jobless Claims Trend");
+  const laborDeteriorating = isLaborDeteriorating(payrolls3mAvg, unemploymentTrend, joblessClaimsTrend);
+
   // Fast/slow moving-average crossover — same computation as QuadrantCard's
   // Regime Signal Comparison table, so the banner always agrees with it.
   // GDP: 2-quarter avg (fast) vs 4-quarter avg (slow). CPI: 3-month avg
@@ -515,7 +525,7 @@ function MacroSummary({ indicators }) {
   // only when the crossover indicators aren't loaded yet.
   const structuralRegimeKey = gdpFastVal != null
     ? (() => {
-        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvg);
+        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvg) && !laborDeteriorating;
         const inflUp   = cpiFastVal != null && cpiSlowVal != null && cpiFastVal > cpiSlowVal;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -527,7 +537,7 @@ function MacroSummary({ indicators }) {
   // resolves via the identical 2-of-3 majority rather than structural alone.
   const marketRegimeKey = gdpFastVal != null
     ? (() => {
-        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvg);
+        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvg) && !laborDeteriorating;
         const inflUp   = breakevenVal > FED_INFLATION_TARGET;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -571,9 +581,9 @@ function MacroSummary({ indicators }) {
   const cpiTrend = prevCpi != null && cpi != null ? (cpi > prevCpi + 0.05 ? ", rising" : cpi < prevCpi - 0.05 ? ", easing" : "") : "";
   const inflStr =
     cpi == null ? "Inflation data unavailable." :
-    cpi > 5     ? `Inflation is elevated — CPI at ${cpi.toFixed(1)}%${cpiTrend}${coreCpi != null ? `, core at ${coreCpi.toFixed(1)}%` : ""}. Well above the ${breakevenVal.toFixed(1)}% market breakeven.` :
-    cpi > 3     ? `Inflation is running hot — CPI at ${cpi.toFixed(1)}%${cpiTrend}${coreCpi != null ? `, core ${coreCpi.toFixed(1)}%` : ""}${inflAboveExp ? `, surprising markets above the ${breakevenVal.toFixed(1)}% breakeven` : ""}.` :
-    cpi > 2     ? `Inflation is near target — CPI at ${cpi.toFixed(1)}%${cpiTrend}${coreCpi != null ? `, core ${coreCpi.toFixed(1)}%` : ""}${inflAboveExp ? `, modestly above the ${breakevenVal.toFixed(1)}% breakeven` : ""}.` :
+    cpi > 5     ? `Inflation is elevated — CPI at ${cpi.toFixed(1)}%${cpiTrend}${coreCpi != null ? `, core CPI at ${coreCpi.toFixed(1)}%` : ""}. Well above the ${breakevenVal.toFixed(1)}% market breakeven.` :
+    cpi > 3     ? `Inflation is running hot — CPI at ${cpi.toFixed(1)}%${cpiTrend}${coreCpi != null ? `, core CPI ${coreCpi.toFixed(1)}%` : ""}${inflAboveExp ? `, surprising markets above the ${breakevenVal.toFixed(1)}% breakeven` : ""}.` :
+    cpi > 2     ? `Inflation is near target — CPI at ${cpi.toFixed(1)}%${cpiTrend}${coreCpi != null ? `, core CPI ${coreCpi.toFixed(1)}%` : ""}${inflAboveExp ? `, modestly above the ${breakevenVal.toFixed(1)}% breakeven` : ""}.` :
     cpi > 0     ? `Inflation is contained — CPI at ${cpi.toFixed(1)}%${cpiTrend}, below the ${breakevenVal.toFixed(1)}% market expectation.` :
                   `Deflationary pressure — CPI at ${cpi.toFixed(1)}%.`;
 
@@ -675,11 +685,11 @@ function MacroSummary({ indicators }) {
         const growthRegime = regimeKey?.startsWith("rg");
         const inflRegime   = regimeKey?.endsWith("ri");
         const SIGNALS = [
-          { short: "GDP",    current: gdp,       prev: prevGdp, dim: "growth",    fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
-          { short: "CPI",    current: cpi,       prev: prevCpi, dim: "inflation", fmt: v => `${v.toFixed(1)}%` },
-          { short: "PPI",    current: ppi,       prev: prevPpi, dim: "inflation", fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
-          { short: "10Y BE", current: breakeven, prev: prevBe,  dim: "inflation", fmt: v => `${v.toFixed(2)}%` },
-          { short: "LEI",    current: lei,       prev: prevLei, dim: "growth",    fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+          { short: "GDP",    name: "Real GDP Growth",        current: gdp,       prev: prevGdp, dim: "growth",    fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+          { short: "CPI",    name: "CPI (YoY)",               current: cpi,       prev: prevCpi, dim: "inflation", fmt: v => `${v.toFixed(1)}%` },
+          { short: "PPI",    name: "PPI (YoY)",               current: ppi,       prev: prevPpi, dim: "inflation", fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+          { short: "10Y BE", name: "10Y Breakeven Inflation", current: breakeven, prev: prevBe,  dim: "inflation", fmt: v => `${v.toFixed(2)}%` },
+          { short: "LEI",    name: "Conference Board LEI",    current: lei,       prev: prevLei, dim: "growth",    fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
         ].filter(s => s.current != null && s.prev != null).map(s => {
           const delta = s.current - s.prev;
           const dir   = Math.abs(delta) < 0.05 ? "flat" : delta > 0 ? "up" : "down";
@@ -687,7 +697,8 @@ function MacroSummary({ indicators }) {
             dir === "flat" ? null :
             s.dim === "growth"    ? (dir === "up" ? !!growthRegime : !growthRegime) :
             s.dim === "inflation" ? (dir === "up" ? !!inflRegime   : !inflRegime)   : null;
-          return { ...s, delta, dir, aligns };
+          const vintage = vintageLabel(indicators.find(i => i.name === s.name));
+          return { ...s, delta, dir, aligns, vintage };
         });
 
         if (SIGNALS.length === 0) return null;
@@ -695,18 +706,6 @@ function MacroSummary({ indicators }) {
         const supporting = SIGNALS.filter(s => s.aligns === true).length;
         const warning    = SIGNALS.filter(s => s.aligns === false).length;
         const scored     = SIGNALS.filter(s => s.aligns !== null).length;
-
-        // Implied directional regime from momentum
-        const growthUp  = SIGNALS.filter(s => s.dim === "growth"    && s.dir === "up").length;
-        const growthDn  = SIGNALS.filter(s => s.dim === "growth"    && s.dir === "down").length;
-        const inflUp    = SIGNALS.filter(s => s.dim === "inflation"  && s.dir === "up").length;
-        const inflDn    = SIGNALS.filter(s => s.dim === "inflation"  && s.dir === "down").length;
-        const momentumRegimeKey =
-          growthUp >= growthDn && inflUp >= inflDn   ? "rg_ri" :
-          growthUp >= growthDn && inflDn > inflUp    ? "rg_fi" :
-          growthDn > growthUp  && inflUp >= inflDn   ? "fg_ri" : "fg_fi";
-        const momentumRegimeLabel = REGIME_LABELS[momentumRegimeKey];
-        const momentumDiverges = momentumRegimeKey !== regimeKey;
 
         return (
           <div className="mb-4 border-t border-ink-line/50 pt-3">
@@ -732,14 +731,12 @@ function MacroSummary({ indicators }) {
                       {s.aligns ? "✓" : "⚑"}
                     </p>
                   )}
+                  {s.vintage && (
+                    <p className="text-[8px] text-paper-dim/40 mt-0.5">{s.vintage}</p>
+                  )}
                 </div>
               ))}
             </div>
-            {momentumDiverges && (
-              <p className="text-[10px] text-brass-soft/80">
-                ⚑ Momentum points toward <span className="font-semibold">{momentumRegimeLabel}</span> — watch for structural regime shift
-              </p>
-            )}
           </div>
         );
       })()}
@@ -1454,18 +1451,35 @@ const ALLOC_ASSET_META = [
 function QuadrantCard({ indicators, holdings, assetData }) {
   const gdp        = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi        = indicators.find((i) => i.name === "CPI (YoY)");
-  const ism        = indicators.find((i) => i.name === "ISM Manufacturing PMI" || i.name === "ISM New Orders");
+  // Prefer the real, currently-updated indicator over a legacy/orphaned
+  // "ISM New Orders" row with no metadata (a stale name from before ISM
+  // New Orders was folded into "ISM Manufacturing PMI"'s own metadata) —
+  // .find()'s array-order fallback was silently picking the metadata-less
+  // one, which also meant the #6 vintage/nowcast tag never had data to show.
+  const ism        = indicators.find((i) => i.name === "ISM Manufacturing PMI")
+                   ?? indicators.find((i) => i.name === "ISM New Orders");
   const breakeven  = indicators.find((i) => i.name === "10Y Breakeven Inflation");
   const gdp3yAvg   = indicators.find((i) => i.name === "GDP Growth (4Q Avg)");
   const gdpFastInd = indicators.find((i) => i.name === "GDP Growth (2Q Avg)");
   const cpi3yAvg   = indicators.find((i) => i.name === "CPI Growth (9M Avg)");
   const cpiFastInd = indicators.find((i) => i.name === "CPI Growth (3M Avg)");
+  const payrollsInd  = indicators.find((i) => i.name === "Payrolls (3M Avg)");
+  const unrateTrendInd = indicators.find((i) => i.name === "Unemployment Rate Trend");
+  const claimsTrendInd = indicators.find((i) => i.name === "Initial Jobless Claims Trend");
 
   const breakevenVal = breakeven?.current_value != null ? Number(breakeven.current_value) : FED_INFLATION_TARGET;
   const gdp3yAvgVal  = gdp3yAvg?.current_value  != null ? Number(gdp3yAvg.current_value)  : 0;
   const cpi3yAvgVal  = cpi3yAvg?.current_value  != null ? Number(cpi3yAvg.current_value)  : null;
   const gdpFastVal   = gdpFastInd?.current_value != null ? Number(gdpFastInd.current_value) : null;
   const cpiFastVal   = cpiFastInd?.current_value != null ? Number(cpiFastInd.current_value) : null;
+  // Labor veto inputs for the growth axis (see isLaborDeteriorating in
+  // lib/simulatorKeys.js) — lets payrolls/unemployment/claims deterioration
+  // pull a marginal GDP-crossover "Expanding" read down directly, instead of
+  // only ever showing up in the separate Forward Signal composite score.
+  const payrolls3mAvg      = payrollsInd?.current_value != null ? Number(payrollsInd.current_value) : null;
+  const unemploymentTrend  = unrateTrendInd?.current_value != null ? Number(unrateTrendInd.current_value) : null;
+  const joblessClaimsTrend = claimsTrendInd?.current_value != null ? Number(claimsTrendInd.current_value) : null;
+  const laborDeteriorating = isLaborDeteriorating(payrolls3mAvg, unemploymentTrend, joblessClaimsTrend);
 
   // Structural regime: fast/slow moving-average crossover, not raw-reading-
   // vs-baseline. GDP: 2-quarter avg (fast) vs 4-quarter avg (slow). CPI:
@@ -1476,7 +1490,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // used to fall back to) could produce.
   const structuralRegimeKey = gdpFastVal != null && gdp3yAvg?.current_value != null
     ? (() => {
-        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvgVal);
+        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvgVal) && !laborDeteriorating;
         const inflUp   = cpiFastVal != null && cpi3yAvgVal != null && cpiFastVal > cpi3yAvgVal;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -1495,7 +1509,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // the structural regime above.
   const marketRegimeKey = gdpFastVal != null
     ? (() => {
-        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvgVal ?? 0);
+        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvgVal ?? 0) && !laborDeteriorating;
         const inflUp   = breakevenVal > FED_INFLATION_TARGET;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -1673,6 +1687,9 @@ function QuadrantCard({ indicators, holdings, assetData }) {
               <div className="bg-ink-soft rounded-lg px-3 py-1.5">
                 <p className="label text-[10px]">ISM PMI</p>
                 <p className="num text-sm">{formatValue(ism?.current_value, "index")}</p>
+                {vintageLabel(ism) && (
+                  <p className="text-[9px] text-paper-dim/50 mt-0.5">as of {vintageLabel(ism)}</p>
+                )}
               </div>
             </div>
           </div>
