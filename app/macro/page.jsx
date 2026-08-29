@@ -332,13 +332,6 @@ function computeSuggestedPcts(regimeKey, method, assetData) {
   return result;
 }
 
-const QUADRANT_TO_REGIME = {
-  goldilocks:  "rg_fi",
-  reflation:   "rg_ri",
-  bust:        "fg_fi",
-  stagflation: "fg_ri",
-};
-
 const FWD_GROWTH_SIGNALS = [
   { label: "Yield Curve 2/10",  name: "2yr/10yr Yield Spread",     w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
   { label: "Yield Curve 3m/10", name: "3mo/10yr Yield Spread",     w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
@@ -466,7 +459,7 @@ function computeForwardSignal(indicators) {
 
 // ── Daily Macro Summary ───────────────────────────────────────────────────────
 
-function MacroSummary({ indicators, latestQuadrant }) {
+function MacroSummary({ indicators }) {
   const get     = (name) => { const i = indicators.find(x => x.name === name); return i?.current_value  != null ? Number(i.current_value)  : null; };
   const getPrev = (name) => { const i = indicators.find(x => x.name === name); return i?.previous_value != null ? Number(i.previous_value) : null; };
   const stat = (name) => indicators.find(x => x.name === name)?.status ?? null;
@@ -477,6 +470,9 @@ function MacroSummary({ indicators, latestQuadrant }) {
   const ppi        = get("PPI (YoY)");
   const breakeven  = get("10Y Breakeven Inflation");
   const gdp3yAvg   = get("GDP Growth (4Q Avg)") ?? 0;
+  const gdpFastVal = get("GDP Growth (2Q Avg)");
+  const cpiFastVal = get("CPI Growth (3M Avg)");
+  const cpiSlowVal = get("CPI Growth (9M Avg)");
   const unrate     = get("Unemployment Rate");
   const t10y2y     = get("2yr/10yr Yield Spread");
   const t10y3m     = get("3mo/10yr Yield Spread");
@@ -487,9 +483,23 @@ function MacroSummary({ indicators, latestQuadrant }) {
   const inflExp    = get("Consumer Inflation Expectations");
   const breakevenVal = breakeven ?? 2.5;
 
-  const regimeKey = latestQuadrant
-    ? (QUADRANT_TO_REGIME[latestQuadrant] ?? null)
-    : (gdp != null && cpi != null
+  // Fast/slow moving-average crossover — same computation as QuadrantCard's
+  // Regime Signal Comparison table, so the banner always agrees with it.
+  // GDP: 2-quarter avg (fast) vs 4-quarter avg (slow). CPI: 3-month avg
+  // (fast) vs 9-month avg (slow). Falls back to a raw-reading comparison
+  // only when the crossover indicators aren't loaded yet.
+  const structuralRegimeKey = gdpFastVal != null
+    ? (() => {
+        const growthUp = gdpFastVal > gdp3yAvg;
+        const inflUp   = cpiFastVal != null && cpiSlowVal != null && cpiFastVal > cpiSlowVal;
+        if (growthUp && !inflUp) return "rg_fi";
+        if (growthUp && inflUp)  return "rg_ri";
+        if (!growthUp && inflUp) return "fg_ri";
+        return "fg_fi";
+      })()
+    : null;
+  const regimeKey = structuralRegimeKey
+    ?? (gdp != null && cpi != null
         ? detectRegimeKey(gdp, cpi, { breakeven: breakevenVal, gdp3yAvg })
         : null);
   const regime = regimeKey ? REGIME_META[regimeKey] : null;
@@ -1321,7 +1331,7 @@ const ALLOC_ASSET_META = [
   { key: "cash", label: "Cash",          color: "#A8ADB8" },
 ];
 
-function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
+function QuadrantCard({ indicators, holdings, assetData }) {
   const gdp        = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi        = indicators.find((i) => i.name === "CPI (YoY)");
   const ism        = indicators.find((i) => i.name === "ISM Manufacturing PMI" || i.name === "ISM New Orders");
@@ -1337,41 +1347,13 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
   const gdpFastVal   = gdpFastInd?.current_value != null ? Number(gdpFastInd.current_value) : null;
   const cpiFastVal   = cpiFastInd?.current_value != null ? Number(cpiFastInd.current_value) : null;
 
-  // Use the same quadrant source as the Three Forces chart (4Q trailing avg);
-  // fall back to expectation-based detectRegimeKey only when DB data isn't ready.
-  const regimeKey = latestQuadrant
-    ? (QUADRANT_TO_REGIME[latestQuadrant] ?? null)
-    : (gdp?.current_value != null && cpi?.current_value != null
-        ? detectRegimeKey(Number(gdp.current_value), Number(cpi.current_value), {
-            breakeven: breakevenVal,
-            gdp3yAvg:  gdp3yAvgVal,
-          })
-        : null);
-
-  const regime = regimeKey ? REGIME_META[regimeKey] : null;
-
-  // Market-expectations regime: is the market pricing sustained inflation (breakeven > 2.5%)?
-  // CPI > breakeven means the market expects disinflation, NOT that inflation is surprising upside.
-  // We use breakeven vs 2.5% threshold — below that, markets price inflation "under control."
-  // Growth leg reuses the same fast/slow crossover as the structural regime below.
-  const marketRegimeKey = gdpFastVal != null
-    ? (() => {
-        const growthUp = gdpFastVal > (gdp3yAvgVal ?? 0);
-        const inflUp   = breakevenVal > 2.5;
-        if (growthUp && !inflUp) return "rg_fi";
-        if (growthUp && inflUp)  return "rg_ri";
-        if (!growthUp && inflUp) return "fg_ri";
-        return "fg_fi";
-      })()
-    : null;
-  const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
-
   // Structural regime: fast/slow moving-average crossover, not raw-reading-
   // vs-baseline. GDP: 2-quarter avg (fast) vs 4-quarter avg (slow). CPI:
   // 3-month avg (fast) vs 9-month avg (slow). A regime flip only fires when
   // the fast line actually crosses the slow line — a real, sustained shift,
   // not just one noisy print poking through a single threshold the way the
-  // prior current-vs-baseline test could.
+  // prior current-vs-baseline test (and the debt-cycle annual quadrant this
+  // used to fall back to) could produce.
   const structuralRegimeKey = gdpFastVal != null && gdp3yAvg?.current_value != null
     ? (() => {
         const growthUp = gdpFastVal > gdp3yAvgVal;
@@ -1383,6 +1365,35 @@ function QuadrantCard({ indicators, holdings, assetData, latestQuadrant }) {
       })()
     : null;
   const structuralMeta = structuralRegimeKey ? REGIME_META[structuralRegimeKey] : null;
+
+  // Drives allocation suggestions, signal keys, and the top banner — same
+  // crossover as structuralRegimeKey above (which also feeds the Regime
+  // Signal Comparison table), so the whole page agrees on one regime read.
+  const regimeKey = structuralRegimeKey
+    ?? (gdp?.current_value != null && cpi?.current_value != null
+        ? detectRegimeKey(Number(gdp.current_value), Number(cpi.current_value), {
+            breakeven: breakevenVal,
+            gdp3yAvg:  gdp3yAvgVal,
+          })
+        : null);
+
+  const regime = regimeKey ? REGIME_META[regimeKey] : null;
+
+  // Market-expectations regime: is the market pricing sustained inflation (breakeven > 2.5%)?
+  // CPI > breakeven means the market expects disinflation, NOT that inflation is surprising upside.
+  // We use breakeven vs 2.5% threshold — below that, markets price inflation "under control."
+  // Growth leg reuses the same fast/slow crossover as the structural regime above.
+  const marketRegimeKey = gdpFastVal != null
+    ? (() => {
+        const growthUp = gdpFastVal > (gdp3yAvgVal ?? 0);
+        const inflUp   = breakevenVal > 2.5;
+        if (growthUp && !inflUp) return "rg_fi";
+        if (growthUp && inflUp)  return "rg_ri";
+        if (!growthUp && inflUp) return "fg_ri";
+        return "fg_fi";
+      })()
+    : null;
+  const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
 
   const fwd = computeForwardSignal(indicators);
 
@@ -5886,7 +5897,6 @@ export default function MacroDashboard() {
   const [error, setError] = useState("");
   const [portfolioHoldings, setPortfolioHoldings] = useState([]);
   const [assetData, setAssetData] = useState(null);
-  const [latestQuadrant, setLatestQuadrant] = useState(null);
   const [debtDrawerOpen, setDebtDrawerOpen] = useState(false);
   const [cpiDrawerOpen, setCpiDrawerOpen] = useState(false);
   const [consumerExpOpen, setConsumerExpOpen] = useState(false);
@@ -5915,18 +5925,6 @@ export default function MacroDashboard() {
   }, []);
 
   useEffect(() => { fetchIndicators(); }, [fetchIndicators]);
-
-  useEffect(() => {
-    supabase
-      .from("macro_debt_cycle_computed")
-      .select("year, quadrant")
-      .not("quadrant", "is", null)
-      .order("year", { ascending: false })
-      .limit(1)
-      .single()
-      .then(({ data }) => { if (data?.quadrant) setLatestQuadrant(data.quadrant); })
-      .catch(() => {});
-  }, []);
 
   useEffect(() => { getAssetData().then(setAssetData).catch(() => {}); }, []);
 
@@ -6031,9 +6029,9 @@ export default function MacroDashboard() {
         <p className="text-paper-dim text-sm py-12 text-center">Loading…</p>
       ) : (
         <>
-          <MacroSummary indicators={indicators} latestQuadrant={latestQuadrant} />
+          <MacroSummary indicators={indicators} />
           <StructuralRegimeCard />
-          <QuadrantCard indicators={indicators} holdings={portfolioHoldings} assetData={assetData} latestQuadrant={latestQuadrant} />
+          <QuadrantCard indicators={indicators} holdings={portfolioHoldings} assetData={assetData} />
           <RegimeAnalysisCard />
 
           {regimeHistory.length > 0 && (
