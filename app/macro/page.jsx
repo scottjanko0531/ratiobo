@@ -1086,7 +1086,16 @@ function econCalUtils() {
       let end = eoq(today);
       for (let i = 0; i < 4; i++) {
         if (addDays(end, lagDays) <= today) return fmtQ(end);
-        end = eoq(new Date(end.getTime() - 864e5)); // day before = prev quarter
+        // Step to the end of the PREVIOUS quarter. Subtracting 1 day from
+        // `end` (always a quarter-end date) and re-running eoq() on that
+        // doesn't actually cross the quarter boundary — day 29 of a
+        // 30-day quarter-end month is still inside the same quarter, so
+        // eoq() maps it right back to `end`, making this loop never
+        // advance and always fall through to "—". Instead, go 2 months
+        // back from the quarter-end month (to the quarter's start month)
+        // and take day 0, which rolls back to the last day of the prior
+        // quarter directly.
+        end = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 2, 0));
       }
     }
     return "—";
