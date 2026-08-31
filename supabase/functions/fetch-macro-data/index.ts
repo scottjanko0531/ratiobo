@@ -111,6 +111,39 @@ async function fetchFredAnnual(seriesId: string): Promise<{ year: number; value:
     .filter((o) => !isNaN(o.value));
 }
 
+// GDP & Inflation Regime Metrics spec, G1/I1 "Level — Hi vs. Low": z-score
+// of the current YoY reading against a trailing rolling window's own
+// mean/stdev. windowSize is in periods (40 quarters for GDP, 216 months
+// for Core CPI) — the date-matched year-ago lookup (findYearAgo, not a
+// positional offset) is the same gap-safe pattern used by gdp_2q_avg/
+// cpi_3m_avg, extended over a much longer window. Returns null if there
+// isn't enough real history yet to fill most of the window (still-thin
+// data reads as a confident z-score otherwise).
+async function computeRollingZScore(
+  seriesId: string, windowSize: number
+): Promise<{ zscore: number; window_mean: number; window_min: number; window_max: number } | null> {
+  const obs = await fetchFredObs(seriesId, windowSize + 20);
+  const yoySeries: number[] = [];
+  for (let i = 0; i < windowSize; i++) {
+    const cur = obs[i];
+    if (!cur) break;
+    const ya = findYearAgo(obs, cur.date);
+    if (!ya) break;
+    yoySeries.push((cur.value / ya.value - 1) * 100);
+  }
+  if (yoySeries.length < windowSize * 0.9) return null;
+  const mean = yoySeries.reduce((a, b) => a + b, 0) / yoySeries.length;
+  const variance = yoySeries.reduce((s, v) => s + (v - mean) ** 2, 0) / yoySeries.length;
+  const stdev = Math.sqrt(variance) || 1;
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  return {
+    zscore: r2((yoySeries[0] - mean) / stdev),
+    window_mean: r2(mean),
+    window_min: r2(Math.min(...yoySeries)),
+    window_max: r2(Math.max(...yoySeries)),
+  };
+}
+
 type Status = "healthy" | "watch" | "danger" | "unknown";
 type StatusFn = (v: number) => Status;
 
@@ -583,6 +616,20 @@ const INDICATORS: Indicator[] = [
     series: "CPIAUCSL", type: "cpi_9m_avg",
     statusFn: v => v >= 1 && v <= 2.5 ? "healthy" : v <= 4 ? "watch" : "danger",
   },
+  {
+    name: "Core CPI Growth (3M Avg)", layer: 3, layer_name: "Business Cycle",
+    description: "3-month trailing average of Core CPI (ex food/energy) YoY inflation — the fast line in a fast/slow crossover for the GDP & Inflation Regime Metrics spec's I2 \"Rate of Change\" read. Uses core, not headline, so a food/energy supply shock doesn't register as an accelerating/decelerating trend shift — that's a separate, deliberately headline-based question (see I3 direction-of-change).",
+    fred_series_id: "CPILFESL", unit: "%", data_source: "fred", sort_order: 287,
+    series: "CPILFESL", type: "cpi_3m_avg",
+    statusFn: v => v >= 1 && v <= 2.5 ? "healthy" : v <= 4 ? "watch" : "danger",
+  },
+  {
+    name: "Core CPI Growth (9M Avg)", layer: 3, layer_name: "Business Cycle",
+    description: "9-month trailing average of Core CPI YoY inflation — the slow line paired with Core CPI Growth (3M Avg) for the I2 Rate of Change read.",
+    fred_series_id: "CPILFESL", unit: "%", data_source: "fred", sort_order: 288,
+    series: "CPILFESL", type: "cpi_9m_avg",
+    statusFn: v => v >= 1 && v <= 2.5 ? "healthy" : v <= 4 ? "watch" : "danger",
+  },
   // ── LAYER 4: Tail Risk ──
   {
     name: "VIX", layer: 4, layer_name: "Tail Risk",
@@ -791,6 +838,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const yoy = yoyPair(obs);
         if (!yoy) return null;
         current = yoy.current; previous = yoy.previous;
+        // I1 "Level — Hi vs. Low": z-score vs. a trailing 18-year (216mo)
+        // rolling window, computed on Core CPI specifically (not headline —
+        // see the GDP & Inflation Regime Metrics spec's rationale: headline
+        // is noisy from energy/food and would read a supply shock as a
+        // structural regime shift).
+        if (ind.name === "Core CPI (YoY)") {
+          const z = await computeRollingZScore(ind.series!, 216);
+          if (z) metadata = { ...metadata, zscore_18y: z.zscore, window_mean: z.window_mean, window_min: z.window_min, window_max: z.window_max };
+        }
         break;
       }
       case "yoy_monthly_with_3m": {
@@ -833,6 +889,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         if (!yoy) return null;
         current = yoy.current; previous = yoy.previous;
         metadata = { reference_period: obs[0].date };
+        // G1 "Level — Hi vs. Low": z-score vs. a trailing 10-year (40Q)
+        // rolling window — runs alongside the existing potential-GDP-floor
+        // anchor (POTENTIAL_GDP_GROWTH), not replacing it; the two answer
+        // different questions ("vs. recent experience" vs. "vs. the
+        // economy's structural speed limit") and can disagree usefully.
+        if (ind.name === "Real GDP Growth") {
+          const z = await computeRollingZScore(ind.series!, 40);
+          if (z) metadata = { ...metadata, zscore_10y: z.zscore, window_mean: z.window_mean, window_min: z.window_min, window_max: z.window_max };
+        }
         break;
       }
       case "gdp_2q_avg": {
@@ -2445,12 +2510,27 @@ async function updateConsumerExpectations(): Promise<void> {
     const compositeZ = latestComposite?.composite_stress_z ?? r2((latest.value-muM)/sdM);
     const status: Status = compositeZ > p80 ? "danger" : compositeZ > p50 ? "watch" : "healthy";
     const now = new Date().toISOString();
+    // I4 attribution: the displayed figure is composite_stress_z (a blend of
+    // Michigan + NY Fed SCE inflation expectations + NY Fed SCE delinquency
+    // probability), which the GDP & Inflation Regime Metrics spec flagged as
+    // an unattributed "consumer inflation expectations" line — expose the
+    // two raw 1yr survey values separately, each dated to its own most
+    // recent independent reading (the two surveys don't share a release
+    // cadence, so the composite's own "latest" date may only have one of
+    // the two).
+    const latestNyfedDate = Object.keys(nyfedInfMap).sort().pop() ?? null;
+    const latestNyfedVal  = latestNyfedDate != null ? nyfedInfMap[latestNyfedDate] : null;
     await supabase.from("macro_indicators").upsert({
       name: "Consumer Inflation Expectations", layer: 3, layer_name: "Business Cycle",
       description: "Michigan Survey 1-yr ahead inflation expectation · NY Fed SCE consumer stress signals",
       fred_series_id: "MICH", unit: "%", data_source: "fred+nyfed", sort_order: 22,
       current_value: r2(latest.value), previous_value: r2(prev.value), change_value: r2(latest.value-prev.value), status,
       last_fetched_at: now, updated_at: now,
+      metadata: {
+        composite_stress_z: compositeZ,
+        umich_1yr: r2(latest.value), umich_date: latest.date,
+        nyfed_1yr: latestNyfedVal != null ? r2(latestNyfedVal) : null, nyfed_date: latestNyfedDate,
+      },
     }, { onConflict: "name" });
   } catch (e) { console.error("[consumer_exp]", e); }
 }
