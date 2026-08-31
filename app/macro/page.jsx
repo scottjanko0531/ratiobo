@@ -1729,6 +1729,9 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     4Q avg {gdp3yAvgVal.toFixed(1)}%
                   </p>
                 )}
+                {vintageLabel(gdp) && (
+                  <p className="text-[9px] text-paper-dim/50 mt-0.5">as of {vintageLabel(gdp)}</p>
+                )}
               </div>
               {/* CPI: actual vs 10Y breakeven */}
               <div className="bg-ink-soft rounded-lg px-3 py-1.5">
@@ -1742,6 +1745,9 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     }{" "}
                     mkt exp {breakevenVal.toFixed(2)}%
                   </p>
+                )}
+                {vintageLabel(cpi) && (
+                  <p className="text-[9px] text-paper-dim/50 mt-0.5">as of {vintageLabel(cpi)}</p>
                 )}
               </div>
               {/* ISM PMI */}
