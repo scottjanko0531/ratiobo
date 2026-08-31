@@ -3,8 +3,10 @@ import {
   detectRegimeKey,
   isGrowthExpanding,
   isLaborDeteriorating,
+  rateOfChangeLabel,
   POTENTIAL_GDP_GROWTH,
   GROWTH_MIN_GAP,
+  CPI_MIN_GAP,
   POTENTIAL_FLOOR_FRACTION,
 } from "../lib/simulatorKeys";
 
@@ -140,5 +142,31 @@ describe("detectRegimeKey — labor veto on the growth axis", () => {
       payrolls3mAvg: 200, unemploymentTrend: -0.3, joblessClaimsTrend: -5,
     });
     expect(key).toBe("fg_fi");
+  });
+});
+
+// GDP & Inflation Regime Metrics spec, G2/I2 "Rate of Change": a pure,
+// symmetric fast-vs-slow gap test with a dead band — distinct from
+// isGrowthExpanding (which also requires clearing the potential-GDP floor).
+describe("rateOfChangeLabel", () => {
+  it("Accelerating when fast clears slow by more than minGap (GDP's 0.15pp)", () => {
+    expect(rateOfChangeLabel(3.0, 2.5, GROWTH_MIN_GAP)).toBe("Accelerating");
+  });
+
+  it("Decelerating when fast trails slow by more than minGap", () => {
+    expect(rateOfChangeLabel(2.0, 2.5, GROWTH_MIN_GAP)).toBe("Decelerating");
+  });
+
+  it("Stable within the dead band, either side of zero", () => {
+    expect(rateOfChangeLabel(2.55, 2.5, GROWTH_MIN_GAP)).toBe("Stable");
+    expect(rateOfChangeLabel(2.45, 2.5, GROWTH_MIN_GAP)).toBe("Stable");
+  });
+
+  it("uses inflation's wider 0.20pp dead band when passed CPI_MIN_GAP", () => {
+    // A 0.18pp gap clears GDP's 0.15pp band (would be Accelerating there)
+    // but stays inside inflation's wider 0.20pp band (Stable here) — the
+    // two axes deliberately use different thresholds.
+    expect(rateOfChangeLabel(2.68, 2.5, GROWTH_MIN_GAP)).toBe("Accelerating");
+    expect(rateOfChangeLabel(2.68, 2.5, CPI_MIN_GAP)).toBe("Stable");
   });
 });
