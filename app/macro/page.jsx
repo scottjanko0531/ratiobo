@@ -20,6 +20,9 @@ import {
   detectRegimeKey,
   isGrowthExpanding,
   isLaborDeteriorating,
+  rateOfChangeLabel,
+  CPI_MIN_GAP,
+  GROWTH_MIN_GAP,
   POTENTIAL_GDP_GROWTH,
   POTENTIAL_FLOOR_FRACTION,
   FED_INFLATION_TARGET,
@@ -1470,6 +1473,13 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   const payrollsInd  = indicators.find((i) => i.name === "Payrolls (3M Avg)");
   const unrateTrendInd = indicators.find((i) => i.name === "Unemployment Rate Trend");
   const claimsTrendInd = indicators.find((i) => i.name === "Initial Jobless Claims Trend");
+  // GDP & Inflation Regime Metrics spec (G1/G3 and I1/I2/I3/I4) — see
+  // gdpRegimeStats/cpiRegimeStats below, passed to the extended crossover
+  // drawers.
+  const coreCpiInd     = indicators.find((i) => i.name === "Core CPI (YoY)");
+  const coreCpiFastInd = indicators.find((i) => i.name === "Core CPI Growth (3M Avg)");
+  const coreCpiSlowInd = indicators.find((i) => i.name === "Core CPI Growth (9M Avg)");
+  const consumerExpInd = indicators.find((i) => i.name === "Consumer Inflation Expectations");
 
   const breakevenVal = breakeven?.current_value != null ? Number(breakeven.current_value) : FED_INFLATION_TARGET;
   const gdp3yAvgVal  = gdp3yAvg?.current_value  != null ? Number(gdp3yAvg.current_value)  : 0;
@@ -1551,6 +1561,44 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   const [gdpDrawerOpen, setGdpDrawerOpen] = useState(false);
   const [cpiCrossoverDrawerOpen, setCpiCrossoverDrawerOpen] = useState(false);
   const [inflExpDrawerOpen, setInflExpDrawerOpen] = useState(false);
+
+  // GDP & Inflation Regime Metrics spec — G1 (z-score vs 10yr window, from
+  // fetch-macro-data's computeRollingZScore, stored on "Real GDP Growth"'s
+  // metadata), G2 (Accelerating/Decelerating/Stable via rateOfChangeLabel,
+  // reusing the same fast/slow crossover the Structural lens already uses),
+  // G3 (direction — the 2Q-avg indicator's own current vs. previous value
+  // already IS MA_2q(t) vs MA_2q(t-1), so no new data is needed).
+  const gdpRegimeStats = {
+    zscore: gdp?.metadata?.zscore_10y ?? null,
+    windowMean: gdp?.metadata?.window_mean ?? null,
+    windowMin: gdp?.metadata?.window_min ?? null,
+    windowMax: gdp?.metadata?.window_max ?? null,
+    rateLabel: gdpFastVal != null && gdp3yAvg?.current_value != null
+      ? rateOfChangeLabel(gdpFastVal, gdp3yAvgVal, GROWTH_MIN_GAP) : null,
+    direction: gdpFastInd?.current_value != null && gdpFastInd?.previous_value != null
+      ? Math.sign(Number(gdpFastInd.current_value) - Number(gdpFastInd.previous_value)) : null,
+  };
+  // I1 (z-score vs 18yr window, on Core CPI — see computeRollingZScore's
+  // guard on "Core CPI (YoY)"), I2 (Accelerating/Decelerating/Stable on
+  // Core CPI's own 3M/9M crossover, wider CPI_MIN_GAP dead band), I3
+  // (direction on the existing HEADLINE CPI 3M-avg indicator — I3 is
+  // deliberately headline, unlike I1/I2's core basis), I4's consumer-
+  // expectations attribution (umich_1yr/nyfed_1yr, set alongside the
+  // existing blended composite_stress_z).
+  const coreCpiFastVal = coreCpiFastInd?.current_value != null ? Number(coreCpiFastInd.current_value) : null;
+  const coreCpiSlowVal = coreCpiSlowInd?.current_value != null ? Number(coreCpiSlowInd.current_value) : null;
+  const cpiRegimeStats = {
+    zscore: coreCpiInd?.metadata?.zscore_18y ?? null,
+    windowMean: coreCpiInd?.metadata?.window_mean ?? null,
+    windowMin: coreCpiInd?.metadata?.window_min ?? null,
+    windowMax: coreCpiInd?.metadata?.window_max ?? null,
+    rateLabel: coreCpiFastVal != null && coreCpiSlowVal != null
+      ? rateOfChangeLabel(coreCpiFastVal, coreCpiSlowVal, CPI_MIN_GAP) : null,
+    direction: cpiFastInd?.current_value != null && cpiFastInd?.previous_value != null
+      ? Math.sign(Number(cpiFastInd.current_value) - Number(cpiFastInd.previous_value)) : null,
+    umich1yr: consumerExpInd?.metadata?.umich_1yr ?? null,
+    nyfed1yr: consumerExpInd?.metadata?.nyfed_1yr ?? null,
+  };
 
   const signalKeys = regimeKey ? getSignalKeys(regimeKey) : [];
   // BW Modified and RP methods show all 8 market assets; Default shows regime-favored only
@@ -2211,6 +2259,10 @@ function QuadrantCard({ indicators, holdings, assetData }) {
           { key: "fast", label: "2Q Avg (fast)", shortLabel: "2Q", color: "#C9A227" },
           { key: "slow", label: "4Q Avg (slow)", shortLabel: "4Q", color: "#A8ADB8", dash: "5 3" },
         ]}
+        regimeStats={gdpRegimeStats}
+        zscoreLabel="vs. 10yr (40Q) window"
+        consensusVar="RGDP"
+        consensusLabel="Real GDP"
       />
       <TwoLineHistoryDrawer
         open={cpiCrossoverDrawerOpen}
@@ -2222,6 +2274,10 @@ function QuadrantCard({ indicators, holdings, assetData }) {
           { key: "fast", label: "3M Avg (fast)", shortLabel: "3M", color: "#E0635C" },
           { key: "slow", label: "9M Avg (slow)", shortLabel: "9M", color: "#A8ADB8", dash: "5 3" },
         ]}
+        regimeStats={cpiRegimeStats}
+        zscoreLabel="Core CPI vs. 18yr window"
+        consensusVar="CORECPI"
+        consensusLabel="Core CPI"
       />
       <TwoLineHistoryDrawer
         open={inflExpDrawerOpen}
@@ -2292,10 +2348,19 @@ const CROSSOVER_PRESETS = [
 // Reusable side-drawer chart for any "two tracked lines over time" cell —
 // backs the Regime Signal Comparison table's clickable Growth/Inflation cells
 // (fast vs slow crossover lines, or realized vs market-priced inflation).
-function TwoLineHistoryDrawer({ open, onClose, title, subtitle, fetchUrl, series, unit = "%" }) {
+function TwoLineHistoryDrawer({
+  open, onClose, title, subtitle, fetchUrl, series, unit = "%",
+  regimeStats, zscoreLabel, consensusVar, consensusLabel,
+}) {
   const [rows, setRows] = useState(null);
   const [fromDate, setFromDate] = useState("2000-01");
   const [toDate, setToDate] = useState("");
+  // GDP & Inflation Regime Metrics spec, G4/I4 "Forward Consensus" — SPF
+  // median forecast, fetched lazily on open (like the chart rows) rather
+  // than up front, since it's only needed when this drawer is actually
+  // viewed. horizon_quarters=1 is the SPF's own "current quarter" read;
+  // 2-5 averaged is the closest match to the spec's "next 4 quarters".
+  const [consensus, setConsensus] = useState(null);
 
   useEffect(() => {
     if (!open) return;
@@ -2305,6 +2370,30 @@ function TwoLineHistoryDrawer({ open, onClose, title, subtitle, fetchUrl, series
       .then((data) => setRows(Array.isArray(data) ? data : []))
       .catch(() => setRows([]));
   }, [open, fetchUrl]);
+
+  useEffect(() => {
+    if (!open || !consensusVar) return;
+    setConsensus(null);
+    supabase
+      .from("spf_forecasts")
+      .select("vintage_label, horizon_quarters, value")
+      .eq("variable_code", consensusVar)
+      .order("vintage_label", { ascending: false })
+      .limit(20)
+      .then(({ data }) => {
+        if (!data || !data.length) { setConsensus(false); return; }
+        const latestVintage = data[0].vintage_label;
+        const latest = data.filter((r) => r.vintage_label === latestVintage);
+        const h1 = latest.find((r) => r.horizon_quarters === 1)?.value ?? null;
+        const next4 = latest.filter((r) => r.horizon_quarters >= 2 && r.horizon_quarters <= 5).map((r) => Number(r.value));
+        setConsensus({
+          vintage: latestVintage,
+          currentQuarter: h1 != null ? Number(h1) : null,
+          next4qAvg: next4.length ? Math.round((next4.reduce((a, b) => a + b, 0) / next4.length) * 100) / 100 : null,
+        });
+      })
+      .catch(() => setConsensus(false));
+  }, [open, consensusVar]);
 
   const chartData = useMemo(() => {
     if (!rows) return [];
@@ -2418,6 +2507,70 @@ function TwoLineHistoryDrawer({ open, onClose, title, subtitle, fetchUrl, series
               })}
             </div>
           </div>
+
+          {regimeStats && (
+            <div className="card p-4 space-y-3">
+              <p className="label text-[10px]">Regime Metrics</p>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-0.5">Level {zscoreLabel ? `(${zscoreLabel})` : ""}</p>
+                  {regimeStats.zscore != null ? (
+                    <>
+                      <p className="num font-semibold text-paper">{regimeStats.zscore >= 0 ? "+" : ""}{regimeStats.zscore.toFixed(2)}σ</p>
+                      <p className="text-paper-dim text-[10px]">
+                        mean {regimeStats.windowMean?.toFixed(1)}% · range {regimeStats.windowMin?.toFixed(1)}–{regimeStats.windowMax?.toFixed(1)}%
+                      </p>
+                    </>
+                  ) : <p className="text-paper-dim">—</p>}
+                </div>
+                <div>
+                  <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-0.5">Rate of Change</p>
+                  <p className={`font-semibold ${regimeStats.rateLabel === "Accelerating" ? "text-gain" : regimeStats.rateLabel === "Decelerating" ? "text-loss" : "text-paper-dim"}`}>
+                    {regimeStats.rateLabel ?? "—"}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-0.5">Direction</p>
+                  <p className="font-semibold text-paper">
+                    {regimeStats.direction == null ? "—" : regimeStats.direction > 0 ? "↑ Rising" : regimeStats.direction < 0 ? "↓ Falling" : "→ Flat"}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-0.5">Forward Consensus (SPF)</p>
+                  {consensus === null ? (
+                    <p className="text-paper-dim">Loading…</p>
+                  ) : consensus === false || (consensus.currentQuarter == null && consensus.next4qAvg == null) ? (
+                    <p className="text-paper-dim">—</p>
+                  ) : (
+                    <>
+                      <p className="num font-semibold text-paper">
+                        {consensus.currentQuarter != null ? `${consensus.currentQuarter.toFixed(1)}%` : "—"}
+                        <span className="text-[9px] text-paper-dim font-normal ml-1">this qtr</span>
+                      </p>
+                      <p className="text-paper-dim text-[10px]">
+                        {consensus.next4qAvg != null ? `${consensus.next4qAvg.toFixed(1)}% next 4Q avg` : ""} · {consensusLabel} · SPF {consensus.vintage}
+                      </p>
+                    </>
+                  )}
+                </div>
+              </div>
+              {(regimeStats.umich1yr != null || regimeStats.nyfed1yr != null) && (
+                <div className="pt-2 border-t border-ink-line/50">
+                  <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-1">Consumer Inflation Expectations (1yr, attributed)</p>
+                  <div className="flex gap-4 text-xs">
+                    <p className="text-paper">
+                      {regimeStats.umich1yr != null ? `${regimeStats.umich1yr.toFixed(1)}%` : "—"}
+                      <span className="text-[9px] text-paper-dim ml-1">UMich</span>
+                    </p>
+                    <p className="text-paper">
+                      {regimeStats.nyfed1yr != null ? `${regimeStats.nyfed1yr.toFixed(1)}%` : "—"}
+                      <span className="text-[9px] text-paper-dim ml-1">NY Fed SCE</span>
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {rows === null ? (
             <div className="h-64 flex items-center justify-center text-paper-dim text-sm">Loading…</div>
