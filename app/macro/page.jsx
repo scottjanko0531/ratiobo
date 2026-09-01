@@ -1586,6 +1586,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
       ? rateOfChangeLabel(gdpFastVal, gdp3yAvgVal, GROWTH_MIN_GAP) : null,
     direction: gdpFastInd?.current_value != null && gdpFastInd?.previous_value != null
       ? Math.sign(Number(gdpFastInd.current_value) - Number(gdpFastInd.previous_value)) : null,
+    currentValue: gdp?.current_value != null ? Number(gdp.current_value) : null,
   };
   // I1 (z-score vs 18yr window, on Core CPI — see computeRollingZScore's
   // guard on "Core CPI (YoY)"), I2 (Accelerating/Decelerating/Stable on
@@ -1607,6 +1608,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
       ? Math.sign(Number(cpiFastInd.current_value) - Number(cpiFastInd.previous_value)) : null,
     umich1yr: consumerExpInd?.metadata?.umich_1yr ?? null,
     nyfed1yr: consumerExpInd?.metadata?.nyfed_1yr ?? null,
+    currentValue: coreCpiInd?.current_value != null ? Number(coreCpiInd.current_value) : null,
   };
 
   const signalKeys = regimeKey ? getSignalKeys(regimeKey) : [];
@@ -2541,32 +2543,41 @@ function TwoLineHistoryDrawer({
                 <div>
                   <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-0.5">Rate of Change</p>
                   <p className={`font-semibold ${regimeStats.rateLabel === "Accelerating" ? "text-gain" : regimeStats.rateLabel === "Decelerating" ? "text-loss" : "text-paper-dim"}`}>
-                    {regimeStats.rateLabel ?? "—"}
+                    {regimeStats.rateLabel === "Accelerating" ? "Increasing" : regimeStats.rateLabel === "Decelerating" ? "Decreasing" : regimeStats.rateLabel ?? "—"}
                   </p>
                 </div>
                 <div>
                   <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-0.5">Direction</p>
-                  <p className="font-semibold text-paper">
-                    {regimeStats.direction == null ? "—" : regimeStats.direction > 0 ? "↑ Rising" : regimeStats.direction < 0 ? "↓ Falling" : "→ Flat"}
+                  <p className={`font-semibold ${regimeStats.direction > 0 ? "text-gain" : regimeStats.direction < 0 ? "text-loss" : "text-paper-dim"}`}>
+                    {regimeStats.direction == null ? "—" : regimeStats.direction > 0 ? "↑ Up" : regimeStats.direction < 0 ? "↓ Down" : "→ Flat"}
                   </p>
                 </div>
                 <div>
                   <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-0.5">Forward Consensus (SPF)</p>
                   {consensus === null ? (
                     <p className="text-paper-dim">Loading…</p>
-                  ) : consensus === false || (consensus.currentQuarter == null && consensus.next4qAvg == null) ? (
+                  ) : consensus === false || (consensus.currentQuarter == null && consensus.next4qAvg == null) || regimeStats.currentValue == null ? (
                     <p className="text-paper-dim">—</p>
-                  ) : (
-                    <>
-                      <p className="num font-semibold text-paper">
-                        {consensus.currentQuarter != null ? `${consensus.currentQuarter.toFixed(1)}%` : "—"}
-                        <span className="text-[9px] text-paper-dim font-normal ml-1">this qtr</span>
-                      </p>
-                      <p className="text-paper-dim text-[10px]">
-                        {consensus.next4qAvg != null ? `${consensus.next4qAvg.toFixed(1)}% next 4Q avg` : ""} · {consensusLabel} · SPF {consensus.vintage}
-                      </p>
-                    </>
-                  )}
+                  ) : (() => {
+                    // Compare the actual current reading against the nearest
+                    // available SPF forecast — "this qtr" (horizon 1) when
+                    // present, else the "next 4Q" average (RGDP's file has no
+                    // horizon-1 row, see update-spf-forecasts, so GDP always
+                    // falls back to next4qAvg here).
+                    const consensusVal = consensus.currentQuarter ?? consensus.next4qAvg;
+                    const delta = regimeStats.currentValue - consensusVal;
+                    const dir = Math.abs(delta) < 0.05 ? "flat" : delta > 0 ? "above" : "below";
+                    return (
+                      <>
+                        <p className={`font-semibold ${dir === "above" ? "text-gain" : dir === "below" ? "text-loss" : "text-paper-dim"}`}>
+                          {dir === "above" ? "↑ Above Consensus" : dir === "below" ? "↓ Below Consensus" : "→ In Line"}
+                        </p>
+                        <p className="text-paper-dim text-[10px]">
+                          {regimeStats.currentValue.toFixed(1)}% actual vs {consensusVal.toFixed(1)}% {consensusLabel} · SPF {consensus.vintage}
+                        </p>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
               {(regimeStats.umich1yr != null || regimeStats.nyfed1yr != null) && (
