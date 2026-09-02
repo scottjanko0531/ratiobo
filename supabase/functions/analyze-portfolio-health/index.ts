@@ -101,13 +101,19 @@ async function generatePortfolioAnalysis(params: {
   summary: ReturnType<typeof computePortfolioSummary>;
   dayChg: number | null;
   today: string;
-  structuralRegime: string | null; marketRegime: string | null; forwardConfidence: number | null;
+  structuralRegime: string | null; marketRegime: string | null;
+  nearTermForwardKey: string | null; nearTermForwardConfidence: number | null;
+  mediumTermForwardKey: string | null; mediumTermForwardConfidence: number | null;
   clioAnalysis: string | null; clioMusing: string | null;
   macroStatusCounts: { healthy: number; watch: number; danger: number };
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY) return null;
   try {
-    const { portfolio, summary, dayChg, today, structuralRegime, marketRegime, forwardConfidence, clioAnalysis, clioMusing, macroStatusCounts } = params;
+    const {
+      portfolio, summary, dayChg, today, structuralRegime, marketRegime,
+      nearTermForwardKey, nearTermForwardConfidence, mediumTermForwardKey, mediumTermForwardConfidence,
+      clioAnalysis, clioMusing, macroStatusCounts,
+    } = params;
     const todayFormatted = new Date(today + "T00:00:00Z").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
     const usd = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`;
@@ -128,10 +134,10 @@ async function generatePortfolioAnalysis(params: {
     const anyOutOfBand = summary.allocation.some(a => a.outOfBand);
 
     const STATIC_TEXT = `This portfolio is explicitly configured as a STATIC, regime-agnostic framework (e.g. risk parity, All Weather) — it does NOT need to predict which macro regime is active, because diversification comes from the mix of asset classes itself. Your recommendations must stay within rebalancing back to the target allocations shown above — do NOT recommend new sector, style, or duration tilts driven by today's regime call (e.g. "shift into small-cap/value," "avoid mega-cap"), since that contradicts this framework's own design philosophy. Judge holding composition on its own terms from what's actually listed above (e.g. a broad total-market fund like VTI or ITOT is not a "mega-cap" or "duration" bet — it's simply unstyled market-cap-weighted exposure) rather than speculating about what a bucket might contain.`;
-    const TACTICAL_TEXT = `This portfolio is explicitly configured as a TACTICAL, regime-responsive framework — it is meant to rotate or tilt exposure based on the macro cycle. Regime-driven tilts, including within a single sleeve and beyond simple rebalancing to target, are appropriate and expected.`;
+    const TACTICAL_TEXT = `This portfolio is explicitly configured as a TACTICAL, regime-responsive framework — it is meant to rotate or tilt exposure based on the macro cycle. Regime-driven tilts, including within a single sleeve and beyond simple rebalancing to target, are appropriate and expected. Ground any tilt recommendation in the Near-Term Forward Signal (2-3mo) below, not the Medium-Term composite — tactical portfolio actions taken today should track the near-dated outlook, not a 6-18 month view (that longer horizon is what REGIME-DRIVEN portfolios' automated targets already track, a different mechanism from this framework).`;
     const regimeDrivenLabel = portfolio.current_regime_key ? (REGIME_LABELS[portfolio.current_regime_key] ?? portfolio.current_regime_key) : null;
     const REGIME_DRIVEN_TEXT = `This portfolio is explicitly configured as REGIME-DRIVEN: its target allocations shown above are set AUTOMATICALLY by a daily job that tracks the Forward Signal (the app's 6-18 month leading-indicator composite, not the structural or market-implied regime) and only shifts targets once a new regime has held for 30 consecutive days AND the Forward Signal confidence is at least 60% on the day it commits (avoiding both whipsaw and low-conviction commitments — a decayed-confidence candidate will not commit just because 30 days passed) — currently targeting ${regimeDrivenLabel ?? "an unset regime"}${portfolio.regime_confirmed_since ? `, confirmed since ${portfolio.regime_confirmed_since}` : ""}. The regime tilt has ALREADY happened at the target-allocation level — treat this exactly like a static framework for recommendation purposes: stay within rebalancing back to the CURRENT target shown above, do NOT layer additional freelance tactical tilts on top of what the automated target already encodes. If you believe the live Forward Signal differs from what's targeted, note that as context only — do not recommend the portfolio manually front-run the confirmation window.`;
-    const UNSET_TEXT = `Determine from the stated strategy and actual holdings above whether this portfolio is a static, regime-agnostic asset-allocation framework (e.g. risk parity, All Weather — explicitly designed so the investor does NOT need to predict which macro regime is active) or a tactical, regime-responsive framework (e.g. explicitly built to rotate or tilt exposure based on the macro cycle, such as BW Modified). If static/regime-agnostic, recommendations must stay within rebalancing back to the target allocations shown above — do NOT recommend new sector, style, or duration tilts driven by today's regime call. Judge holding composition on its own terms (e.g. a broad total-market fund like VTI or ITOT is not a "mega-cap" bet) rather than speculating about what a bucket might contain. If tactical/regime-responsive, regime-driven tilts are appropriate and expected.`;
+    const UNSET_TEXT = `Determine from the stated strategy and actual holdings above whether this portfolio is a static, regime-agnostic asset-allocation framework (e.g. risk parity, All Weather — explicitly designed so the investor does NOT need to predict which macro regime is active) or a tactical, regime-responsive framework (e.g. explicitly built to rotate or tilt exposure based on the macro cycle, such as BW Modified). If static/regime-agnostic, recommendations must stay within rebalancing back to the target allocations shown above — do NOT recommend new sector, style, or duration tilts driven by today's regime call. Judge holding composition on its own terms (e.g. a broad total-market fund like VTI or ITOT is not a "mega-cap" bet) rather than speculating about what a bucket might contain. If tactical/regime-responsive, regime-driven tilts are appropriate and expected — ground any such tilt in the Near-Term Forward Signal (2-3mo) below, not the Medium-Term composite.`;
     const frameworkConstraint = "FRAMEWORK CONSTRAINT: " + (
       portfolio.strategy_framework === "static" ? STATIC_TEXT
       : portfolio.strategy_framework === "tactical" ? TACTICAL_TEXT
@@ -162,7 +168,8 @@ ${anyOutOfBand ? "" : "REBALANCING CONSTRAINT: every bucket above is within its 
 TODAY'S MACRO BACKDROP:
 Structural regime: ${structuralRegime ?? "unknown"}
 Market-implied regime: ${marketRegime ?? "unknown"}
-Forward signal confidence: ${forwardConfidence != null ? `${forwardConfidence}%` : "n/a"}
+Near-Term Forward Signal (2-3mo): ${nearTermForwardKey ? `${REGIME_LABELS[nearTermForwardKey] ?? nearTermForwardKey}${nearTermForwardConfidence != null ? ` (${nearTermForwardConfidence}% confidence)` : ""}` : "n/a"} — use THIS signal for any tactical tilt recommendations below
+Medium-Term Forward Signal (6-18mo): ${mediumTermForwardKey ? `${REGIME_LABELS[mediumTermForwardKey] ?? mediumTermForwardKey}${mediumTermForwardConfidence != null ? ` (${mediumTermForwardConfidence}% confidence)` : ""}` : "n/a"} — context only; this is what drives REGIME-DRIVEN portfolios' automated target allocations, not a signal to cite for tactical tilts
 Indicator status counts: ${macroStatusCounts.healthy} healthy, ${macroStatusCounts.watch} watch, ${macroStatusCounts.danger} danger
 
 CLIO'S REGIME ANALYSIS (already published today):
@@ -175,7 +182,7 @@ ${frameworkConstraint}
 
 Structure your answer in two parts, separated by a blank line:
 (1) A paragraph assessing this portfolio's health: is its current allocation appropriate given its stated strategy AND the macro backdrop above? Where is it well-positioned, and where is it exposed? If it has no stated strategy, note that explicitly and assess purely against the macro backdrop.
-(2) A "Recommendations:" section: one short lead-in sentence, then 3-5 bullet points (each on its own line, starting with "- "), each a specific, actionable instruction naming a real bucket, asset class, or holding in this portfolio and what to do with it. Any rebalancing trade must be justified by a bucket marked OUT OF BAND above — never recommend trimming or adding to a bucket that's within its band purely because it has nonzero drift or because of the macro regime call (for static/regime-agnostic frameworks per the constraint above). Bullets not about rebalancing (e.g. macro-driven tactical calls for a tactical framework) don't need a band justification, just the macro regime tie-in.
+(2) A "Recommendations:" section: one short lead-in sentence, then 3-5 bullet points (each on its own line, starting with "- "), each a specific, actionable instruction naming a real bucket, asset class, or holding in this portfolio and what to do with it. Any rebalancing trade must be justified by a bucket marked OUT OF BAND above — never recommend trimming or adding to a bucket that's within its band purely because it has nonzero drift or because of the macro regime call (for static/regime-agnostic frameworks per the constraint above). Bullets not about rebalancing (e.g. macro-driven tactical calls for a tactical framework) don't need a band justification, just the macro tie-in — and that tie-in must cite the Near-Term Forward Signal (2-3mo) above, not the Medium-Term composite.
 
 Part 1 must be plain prose — no bullets, no bold, no headers. Part 2 must be lead-in sentence + bullets only.`;
 
@@ -199,7 +206,9 @@ async function analyzeOnePortfolio(
   sb: ReturnType<typeof createClient>,
   portfolio: Portfolio,
   macroCtx: {
-    structuralRegime: string | null; marketRegime: string | null; forwardConfidence: number | null;
+    structuralRegime: string | null; marketRegime: string | null;
+    nearTermForwardKey: string | null; nearTermForwardConfidence: number | null;
+    mediumTermForwardKey: string | null; mediumTermForwardConfidence: number | null;
     clioAnalysis: string | null; clioMusing: string | null;
     macroStatusCounts: { healthy: number; watch: number; danger: number };
   },
@@ -235,7 +244,8 @@ async function analyzeOnePortfolio(
     const analysis = await generatePortfolioAnalysis({
       portfolio, summary, dayChg, today,
       structuralRegime: macroCtx.structuralRegime, marketRegime: macroCtx.marketRegime,
-      forwardConfidence: macroCtx.forwardConfidence,
+      nearTermForwardKey: macroCtx.nearTermForwardKey, nearTermForwardConfidence: macroCtx.nearTermForwardConfidence,
+      mediumTermForwardKey: macroCtx.mediumTermForwardKey, mediumTermForwardConfidence: macroCtx.mediumTermForwardConfidence,
       clioAnalysis: macroCtx.clioAnalysis, clioMusing: macroCtx.clioMusing,
       macroStatusCounts: macroCtx.macroStatusCounts,
     });
@@ -247,7 +257,12 @@ async function analyzeOnePortfolio(
       analysis,
       structural_regime: macroCtx.structuralRegime,
       market_regime: macroCtx.marketRegime,
-      forward_confidence: macroCtx.forwardConfidence,
+      // Medium-Term kept for context/audit (matches what REGIME-DRIVEN
+      // portfolios' automated targets track); Near-Term is the signal that
+      // actually informed this review's tactical tilt recommendations.
+      forward_confidence: macroCtx.mediumTermForwardConfidence,
+      nearterm_forward_key: macroCtx.nearTermForwardKey,
+      nearterm_forward_confidence: macroCtx.nearTermForwardConfidence,
       rebalance_band_pct: bandPct,
       generated_at: new Date().toISOString(),
     }, { onConflict: "portfolio_id,analysis_date" });
@@ -289,7 +304,9 @@ Deno.serve(async (req: Request) => {
       sb.from("macro_indicators").select("status"),
     ]);
     const { data: regimeHistRow } = await sb
-      .from("macro_regime_history").select("forward_confidence").order("period_date", { ascending: false }).limit(1).maybeSingle();
+      .from("macro_regime_history")
+      .select("forward_key,forward_confidence,nearterm_forward_key,nearterm_forward_confidence")
+      .order("period_date", { ascending: false }).limit(1).maybeSingle();
 
     const macroStatusCounts = { healthy: 0, watch: 0, danger: 0 };
     for (const r of (macroRows ?? []) as { status: string | null }[]) {
@@ -300,7 +317,14 @@ Deno.serve(async (req: Request) => {
     const macroCtx = {
       structuralRegime: regimeRow?.structural_regime ?? null,
       marketRegime: regimeRow?.market_regime ?? null,
-      forwardConfidence: regimeHistRow?.forward_confidence != null ? Number(regimeHistRow.forward_confidence) : null,
+      // Near-Term informs this review's tactical tilt recommendations;
+      // Medium-Term is kept only as context (it's what REGIME-DRIVEN
+      // portfolios' automated targets actually track) — see the
+      // forward-signal two-horizon spec.
+      nearTermForwardKey: regimeHistRow?.nearterm_forward_key ?? null,
+      nearTermForwardConfidence: regimeHistRow?.nearterm_forward_confidence != null ? Number(regimeHistRow.nearterm_forward_confidence) : null,
+      mediumTermForwardKey: regimeHistRow?.forward_key ?? null,
+      mediumTermForwardConfidence: regimeHistRow?.forward_confidence != null ? Number(regimeHistRow.forward_confidence) : null,
       clioAnalysis: regimeRow?.analysis ?? null,
       clioMusing: regimeRow?.news_musing ?? null,
       macroStatusCounts,

@@ -594,7 +594,7 @@ export default function PortfoliosPage() {
                               <p className="text-[10px] text-paper-dim/60 mt-0.5">
                                 {isStale ? `Last run ${a.analysis_date}` : "Updated today"}
                                 {a.structural_regime && ` · ${a.structural_regime}${a.market_regime && a.market_regime !== a.structural_regime ? ` / ${a.market_regime}` : ""}`}
-                                {a.forward_confidence != null && ` · ${a.forward_confidence}% forward confidence`}
+                                {a.nearterm_forward_confidence != null && ` · ${a.nearterm_forward_confidence}% near-term forward confidence`}
                                 {a.rebalance_band_pct != null && ` · ±${a.rebalance_band_pct}pt rebalance band`}
                               </p>
                             )}
