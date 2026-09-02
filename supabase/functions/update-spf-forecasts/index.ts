@@ -56,18 +56,23 @@ Deno.serve(async (req: Request) => {
     const rows: Row[] = [];
     const errors: string[] = [];
 
+    // Each Median_*_Level.xlsx carries every past survey vintage (RGDP back
+    // to 1968-Q4), not just the latest one — ingest all of them so historical
+    // "recent readings" rows can show what SPF actually forecast at the time,
+    // not just the current forward-looking path. `last` (below) still picks
+    // out the newest vintage for the "Real GDP Growth" metadata stamp.
     for (const code of RATE_VARS) {
       try {
         const data = await fetchSpfSheet(code);
-        const last = data[data.length - 1];
-        if (!last) continue;
-        const year = num(last.YEAR), quarter = num(last.QUARTER);
-        if (year == null || quarter == null) continue;
-        const vintage_label = `${year}-Q${quarter}`;
-        for (let h = 1; h <= 6; h++) {
-          const v = num(last[`${code}${h}`]);
-          if (v == null) continue;
-          rows.push({ vintage_label, variable_code: code, horizon_quarters: h, value: r2(v) });
+        for (const vintageRow of data) {
+          const year = num(vintageRow.YEAR), quarter = num(vintageRow.QUARTER);
+          if (year == null || quarter == null) continue;
+          const vintage_label = `${year}-Q${quarter}`;
+          for (let h = 1; h <= 6; h++) {
+            const v = num(vintageRow[`${code}${h}`]);
+            if (v == null) continue;
+            rows.push({ vintage_label, variable_code: code, horizon_quarters: h, value: r2(v) });
+          }
         }
       } catch (e) { errors.push(`${code}: ${e instanceof Error ? e.message : String(e)}`); }
     }
@@ -75,44 +80,49 @@ Deno.serve(async (req: Request) => {
     for (const code of LONGRUN_VARS) {
       try {
         const data = await fetchSpfSheet(code);
-        const last = data[data.length - 1];
-        if (!last) continue;
-        const year = num(last.YEAR), quarter = num(last.QUARTER);
-        const v = num(last[code]);
-        if (year == null || quarter == null || v == null) continue;
-        rows.push({ vintage_label: `${year}-Q${quarter}`, variable_code: code, horizon_quarters: 0, value: r2(v) });
+        for (const vintageRow of data) {
+          const year = num(vintageRow.YEAR), quarter = num(vintageRow.QUARTER);
+          const v = num(vintageRow[code]);
+          if (year == null || quarter == null || v == null) continue;
+          rows.push({ vintage_label: `${year}-Q${quarter}`, variable_code: code, horizon_quarters: 0, value: r2(v) });
+        }
       } catch (e) { errors.push(`${code}: ${e instanceof Error ? e.message : String(e)}`); }
     }
 
     for (const code of LEVEL_VARS) {
       try {
         const data = await fetchSpfSheet(code);
-        const last = data[data.length - 1];
-        if (!last) continue;
-        const year = num(last.YEAR), quarter = num(last.QUARTER);
-        if (year == null || quarter == null) continue;
-        const vintage_label = `${year}-Q${quarter}`;
-        const levels: (number | null)[] = [];
-        for (let h = 1; h <= 6; h++) levels.push(num(last[`${code}${h}`]));
-        // Growth INTO quarter h, from the level forecast at h-1 to h — so
-        // horizon_quarters=2 is "the annualized growth rate forecast for 2
-        // quarters from now," etc. No horizon_quarters=1 row: that would
-        // need the already-realized base-quarter level, which this file
-        // doesn't carry (see the plan's noted derivation caveat).
-        for (let h = 2; h <= 6; h++) {
-          const a = levels[h - 2], b = levels[h - 1];
-          if (a == null || b == null || a <= 0) continue;
-          const growth = (Math.pow(b / a, 4) - 1) * 100;
-          rows.push({ vintage_label, variable_code: code, horizon_quarters: h, value: r2(growth) });
+        for (const vintageRow of data) {
+          const year = num(vintageRow.YEAR), quarter = num(vintageRow.QUARTER);
+          if (year == null || quarter == null) continue;
+          const vintage_label = `${year}-Q${quarter}`;
+          const levels: (number | null)[] = [];
+          for (let h = 1; h <= 6; h++) levels.push(num(vintageRow[`${code}${h}`]));
+          // Growth INTO quarter h, from the level forecast at h-1 to h — so
+          // horizon_quarters=2 is "the annualized growth rate forecast for 2
+          // quarters from now," etc. No horizon_quarters=1 row: that would
+          // need the already-realized base-quarter level, which this file
+          // doesn't carry (see the plan's noted derivation caveat).
+          for (let h = 2; h <= 6; h++) {
+            const a = levels[h - 2], b = levels[h - 1];
+            if (a == null || b == null || a <= 0) continue;
+            const growth = (Math.pow(b / a, 4) - 1) * 100;
+            rows.push({ vintage_label, variable_code: code, horizon_quarters: h, value: r2(growth) });
+          }
         }
       } catch (e) { errors.push(`${code}: ${e instanceof Error ? e.message : String(e)}`); }
     }
 
     if (rows.length) {
-      const { error } = await supabase.from("spf_forecasts").upsert(rows, {
-        onConflict: "vintage_label,variable_code,horizon_quarters",
-      });
-      if (error) throw new Error(`upsert failed: ${error.message}`);
+      // Chunked upsert — a full backfill is ~7k rows across 6 series, well
+      // past what's comfortable in a single request.
+      const CHUNK = 1000;
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        const { error } = await supabase.from("spf_forecasts").upsert(rows.slice(i, i + CHUNK), {
+          onConflict: "vintage_label,variable_code,horizon_quarters",
+        });
+        if (error) throw new Error(`upsert failed at offset ${i}: ${error.message}`);
+      }
     }
 
     // Stamp the nearest-available RGDP consensus onto "Real GDP Growth"'s
@@ -122,7 +132,11 @@ Deno.serve(async (req: Request) => {
     // the GDP drawer's Forward Consensus block. Fetch-then-merge, not a
     // blind upsert, so this doesn't clobber zscore_10y/reference_period,
     // which fetch-macro-data writes on the same row.
-    const rgdpRows = rows.filter((r) => r.variable_code === "RGDP");
+    const allRgdpRows = rows.filter((r) => r.variable_code === "RGDP");
+    const latestRgdpVintage = allRgdpRows.length
+      ? allRgdpRows.map((r) => r.vintage_label).sort().at(-1)
+      : null;
+    const rgdpRows = latestRgdpVintage ? allRgdpRows.filter((r) => r.vintage_label === latestRgdpVintage) : [];
     if (rgdpRows.length) {
       const h1 = rgdpRows.find((r) => r.horizon_quarters === 1)?.value ?? null;
       const next4 = rgdpRows.filter((r) => r.horizon_quarters >= 2 && r.horizon_quarters <= 5).map((r) => r.value);

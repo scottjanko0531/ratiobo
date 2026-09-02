@@ -2419,36 +2419,75 @@ function TwoLineHistoryDrawer({
   useEffect(() => {
     if (!open || !consensusVar) return;
     setConsensus(null);
-    supabase
-      .from("spf_forecasts")
-      .select("vintage_label, horizon_quarters, value")
-      .eq("variable_code", consensusVar)
-      .order("vintage_label", { ascending: false })
-      .limit(20)
-      .then(({ data }) => {
-        if (!data || !data.length) { setConsensus(false); return; }
-        const latestVintage = data[0].vintage_label;
-        const latest = data.filter((r) => r.vintage_label === latestVintage);
+    // Two separate queries rather than one unfiltered pull of this series'
+    // full history: PostgREST caps unfiltered result sets around 1000 rows,
+    // and a 230+ vintage series like RGDP (6 horizons/vintage) can exceed
+    // that. Horizon 1/2 is all the historical lookup below needs.
+    Promise.all([
+      supabase
+        .from("spf_forecasts")
+        .select("vintage_label, horizon_quarters, value")
+        .eq("variable_code", consensusVar)
+        .order("vintage_label", { ascending: false })
+        .limit(10),
+      supabase
+        .from("spf_forecasts")
+        .select("vintage_label, horizon_quarters, value")
+        .eq("variable_code", consensusVar)
+        .in("horizon_quarters", [1, 2]),
+    ])
+      .then(([{ data: latestData }, { data: historyData }]) => {
+        if (!latestData || !latestData.length) { setConsensus(false); return; }
+        const latestVintage = latestData[0].vintage_label;
+        const latest = latestData.filter((r) => r.vintage_label === latestVintage);
         const h1 = latest.find((r) => r.horizon_quarters === 1)?.value ?? null;
         const next4 = latest.filter((r) => r.horizon_quarters >= 2 && r.horizon_quarters <= 5).map((r) => Number(r.value));
+
+        const parseVintage = (v) => { const [y, q] = v.split("-Q").map(Number); return { y, q }; };
+        const qToDate = (y, q) => `${y}-${String((q - 1) * 3 + 1).padStart(2, "0")}-01`;
+        const addQuarters = (y, q, n) => {
+          const total = (q - 1) + n;
+          return { y: y + Math.floor(total / 4), q: (((total % 4) + 4) % 4) + 1 };
+        };
+
         // Per-horizon forecast path for the readings table: horizon 1 is the
         // vintage's own survey quarter, horizon 2 the next quarter, etc. —
         // convert each to the calendar quarter it targets so it can be
         // plotted alongside the historical actuals.
-        const [vy, vq] = latestVintage.split("-Q").map(Number);
+        const { y: latestY, q: latestQ } = parseVintage(latestVintage);
         const forecastRows = latest
           .map((r) => {
-            const totalQ = (vq - 1) + (r.horizon_quarters - 1);
-            const year = vy + Math.floor(totalQ / 4);
-            const month = String((totalQ % 4) * 3 + 1).padStart(2, "0");
-            return { date: `${year}-${month}-01`, value: Number(r.value) };
+            const target = addQuarters(latestY, latestQ, r.horizon_quarters - 1);
+            return { date: qToDate(target.y, target.q), value: Number(r.value) };
           })
           .sort((a, b) => b.date.localeCompare(a.date));
+
+        // Point-forecast-by-quarter, for the "what did SPF think this
+        // quarter would look like" column on past/actual rows: prefer the
+        // nowcast (horizon 1) made during that same quarter; else fall back
+        // to the 1-quarter-ahead forecast (horizon 2) made the quarter
+        // before — RGDP has no horizon-1 row at all, so it always uses the
+        // fallback.
+        const pointForecastByDate = {};
+        for (const r of historyData ?? []) {
+          if (r.horizon_quarters !== 1) continue;
+          const { y, q } = parseVintage(r.vintage_label);
+          pointForecastByDate[qToDate(y, q)] = Number(r.value);
+        }
+        for (const r of historyData ?? []) {
+          if (r.horizon_quarters !== 2) continue;
+          const { y, q } = parseVintage(r.vintage_label);
+          const target = addQuarters(y, q, 1);
+          const d = qToDate(target.y, target.q);
+          if (pointForecastByDate[d] == null) pointForecastByDate[d] = Number(r.value);
+        }
+
         setConsensus({
           vintage: latestVintage,
           currentQuarter: h1 != null ? Number(h1) : null,
           next4qAvg: next4.length ? Math.round((next4.reduce((a, b) => a + b, 0) / next4.length) * 100) / 100 : null,
           forecastRows,
+          pointForecastByDate,
         });
       })
       .catch(() => setConsensus(false));
@@ -2745,9 +2784,14 @@ function TwoLineHistoryDrawer({
                           {r[s.key] != null ? `${r[s.key].toFixed(2)}${unit}` : "—"}
                         </div>
                       ))}
-                      {consensusVar && (
-                        <div className="bg-ink px-2 py-1.5 text-right text-paper-dim/30 num">—</div>
-                      )}
+                      {consensusVar && (() => {
+                        const spf = consensus?.pointForecastByDate?.[r.date];
+                        return (
+                          <div className={`bg-ink px-2 py-1.5 text-right num ${spf != null ? "text-brass-soft/70" : "text-paper-dim/30"}`}>
+                            {spf != null ? `${spf.toFixed(2)}${unit}` : "—"}
+                          </div>
+                        );
+                      })()}
                     </Fragment>
                   ))}
                 </div>
