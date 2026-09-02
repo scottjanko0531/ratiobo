@@ -356,9 +356,7 @@ async function getFedRateOdds(): Promise<FedOdds | null> {
 // this request already fetched, rather than trusting the once-nightly
 // macro_regime_history cache, which was found to silently go a full day stale.
 // Kept in sync with fetch-macro-data's identical constants/formula.
-const POTENTIAL_GDP_GROWTH = 1.9;
 const GROWTH_MIN_GAP = 0.15;
-const POTENTIAL_FLOOR_FRACTION = 0.85;
 // The Fed's actual inflation mandate, not an arbitrary round number.
 const FED_INFLATION_TARGET = 2.0;
 
@@ -381,7 +379,16 @@ function detectRegimeKeyLive(
   gdpYoy: number, cpiYoy: number, gdp3y: number, cpi3y: number,
   laborInputs?: { payrolls3mAvg: number | null; unemploymentTrend: number | null; joblessClaimsTrend: number | null },
 ): string {
-  const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP) && (gdpYoy > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION)
+  // Growth axis: the SAME gap-vs-dead-band test the Structural Growth
+  // panel displays (rateOfChangeLabel === "Accelerating"), not a
+  // separately-computed test — this used to also require clearing the
+  // potential-GDP floor, which the panel's own label never checked, so
+  // the two could disagree on the identical fast/slow pair. The potential
+  // floor is still a legitimate, separately-displayed data point on the
+  // macro page — it's just no longer a silent gate on this classification.
+  // See the regime-table dead-band bug fix and the follow-up request to
+  // stop having an independent GDP-state read.
+  const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP)
     && !(laborInputs && isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend));
   const rising = cpiYoy > cpi3y;
   if (growing && !rising) return "rg_fi";
@@ -423,7 +430,10 @@ function computeLiveRegimeKeys(
   const marketKey = gdpFast != null && gdpSlow != null
     ? (() => {
         const mktInflUp = (breakeven ?? FED_INFLATION_TARGET) > FED_INFLATION_TARGET;
-        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP) && (gdpFast > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION)
+        // Same gap-only growth test as detectRegimeKeyLive above — no
+        // separate potential-floor gate (see the regime-table dead-band
+        // bug fix / independent-GDP-state-read follow-up).
+        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP)
           && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
         return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })()

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   detectRegimeKey,
   isGrowthExpanding,
+  isGrowthAccelerating,
   isLaborDeteriorating,
   rateOfChangeLabel,
   POTENTIAL_GDP_GROWTH,
@@ -192,5 +193,39 @@ describe("rateOfChangeLabel", () => {
 
   it("a gap clearly below minGap still reads Decelerating", () => {
     expect(rateOfChangeLabel(2.00, 2.28, GROWTH_MIN_GAP)).toBe("Decelerating");
+  });
+});
+
+// Follow-up to the dead-band bug fix: the Structural/Market classifiers'
+// growth axis must use the exact same read as the Structural Growth
+// panel's label — no separate, independently-computed test. isGrowthExpanding
+// (still used by detectRegimeKey/run-backtest/the Regime Simulator) also
+// requires clearing the potential-GDP floor; isGrowthAccelerating
+// deliberately does not, since the panel's own label never checked it either.
+describe("isGrowthAccelerating", () => {
+  it("true only on a genuine Accelerating read (gap > minGap)", () => {
+    expect(isGrowthAccelerating(2.60, 2.28)).toBe(true);
+  });
+
+  it("false for the live pair that motivated the bug fix, even though it's positive and technically clears potential", () => {
+    // 2.39 vs 2.28 is a 0.11pp gap — below the 0.15pp dead band — so this
+    // must be false regardless of whether 2.39% also clears the potential
+    // floor (it does: 2.39 > 1.9*0.85=1.615). The point of this fix is
+    // that potential no longer participates in this test at all.
+    expect(isGrowthAccelerating(2.39, 2.28)).toBe(false);
+  });
+
+  it("false when Decelerating (gap < -minGap)", () => {
+    expect(isGrowthAccelerating(2.00, 2.28)).toBe(false);
+  });
+
+  it("differs from isGrowthExpanding when a real crossover clears the gap but not the potential floor", () => {
+    // fast=1.0, slow=0.5: gap 0.5pp clears GROWTH_MIN_GAP (0.15pp), but
+    // 1.0% is well below the potential floor (1.9*0.85=1.615%).
+    // isGrowthExpanding requires both and returns false; isGrowthAccelerating
+    // only checks the gap and returns true — this is the exact behavioral
+    // difference the fix introduces.
+    expect(isGrowthExpanding(1.0, 0.5)).toBe(false);
+    expect(isGrowthAccelerating(1.0, 0.5)).toBe(true);
   });
 });

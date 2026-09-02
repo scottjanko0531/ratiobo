@@ -2029,16 +2029,32 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       // avg) side of the crossover, not a 3-year average or a single prior
       // period — see detectRegimeKey's call below for the actual fast/slow pair.
       gdp_3y_avg: r2(gdpSlow), cpi_3y_avg: r2(cpiSlow),
-      structural_key: detectRegimeKey(gdpFast, cpiFast, gdpSlow, cpiSlow, laborInputs),
+      // Structural regime: inlined here rather than calling the shared
+      // detectRegimeKey (still used, unchanged, by backfillRegimeHistory's
+      // historical reconstruction below) — the growth axis is the SAME
+      // gap-vs-dead-band test the Structural Growth panel displays
+      // (rateOfChangeLabel === "Accelerating"), not a separately-computed
+      // test. This used to also require clearing the potential-GDP floor,
+      // which the panel's own label never checked, so the live page's
+      // Structural regime read and its own Structural Growth panel could
+      // disagree on the identical fast/slow pair. See the regime-table
+      // dead-band bug fix and the follow-up request to stop having an
+      // independent GDP-state read.
+      structural_key: (() => {
+        const structGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP)
+          && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
+        const structInflUp = cpiFast > cpiSlow;
+        return structGrowthUp ? (structInflUp ? "rg_ri" : "rg_fi") : (structInflUp ? "fg_ri" : "fg_fi");
+      })(),
       // Market regime: use breakeven vs the Fed's own FED_INFLATION_TARGET
       // (2%, not an arbitrary 2.5%) — is market pricing sustained inflation
       // above the Fed's real mandate? cpiYoy > breakeven means markets expect
       // disinflation, not that inflation is surprising upside. Growth leg
-      // reuses the same fast/slow crossover as the structural regime, plus
-      // the same labor veto (see isLaborDeteriorating).
+      // reuses the same gap-only crossover test as the structural regime
+      // above, plus the same labor veto (see isLaborDeteriorating).
       market_key: (() => {
         const mktInflUp = (bre ?? FED_INFLATION_TARGET) > FED_INFLATION_TARGET;
-        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP) && (gdpFast > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION)
+        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP)
           && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
         return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })(),

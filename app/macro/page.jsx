@@ -18,7 +18,7 @@ import {
   BW_ALLOC,
   ILLIQUID_KEYS,
   detectRegimeKey,
-  isGrowthExpanding,
+  isGrowthAccelerating,
   isLaborDeteriorating,
   rateOfChangeLabel,
   CPI_MIN_GAP,
@@ -545,7 +545,7 @@ function MacroSummary({ indicators }) {
   // only when the crossover indicators aren't loaded yet.
   const structuralRegimeKey = gdpFastVal != null
     ? (() => {
-        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvg) && !laborDeteriorating;
+        const growthUp = isGrowthAccelerating(gdpFastVal, gdp3yAvg) && !laborDeteriorating;
         const inflUp   = cpiFastVal != null && cpiSlowVal != null && cpiFastVal > cpiSlowVal;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -557,7 +557,7 @@ function MacroSummary({ indicators }) {
   // resolves via the identical 2-of-3 majority rather than structural alone.
   const marketRegimeKey = gdpFastVal != null
     ? (() => {
-        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvg) && !laborDeteriorating;
+        const growthUp = isGrowthAccelerating(gdpFastVal, gdp3yAvg) && !laborDeteriorating;
         const inflUp   = breakevenVal > FED_INFLATION_TARGET;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -1539,7 +1539,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // used to fall back to) could produce.
   const structuralRegimeKey = gdpFastVal != null && gdp3yAvg?.current_value != null
     ? (() => {
-        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvgVal) && !laborDeteriorating;
+        const growthUp = isGrowthAccelerating(gdpFastVal, gdp3yAvgVal) && !laborDeteriorating;
         const inflUp   = cpiFastVal != null && cpi3yAvgVal != null && cpiFastVal > cpi3yAvgVal;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -1558,7 +1558,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // the structural regime above.
   const marketRegimeKey = gdpFastVal != null
     ? (() => {
-        const growthUp = isGrowthExpanding(gdpFastVal, gdp3yAvgVal ?? 0) && !laborDeteriorating;
+        const growthUp = isGrowthAccelerating(gdpFastVal, gdp3yAvgVal ?? 0) && !laborDeteriorating;
         const inflUp   = breakevenVal > FED_INFLATION_TARGET;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
