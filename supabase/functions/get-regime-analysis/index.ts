@@ -624,7 +624,9 @@ function computeLiveRegimeKeys(
 // against and the "ground truth" the validator checks against never drift apart.
 function buildReferenceBlock(p: {
   regimeLabel: string; marketLabel: string | null; fwdLabel: string | null; fwdConf: number | null;
-  qualifier: string; yieldCurveValue: number | null; yieldCurveState: YieldCurveState;
+  qualifier: string;
+  nearTermFwdLabel: string | null; nearTermFwdConf: number | null; nearTermQualifier: string;
+  yieldCurveValue: number | null; yieldCurveState: YieldCurveState;
   credit: CreditIndicator[]; liquidity: LiquidityIndicator;
 }): string {
   const creditLines = p.credit
@@ -636,7 +638,8 @@ function buildReferenceBlock(p: {
     : "n/a";
   return `Structural regime: ${p.regimeLabel}
 Market-implied regime: ${p.marketLabel ?? "unknown"}
-Forward signal: ${p.fwdLabel ?? "none"}${p.fwdConf != null ? `, ${p.fwdConf}% confidence — must be described as "${p.qualifier}"` : ""}
+Medium-Term Forward Signal (6-18mo): ${p.fwdLabel ?? "none"}${p.fwdConf != null ? `, ${p.fwdConf}% confidence — must be described as "${p.qualifier}"` : ""}
+Near-Term Forward Signal (2-3mo): ${p.nearTermFwdLabel ?? "none"}${p.nearTermFwdConf != null ? `, ${p.nearTermFwdConf}% confidence — must be described as "${p.nearTermQualifier}"` : ""}
 2/10 yield curve: ${p.yieldCurveValue != null ? p.yieldCurveValue.toFixed(2) + "%" : "n/a"} — ${YIELD_CURVE_STATE_NOTE[p.yieldCurveState]}
 Credit stress indicators (lead recessions; HEALTHY = no stress despite any bust narrative):
 ${creditLines}
@@ -646,7 +649,8 @@ Liquidity composite (leads risk appetite): ${liquidityLine}`;
 // ── Main regime analysis ──────────────────────────────────────────────────────
 async function generateAnalysis(params: {
   regimeLabel: string; marketLabel: string | null; fwdLabel: string | null;
-  fwdConf: number | null; divergence: boolean;
+  fwdConf: number | null; nearTermFwdLabel: string | null; nearTermFwdConf: number | null;
+  divergence: boolean;
   gdp: number | null; cpi: number | null; ppi: number | null; t10y2y: number | null;
   lei: number | null; breakeven: number | null;
   prevGdp: number | null; prevCpi: number | null; prevPpi: number | null;
@@ -662,7 +666,7 @@ async function generateAnalysis(params: {
   if (!ANTHROPIC_KEY) return null;
   try {
     const {
-      regimeLabel, marketLabel, fwdLabel, fwdConf, divergence,
+      regimeLabel, marketLabel, fwdLabel, fwdConf, nearTermFwdLabel, nearTermFwdConf, divergence,
       gdp, cpi, ppi, t10y2y, lei, breakeven,
       prevGdp, prevCpi, prevPpi, prevLei, prevBe,
       marketSnapshot, supplyChain, yieldCurveState, credit, liquidity, today, correction,
@@ -670,6 +674,7 @@ async function generateAnalysis(params: {
     const todayFormatted = new Date(today + "T00:00:00Z").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
     const qualifier = confidenceQualifier(fwdConf);
+    const nearTermQualifier = confidenceQualifier(nearTermFwdConf);
 
     const mktLines = marketSnapshot
       .map(m => `${m.name}: ${m.changePct >= 0 ? "+" : ""}${m.changePct.toFixed(1)}%`)
@@ -722,9 +727,9 @@ PORTFOLIO FRAMEWORK — BW Modified (structural base, always held):
   US Equities 20% · International 8% · EM 5% · Nominal Bonds 20% · TIPS 20% · Commodities 12% · Gold 12% · Cash 3%
   Rationale: Bridgewater's 2025–2026 thesis holds that the old paradigm (US-heavy, equity-heavy, long nominal bonds) is broken. Modern mercantilism, AI-driven commodity demand, and CB gold accumulation create structural bids for real assets regardless of the cyclical quadrant. BW Modified is the resilient base. Regime-specific tilts are overlays on top of it, only when the signal is unambiguous.
 
-CONFIDENCE LANGUAGE — HARD CONSTRAINT: Any time you describe how confident we should be in a regime transition (structural, momentum-implied, or forward), you MUST use language consistent with "${qualifier}" — this is derived directly from the ${fwdConf ?? "n/a"}% forward-signal confidence stored on this page. Never use stronger language (e.g. "high confidence," "unambiguous," "clearly confirmed") than that band supports, and never contradict it elsewhere in the piece.
+CONFIDENCE LANGUAGE — HARD CONSTRAINT: When describing confidence in the structural/momentum-implied regime or the Medium-Term Forward Signal (Signal 3), use language consistent with "${qualifier}" (derived from the ${fwdConf ?? "n/a"}% Medium-Term forward-signal confidence). When describing confidence in the Near-Term Forward Signal specifically (Signal 3b), use "${nearTermQualifier}" instead (derived from its own ${nearTermFwdConf ?? "n/a"}% confidence) — the two horizons frequently carry different confidence and must not be conflated. Never use stronger language (e.g. "high confidence," "unambiguous," "clearly confirmed") than the relevant band supports for whichever signal you're describing, and never contradict either band elsewhere in the piece.
 
-You have five signals that may conflict. Reconcile them explicitly.
+You have six signals that may conflict. Reconcile them explicitly.
 
 SIGNAL 1 — Structural regime (level-based, 3Y trailing averages):
   ${regimeLabel}
@@ -748,11 +753,15 @@ SIGNAL 2c — Liquidity momentum (Fed net liquidity + private liquidity proxy, l
   Reading guide: above zero and accelerating = expansionary tailwind (risk-on historically favored); above zero but decelerating = late-cycle caution; below zero = contraction, historically the most dangerous regime for risk assets.
 ${liquidityConstraint}
 
-SIGNAL 3 — Market pricing (yesterday's action, forward-looking):
+SIGNAL 3 — Market pricing (yesterday's action, forward-looking) and Medium-Term Forward Signal (6-18mo composite):
   Market-implied regime: ${marketLabel ?? "unknown"}
   ${divergence ? `⚑ Market diverges from structural regime` : "✓ Market aligns with structural regime"}
-  Forward signal: ${fwdLabel ?? "none"}${fwdConf != null ? ` (${fwdConf}% confidence — "${qualifier}")` : ""}
+  Medium-Term Forward Signal: ${fwdLabel ?? "none"}${fwdConf != null ? ` (${fwdConf}% confidence — "${qualifier}")` : ""}
   ${mktLines}
+
+SIGNAL 3b — Near-Term Forward Signal (2-3mo composite — independently scored from Signal 3's Medium-Term one; the two can and do disagree, which is itself informative, not noise to reconcile away):
+  ${nearTermFwdLabel ?? "none"}${nearTermFwdConf != null ? ` (${nearTermFwdConf}% confidence — "${nearTermQualifier}")` : ""}
+  ${fwdLabel && nearTermFwdLabel && fwdLabel !== nearTermFwdLabel ? `⚑ Near-Term and Medium-Term forward signals disagree — name this explicitly, it matters for how far out any tactical call should be sized.` : fwdLabel && nearTermFwdLabel ? "✓ Near-Term and Medium-Term forward signals agree on direction (confidence levels may still differ — see above)." : ""}
 
 SIGNAL 4 — Supply chain / structural tail risk (12 tracked chokepoints, daily AI+web-search scored, 0–100). Each is tagged [ACTIVE] (a confirmed, currently-in-progress disruption) or [STRUCTURAL] (elevated but latent — no live triggering event right now):
 ${scLines || "  No critical or worsening chokepoints currently flagged."}
@@ -760,7 +769,7 @@ ${scLines || "  No critical or worsening chokepoints currently flagged."}
 
 Structure your answer in four parts, separated by blank lines:
 (1) A paragraph: what is the hard data momentum telling us — is the structural regime transitioning, and how confident should we be? (must use the "${qualifier}" language constraint above)
-(2) A paragraph: is yesterday's market action consistent with that momentum signal, or pricing a different scenario? If leaning toward a recession/bust read, address the credit-stress tension from Signal 2b if it applies. Also weigh in the liquidity signal (2c) — does it corroborate or complicate the market-pricing read on risk appetite, respecting its constraint above.
+(2) A paragraph: is yesterday's market action consistent with that momentum signal, or pricing a different scenario? Address BOTH forward signals (3 and 3b) explicitly, using each one's own confidence-language band — if they disagree with each other per Signal 3b's flag, say so by name rather than blending them into one composite view. If leaning toward a recession/bust read, address the credit-stress tension from Signal 2b if it applies. Also weigh in the liquidity signal (2c) — does it corroborate or complicate the market-pricing read on risk appetite, respecting its constraint above.
 (3) A paragraph: what does the supply chain signal confirm or complicate — does it corroborate the BW Modified real-assets sleeve (gold/commodities/TIPS), and is any specific chokepoint above a live tail risk for a sector or asset class in the portfolio? Respect the active-vs-structural framing constraint above.
 (4) A "Concrete moves:" section: one short lead-in sentence, then 3-6 bullet points (each on its own line, starting with "- "), each one specific, actionable sentence naming a real instrument or asset class and what to do with it — not just "hold the base." Split opportunities and hedges across the bullets as the analysis warrants, rather than writing separate paragraphs for each.
 
@@ -841,12 +850,18 @@ async function generateNewsMusing(params: {
   regimeLabel: string;
   momentumRegime: string;
   marketLabel: string | null;
+  nearTermFwdLabel: string | null; nearTermFwdConf: number | null;
+  fwdLabel: string | null; fwdConf: number | null;
   fedOdds: FedOdds | null;
   today: string;
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY || params.headlines.length === 0) return null;
   try {
-    const { headlines, watchedHeadlines, regimeLabel, momentumRegime, marketLabel, fedOdds, today } = params;
+    const {
+      headlines, watchedHeadlines, regimeLabel, momentumRegime, marketLabel,
+      nearTermFwdLabel, nearTermFwdConf, fwdLabel, fwdConf,
+      fedOdds, today,
+    } = params;
     const todayFormatted = new Date(today + "T00:00:00Z").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
     const mvEpisode = headlines.find(h => h.source === "MacroVoices");
     const newsLines = headlines
@@ -880,10 +895,13 @@ async function generateNewsMusing(params: {
 
 TODAY'S DATE: ${todayFormatted}. Use this as the actual current date for any date references, year mentions, or forward-looking horizons — do not default to your training-data cutoff or any other year.
 
-Current regime signals:
+Current regime signals — all four panels tracked on this page, not just one:
   Structural: ${regimeLabel}
   Momentum-implied: ${momentumRegime}
   Market-implied: ${marketLabel ?? "unknown"}
+  Near-Term Forward Signal (2-3mo): ${nearTermFwdLabel ?? "none"}${nearTermFwdConf != null ? ` (${nearTermFwdConf}% confidence)` : ""}
+  Medium-Term Forward Signal (6-18mo): ${fwdLabel ?? "none"}${fwdConf != null ? ` (${fwdConf}% confidence)` : ""}
+REQUIRED: your second paragraph must explicitly address whether the headline narrative is consistent with BOTH forward signals above, not just the structural/market regime — call out by name any place the Near-Term and Medium-Term panels disagree with each other, since that disagreement (a near-term wobble inside a longer uptrend, or vice versa) is itself informative, not noise to smooth over.
 
 Top macro headlines (last 24–48 hours):
 ${newsLines}
@@ -891,7 +909,7 @@ ${mvInstruction}
 ${fedOddsBlock}
 ${watchedInstruction}
 
-Assess: (1) What macro narrative are these headlines collectively signaling — growth, inflation, credit stress, risk-on, or risk-off? (2) Does that narrative align with or diverge from the regime signals above and the priced Fed odds, and what (if anything) should a BW Modified portfolio holder do differently in response?`;
+Assess: (1) What macro narrative are these headlines collectively signaling — growth, inflation, credit stress, risk-on, or risk-off? (2) Does that narrative align with or diverge from ALL FOUR regime signals above (structural, market-implied, near-term forward, medium-term forward) and the priced Fed odds, and what (if anything) should a BW Modified portfolio holder do differently in response?`;
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -902,7 +920,7 @@ Assess: (1) What macro narrative are these headlines collectively signaling — 
       },
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 300,
+        max_tokens: 400,
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -1017,6 +1035,9 @@ Deno.serve(async (req: Request) => {
     const regimeLabel = structuralKey ? (REGIME_LABELS[structuralKey] ?? structuralKey) : "Unknown";
     const marketLabel = marketKey ? (REGIME_LABELS[marketKey] ?? marketKey) : null;
     const fwdLabel = fwdKey ? (REGIME_LABELS[fwdKey] ?? fwdKey) : null;
+    // Near-Term (2-3mo) Forward Signal — see the forward-signal two-horizon
+    // spec. fwdLabel/fwdConf above are Medium-Term (6-18mo) specifically.
+    const nearTermFwdLabel = nearTermFwdKey ? (REGIME_LABELS[nearTermFwdKey] ?? nearTermFwdKey) : null;
     const divergence = !!(structuralKey && marketKey && structuralKey !== marketKey);
 
     const gdp     = get("Real GDP Growth");
@@ -1032,7 +1053,7 @@ Deno.serve(async (req: Request) => {
       !gdpUp && inflUp  ? "Stagflation" : "Deflationary Bust";
 
     const analysisParams = {
-      regimeLabel, marketLabel, fwdLabel, fwdConf,
+      regimeLabel, marketLabel, fwdLabel, fwdConf, nearTermFwdLabel, nearTermFwdConf,
       divergence,
       gdp,
       cpi,
@@ -1055,7 +1076,11 @@ Deno.serve(async (req: Request) => {
 
     const [analysisFirstPass, newsMusing] = await Promise.all([
       generateAnalysis(analysisParams),
-      generateNewsMusing({ headlines, watchedHeadlines: dedupedWatched, regimeLabel, momentumRegime, marketLabel, fedOdds, today }),
+      generateNewsMusing({
+        headlines, watchedHeadlines: dedupedWatched, regimeLabel, momentumRegime, marketLabel,
+        nearTermFwdLabel, nearTermFwdConf, fwdLabel, fwdConf,
+        fedOdds, today,
+      }),
     ]);
 
     if (!analysisFirstPass) {
@@ -1071,6 +1096,8 @@ Deno.serve(async (req: Request) => {
     const referenceBlock = buildReferenceBlock({
       regimeLabel, marketLabel, fwdLabel, fwdConf,
       qualifier: confidenceQualifier(fwdConf),
+      nearTermFwdLabel, nearTermFwdConf,
+      nearTermQualifier: confidenceQualifier(nearTermFwdConf),
       yieldCurveValue: yieldCurve.value, yieldCurveState: yieldCurve.state,
       credit, liquidity,
     });
