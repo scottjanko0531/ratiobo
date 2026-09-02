@@ -19,6 +19,7 @@ import {
   ILLIQUID_KEYS,
   detectRegimeKey,
   isGrowthAccelerating,
+  isInflationAccelerating,
   isLaborDeteriorating,
   rateOfChangeLabel,
   CPI_MIN_GAP,
@@ -546,7 +547,7 @@ function MacroSummary({ indicators }) {
   const structuralRegimeKey = gdpFastVal != null
     ? (() => {
         const growthUp = isGrowthAccelerating(gdpFastVal, gdp3yAvg) && !laborDeteriorating;
-        const inflUp   = cpiFastVal != null && cpiSlowVal != null && cpiFastVal > cpiSlowVal;
+        const inflUp   = cpiFastVal != null && cpiSlowVal != null && isInflationAccelerating(cpiFastVal, cpiSlowVal);
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
         if (!growthUp && inflUp) return "fg_ri";
@@ -1540,7 +1541,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   const structuralRegimeKey = gdpFastVal != null && gdp3yAvg?.current_value != null
     ? (() => {
         const growthUp = isGrowthAccelerating(gdpFastVal, gdp3yAvgVal) && !laborDeteriorating;
-        const inflUp   = cpiFastVal != null && cpi3yAvgVal != null && cpiFastVal > cpi3yAvgVal;
+        const inflUp   = cpiFastVal != null && cpi3yAvgVal != null && isInflationAccelerating(cpiFastVal, cpi3yAvgVal);
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
         if (!growthUp && inflUp) return "fg_ri";
@@ -1870,17 +1871,18 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     3M vs 9M avg — crossover?
                     <ChartIcon />
                   </p>
-                  {cpiFastVal != null && cpi3yAvgVal != null ? (
-                    <>
-                      <p className={`font-medium ${cpiFastVal > cpi3yAvgVal ? "text-loss" : "text-gain"}`}>
-                        {cpiFastVal > cpi3yAvgVal ? "↑ Fast > slow" : "↓ Fast < slow"}
-                      </p>
-                      <p className="num text-[11px] text-paper-dim mt-0.5">{cpiFastVal.toFixed(2)}% vs {cpi3yAvgVal.toFixed(2)}%</p>
-                      {vintageLabel(cpiFastInd) && (
-                        <p className="text-[9px] text-paper-dim/50 mt-0.5">as of {vintageLabel(cpiFastInd)}</p>
-                      )}
-                    </>
-                  ) : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
+                  {cpiFastVal != null && cpi3yAvgVal != null ? (() => {
+                    const state = rateOfChangeDisplay(cpiFastVal, cpi3yAvgVal, CPI_MIN_GAP);
+                    return (
+                      <>
+                        <p className={`font-medium ${state.color}`}>{state.label}</p>
+                        <p className="num text-[11px] text-paper-dim mt-0.5">{cpiFastVal.toFixed(2)}% vs {cpi3yAvgVal.toFixed(2)}% (min gap 0.20pp)</p>
+                        {vintageLabel(cpiFastInd) && (
+                          <p className="text-[9px] text-paper-dim/50 mt-0.5">as of {vintageLabel(cpiFastInd)}</p>
+                        )}
+                      </>
+                    );
+                  })() : <p className="text-paper-dim text-[11px]">Pending refresh</p>}
                 </div>
                 <div
                   onClick={() => setInflExpDrawerOpen(true)}

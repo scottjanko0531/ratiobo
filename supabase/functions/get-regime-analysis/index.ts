@@ -357,6 +357,11 @@ async function getFedRateOdds(): Promise<FedOdds | null> {
 // macro_regime_history cache, which was found to silently go a full day stale.
 // Kept in sync with fetch-macro-data's identical constants/formula.
 const GROWTH_MIN_GAP = 0.15;
+// Dead band for the inflation crossover's up/down read — wider than
+// GROWTH_MIN_GAP since inflation prints are noisier month to month than
+// GDP's quarterly cadence. Kept in sync with lib/simulatorKeys.js's
+// identical constant.
+const CPI_MIN_GAP = 0.20;
 // The Fed's actual inflation mandate, not an arbitrary round number.
 const FED_INFLATION_TARGET = 2.0;
 
@@ -390,7 +395,11 @@ function detectRegimeKeyLive(
   // stop having an independent GDP-state read.
   const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP)
     && !(laborInputs && isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend));
-  const rising = cpiYoy > cpi3y;
+  // Inflation axis: same dead-band treatment as growth — a bare
+  // cpiYoy > cpi3y sign test let a print separated by a hundredth of a
+  // point flip the regime read. See the follow-up request to stop having
+  // an independent inflation-state read.
+  const rising = (cpiYoy - cpi3y) > CPI_MIN_GAP;
   if (growing && !rising) return "rg_fi";
   if (growing && rising) return "rg_ri";
   if (!growing && rising) return "fg_ri";

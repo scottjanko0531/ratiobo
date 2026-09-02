@@ -3,6 +3,7 @@ import {
   detectRegimeKey,
   isGrowthExpanding,
   isGrowthAccelerating,
+  isInflationAccelerating,
   isLaborDeteriorating,
   rateOfChangeLabel,
   POTENTIAL_GDP_GROWTH,
@@ -227,5 +228,30 @@ describe("isGrowthAccelerating", () => {
     // difference the fix introduces.
     expect(isGrowthExpanding(1.0, 0.5)).toBe(false);
     expect(isGrowthAccelerating(1.0, 0.5)).toBe(true);
+  });
+});
+
+// Same "one source of truth" fix applied to the inflation axis: the
+// Structural/Market classifiers' inflUp used a bare `cpiFast > cpiSlow`
+// sign test with no dead band at all, unlike growth's GROWTH_MIN_GAP —
+// meaning a hundredth-of-a-point print could flip Reflation to
+// Disinflationary Boom. isInflationAccelerating applies the same
+// rateOfChangeLabel dead-band test (CPI_MIN_GAP, 0.20pp), and the
+// Structural × Inflation table cell now renders off the same function
+// instead of its own separate `>` comparison.
+describe("isInflationAccelerating", () => {
+  it("true only on a genuine Accelerating read (gap > CPI_MIN_GAP)", () => {
+    expect(isInflationAccelerating(3.65, 3.13)).toBe(true);
+  });
+
+  it("false for a marginal gap that a bare sign test would have called rising", () => {
+    // 3.65 vs 3.55 is a 0.10pp gap — positive, but below the 0.20pp dead
+    // band. A bare `fast > slow` test would have called this "rising";
+    // isInflationAccelerating correctly calls it Stable (not up).
+    expect(isInflationAccelerating(3.65, 3.55)).toBe(false);
+  });
+
+  it("false when Decelerating (gap < -CPI_MIN_GAP)", () => {
+    expect(isInflationAccelerating(3.00, 3.30)).toBe(false);
   });
 });

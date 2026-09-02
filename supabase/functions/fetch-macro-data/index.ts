@@ -1523,6 +1523,12 @@ const POTENTIAL_GDP_GROWTH = 1.9;
 const GROWTH_MIN_GAP = 0.15; // pp — fast line must clear the slow line by more than this
 const POTENTIAL_FLOOR_FRACTION = 0.85; // fast line must be at least this fraction of potential
 
+// Dead band for the inflation crossover's up/down read — wider than
+// GROWTH_MIN_GAP since inflation prints are noisier month to month than
+// GDP's quarterly cadence. Kept in sync with the identical constant in
+// lib/simulatorKeys.js/get-regime-analysis.
+const CPI_MIN_GAP = 0.20; // pp
+
 // The Fed's actual inflation mandate, not an arbitrary round number. Kept in
 // sync with the identical constant in lib/simulatorKeys.js/get-regime-analysis.
 const FED_INFLATION_TARGET = 2.0;
@@ -2043,7 +2049,11 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       structural_key: (() => {
         const structGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP)
           && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
-        const structInflUp = cpiFast > cpiSlow;
+        // Inflation axis: same dead-band treatment as growth — a bare
+        // cpiFast > cpiSlow sign test let a print separated by a hundredth
+        // of a point flip the regime read. See the follow-up request to
+        // stop having an independent inflation-state read.
+        const structInflUp = (cpiFast - cpiSlow) > CPI_MIN_GAP;
         return structGrowthUp ? (structInflUp ? "rg_ri" : "rg_fi") : (structInflUp ? "fg_ri" : "fg_fi");
       })(),
       // Market regime: use breakeven vs the Fed's own FED_INFLATION_TARGET
