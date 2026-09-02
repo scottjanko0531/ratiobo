@@ -20,6 +20,7 @@ import {
   detectRegimeKey,
   isGrowthAccelerating,
   isInflationAccelerating,
+  resolveAxisDirection,
   isLaborDeteriorating,
   rateOfChangeLabel,
   CPI_MIN_GAP,
@@ -509,6 +510,7 @@ function computeForwardSignal(indicators) {
 function MacroSummary({ indicators }) {
   const get     = (name) => { const i = indicators.find(x => x.name === name); return i?.current_value  != null ? Number(i.current_value)  : null; };
   const getPrev = (name) => { const i = indicators.find(x => x.name === name); return i?.previous_value != null ? Number(i.previous_value) : null; };
+  const getMeta = (name, key) => { const v = indicators.find(x => x.name === name)?.metadata?.[key]; return typeof v === "number" ? v : null; };
   const stat = (name) => indicators.find(x => x.name === name)?.status ?? null;
 
   const gdp        = get("Real GDP Growth");
@@ -544,10 +546,20 @@ function MacroSummary({ indicators }) {
   // GDP: 2-quarter avg (fast) vs 4-quarter avg (slow). CPI: 3-month avg
   // (fast) vs 9-month avg (slow). Falls back to a raw-reading comparison
   // only when the crossover indicators aren't loaded yet.
+  // Tiebreak inputs (Direction/Level) for when Rate of Change reads
+  // "Stable" — see resolveAxisDirection and the regime tiebreaker spec.
+  const gdpDirection = (() => { const c = get("GDP Growth (2Q Avg)"), p = getPrev("GDP Growth (2Q Avg)"); return c != null && p != null ? Math.sign(c - p) : null; })();
+  const gdpZscore    = getMeta("Real GDP Growth", "zscore_10y");
+  const cpiDirection = (() => { const c = get("CPI Growth (3M Avg)"), p = getPrev("CPI Growth (3M Avg)"); return c != null && p != null ? Math.sign(c - p) : null; })();
+  const cpiZscore    = getMeta("Core CPI (YoY)", "zscore_18y");
   const structuralRegimeKey = gdpFastVal != null
     ? (() => {
-        const growthUp = isGrowthAccelerating(gdpFastVal, gdp3yAvg) && !laborDeteriorating;
-        const inflUp   = cpiFastVal != null && cpiSlowVal != null && isInflationAccelerating(cpiFastVal, cpiSlowVal);
+        const gAxis = resolveAxisDirection(gdpFastVal, gdp3yAvg, GROWTH_MIN_GAP, gdpDirection, gdpZscore);
+        const iAxis = cpiFastVal != null && cpiSlowVal != null
+          ? resolveAxisDirection(cpiFastVal, cpiSlowVal, CPI_MIN_GAP, cpiDirection, cpiZscore)
+          : null;
+        const growthUp = gAxis.up === true && !laborDeteriorating;
+        const inflUp   = iAxis?.up === true;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
         if (!growthUp && inflUp) return "fg_ri";
@@ -999,6 +1011,18 @@ function stateDisplay(state) {
 }
 function rateOfChangeDisplay(fast, slow, minGap) {
   return stateDisplay(rateOfChangeLabel(fast, slow, minGap));
+}
+
+// Describes how resolveAxisDirection resolved an axis, for the Regime Read
+// row's "which path was used" line — see the regime tiebreaker spec. Only
+// meaningful when axis.tentative is true (Rate of Change alone was
+// conclusive, no line needed).
+function describeAxisResolution(label, axis) {
+  if (!axis?.tentative) return null;
+  const via = axis.resolvedVia === "direction" ? "Direction" : axis.resolvedVia === "level" ? "Level" : null;
+  return via
+    ? `${label}: ${axis.rateLabel} → resolved via ${via} (${axis.up ? "Up" : "Down"})`
+    : `${label}: ${axis.rateLabel} → no clear signal (defaulted Down)`;
 }
 
 // Data vintage: which FRED release period a reading actually corresponds
@@ -1538,10 +1562,22 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // not just one noisy print poking through a single threshold the way the
   // prior current-vs-baseline test (and the debt-cycle annual quadrant this
   // used to fall back to) could produce.
+  // Tiebreak inputs (Direction/Level) for when Rate of Change reads
+  // "Stable" — see resolveAxisDirection and the regime tiebreaker spec.
+  const gdpDirection = gdpFastInd?.current_value != null && gdpFastInd?.previous_value != null
+    ? Math.sign(Number(gdpFastInd.current_value) - Number(gdpFastInd.previous_value)) : null;
+  const gdpZscore    = gdp?.metadata?.zscore_10y ?? null;
+  const cpiDirection = cpiFastInd?.current_value != null && cpiFastInd?.previous_value != null
+    ? Math.sign(Number(cpiFastInd.current_value) - Number(cpiFastInd.previous_value)) : null;
+  const cpiZscore    = coreCpiInd?.metadata?.zscore_18y ?? null;
+  const structuralGrowthAxis = resolveAxisDirection(gdpFastVal, gdp3yAvgVal, GROWTH_MIN_GAP, gdpDirection, gdpZscore);
+  const structuralInflAxis   = cpiFastVal != null && cpi3yAvgVal != null
+    ? resolveAxisDirection(cpiFastVal, cpi3yAvgVal, CPI_MIN_GAP, cpiDirection, cpiZscore)
+    : null;
   const structuralRegimeKey = gdpFastVal != null && gdp3yAvg?.current_value != null
     ? (() => {
-        const growthUp = isGrowthAccelerating(gdpFastVal, gdp3yAvgVal) && !laborDeteriorating;
-        const inflUp   = cpiFastVal != null && cpi3yAvgVal != null && isInflationAccelerating(cpiFastVal, cpi3yAvgVal);
+        const growthUp = structuralGrowthAxis.up === true && !laborDeteriorating;
+        const inflUp   = structuralInflAxis?.up === true;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
         if (!growthUp && inflUp) return "fg_ri";
@@ -1549,6 +1585,13 @@ function QuadrantCard({ indicators, holdings, assetData }) {
       })()
     : null;
   const structuralMeta = structuralRegimeKey ? REGIME_META[structuralRegimeKey] : null;
+  // Tentative when either axis fell through Rate of Change's dead band and
+  // had to resolve via Direction or Level instead of a direct crossover
+  // match — see the regime tiebreaker spec. Reserved for the Regime Read
+  // row's Structural column specifically, not the Market Expectations
+  // column (unchanged, no tiebreak) or the majority-vote headline above.
+  const structuralTentative = structuralRegimeKey != null
+    && (structuralGrowthAxis.tentative || (structuralInflAxis?.tentative ?? false));
 
   // Market-expectations regime: is the market pricing sustained inflation above
   // the Fed's own 2% target (FED_INFLATION_TARGET)? CPI > breakeven means the
@@ -1908,11 +1951,20 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                 <div className="px-3 py-3">
                   <p className="label text-[10px]">Regime Read</p>
                 </div>
-                <div className="px-3 py-3 border-l border-ink-line">
+                <div className={`px-3 py-3 border-l border-ink-line ${structuralTentative ? "border-b-2 border-b-brass/40" : ""}`}>
                   {structuralMeta ? (
                     <>
-                      <p className={`font-semibold ${structuralMeta.color}`}>{structuralMeta.label}</p>
+                      <p className={`font-semibold ${structuralTentative ? "text-brass-soft" : structuralMeta.color}`}>
+                        {structuralMeta.label}{structuralTentative ? " (Tentative)" : ""}
+                      </p>
                       <p className="text-[11px] text-paper-dim mt-0.5">{structuralMeta.desc}</p>
+                      {structuralTentative && (
+                        <p className="text-[10px] text-brass-soft/70 mt-1">
+                          {[describeAxisResolution("Growth", structuralGrowthAxis), describeAxisResolution("Inflation", structuralInflAxis)]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </p>
+                      )}
                     </>
                   ) : <p className="text-paper-dim text-[11px]">—</p>}
                 </div>

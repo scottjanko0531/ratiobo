@@ -1549,6 +1549,26 @@ function isLaborDeteriorating(payrolls3mAvg: number | null, unemploymentTrend: n
   return votes.filter(Boolean).length >= 2;
 }
 
+// Tiebreaker for an axis (growth or inflation) when its fast/slow gap
+// doesn't clear minGap (Rate of Change = Stable): the four-quadrant model
+// needs a binary Up/Down, so Stable can't just silently fall through to
+// Down. Falls back to Direction (the fast indicator's own short-window
+// sign), then to Level (z-score vs the long window) if Direction is also
+// flat/unavailable. Mirrors resolveAxisDirection in lib/simulatorKeys.js
+// and get-regime-analysis's identical resolveAxisUp — kept in sync
+// manually. Used only by updateCurrentRegimeHistory's structural_key
+// (the live "today" computation); backfillRegimeHistory's historical loop
+// below still calls the shared detectRegimeKey, unchanged — a different
+// use case with different data. See the regime tiebreaker spec.
+function resolveAxisUp(gap: number, minGap: number, direction: number | null, zscore: number | null): boolean {
+  if (gap > minGap) return true;
+  if (gap < -minGap) return false;
+  if (direction === 1) return true;
+  if (direction === -1) return false;
+  if (zscore != null && zscore !== 0) return zscore > 0;
+  return false;
+}
+
 function detectRegimeKey(
   gdpYoy: number, cpiYoy: number, gdp3y: number, inflThreshold: number,
   laborInputs?: { payrolls3mAvg: number | null; unemploymentTrend: number | null; joblessClaimsTrend: number | null },
@@ -1984,6 +2004,9 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const gdpSlowRow = processedRows.find(r => r.name === "GDP Growth (4Q Avg)");
     const cpiFastRow = processedRows.find(r => r.name === "CPI Growth (3M Avg)");
     const cpiSlowRow = processedRows.find(r => r.name === "CPI Growth (9M Avg)");
+    // Tiebreaker inputs (Direction/Level) for structural_key below — see
+    // resolveAxisUp and the regime tiebreaker spec.
+    const coreCpiRow = processedRows.find(r => r.name === "Core CPI (YoY)");
     const payrollsRow    = processedRows.find(r => r.name === "Payrolls (3M Avg)");
     const unrateTrendRow = processedRows.find(r => r.name === "Unemployment Rate Trend");
     const claimsTrendRow = processedRows.find(r => r.name === "Initial Jobless Claims Trend");
@@ -2047,13 +2070,25 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       // dead-band bug fix and the follow-up request to stop having an
       // independent GDP-state read.
       structural_key: (() => {
-        const structGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP)
+        // Tiebreak inputs: Direction (G3/I3 sign) and Level (G1/I1 z-score,
+        // stamped earlier in this same run onto "Real GDP Growth"/
+        // "Core CPI (YoY)"'s metadata) — see resolveAxisUp and the regime
+        // tiebreaker spec.
+        const gdpDirection = gdpFastRow?.current_value != null && gdpFastRow?.previous_value != null
+          ? Math.sign(Number(gdpFastRow.current_value) - Number(gdpFastRow.previous_value)) : null;
+        const gdpZscore = typeof gdpRow.metadata?.zscore_10y === "number" ? gdpRow.metadata.zscore_10y : null;
+        const cpiDirection = cpiFastRow?.current_value != null && cpiFastRow?.previous_value != null
+          ? Math.sign(Number(cpiFastRow.current_value) - Number(cpiFastRow.previous_value)) : null;
+        const cpiZscore = typeof coreCpiRow?.metadata?.zscore_18y === "number" ? coreCpiRow.metadata.zscore_18y : null;
+
+        const structGrowthUp = resolveAxisUp(gdpFast - gdpSlow, GROWTH_MIN_GAP, gdpDirection, gdpZscore)
           && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
-        // Inflation axis: same dead-band treatment as growth — a bare
-        // cpiFast > cpiSlow sign test let a print separated by a hundredth
-        // of a point flip the regime read. See the follow-up request to
-        // stop having an independent inflation-state read.
-        const structInflUp = (cpiFast - cpiSlow) > CPI_MIN_GAP;
+        // Inflation axis: same dead-band + tiebreak treatment as growth —
+        // a bare cpiFast > cpiSlow sign test let a print separated by a
+        // hundredth of a point flip the regime read, and a Stable read
+        // used to silently collapse to Down instead of falling back to
+        // Direction/Level. See the regime tiebreaker spec.
+        const structInflUp = resolveAxisUp(cpiFast - cpiSlow, CPI_MIN_GAP, cpiDirection, cpiZscore);
         return structGrowthUp ? (structInflUp ? "rg_ri" : "rg_fi") : (structInflUp ? "fg_ri" : "fg_fi");
       })(),
       // Market regime: use breakeven vs the Fed's own FED_INFLATION_TARGET

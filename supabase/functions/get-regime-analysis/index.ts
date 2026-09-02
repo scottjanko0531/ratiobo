@@ -380,9 +380,26 @@ function isLaborDeteriorating(payrolls3mAvg: number | null, unemploymentTrend: n
   return votes.filter(Boolean).length >= 2;
 }
 
+// Tiebreaker for an axis (growth or inflation) when its fast/slow gap
+// doesn't clear minGap (Rate of Change = Stable): the four-quadrant model
+// needs a binary Up/Down, so Stable can't just silently fall through to
+// Down. Falls back to Direction (the fast indicator's own short-window
+// sign), then to Level (z-score vs the long window) if Direction is also
+// flat/unavailable. Mirrors resolveAxisDirection in lib/simulatorKeys.js —
+// kept in sync manually. See the regime tiebreaker spec.
+function resolveAxisUp(gap: number, minGap: number, direction: number | null, zscore: number | null): boolean {
+  if (gap > minGap) return true;
+  if (gap < -minGap) return false;
+  if (direction === 1) return true;
+  if (direction === -1) return false;
+  if (zscore != null && zscore !== 0) return zscore > 0;
+  return false;
+}
+
 function detectRegimeKeyLive(
   gdpYoy: number, cpiYoy: number, gdp3y: number, cpi3y: number,
   laborInputs?: { payrolls3mAvg: number | null; unemploymentTrend: number | null; joblessClaimsTrend: number | null },
+  tiebreakInputs?: { gdpDirection: number | null; gdpZscore: number | null; cpiDirection: number | null; cpiZscore: number | null },
 ): string {
   // Growth axis: the SAME gap-vs-dead-band test the Structural Growth
   // panel displays (rateOfChangeLabel === "Accelerating"), not a
@@ -393,13 +410,14 @@ function detectRegimeKeyLive(
   // macro page — it's just no longer a silent gate on this classification.
   // See the regime-table dead-band bug fix and the follow-up request to
   // stop having an independent GDP-state read.
-  const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP)
+  const growing = resolveAxisUp(gdpYoy - gdp3y, GROWTH_MIN_GAP, tiebreakInputs?.gdpDirection ?? null, tiebreakInputs?.gdpZscore ?? null)
     && !(laborInputs && isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend));
-  // Inflation axis: same dead-band treatment as growth — a bare
+  // Inflation axis: same dead-band + tiebreak treatment as growth — a bare
   // cpiYoy > cpi3y sign test let a print separated by a hundredth of a
-  // point flip the regime read. See the follow-up request to stop having
-  // an independent inflation-state read.
-  const rising = (cpiYoy - cpi3y) > CPI_MIN_GAP;
+  // point flip the regime read, and a Stable read used to silently
+  // collapse to Down instead of falling back to Direction/Level. See the
+  // regime tiebreaker spec.
+  const rising = resolveAxisUp(cpiYoy - cpi3y, CPI_MIN_GAP, tiebreakInputs?.cpiDirection ?? null, tiebreakInputs?.cpiZscore ?? null);
   if (growing && !rising) return "rg_fi";
   if (growing && rising) return "rg_ri";
   if (!growing && rising) return "fg_ri";
@@ -411,6 +429,7 @@ type Getter = (name: string) => number | null;
 function computeLiveRegimeKeys(
   get: Getter, getMeta3m: Getter, getPP3m: Getter,
   getShortPct: Getter, getVolShock: (name: string) => boolean, getSpfSpread: Getter,
+  getPrev: Getter, getMetaNum: (name: string, key: string) => number | null,
 ): { structuralKey: string | null; marketKey: string | null; fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number } {
   // Fast/slow moving-average crossover, not raw-reading-vs-baseline: a
   // regime flip only fires when the fast line actually crosses the slow
@@ -431,9 +450,23 @@ function computeLiveRegimeKeys(
     unemploymentTrend:  get("Unemployment Rate Trend"),
     joblessClaimsTrend: get("Initial Jobless Claims Trend"),
   };
+  // Tiebreak inputs for detectRegimeKeyLive: Direction (G3/I3 — the fast
+  // indicator's own current-vs-previous sign) and Level (G1/I1 — z-score
+  // vs the long window, stamped by fetch-macro-data's computeRollingZScore
+  // onto "Real GDP Growth"/"Core CPI (YoY)"). See the regime tiebreaker
+  // spec — same fields the live page already shows in the crossover
+  // drawers, reused here rather than recomputed.
+  const gdpFastPrev = getPrev("GDP Growth (2Q Avg)");
+  const cpiFastPrev = getPrev("CPI Growth (3M Avg)");
+  const tiebreakInputs = {
+    gdpDirection: gdpFast != null && gdpFastPrev != null ? Math.sign(gdpFast - gdpFastPrev) : null,
+    gdpZscore:    getMetaNum("Real GDP Growth", "zscore_10y"),
+    cpiDirection: cpiFast != null && cpiFastPrev != null ? Math.sign(cpiFast - cpiFastPrev) : null,
+    cpiZscore:    getMetaNum("Core CPI (YoY)", "zscore_18y"),
+  };
 
   const structuralKey = gdpFast != null && cpiFast != null
-    ? detectRegimeKeyLive(gdpFast, cpiFast, gdpSlow ?? 0, cpiSlow ?? cpiFast, laborInputs)
+    ? detectRegimeKeyLive(gdpFast, cpiFast, gdpSlow ?? 0, cpiSlow ?? cpiFast, laborInputs, tiebreakInputs)
     : null;
 
   const marketKey = gdpFast != null && gdpSlow != null
@@ -942,6 +975,13 @@ Deno.serve(async (req: Request) => {
       const i = (macroRows ?? []).find((x: { name: string; metadata: Record<string, unknown> | null }) => x.name === name);
       return !!i?.metadata?.vol_shock;
     };
+    // Generic metadata-number reader — used for the regime tiebreaker's
+    // Level fallback (zscore_10y/zscore_18y).
+    const getMetaNum = (name: string, key: string): number | null => {
+      const i = (macroRows ?? []).find((x: { name: string; metadata: Record<string, unknown> | null }) => x.name === name);
+      const v = i?.metadata?.[key];
+      return typeof v === "number" ? v : null;
+    };
     // Spread between the actual reading and its SPF consensus forecast
     // (stamped onto the indicator's own metadata by update-spf-forecasts) —
     // positive means the economy is beating what forecasters expected.
@@ -961,7 +1001,7 @@ Deno.serve(async (req: Request) => {
     // its nightly update silently failed to run for that day. Computing live
     // means Clio's narrative can never drift from what the Forward Signal tile
     // on the same page shows, regardless of whether the nightly job succeeded.
-    const { structuralKey, marketKey, fwdKey, fwdConf } = computeLiveRegimeKeys(get, getMeta3m, getPP3m, getShortPct, getVolShock, getSpfSpread);
+    const { structuralKey, marketKey, fwdKey, fwdConf } = computeLiveRegimeKeys(get, getMeta3m, getPP3m, getShortPct, getVolShock, getSpfSpread, getPrev, getMetaNum);
     const regimeLabel = structuralKey ? (REGIME_LABELS[structuralKey] ?? structuralKey) : "Unknown";
     const marketLabel = marketKey ? (REGIME_LABELS[marketKey] ?? marketKey) : null;
     const fwdLabel = fwdKey ? (REGIME_LABELS[fwdKey] ?? fwdKey) : null;

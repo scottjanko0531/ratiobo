@@ -4,12 +4,14 @@ import {
   isGrowthExpanding,
   isGrowthAccelerating,
   isInflationAccelerating,
+  resolveAxisDirection,
   isLaborDeteriorating,
   rateOfChangeLabel,
   POTENTIAL_GDP_GROWTH,
   GROWTH_MIN_GAP,
   CPI_MIN_GAP,
   POTENTIAL_FLOOR_FRACTION,
+  REGIME_META,
 } from "../lib/simulatorKeys";
 
 // Regression coverage for the "regime calc improvements" work order: before
@@ -253,5 +255,110 @@ describe("isInflationAccelerating", () => {
 
   it("false when Decelerating (gap < -CPI_MIN_GAP)", () => {
     expect(isInflationAccelerating(3.00, 3.30)).toBe(false);
+  });
+});
+
+// Regime tiebreaker spec: "Stable" is not a synonym for "Down." The
+// four-quadrant model needs a binary Up/Down, so a Stable crossover read
+// falls back to Direction (G3/I3), then Level (G1/I1), before resolveAxisDirection
+// gives up. Reads resolved via the fallback are marked tentative so the UI
+// doesn't present a coin-flip-resolved regime word with full confidence.
+describe("resolveAxisDirection", () => {
+  it("Accelerating resolves directly via rate, ignoring direction/level even when they'd disagree", () => {
+    const r = resolveAxisDirection(2.60, 2.28, GROWTH_MIN_GAP, -1, -5);
+    expect(r).toMatchObject({ up: true, tentative: false, resolvedVia: "rate" });
+  });
+
+  it("Decelerating resolves directly via rate, ignoring direction/level even when they'd disagree", () => {
+    const r = resolveAxisDirection(2.00, 2.28, GROWTH_MIN_GAP, 1, 5);
+    expect(r).toMatchObject({ up: false, tentative: false, resolvedVia: "rate" });
+  });
+
+  it("Stable + Direction Up falls back to Direction, marked tentative", () => {
+    const r = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 1, -0.15);
+    expect(r).toMatchObject({ up: true, tentative: true, resolvedVia: "direction" });
+  });
+
+  it("Stable + Direction Down falls back to Direction, marked tentative", () => {
+    const r = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, -1, -0.15);
+    expect(r).toMatchObject({ up: false, tentative: true, resolvedVia: "direction" });
+  });
+
+  it("Stable + Direction flat falls back to Level, sign of the z-score", () => {
+    const above = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 0, 0.5);
+    expect(above).toMatchObject({ up: true, tentative: true, resolvedVia: "level" });
+    const below = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 0, -0.5);
+    expect(below).toMatchObject({ up: false, tentative: true, resolvedVia: "level" });
+  });
+
+  it("Stable + Direction unavailable falls back to Level", () => {
+    const r = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, null, -0.5);
+    expect(r).toMatchObject({ up: false, tentative: true, resolvedVia: "level" });
+  });
+
+  it("Stable + Direction and Level both unavailable is unresolved but still tentative", () => {
+    const r = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, null, null);
+    expect(r).toMatchObject({ up: null, tentative: true, resolvedVia: null });
+  });
+});
+
+// Same "classify structural key from two axes" logic as page.jsx's
+// structuralRegimeKey — reimplemented here so the regime-quadrant mapping
+// itself is covered without importing React components into a unit test.
+function classifyStructural(gAxis: ReturnType<typeof resolveAxisDirection>, iAxis: ReturnType<typeof resolveAxisDirection> | null) {
+  const growthUp = gAxis.up === true;
+  const inflUp = iAxis?.up === true;
+  const key = growthUp && !inflUp ? "rg_fi" : growthUp && inflUp ? "rg_ri" : !growthUp && inflUp ? "fg_ri" : "fg_fi";
+  const tentative = gAxis.tentative || (iAxis?.tentative ?? false);
+  return { key, tentative };
+}
+
+describe("Structural regime tiebreaker — scenarios from the regime tiebreaker spec", () => {
+  it("Growth Stable + Direction Up + Inflation Increasing → Reflation (Tentative)", () => {
+    const g = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 1, null);
+    const i = resolveAxisDirection(3.65, 3.13, CPI_MIN_GAP, null, null); // Accelerating
+    const { key, tentative } = classifyStructural(g, i);
+    expect(REGIME_META[key].label).toBe("Reflation");
+    expect(tentative).toBe(true);
+  });
+
+  it("Growth Stable + Direction Down + Inflation Increasing → Stagflation (Tentative)", () => {
+    const g = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, -1, null);
+    const i = resolveAxisDirection(3.65, 3.13, CPI_MIN_GAP, null, null); // Accelerating
+    const { key, tentative } = classifyStructural(g, i);
+    expect(REGIME_META[key].label).toBe("Stagflation");
+    expect(tentative).toBe(true);
+  });
+
+  it("Growth Stable + Direction Up + Inflation Decreasing → Disinflationary Boom (Tentative)", () => {
+    const g = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 1, null);
+    const i = resolveAxisDirection(3.00, 3.30, CPI_MIN_GAP, null, null); // Decelerating
+    const { key, tentative } = classifyStructural(g, i);
+    expect(REGIME_META[key].label).toBe("Disinflationary Boom");
+    expect(tentative).toBe(true);
+  });
+
+  it("Growth Stable + Direction Down + Inflation Decreasing → Deflationary Bust (Tentative)", () => {
+    const g = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, -1, null);
+    const i = resolveAxisDirection(3.00, 3.30, CPI_MIN_GAP, null, null); // Decelerating
+    const { key, tentative } = classifyStructural(g, i);
+    expect(REGIME_META[key].label).toBe("Deflationary Bust");
+    expect(tentative).toBe(true);
+  });
+
+  it("Growth Stable + Direction also flat + Level above mean + Inflation Increasing → Reflation (Tentative), resolved via Level", () => {
+    const g = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 0, 0.5);
+    const i = resolveAxisDirection(3.65, 3.13, CPI_MIN_GAP, null, null); // Accelerating
+    const { key, tentative } = classifyStructural(g, i);
+    expect(REGIME_META[key].label).toBe("Reflation");
+    expect(tentative).toBe(true);
+    expect(g.resolvedVia).toBe("level");
+  });
+
+  it("Growth clearing the dead band directly (Accelerating or Decelerating) is never tentative", () => {
+    const accel = resolveAxisDirection(2.60, 2.28, GROWTH_MIN_GAP, null, null);
+    const decel = resolveAxisDirection(2.00, 2.28, GROWTH_MIN_GAP, null, null);
+    expect(accel.tentative).toBe(false);
+    expect(decel.tentative).toBe(false);
   });
 });
