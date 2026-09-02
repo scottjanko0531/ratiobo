@@ -169,4 +169,28 @@ describe("rateOfChangeLabel", () => {
     expect(rateOfChangeLabel(2.68, 2.5, GROWTH_MIN_GAP)).toBe("Accelerating");
     expect(rateOfChangeLabel(2.68, 2.5, CPI_MIN_GAP)).toBe("Stable");
   });
+
+  // Regression coverage for the regime-table dead-band bug fix: the "Real
+  // GDP Growth — Fast vs Slow" drawer and the Regime Signal Comparison
+  // table's Structural/Market Expectations Growth cells previously called
+  // two DIFFERENT functions on the identical live fast/slow pair (2.39%
+  // vs 2.28%) and disagreed — the drawer's rateOfChangeLabel correctly
+  // said "Stable" while the table's old growthStateLabel (removed; see
+  // page.jsx's rateOfChangeDisplay/stateDisplay) blended in the
+  // potential-floor test and said "Decelerating." Both surfaces now call
+  // rateOfChangeLabel directly (page.jsx's rateOfChangeDisplay is a thin
+  // presentational wrapper with no separate classification logic), so
+  // this single test structurally covers every call site — there is no
+  // longer a second function that could drift out of sync.
+  it("the live pair that motivated the bug fix (2.39% vs 2.28%) reads Stable everywhere", () => {
+    expect(rateOfChangeLabel(2.39, 2.28, GROWTH_MIN_GAP)).toBe("Stable");
+  });
+
+  it("a gap clearly above minGap still reads Accelerating", () => {
+    expect(rateOfChangeLabel(2.60, 2.28, GROWTH_MIN_GAP)).toBe("Accelerating");
+  });
+
+  it("a gap clearly below minGap still reads Decelerating", () => {
+    expect(rateOfChangeLabel(2.00, 2.28, GROWTH_MIN_GAP)).toBe("Decelerating");
+  });
 });

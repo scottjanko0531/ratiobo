@@ -980,15 +980,24 @@ const REGIME_COLORS = {
 };
 const REGIME_SHORT  = { rg_fi: "Boom", rg_ri: "Refl", fg_ri: "Stag", fg_fi: "Bust" };
 
-// Three-way growth-axis read: Expanding requires clearing isGrowthExpanding's
-// magnitude/potential-relative bar; Contracting means outright negative
-// growth; anything in between (including a positive-but-marginal crossover
-// like 2.39% vs 2.28%) reads as Decelerating — the middle state the old
-// binary "is the trend positive" test couldn't express.
-function growthStateLabel(fast, slow) {
-  if (fast <= 0) return { label: "↓ Contracting", color: "text-loss" };
-  if (isGrowthExpanding(fast, slow)) return { label: "↑ Expanding", color: "text-gain" };
-  return { label: "→ Decelerating", color: "text-brass-soft" };
+// Presentational wrapper around the shared rateOfChangeLabel classifier —
+// every surface that displays a fast/slow crossover state (Regime Signal
+// Comparison table, GDP/CPI drawers) must render from this one function so
+// wording and color can never drift apart again. Previously the table used
+// a separate growthStateLabel that blended the potential-floor test into
+// the same word meant to describe "fast vs. slow" — a technically-positive
+// but marginal crossover (e.g. 2.39% vs 2.28%, gap 0.11pp, below the
+// 0.15pp dead band) read "Decelerating" here while the drawer's Rate of
+// Change field, using rateOfChangeLabel directly, correctly read "Stable"
+// for the identical pair. See the regime-table dead-band bug fix.
+function stateDisplay(state) {
+  const text  = state === "Accelerating" ? "Increasing" : state === "Decelerating" ? "Decreasing" : "Stable";
+  const color = state === "Accelerating" ? "text-gain" : state === "Decelerating" ? "text-loss" : "text-paper-dim";
+  const arrow = state === "Accelerating" ? "↑" : state === "Decelerating" ? "↓" : "→";
+  return { state, text, color, arrow, label: `${arrow} ${text}` };
+}
+function rateOfChangeDisplay(fast, slow, minGap) {
+  return stateDisplay(rateOfChangeLabel(fast, slow, minGap));
 }
 
 // Data vintage: which FRED release period a reading actually corresponds
@@ -1813,12 +1822,12 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     <ChartIcon />
                   </p>
                   {gdpFastVal != null && gdp3yAvg?.current_value != null ? (() => {
-                    const state = growthStateLabel(gdpFastVal, gdp3yAvgVal);
+                    const state = rateOfChangeDisplay(gdpFastVal, gdp3yAvgVal, GROWTH_MIN_GAP);
                     return (
                       <>
                         <p className={`font-medium ${state.color}`}>{state.label}</p>
                         <p className="num text-[11px] text-paper-dim mt-0.5">
-                          {gdpFastVal.toFixed(2)}% vs {gdp3yAvgVal.toFixed(2)}% (min gap 0.15pp, potential floor {(POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION).toFixed(2)}%)
+                          {gdpFastVal.toFixed(2)}% vs {gdp3yAvgVal.toFixed(2)}% (min gap 0.15pp) · potential floor {(POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION).toFixed(2)}%
                         </p>
                         {vintageLabel(gdpFastInd) && (
                           <p className="text-[9px] text-paper-dim/50 mt-0.5">as of {vintageLabel(gdpFastInd)}</p>
@@ -1836,7 +1845,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     <ChartIcon />
                   </p>
                   {gdpFastVal != null && gdp3yAvg?.current_value != null ? (() => {
-                    const state = growthStateLabel(gdpFastVal, gdp3yAvgVal);
+                    const state = rateOfChangeDisplay(gdpFastVal, gdp3yAvgVal, GROWTH_MIN_GAP);
                     return (
                       <>
                         <p className={`font-medium ${state.color}`}>{state.label}</p>
@@ -2559,8 +2568,8 @@ function TwoLineHistoryDrawer({
                 </div>
                 <div>
                   <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-0.5">Rate of Change</p>
-                  <p className={`font-semibold ${regimeStats.rateLabel === "Accelerating" ? "text-gain" : regimeStats.rateLabel === "Decelerating" ? "text-loss" : "text-paper-dim"}`}>
-                    {regimeStats.rateLabel === "Accelerating" ? "Increasing" : regimeStats.rateLabel === "Decelerating" ? "Decreasing" : regimeStats.rateLabel ?? "—"}
+                  <p className={`font-semibold ${regimeStats.rateLabel ? stateDisplay(regimeStats.rateLabel).color : "text-paper-dim"}`}>
+                    {regimeStats.rateLabel ? stateDisplay(regimeStats.rateLabel).text : "—"}
                   </p>
                 </div>
                 <div>
