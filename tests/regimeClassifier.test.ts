@@ -16,6 +16,7 @@ import {
   NEARTERM_INFL_SIGNALS,
   MEDTERM_GROWTH_SIGNALS,
   MEDTERM_INFL_SIGNALS,
+  confidenceTierMultiplier,
 } from "../lib/simulatorKeys";
 
 // Regression coverage for the "regime calc improvements" work order: before
@@ -437,5 +438,28 @@ describe("Forward Signal scoring sanity", () => {
   });
   it("Medium-Term Inflation: every signal voting down -> score -1", () => {
     expect(scoreAllAt(MEDTERM_INFL_SIGNALS, -1)).toBeCloseTo(-1, 5);
+  });
+});
+
+// Regime engine follow-up fixes, section C: gates how much of a Forward
+// Signal leg's suggested tilt reaches the Positioning Signal table.
+describe("confidenceTierMultiplier", () => {
+  it("null or below 50 -> 0 (not actionable)", () => {
+    expect(confidenceTierMultiplier(null)).toBe(0);
+    expect(confidenceTierMultiplier(0)).toBe(0);
+    expect(confidenceTierMultiplier(49)).toBe(0);
+  });
+  it("at 50 -> 0.3 (bottom of partial band)", () => {
+    expect(confidenceTierMultiplier(50)).toBeCloseTo(0.3, 5);
+  });
+  it("at 65 -> 0.5 (top of partial band)", () => {
+    expect(confidenceTierMultiplier(65)).toBeCloseTo(0.5, 5);
+  });
+  it("midpoint 57.5 -> 0.4 (linear interpolation)", () => {
+    expect(confidenceTierMultiplier(57.5)).toBeCloseTo(0.4, 5);
+  });
+  it("above 65 -> 1 (full conviction)", () => {
+    expect(confidenceTierMultiplier(66)).toBe(1);
+    expect(confidenceTierMultiplier(100)).toBe(1);
   });
 });

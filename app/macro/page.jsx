@@ -20,6 +20,7 @@ import {
   detectRegimeKey,
   isInflationAccelerating,
   resolveAxisDirection,
+  confidenceTierMultiplier,
   isLaborDeteriorating,
   rateOfChangeLabel,
   CPI_MIN_GAP,
@@ -293,11 +294,20 @@ function IndicatorCard({ ind, onSave, onClick, note }) {
 // Source: Bridgewater 2025-2026 research — reduce long nominal bonds, add TIPS/inflation-linked,
 // increase gold + commodities, diversify away from US-only equity book.
 
-function computeSuggestedPcts(regimeKey, method, assetData) {
+// tiltMultiplier (0-1, BW Modified only) blends between the static BW_ALLOC
+// baseline (0 = hold, no regime signal reached the actionability bar) and
+// the full regime-quadrant table (1 = full conviction). Previously "bw"
+// always returned the unmodified baseline regardless of signal strength —
+// the code's own comment ("regime tilts are overlays... only when the
+// signal is unambiguous") described this gating but it was never actually
+// wired up. See the regime engine follow-up fixes, section C.
+function computeSuggestedPcts(regimeKey, method, assetData, tiltMultiplier = 1) {
   const dw = REGIME_DEFAULT_WEIGHTS[regimeKey] ?? {};
 
   if (method === "bw") {
-    return { ...BW_ALLOC };
+    return Object.fromEntries(
+      Object.keys(BW_ALLOC).map((k) => [k, BW_ALLOC[k] + tiltMultiplier * ((dw[k] ?? BW_ALLOC[k]) - BW_ALLOC[k])])
+    );
   }
 
   if (method === "default" || !assetData) {
@@ -392,24 +402,32 @@ function computeForwardSignal(indicators, growthSignals, inflSignals, thresh) {
     const v = indicators.find(i => i.name === name)?.metadata?.[key];
     return typeof v === "number" ? v : null;
   };
+  // valueKind tags each signal's raw value with the unit it should render in
+  // (pp = percentage points, pct = relative % change, raw = the indicator's
+  // own unit) — set alongside `val` so the UI can format it correctly
+  // without re-deriving which getter produced it. See D1 in the regime
+  // engine follow-up fixes.
   const scoreGroup = (sigs) => {
     let weighted = 0, totalW = 0;
+    const fullWeight = sigs.reduce((s, sig) => s + sig.w, 0);
     const scored = sigs.map(s => {
       const source = s.sourceName ?? s.name;
-      if (s.shockGate && !getVolShock(source)) return { ...s, val: null, vote: null };
+      const ind = indicators.find(i => i.name === source);
+      const valueKind = s.useSpfSpread || s.getPP3m ? "pp" : s.useShortPct || s.getPct3m ? "pct" : "raw";
+      if (s.shockGate && !getVolShock(source)) return { ...s, val: null, vote: null, voteFn: s.vote, valueKind, unit: ind?.unit ?? null };
       const val = s.useSpfSpread ? getSpfSpread(source, typeof s.useSpfSpread === "string" ? s.useSpfSpread : "spf_consensus_gdp")
         : s.useMetaField ? getMetaField(source, s.useMetaField)
         : s.useShortPct ? getShortPct(source)
         : s.getPct3m ? getPct3m(source)
         : s.getPP3m ? getPP3m(source)
         : get(source);
-      if (val == null) return { ...s, val: null, vote: null };
+      if (val == null) return { ...s, val: null, vote: null, voteFn: s.vote, valueKind, unit: ind?.unit ?? null };
       const v = s.vote(val);
       weighted += v * s.w;
       totalW += s.w;
-      return { ...s, val, vote: v };
+      return { ...s, val, vote: v, voteFn: s.vote, valueKind, unit: ind?.unit ?? null };
     });
-    return { signals: scored, score: totalW > 0 ? weighted / totalW : null };
+    return { signals: scored, score: totalW > 0 ? weighted / totalW : null, totalW, fullWeight };
   };
   const growth = scoreGroup(growthSignals);
   const infl   = scoreGroup(inflSignals);
@@ -462,7 +480,7 @@ function computeForwardSignal(indicators, growthSignals, inflSignals, thresh) {
     return confirms ? 5 : -8;
   })();
   const confidence = baseConfidence != null ? Math.max(0, Math.min(100, baseConfidence + volMod)) : null;
-  return { growth, infl, gDir, iDir, rawGDir, rawIDir, forwardKey, confidence, baseConfidence, volMod };
+  return { growth, infl, gDir, iDir, rawGDir, rawIDir, forwardKey, confidence, baseConfidence, volMod, gConf, iConf };
 }
 
 // Computes both horizon panels independently — they are never averaged or
@@ -1500,6 +1518,39 @@ const ALLOC_ASSET_META = [
   { key: "cash", label: "Cash",          color: "#A8ADB8" },
 ];
 
+// Formats a Forward Signal input's raw value (D1 in the regime engine
+// follow-up fixes) using the valueKind scoreGroup tagged it with, so a user
+// can see the actual number behind an arrow instead of trusting the arrow.
+function formatSignalVal(s) {
+  if (s.val == null) return null;
+  if (s.valueKind === "pp") return `${s.val >= 0 ? "+" : ""}${s.val.toFixed(2)}pp`;
+  if (s.valueKind === "pct") return `${s.val >= 0 ? "+" : ""}${s.val.toFixed(1)}%`;
+  const decimals = s.unit === "K" || s.unit === "index" ? 0 : 1;
+  return `${s.val.toFixed(decimals)}${s.unit && s.unit !== "index" && s.unit !== "K" ? s.unit : ""}`;
+}
+
+// D3: distinguishes a genuinely flat neutral reading from a near-miss that
+// just barely didn't clear its own vote threshold — e.g. -0.48pp against a
+// ±0.5pp trigger is a near-miss, not a flat 0.00pp. Works generically
+// against any vote() closure by numerically probing outward for the
+// nearest point where the vote would flip, rather than requiring every
+// signal to also store its threshold(s) as separate data.
+function isNearThreshold(s) {
+  if (s.val == null || s.vote !== 0 || typeof s.voteFn !== "function") return false;
+  const scale = Math.max(Math.abs(s.val), 0.5);
+  const step = scale * 0.005;
+  for (let i = 1; i <= 200; i++) {
+    const delta = step * i;
+    const upFlips = s.voteFn(s.val + delta) !== 0;
+    const downFlips = s.voteFn(s.val - delta) !== 0;
+    if (upFlips || downFlips) {
+      const boundaryVal = upFlips ? s.val + delta : s.val - delta;
+      return delta / Math.max(Math.abs(boundaryVal), 0.01) <= 0.15;
+    }
+  }
+  return false;
+}
+
 // One horizon panel's worth of Forward Signal UI — Near-Term and Medium-Term
 // render from this same function so they can never visually drift apart.
 // They are independently scored and never averaged or reconciled into one
@@ -1517,33 +1568,56 @@ function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime }) {
           // dir uses the RAW pre-fallback direction (rawGDir/rawIDir), not
           // gDir/iDir — those already collapse "neutral" to a sign for the
           // regime-key computation, which would make "Flat / Uncertain" below
-          // unreachable if reused here.
-          { key: "growth", label: "Growth Momentum", sigs: panel.growth.signals, dir: panel.rawGDir, score: panel.growth.score, upLabel: "Expanding", downLabel: "Contracting" },
-          { key: "infl", label: "Inflation Momentum", sigs: panel.infl.signals, dir: panel.rawIDir, score: panel.infl.score, upLabel: "Rising", downLabel: "Falling" },
-        ].map(({ key, label, sigs, dir, score, upLabel, downLabel }) => (
+          // unreachable if reused here. conf is this leg's OWN confidence
+          // (B4) — not the blended headline number — so a strong growth
+          // read and a weak inflation read never get averaged into one
+          // misleadingly-middling figure.
+          { key: "growth", label: "Growth Momentum", group: panel.growth, dir: panel.rawGDir, conf: panel.gConf, upLabel: "Expanding", downLabel: "Contracting" },
+          { key: "infl", label: "Inflation Momentum", group: panel.infl, dir: panel.rawIDir, conf: panel.iConf, upLabel: "Rising", downLabel: "Falling" },
+        ].map(({ key, label, group, dir, conf, upLabel, downLabel }) => (
           <div key={key} className="bg-ink-soft rounded-lg p-3">
             <p className="label text-[10px] mb-2">{label}</p>
             <div className="space-y-1 mb-2">
-              {sigs.map(s => (
-                <div key={s.label} className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] text-paper-dim truncate">{s.label}</span>
-                  <span className="flex items-center gap-1.5 shrink-0">
-                    <span className="num text-[9px] text-paper-dim/50">w{s.w.toFixed(2)}</span>
-                    <span className={`text-[10px] font-medium ${s.vote > 0 ? "text-gain" : s.vote < 0 ? "text-loss" : "text-paper-dim"}`}>
-                      {s.vote == null ? "—" : s.vote > 0 ? "↑" : s.vote < 0 ? "↓" : "→"}
+              {group.signals.map(s => {
+                const rawStr = formatSignalVal(s);
+                const nearMiss = isNearThreshold(s);
+                return (
+                  <div key={s.label} className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-paper-dim truncate">{s.label}</span>
+                    <span className="flex items-center gap-1.5 shrink-0">
+                      {rawStr && <span className="num text-[9px] text-paper-dim/60">{rawStr}</span>}
+                      <span className="num text-[9px] text-paper-dim/50">w{s.w.toFixed(2)}</span>
+                      <span
+                        className={`text-[10px] font-medium ${s.vote > 0 ? "text-gain" : s.vote < 0 ? "text-loss" : nearMiss ? "text-brass-soft" : "text-paper-dim"}`}
+                        title={nearMiss ? "Near-threshold — close to flipping direction, not a flat/settled reading" : undefined}
+                      >
+                        {s.vote == null ? "—" : s.vote > 0 ? "↑" : s.vote < 0 ? "↓" : nearMiss ? "→*" : "→"}
+                      </span>
                     </span>
-                  </span>
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
+            {group.totalW < group.fullWeight && (
+              <p className="text-[9px] text-paper-dim/50 mb-2">
+                computed on {group.totalW.toFixed(2)} of {group.fullWeight.toFixed(2)} basket weight — {group.signals.filter(s => s.vote == null).map(s => s.label).join(", ")} inactive/no data
+              </p>
+            )}
             <div className="pt-2 border-t border-ink-line flex items-center justify-between">
               <span className={`text-xs font-semibold ${dir === "up" ? "text-gain" : dir === "down" ? "text-loss" : "text-paper-dim"}`}>
                 {dir === "up" ? `↑ ${upLabel}` : dir === "down" ? `↓ ${downLabel}` : "→ Flat / Uncertain"}
               </span>
               <span className="num text-[10px] text-paper-dim">
-                score {score == null ? "—" : `${score >= 0 ? "+" : ""}${score.toFixed(2)}`}
+                score {group.score == null ? "—" : `${group.score >= 0 ? "+" : ""}${group.score.toFixed(2)}`}
               </span>
             </div>
+            {/* B2: a leg whose direction was resolved by the dead-band
+                sign-fallback (dir === "neutral") gets its confidence
+                suppressed — the number would be computed against an
+                arbitrary tiebreak direction, not a real signal. */}
+            <p className="text-[10px] text-paper-dim mt-1">
+              confidence: {dir === "neutral" ? "N/A — inside dead band" : conf != null ? `${conf}%` : "—"}
+            </p>
           </div>
         ))}
       </div>
@@ -1564,11 +1638,22 @@ function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime }) {
             <p className="text-[10px] text-paper-dim">{REGIME_META[panel.forwardKey]?.desc}</p>
           </div>
           <div className="ml-auto text-right">
-            <p className="text-[10px] text-paper-dim mb-0.5">Signal strength</p>
+            <p className="text-[10px] text-paper-dim mb-0.5">Signal strength (Combined)</p>
             <p className="num text-sm">{panel.confidence}%</p>
             <p className="text-[10px] text-paper-dim">
               {panel.confidence >= 60 ? "Strong" : panel.confidence >= 30 ? "Moderate" : "Weak"}
             </p>
+            {/* B3: the vol cross-check's +5/-8 asymmetry is deliberate risk
+                policy (penalize false confidence harder than reward true
+                confidence), not an unexplained constant — surfaced here so
+                a week-to-week confidence swing is attributable to "vol
+                regime flipped" rather than mistaken for a fundamentals
+                change. */}
+            {panel.volMod !== 0 && (
+              <p className={`text-[9px] mt-0.5 ${panel.volMod > 0 ? "text-gain" : "text-loss"}`} title="Vol cross-check: confirming vol behavior adds +5; contradicting behavior subtracts -8 — penalized harder than rewarded, by design.">
+                vol regime {panel.volMod > 0 ? "confirms" : "contradicts"} ({panel.volMod > 0 ? "+" : ""}{panel.volMod})
+              </p>
+            )}
           </div>
         </div>
       ) : (
@@ -1768,8 +1853,28 @@ function QuadrantCard({ indicators, holdings, assetData }) {
         : assetData.assets.map((a) => a.key))
     : [];
   const favoredSet = new Set(displayKeys);
+  // Positioning actionability (regime engine follow-up fixes, section C):
+  // gate the BW Modified tilt by Near-Term's own per-leg confidence, not
+  // the blended headline number — a leg whose direction was dead-band-
+  // resolved (rawDir === "neutral") never drives a tilt, regardless of its
+  // raw confidence figure, same "don't trust a tiebreak-direction
+  // confidence number" principle as section B2. The weaker leg caps the
+  // combined multiplier (min, not average) — a confident growth read
+  // doesn't offset an unconfirmed inflation read. When the top-level
+  // regime itself is Transitional (no 2-of-3 majority), the combined
+  // multiplier is additionally capped at the partial tier — a single
+  // panel's own confidence doesn't resolve disagreement BETWEEN the
+  // regime lenses, so full-conviction sizing on top of that disagreement
+  // would be taking on model-disagreement risk the panel's score doesn't
+  // capture.
+  const legTiltMultiplier = (rawDir, conf) => rawDir === "neutral" ? 0 : confidenceTierMultiplier(conf);
+  const growthTiltMult = legTiltMultiplier(fwd.nearTerm.rawGDir, fwd.nearTerm.gConf);
+  const inflTiltMult   = legTiltMultiplier(fwd.nearTerm.rawIDir, fwd.nearTerm.iConf);
+  let tiltMultiplier = Math.min(growthTiltMult, inflTiltMult);
+  if (isTransitional) tiltMultiplier = Math.min(tiltMultiplier, 0.5);
+  const tiltTier = tiltMultiplier === 0 ? "baseline" : tiltMultiplier < 1 ? "partial" : "full";
   const suggestedPcts = regimeKey
-    ? computeSuggestedPcts(regimeKey, allocMethod, assetData)
+    ? computeSuggestedPcts(regimeKey, allocMethod, assetData, tiltMultiplier)
     : {};
 
   const regimeReturns = regimeKey ? (REGIME_RETURNS[regimeKey] ?? {}) : {};
@@ -1858,7 +1963,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
               </div>
               {isTransitional ? (
                 <p className="text-paper-dim text-sm mt-1">
-                  Lenses diverging — Structural: {structuralMeta?.label ?? "n/a"} · Market: {marketMeta?.label ?? "n/a"} · Forward: {fwd.mediumTerm.forwardKey ? (REGIME_META[fwd.mediumTerm.forwardKey]?.label ?? "n/a") : "n/a"}
+                  Lenses diverging — Structural: {structuralMeta?.label ?? "n/a"} · Market: {marketMeta?.label ?? "n/a"} · Forward (Medium-Term): {fwd.mediumTerm.forwardKey ? (REGIME_META[fwd.mediumTerm.forwardKey]?.label ?? "n/a") : "n/a"}
                 </p>
               ) : (
                 <p className="text-paper-dim text-sm mt-1">{regime.desc}</p>
@@ -1988,7 +2093,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                   className="px-3 py-3 border-l border-ink-line cursor-pointer hover:bg-ink/40 transition-colors group"
                 >
                   <p className="text-[10px] text-paper-dim mb-1 flex items-center gap-1">
-                    3M vs 9M avg — crossover?
+                    CPI Trend (3M/9M Avg) — crossover?
                     <ChartIcon />
                   </p>
                   {cpiFastVal != null && cpi3yAvgVal != null ? (() => {
@@ -2076,10 +2181,10 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     : "bg-brass/10 text-brass-soft border border-brass/20"
               }`}>
                 {isTransitional
-                  ? "⚠ No 2-of-3 majority across Structural/Market/Forward — see \"Transitional\" read above"
+                  ? "⚠ No 2-of-3 majority across Structural/Market/Forward (Medium-Term) — see \"Transitional\" read above"
                   : structuralRegimeKey === marketRegimeKey
                     ? "✓ Structural and Market lenses agree — regime signal is clear"
-                    : `⚠ Structural/Market diverge — Forward Signal breaks the tie toward ${regime?.label ?? "n/a"}`
+                    : `⚠ Structural/Market diverge — Medium-Term Forward Signal breaks the tie toward ${regime?.label ?? "n/a"}`
                 }
               </div>
             )}
@@ -2104,6 +2209,30 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                   </span>
                 )}
               </div>
+              {allocMethod === "bw" && (
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                    tiltTier === "full" ? "text-gain border-gain/30 bg-gain/10"
+                    : tiltTier === "partial" ? "text-brass-soft border-brass/30 bg-brass/10"
+                    : "text-paper-dim border-ink-line bg-ink-soft/50"
+                  }`}
+                  title="BW Modified's regime tilt is gated by Near-Term Growth/Inflation confidence (weakest leg caps it), and capped at partial when the top-level regime is Transitional — see the regime engine follow-up fixes, section C."
+                >
+                  {tiltTier === "full" ? "Full conviction tilt"
+                    : tiltTier === "partial" ? `Partial tilt (${Math.round(tiltMultiplier * 100)}%)`
+                    : "Baseline hold — signal not actionable"}
+                  {tiltTier !== "full" && (
+                    <span className="text-paper-dim/70">
+                      {" · "}
+                      {isTransitional && tiltMultiplier <= 0.5 ? "regime read is Transitional"
+                        : growthTiltMult === 0 && inflTiltMult === 0 ? "Near-Term Growth and Inflation both below actionable confidence"
+                        : growthTiltMult === 0 ? "Near-Term Growth below actionable confidence"
+                        : inflTiltMult === 0 ? "Near-Term Inflation below actionable confidence"
+                        : "Near-Term confidence in the partial band"}
+                    </span>
+                  )}
+                </span>
+              )}
               <div className="flex items-center gap-0.5">
                 {[
                   { k: "default", l: "Default" },
