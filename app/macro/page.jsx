@@ -2301,6 +2301,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
         series={[
           { key: "fast", label: "2Q Avg (fast)", shortLabel: "2Q", color: "#C9A227" },
           { key: "slow", label: "4Q Avg (slow)", shortLabel: "4Q", color: "#A8ADB8", dash: "5 3" },
+          { key: "actual", label: "Actual (this qtr)", shortLabel: "Actual", color: "#7C9CBF", dash: "2 2" },
         ]}
         regimeStats={gdpRegimeStats}
         zscoreLabel="vs. 10yr (40Q) window"
