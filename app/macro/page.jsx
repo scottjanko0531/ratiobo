@@ -2302,6 +2302,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
           { key: "fast", label: "2Q Avg (fast)", shortLabel: "2Q", color: "#C9A227" },
           { key: "slow", label: "4Q Avg (slow)", shortLabel: "4Q", color: "#A8ADB8", dash: "5 3" },
           { key: "actual", label: "Actual (this qtr)", shortLabel: "Actual", color: "#7C9CBF", dash: "2 2" },
+          { key: "avg10y", label: "10Y Avg (40Q)", shortLabel: "10Y", color: "#8B6FB3", dash: "1 4" },
         ]}
         regimeStats={gdpRegimeStats}
         zscoreLabel="vs. 10yr (40Q) window"
@@ -2430,10 +2431,24 @@ function TwoLineHistoryDrawer({
         const latest = data.filter((r) => r.vintage_label === latestVintage);
         const h1 = latest.find((r) => r.horizon_quarters === 1)?.value ?? null;
         const next4 = latest.filter((r) => r.horizon_quarters >= 2 && r.horizon_quarters <= 5).map((r) => Number(r.value));
+        // Per-horizon forecast path for the readings table: horizon 1 is the
+        // vintage's own survey quarter, horizon 2 the next quarter, etc. —
+        // convert each to the calendar quarter it targets so it can be
+        // plotted alongside the historical actuals.
+        const [vy, vq] = latestVintage.split("-Q").map(Number);
+        const forecastRows = latest
+          .map((r) => {
+            const totalQ = (vq - 1) + (r.horizon_quarters - 1);
+            const year = vy + Math.floor(totalQ / 4);
+            const month = String((totalQ % 4) * 3 + 1).padStart(2, "0");
+            return { date: `${year}-${month}-01`, value: Number(r.value) };
+          })
+          .sort((a, b) => b.date.localeCompare(a.date));
         setConsensus({
           vintage: latestVintage,
           currentQuarter: h1 != null ? Number(h1) : null,
           next4qAvg: next4.length ? Math.round((next4.reduce((a, b) => a + b, 0) / next4.length) * 100) / 100 : null,
+          forecastRows,
         });
       })
       .catch(() => setConsensus(false));
@@ -2466,6 +2481,7 @@ function TwoLineHistoryDrawer({
 
   const latest = rows && rows.length ? rows[rows.length - 1] : null;
   const summaryRows = useMemo(() => (rows?.length ? rows.slice(-8).reverse() : []), [rows]);
+  const forecastRows = consensusVar && consensus && consensus.forecastRows ? consensus.forecastRows : [];
 
   return (
     <>
@@ -2689,19 +2705,35 @@ function TwoLineHistoryDrawer({
             </div>
           )}
 
-          {rows !== null && summaryRows.length > 0 && (
+          {rows !== null && (summaryRows.length > 0 || forecastRows.length > 0) && (
             <div>
-              <p className="label text-[10px] mb-2">Recent readings</p>
+              <p className="label text-[10px] mb-2">Recent readings{forecastRows.length ? " + SPF forecast" : ""}</p>
               <div className="border border-ink-line rounded-lg overflow-hidden text-xs">
                 <div
                   className="grid gap-px bg-ink-line"
-                  style={{ gridTemplateColumns: `1fr repeat(${series.length}, 1fr)` }}
+                  style={{ gridTemplateColumns: `1fr repeat(${series.length}, 1fr)${consensusVar ? " 1fr" : ""}` }}
                 >
                   <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim">Date</div>
                   {series.map((s) => (
                     <div key={s.key} className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">
                       {s.shortLabel ?? s.label}
                     </div>
+                  ))}
+                  {consensusVar && (
+                    <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">SPF</div>
+                  )}
+                  {forecastRows.map((r) => (
+                    <Fragment key={`f-${r.date}`}>
+                      <div className="bg-ink px-2 py-1.5 text-paper-dim/60 italic">
+                        {new Date(r.date + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })}
+                      </div>
+                      {series.map((s) => (
+                        <div key={s.key} className="bg-ink px-2 py-1.5 text-right text-paper-dim/30">—</div>
+                      ))}
+                      <div className="bg-ink px-2 py-1.5 text-right num text-brass-soft">
+                        {r.value.toFixed(2)}{unit}
+                      </div>
+                    </Fragment>
                   ))}
                   {summaryRows.map((r) => (
                     <Fragment key={r.date}>
@@ -2713,6 +2745,9 @@ function TwoLineHistoryDrawer({
                           {r[s.key] != null ? `${r[s.key].toFixed(2)}${unit}` : "—"}
                         </div>
                       ))}
+                      {consensusVar && (
+                        <div className="bg-ink px-2 py-1.5 text-right text-paper-dim/30 num">—</div>
+                      )}
                     </Fragment>
                   ))}
                 </div>
