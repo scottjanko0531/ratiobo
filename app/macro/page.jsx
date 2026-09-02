@@ -2320,6 +2320,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
         series={[
           { key: "fast", label: "3M Avg (fast)", shortLabel: "3M", color: "#E0635C" },
           { key: "slow", label: "9M Avg (slow)", shortLabel: "9M", color: "#A8ADB8", dash: "5 3" },
+          { key: "actual", label: "Actual (this mo.)", shortLabel: "Actual", color: "#7C9CBF", dash: "2 2" },
         ]}
         regimeStats={cpiRegimeStats}
         zscoreLabel="Core CPI vs. 18yr window"
@@ -2522,7 +2523,16 @@ function TwoLineHistoryDrawer({
 
   const latest = rows && rows.length ? rows[rows.length - 1] : null;
   const summaryRows = useMemo(() => (rows?.length ? rows.slice(-8).reverse() : []), [rows]);
-  const forecastRows = consensusVar && consensus && consensus.forecastRows ? consensus.forecastRows : [];
+  // Forecast dates are quantized to a quarter's first month (see the
+  // consensus effect above); for a monthly series like CPI, that can land
+  // on the same month as an already-released actual reading (e.g. a
+  // horizon-1 nowcast targeting the current quarter's first month, when
+  // that month has already printed) — drop any forecast row whose date is
+  // already covered by actual data rather than showing both.
+  const actualDates = useMemo(() => new Set((rows ?? []).map((r) => r.date)), [rows]);
+  const forecastRows = consensusVar && consensus && consensus.forecastRows
+    ? consensus.forecastRows.filter((r) => !actualDates.has(r.date))
+    : [];
 
   return (
     <>

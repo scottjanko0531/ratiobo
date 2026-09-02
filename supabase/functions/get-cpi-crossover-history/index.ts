@@ -40,7 +40,7 @@ Deno.serve(async (req: Request) => {
       yoySeries.push({ date: curr.date, yoy: (curr.value / ya - 1) * 100 });
     }
 
-    type Row = { date: string; fast: number; slow: number };
+    type Row = { date: string; fast: number; slow: number; actual: number };
     const rows: Row[] = [];
     for (let i = 8; i < yoySeries.length; i++) {
       const last3 = yoySeries.slice(i - 2, i + 1);
@@ -51,6 +51,7 @@ Deno.serve(async (req: Request) => {
         date: yoySeries[i].date,
         fast: Math.round(fast * 100) / 100,
         slow: Math.round(slow * 100) / 100,
+        actual: Math.round(yoySeries[i].yoy * 100) / 100,
       });
     }
 
