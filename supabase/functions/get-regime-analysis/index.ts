@@ -394,7 +394,7 @@ type Getter = (name: string) => number | null;
 
 function computeLiveRegimeKeys(
   get: Getter, getMeta3m: Getter, getPP3m: Getter,
-  getShortPct: Getter, getVolShock: (name: string) => boolean,
+  getShortPct: Getter, getVolShock: (name: string) => boolean, getSpfSpread: Getter,
 ): { structuralKey: string | null; marketKey: string | null; fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number } {
   // Fast/slow moving-average crossover, not raw-reading-vs-baseline: a
   // regime flip only fires when the fast line actually crosses the slow
@@ -430,7 +430,7 @@ function computeLiveRegimeKeys(
     : null;
 
   type Sig = {
-    name: string; w: number; usePct3m?: boolean; usePP3m?: boolean; useShortPct?: boolean;
+    name: string; w: number; usePct3m?: boolean; usePP3m?: boolean; useShortPct?: boolean; useSpfSpread?: boolean;
     shockGate?: boolean; sourceName?: string; vote: (v: number) => number;
   };
   const G: Sig[] = [
@@ -457,6 +457,13 @@ function computeLiveRegimeKeys(
     // composite, standing in for the ISM employment sub-index (not available
     // for free scraping).
     { name: "Initial Jobless Claims Trend", w: 0.15, vote: v => v < 0 ? 1 : v <= 5 ? 0 : -1 },
+    // GDP & Inflation Regime Metrics spec, G4 "Forward Consensus": is the
+    // economy actually running ahead of or behind what forecasters
+    // expected? A genuine surprise signal, distinct from every other
+    // growth signal above, which measure the economy's own trend rather
+    // than comparing it to a forecast. Kept in sync with fetch-macro-data
+    // and page.jsx's identical entry.
+    { name: "Real GDP Growth", w: 0.15, useSpfSpread: true, vote: v => v > 0.2 ? 1 : v >= -0.2 ? 0 : -1 },
   ];
   const I: Sig[] = [
     // 3-month pp-change signals, in raw percentage points (not relative % —
@@ -493,7 +500,7 @@ function computeLiveRegimeKeys(
     const signals = sigs.map((s) => {
       const source = s.sourceName ?? s.name;
       if (s.shockGate && !getVolShock(source)) return { w: s.w, vote: null };
-      const val = s.useShortPct ? getShortPct(source) : s.usePct3m ? getMeta3m(source) : s.usePP3m ? getPP3m(source) : get(source);
+      const val = s.useSpfSpread ? getSpfSpread(source) : s.useShortPct ? getShortPct(source) : s.usePct3m ? getMeta3m(source) : s.usePP3m ? getPP3m(source) : get(source);
       if (val == null) return { w: s.w, vote: null };
       const v = s.vote(val);
       weighted += v * s.w; totalW += s.w;
@@ -916,6 +923,15 @@ Deno.serve(async (req: Request) => {
       const i = (macroRows ?? []).find((x: { name: string; metadata: Record<string, unknown> | null }) => x.name === name);
       return !!i?.metadata?.vol_shock;
     };
+    // Spread between the actual reading and its SPF consensus forecast
+    // (stamped onto the indicator's own metadata by update-spf-forecasts) —
+    // positive means the economy is beating what forecasters expected.
+    const getSpfSpread = (name: string): number | null => {
+      const i = (macroRows ?? []).find((x: { name: string; current_value: number | null; metadata: Record<string, unknown> | null }) => x.name === name);
+      const actual = i?.current_value != null ? Number(i.current_value) : null;
+      const consensus = i?.metadata?.spf_consensus_gdp;
+      return actual != null && consensus != null ? actual - Number(consensus) : null;
+    };
     const creditIndicatorNames = ["HY Credit Spread (OAS)", "IG Credit Spread (OAS)", "Sr Loan Officer Survey", "C&I Loan Growth (YoY)"];
     const credit: CreditIndicator[] = creditIndicatorNames.map((name) => ({ name, value: get(name), status: getStatus(name) }));
 
@@ -926,7 +942,7 @@ Deno.serve(async (req: Request) => {
     // its nightly update silently failed to run for that day. Computing live
     // means Clio's narrative can never drift from what the Forward Signal tile
     // on the same page shows, regardless of whether the nightly job succeeded.
-    const { structuralKey, marketKey, fwdKey, fwdConf } = computeLiveRegimeKeys(get, getMeta3m, getPP3m, getShortPct, getVolShock);
+    const { structuralKey, marketKey, fwdKey, fwdConf } = computeLiveRegimeKeys(get, getMeta3m, getPP3m, getShortPct, getVolShock, getSpfSpread);
     const regimeLabel = structuralKey ? (REGIME_LABELS[structuralKey] ?? structuralKey) : "Unknown";
     const marketLabel = marketKey ? (REGIME_LABELS[marketKey] ?? marketKey) : null;
     const fwdLabel = fwdKey ? (REGIME_LABELS[fwdKey] ?? fwdKey) : null;

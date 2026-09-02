@@ -359,6 +359,14 @@ const FWD_GROWTH_SIGNALS = [
   { label: "Payrolls (3M Avg)", name: "Payrolls (3M Avg)", w: 0.20, vote: v => v > 100 ? 1 : v >= 0 ? 0 : -1 },
   { label: "Unemployment Trend", name: "Unemployment Rate Trend", w: 0.15, vote: v => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
   { label: "Jobless Claims",    name: "Initial Jobless Claims Trend", w: 0.15, vote: v => v < 0 ? 1 : v <= 5 ? 0 : -1 },
+  // GDP & Inflation Regime Metrics spec, G4 "Forward Consensus": is the
+  // economy actually running ahead of or behind what forecasters expected?
+  // Reads spf_consensus_gdp (update-spf-forecasts' nearest-available SPF
+  // median forecast, stamped onto "Real GDP Growth"'s own metadata) and
+  // votes on the spread vs the current reading — a genuine surprise
+  // signal, distinct from every other growth signal here, which measure
+  // the economy's own trend rather than comparing it to a forecast.
+  { label: "GDP vs SPF",        name: "Real GDP Growth", w: 0.15, useSpfSpread: true, vote: v => v > 0.2 ? 1 : v >= -0.2 ? 0 : -1 },
 ];
 const FWD_INFL_SIGNALS = [
   // 3-month pp-change signals, in raw percentage points (not relative % — CPI/PPI
@@ -418,12 +426,21 @@ function computeForwardSignal(indicators) {
     const ind = indicators.find(i => i.name === name);
     return !!ind?.metadata?.vol_shock;
   };
+  // Spread between the actual reading and its SPF consensus forecast
+  // (stamped onto the indicator's own metadata by update-spf-forecasts) —
+  // positive means the economy is beating what forecasters expected.
+  const getSpfSpread = (name) => {
+    const ind = indicators.find(i => i.name === name);
+    const actual = ind?.current_value != null ? Number(ind.current_value) : null;
+    const consensus = ind?.metadata?.spf_consensus_gdp != null ? Number(ind.metadata.spf_consensus_gdp) : null;
+    return actual != null && consensus != null ? actual - consensus : null;
+  };
   const scoreGroup = (sigs) => {
     let weighted = 0, totalW = 0;
     const scored = sigs.map(s => {
       const source = s.sourceName ?? s.name;
       if (s.shockGate && !getVolShock(source)) return { ...s, val: null, vote: null };
-      const val = s.useShortPct ? getShortPct(source) : s.getPct3m ? getPct3m(source) : s.getPP3m ? getPP3m(source) : get(source);
+      const val = s.useSpfSpread ? getSpfSpread(source) : s.useShortPct ? getShortPct(source) : s.getPct3m ? getPct3m(source) : s.getPP3m ? getPP3m(source) : get(source);
       if (val == null) return { ...s, val: null, vote: null };
       const v = s.vote(val);
       weighted += v * s.w;

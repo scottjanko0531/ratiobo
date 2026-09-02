@@ -115,6 +115,32 @@ Deno.serve(async (req: Request) => {
       if (error) throw new Error(`upsert failed: ${error.message}`);
     }
 
+    // Stamp the nearest-available RGDP consensus onto "Real GDP Growth"'s
+    // own metadata — horizon 1 ("this quarter") when present, else the
+    // next-4Q average, since RGDP's derivation above has no horizon-1 row.
+    // Used by the Forward Signal's "GDP vs SPF" growth-momentum signal and
+    // the GDP drawer's Forward Consensus block. Fetch-then-merge, not a
+    // blind upsert, so this doesn't clobber zscore_10y/reference_period,
+    // which fetch-macro-data writes on the same row.
+    const rgdpRows = rows.filter((r) => r.variable_code === "RGDP");
+    if (rgdpRows.length) {
+      const h1 = rgdpRows.find((r) => r.horizon_quarters === 1)?.value ?? null;
+      const next4 = rgdpRows.filter((r) => r.horizon_quarters >= 2 && r.horizon_quarters <= 5).map((r) => r.value);
+      const consensusVal = h1 ?? (next4.length ? r2(next4.reduce((a, b) => a + b, 0) / next4.length) : null);
+      if (consensusVal != null) {
+        const { data: gdpRow } = await supabase
+          .from("macro_indicators")
+          .select("metadata")
+          .eq("name", "Real GDP Growth")
+          .maybeSingle();
+        if (gdpRow) {
+          await supabase.from("macro_indicators").update({
+            metadata: { ...(gdpRow.metadata ?? {}), spf_consensus_gdp: consensusVal, spf_consensus_vintage: rgdpRows[0].vintage_label },
+          }).eq("name", "Real GDP Growth");
+        }
+      }
+    }
+
     return new Response(
       JSON.stringify({ updated: rows.length, errors: errors.length ? errors : undefined }),
       { headers: { ...CORS, "Content-Type": "application/json" } }

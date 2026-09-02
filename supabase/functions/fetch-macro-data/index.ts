@@ -1690,9 +1690,18 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     const r = rows.find(r => r.name === name);
     return !!(r?.metadata as Record<string, unknown> | undefined)?.vol_shock;
   };
+  // Spread between the actual reading and its SPF consensus forecast
+  // (stamped onto the indicator's own metadata by update-spf-forecasts) —
+  // positive means the economy is beating what forecasters expected.
+  const getSpfSpread = (name: string): number | null => {
+    const r = rows.find(r => r.name === name);
+    const actual = r?.current_value != null ? Number(r.current_value) : null;
+    const consensus = (r?.metadata as Record<string, unknown> | undefined)?.spf_consensus_gdp;
+    return actual != null && consensus != null ? actual - Number(consensus) : null;
+  };
   type Sig = {
     name: string; w: number; vote: (v: number) => number;
-    usePct3m?: boolean; usePP3m?: boolean; useShortPct?: boolean;
+    usePct3m?: boolean; usePP3m?: boolean; useShortPct?: boolean; useSpfSpread?: boolean;
     // When set, this signal only participates (and only then does its weight
     // count) while getVolShock(sourceName ?? name) is true — an explicit
     // override, not a silent blend into the always-on 3-month term.
@@ -1727,6 +1736,13 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     // (nothing today stores "what PAYEMS said for June" as observed on two
     // different dates, only the latest FRED pull) — a real schema addition,
     // deliberately deferred rather than approximated.
+    // GDP & Inflation Regime Metrics spec, G4 "Forward Consensus": is the
+    // economy actually running ahead of or behind what forecasters
+    // expected? A genuine surprise signal, distinct from every other
+    // growth signal above, which measure the economy's own trend rather
+    // than comparing it to a forecast. Kept in sync with the identical
+    // entry in page.jsx and get-regime-analysis.
+    { name: "Real GDP Growth", w: 0.15, useSpfSpread: true, vote: v => v > 0.2 ? 1 : v >= -0.2 ? 0 : -1 },
   ];
   const I: Sig[] = [
     // 3-month pp-change signals: CPI/PPI trend captures disinflation momentum
@@ -1768,7 +1784,7 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     const signals: ScoreSig[] = sigs.map(s => {
       const source = s.sourceName ?? s.name;
       if (s.shockGate && !getVolShock(source)) return { w: s.w, vote: null };
-      const val = s.useShortPct ? getShortPct(source) : s.usePct3m ? getPct3m(source) : s.usePP3m ? getPP3m(source) : get(source);
+      const val = s.useSpfSpread ? getSpfSpread(source) : s.useShortPct ? getShortPct(source) : s.usePct3m ? getPct3m(source) : s.usePP3m ? getPP3m(source) : get(source);
       if (val == null) return { w: s.w, vote: null };
       const v = s.vote(val);
       weighted += v * s.w; totalW += s.w;
