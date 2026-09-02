@@ -477,10 +477,14 @@ function computeLiveRegimeKeys(
   const marketKey = gdpFast != null && gdpSlow != null
     ? (() => {
         const mktInflUp = (breakeven ?? FED_INFLATION_TARGET) > FED_INFLATION_TARGET;
-        // Same gap-only growth test as detectRegimeKeyLive above — no
-        // separate potential-floor gate (see the regime-table dead-band
-        // bug fix / independent-GDP-state-read follow-up).
-        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP)
+        // Same growth test as detectRegimeKeyLive above — including the
+        // Direction/Level tiebreak, not just the gap test. This was the
+        // carryover bug: Market Expectations' growth leg never got the
+        // tiebreaker Structural received, so an identical "Stable"
+        // crossover (gap inside GROWTH_MIN_GAP) silently defaulted to
+        // Down here while Structural correctly resolved it via Direction/
+        // Level. See the regime tiebreaker spec's follow-up report.
+        const mktGrowthUp = resolveAxisUp(gdpFast - gdpSlow, GROWTH_MIN_GAP, tiebreakInputs.gdpDirection, tiebreakInputs.gdpZscore)
           && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
         return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })()

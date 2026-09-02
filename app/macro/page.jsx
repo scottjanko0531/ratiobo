@@ -18,7 +18,6 @@ import {
   BW_ALLOC,
   ILLIQUID_KEYS,
   detectRegimeKey,
-  isGrowthAccelerating,
   isInflationAccelerating,
   resolveAxisDirection,
   isLaborDeteriorating,
@@ -524,12 +523,17 @@ function MacroSummary({ indicators }) {
   const gdpZscore    = getMeta("Real GDP Growth", "zscore_10y");
   const cpiDirection = (() => { const c = get("CPI Growth (3M Avg)"), p = getPrev("CPI Growth (3M Avg)"); return c != null && p != null ? Math.sign(c - p) : null; })();
   const cpiZscore    = getMeta("Core CPI (YoY)", "zscore_18y");
+  // Growth axis (with tiebreak) is shared by Structural AND Market
+  // Expectations — both read the identical GDP fast/slow crossover, so
+  // both must resolve a Stable read via the same Direction/Level
+  // tiebreaker rather than Market silently defaulting Stable to Down.
+  // See the regime tiebreaker spec and its follow-up carryover-bug fix.
+  const gAxis = resolveAxisDirection(gdpFastVal, gdp3yAvg, GROWTH_MIN_GAP, gdpDirection, gdpZscore);
+  const iAxis = cpiFastVal != null && cpiSlowVal != null
+    ? resolveAxisDirection(cpiFastVal, cpiSlowVal, CPI_MIN_GAP, cpiDirection, cpiZscore)
+    : null;
   const structuralRegimeKey = gdpFastVal != null
     ? (() => {
-        const gAxis = resolveAxisDirection(gdpFastVal, gdp3yAvg, GROWTH_MIN_GAP, gdpDirection, gdpZscore);
-        const iAxis = cpiFastVal != null && cpiSlowVal != null
-          ? resolveAxisDirection(cpiFastVal, cpiSlowVal, CPI_MIN_GAP, cpiDirection, cpiZscore)
-          : null;
         const growthUp = gAxis.up === true && !laborDeteriorating;
         const inflUp   = iAxis?.up === true;
         if (growthUp && !inflUp) return "rg_fi";
@@ -540,9 +544,12 @@ function MacroSummary({ indicators }) {
     : null;
   // Same market-expectations leg as QuadrantCard, so this card's headline
   // resolves via the identical 2-of-3 majority rather than structural alone.
+  // Growth leg reuses gAxis (identical crossover + tiebreak as Structural,
+  // not a separately-computed test) — only the inflation leg differs
+  // (breakeven vs Fed target, a level comparison with no Stable state).
   const marketRegimeKey = gdpFastVal != null
     ? (() => {
-        const growthUp = isGrowthAccelerating(gdpFastVal, gdp3yAvg) && !laborDeteriorating;
+        const growthUp = gAxis.up === true && !laborDeteriorating;
         const inflUp   = breakevenVal > FED_INFLATION_TARGET;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -1645,9 +1652,10 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   const structuralMeta = structuralRegimeKey ? REGIME_META[structuralRegimeKey] : null;
   // Tentative when either axis fell through Rate of Change's dead band and
   // had to resolve via Direction or Level instead of a direct crossover
-  // match — see the regime tiebreaker spec. Reserved for the Regime Read
-  // row's Structural column specifically, not the Market Expectations
-  // column (unchanged, no tiebreak) or the majority-vote headline above.
+  // match — see the regime tiebreaker spec. Market Expectations gets its
+  // own marketTentative below (growth leg only, since it shares
+  // structuralGrowthAxis); this one is not reused for the majority-vote
+  // headline above, which just compares keys.
   const structuralTentative = structuralRegimeKey != null
     && (structuralGrowthAxis.tentative || (structuralInflAxis?.tentative ?? false));
 
@@ -1656,11 +1664,17 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // market expects disinflation, NOT that inflation is surprising upside. The
   // threshold used to be a hardcoded 2.5% — an arbitrary round number that
   // called a 2.31% breakeven "below threshold" when it's actually still above
-  // the Fed's real mandate. Growth leg reuses the same fast/slow crossover as
-  // the structural regime above.
+  // the Fed's real mandate. Growth leg reuses structuralGrowthAxis — the
+  // IDENTICAL crossover + Direction/Level tiebreak as the structural regime
+  // above, not a separately-computed test. This carried the same "Stable
+  // silently defaults to Down" bug the regime tiebreaker spec fixed for
+  // Structural — Market Expectations never got the fix, so an identical
+  // "Stable" crossover (e.g. 2.39% vs 2.28%) resolved differently on the
+  // two lenses purely because Structural checked Direction and Market
+  // didn't. See the follow-up carryover-bug report.
   const marketRegimeKey = gdpFastVal != null
     ? (() => {
-        const growthUp = isGrowthAccelerating(gdpFastVal, gdp3yAvgVal ?? 0) && !laborDeteriorating;
+        const growthUp = structuralGrowthAxis.up === true && !laborDeteriorating;
         const inflUp   = breakevenVal > FED_INFLATION_TARGET;
         if (growthUp && !inflUp) return "rg_fi";
         if (growthUp && inflUp)  return "rg_ri";
@@ -1669,6 +1683,11 @@ function QuadrantCard({ indicators, holdings, assetData }) {
       })()
     : null;
   const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
+  // Market's growth leg is structuralGrowthAxis itself, so it can only ever
+  // be tentative when Structural's growth leg is (the inflation leg —
+  // breakeven vs Fed target — is a level comparison with no Stable state,
+  // so it never contributes a tiebreak here).
+  const marketTentative = marketRegimeKey != null && structuralGrowthAxis.tentative;
 
   const fwd = computeForwardSignals(indicators);
 
@@ -2026,11 +2045,18 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     </>
                   ) : <p className="text-paper-dim text-[11px]">—</p>}
                 </div>
-                <div className="px-3 py-3 border-l border-ink-line">
+                <div className={`px-3 py-3 border-l border-ink-line ${marketTentative ? "border-b-2 border-b-brass/40" : ""}`}>
                   {marketMeta ? (
                     <>
-                      <p className={`font-semibold ${marketMeta.color}`}>{marketMeta.label}</p>
+                      <p className={`font-semibold ${marketTentative ? "text-brass-soft" : marketMeta.color}`}>
+                        {marketMeta.label}{marketTentative ? " (Tentative)" : ""}
+                      </p>
                       <p className="text-[11px] text-paper-dim mt-0.5">{marketMeta.desc}</p>
+                      {marketTentative && (
+                        <p className="text-[10px] text-brass-soft/70 mt-1">
+                          {describeAxisResolution("Growth", structuralGrowthAxis)}
+                        </p>
+                      )}
                     </>
                   ) : <p className="text-paper-dim text-[11px]">—</p>}
                 </div>

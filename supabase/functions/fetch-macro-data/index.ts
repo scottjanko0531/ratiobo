@@ -2130,6 +2130,21 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const r2 = (n: number) => Math.round(n * 100) / 100;
 
     const { nearTerm, mediumTerm } = computeEdgeFwdSignals(rowsForSignal);
+    // Growth-axis tiebreak inputs (Direction/Level) shared by structural_key
+    // AND market_key below — both read the identical GDP fast/slow crossover,
+    // so both must resolve a Stable read via the same Direction/Level
+    // tiebreaker rather than market_key silently defaulting Stable to Down.
+    // See the regime tiebreaker spec and its follow-up carryover-bug fix
+    // (Market Expectations never got the fix Structural received).
+    const gdpDirection = gdpFastRow?.current_value != null && gdpFastRow?.previous_value != null
+      ? Math.sign(Number(gdpFastRow.current_value) - Number(gdpFastRow.previous_value)) : null;
+    const gdpZscore = typeof gdpRow.metadata?.zscore_10y === "number" ? gdpRow.metadata.zscore_10y : null;
+    const cpiDirection = cpiFastRow?.current_value != null && cpiFastRow?.previous_value != null
+      ? Math.sign(Number(cpiFastRow.current_value) - Number(cpiFastRow.previous_value)) : null;
+    const cpiZscore = typeof coreCpiRow?.metadata?.zscore_18y === "number" ? coreCpiRow.metadata.zscore_18y : null;
+    const structGrowthUp = resolveAxisUp(gdpFast - gdpSlow, GROWTH_MIN_GAP, gdpDirection, gdpZscore)
+      && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
+
     await supabase.from("macro_regime_history").upsert({
       period_date: periodDate,
       gdp_yoy: r2(gdpYoy), cpi_yoy: r2(cpiYoy),
@@ -2150,19 +2165,6 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       // dead-band bug fix and the follow-up request to stop having an
       // independent GDP-state read.
       structural_key: (() => {
-        // Tiebreak inputs: Direction (G3/I3 sign) and Level (G1/I1 z-score,
-        // stamped earlier in this same run onto "Real GDP Growth"/
-        // "Core CPI (YoY)"'s metadata) — see resolveAxisUp and the regime
-        // tiebreaker spec.
-        const gdpDirection = gdpFastRow?.current_value != null && gdpFastRow?.previous_value != null
-          ? Math.sign(Number(gdpFastRow.current_value) - Number(gdpFastRow.previous_value)) : null;
-        const gdpZscore = typeof gdpRow.metadata?.zscore_10y === "number" ? gdpRow.metadata.zscore_10y : null;
-        const cpiDirection = cpiFastRow?.current_value != null && cpiFastRow?.previous_value != null
-          ? Math.sign(Number(cpiFastRow.current_value) - Number(cpiFastRow.previous_value)) : null;
-        const cpiZscore = typeof coreCpiRow?.metadata?.zscore_18y === "number" ? coreCpiRow.metadata.zscore_18y : null;
-
-        const structGrowthUp = resolveAxisUp(gdpFast - gdpSlow, GROWTH_MIN_GAP, gdpDirection, gdpZscore)
-          && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
         // Inflation axis: same dead-band + tiebreak treatment as growth —
         // a bare cpiFast > cpiSlow sign test let a print separated by a
         // hundredth of a point flip the regime read, and a Stable read
@@ -2175,13 +2177,12 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       // (2%, not an arbitrary 2.5%) — is market pricing sustained inflation
       // above the Fed's real mandate? cpiYoy > breakeven means markets expect
       // disinflation, not that inflation is surprising upside. Growth leg
-      // reuses the same gap-only crossover test as the structural regime
-      // above, plus the same labor veto (see isLaborDeteriorating).
+      // reuses structGrowthUp — the IDENTICAL crossover + tiebreak as the
+      // structural regime above, not a separately-computed test (see the
+      // carryover-bug comment above structGrowthUp's definition).
       market_key: (() => {
         const mktInflUp = (bre ?? FED_INFLATION_TARGET) > FED_INFLATION_TARGET;
-        const mktGrowthUp = (gdpFast - gdpSlow > GROWTH_MIN_GAP)
-          && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
-        return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
+        return structGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })(),
       forward_key: mediumTerm.forwardKey,
       forward_confidence: mediumTerm.confidence,
