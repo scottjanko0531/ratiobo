@@ -190,6 +190,7 @@ interface Indicator {
     | "yahoo_price_with_3m"
     | "supabase_lei"
     | "supabase_ism"
+    | "supabase_ism_services"
     | "supabase_liquidity"
     | "supabase_bigcycle_xref"
     | "supabase_soma_duration"
@@ -465,6 +466,13 @@ const INDICATORS: Indicator[] = [
     description: "Institute for Supply Management Manufacturing PMI — above 50 signals expansion, below 50 contraction; classic leading indicator of industrial activity",
     fred_series_id: null, unit: "index", data_source: "ism_scrape", sort_order: 155,
     type: "supabase_ism",
+    statusFn: v => v >= 50 ? "healthy" : v >= 45 ? "watch" : "danger",
+  },
+  {
+    name: "ISM Services PMI", layer: 3, layer_name: "Business Cycle",
+    description: "Institute for Supply Management Services PMI — above 50 signals expansion, below 50 contraction; services-side counterpart to ISM Manufacturing PMI, ~80% of the economy by output.",
+    fred_series_id: null, unit: "index", data_source: "ism_scrape", sort_order: 156,
+    type: "supabase_ism_services",
     statusFn: v => v >= 50 ? "healthy" : v >= 45 ? "watch" : "danger",
   },
   {
@@ -764,6 +772,15 @@ const INDICATORS: Indicator[] = [
     series: "EXPINF10YR", type: "level",
     statusFn: v => v < 2.5 ? "healthy" : v < 3.5 ? "watch" : "danger",
   },
+  // ── Near-Term Forward Signal panel additions (forward-signal two-horizon spec) ──
+  {
+    name: "GDPNow",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Atlanta Fed's GDPNow — a purpose-built current-quarter GDP nowcast (model-based estimate standing in for a not-yet-released hard number), updated weekly as new data arrives. Tagged is_nowcast, never blended with the SPF consensus forecast.",
+    fred_series_id: "GDPNOW", unit: "%", data_source: "fred", sort_order: 306,
+    series: "GDPNOW", type: "level",
+    statusFn: v => v > 2.5 ? "healthy" : v > 1.0 ? "watch" : "danger",
+  },
 ];
 
 interface ProcessedRow {
@@ -803,6 +820,19 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
           if (obs.length < 2) return null;
           current = obs[0].value; previous = obs[1].value;
           metadata = { reference_period: obs[0].date };
+          break;
+        }
+        // GDPNow is a genuine nowcast (a model-based estimate standing in
+        // for a not-yet-released hard number) — the is_nowcast flag
+        // vintageLabel was left ready for earlier this session, now
+        // finally applies to something. Distinct from is_survey (a real,
+        // finalized release like ISM/LEI) and from spf_consensus_gdp (a
+        // forecaster consensus, not a model nowcast) — never blended.
+        if (ind.name === "GDPNow") {
+          const obs = await fetchFredObs(ind.series!, 2);
+          if (obs.length < 2) return null;
+          current = obs[0].value; previous = obs[1].value;
+          metadata = { reference_period: obs[0].date, is_nowcast: true };
           break;
         }
         const obs = await fetchFred(ind.series!, 2);
@@ -1294,6 +1324,24 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         };
         break;
       }
+      case "supabase_ism_services": {
+        // Read latest 2 rows from ism_services_history (written by
+        // scrape-ism-services) — mirrors supabase_ism (Manufacturing) above.
+        const { data: ismsRows, error: ismsErr } = await supabase
+          .from("ism_services_history")
+          .select("period_date, pmi, business_activity, new_orders")
+          .order("period_date", { ascending: false })
+          .limit(2);
+        if (ismsErr || !ismsRows || ismsRows.length < 2) return null;
+        current  = Number(ismsRows[0].pmi);
+        previous = Number(ismsRows[1].pmi);
+        metadata = {
+          business_activity: ismsRows[0].business_activity != null ? Number(ismsRows[0].business_activity) : null,
+          new_orders: ismsRows[0].new_orders != null ? Number(ismsRows[0].new_orders) : null,
+          reference_period: ismsRows[0].period_date, is_survey: true,
+        };
+        break;
+      }
       case "supabase_liquidity": {
         // Read latest 2 non-null months from liquidity_monthly (written by
         // ingest-liquidity-data edge function); skip any trailing null months
@@ -1733,16 +1781,13 @@ type FwdSig = {
 
 // ── Forward Signal: Near-Term (2-3mo) & Medium-Term (6-18mo) panels ────────
 // Split per the forward-signal two-horizon spec — see the identical
-// NEARTERM_*/MEDTERM_* arrays and rationale comments in app/macro/page.jsx.
-// Kept in sync manually (same quadruplicated-logic convention as the
-// Structural/Market classifiers elsewhere in this file). GDPNow/ISM
-// Manufacturing New Orders/ISM Services New Orders are new data pulls
-// landing alongside this rewrite — until ingested, they vote null, same
-// graceful degradation as any indicator not yet loaded.
+// NEARTERM_*/MEDTERM_* arrays and rationale comments in lib/simulatorKeys.js
+// (app/macro/page.jsx). Kept in sync manually (same quadruplicated-logic
+// convention as the Structural/Market classifiers elsewhere in this file).
 const NEARTERM_G: FwdSig[] = [
   { name: "GDPNow", w: 0.20, vote: v => v > 2.5 ? 1 : v >= 1.0 ? 0 : -1 },
-  { name: "ISM Manufacturing New Orders", w: 0.15, vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
-  { name: "ISM Services New Orders", w: 0.10, vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
+  { name: "ISM Manufacturing PMI", w: 0.15, useMetaField: "new_orders", vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
+  { name: "ISM Services PMI", w: 0.10, useMetaField: "new_orders", vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
   { name: "Initial Jobless Claims Trend", w: 0.15, vote: v => v < 0 ? 1 : v <= 5 ? 0 : -1 },
   { name: "Payrolls (3M Avg)", w: 0.15, vote: v => v > 100 ? 1 : v >= 0 ? 0 : -1 },
   { name: "Retail Sales (YoY)", w: 0.10, vote: v => v >= 2 ? 1 : v >= 0 ? 0 : -1 },

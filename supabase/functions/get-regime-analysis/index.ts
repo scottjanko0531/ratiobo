@@ -493,15 +493,12 @@ function computeLiveRegimeKeys(
   };
   // ── Forward Signal: Near-Term (2-3mo) & Medium-Term (6-18mo) panels ──────
   // Split per the forward-signal two-horizon spec — see the identical
-  // NEARTERM_*/MEDTERM_* arrays in app/macro/page.jsx and fetch-macro-data.
-  // Kept in sync manually. GDPNow/ISM Manufacturing New Orders/ISM Services
-  // New Orders are new data pulls landing alongside this rewrite — until
-  // ingested, they vote null (graceful degradation, same as any indicator
-  // not yet loaded).
+  // NEARTERM_*/MEDTERM_* arrays in lib/simulatorKeys.js and fetch-macro-data.
+  // Kept in sync manually.
   const NEARTERM_G: Sig[] = [
     { name: "GDPNow", w: 0.20, vote: v => v > 2.5 ? 1 : v >= 1.0 ? 0 : -1 },
-    { name: "ISM Manufacturing New Orders", w: 0.15, vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
-    { name: "ISM Services New Orders", w: 0.10, vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
+    { name: "ISM Manufacturing PMI", w: 0.15, useMetaField: "new_orders", vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
+    { name: "ISM Services PMI", w: 0.10, useMetaField: "new_orders", vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
     { name: "Initial Jobless Claims Trend", w: 0.15, vote: v => v < 0 ? 1 : v <= 5 ? 0 : -1 },
     { name: "Payrolls (3M Avg)", w: 0.15, vote: v => v > 100 ? 1 : v >= 0 ? 0 : -1 },
     { name: "Retail Sales (YoY)", w: 0.10, vote: v => v >= 2 ? 1 : v >= 0 ? 0 : -1 },

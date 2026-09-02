@@ -1011,7 +1011,11 @@ function vintageLabel(ind) {
   if (!period) return null;
   const d = new Date(period + "T00:00:00Z");
   const formatted = d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
-  return ind.metadata.is_survey ? `${formatted} · survey` : formatted;
+  // is_nowcast (GDPNow) vs is_survey (ISM/LEI, a real finalized release) —
+  // see the vintageLabel doc comment above on why these are distinct tags.
+  return ind.metadata.is_nowcast ? `${formatted} · nowcast`
+    : ind.metadata.is_survey ? `${formatted} · survey`
+    : formatted;
 }
 
 // 2-of-3 majority across Structural / Market Expectations / Forward Signal.
