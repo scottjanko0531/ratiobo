@@ -425,12 +425,17 @@ function detectRegimeKeyLive(
 }
 
 type Getter = (name: string) => number | null;
+type SpfGetter = (name: string, field?: string) => number | null;
 
 function computeLiveRegimeKeys(
   get: Getter, getMeta3m: Getter, getPP3m: Getter,
-  getShortPct: Getter, getVolShock: (name: string) => boolean, getSpfSpread: Getter,
+  getShortPct: Getter, getVolShock: (name: string) => boolean, getSpfSpread: SpfGetter,
   getPrev: Getter, getMetaNum: (name: string, key: string) => number | null,
-): { structuralKey: string | null; marketKey: string | null; fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number } {
+): {
+  structuralKey: string | null; marketKey: string | null;
+  fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number;
+  nearTermFwdKey: string | null; nearTermFwdConf: number | null;
+} {
   // Fast/slow moving-average crossover, not raw-reading-vs-baseline: a
   // regime flip only fires when the fast line actually crosses the slow
   // line, which requires a real, sustained shift rather than one noisy
@@ -482,77 +487,72 @@ function computeLiveRegimeKeys(
     : null;
 
   type Sig = {
-    name: string; w: number; usePct3m?: boolean; usePP3m?: boolean; useShortPct?: boolean; useSpfSpread?: boolean;
+    name: string; w: number; usePct3m?: boolean; usePP3m?: boolean; useShortPct?: boolean;
+    useSpfSpread?: boolean | string; useMetaField?: string;
     shockGate?: boolean; sourceName?: string; vote: (v: number) => number;
   };
-  const G: Sig[] = [
-    { name: "2yr/10yr Yield Spread",  w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
-    { name: "3mo/10yr Yield Spread",  w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
-    { name: "Sr Loan Officer Survey", w: 0.20, vote: v => v < 15  ? 1 : v <= 35   ? 0 : -1 },
-    { name: "Conference Board LEI",   w: 0.15, vote: v => v > 0   ? 1 : v >= -0.3 ? 0 : -1 },
-    { name: "HY Credit Spread (OAS)", w: 0.10, vote: v => v < 4   ? 1 : v <= 6    ? 0 : -1 },
-    { name: "C&I Loan Growth (YoY)",  w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
-    // Liquidity leads growth by ~12-18mo (banding matches the card's own healthy/watch/danger thresholds)
-    { name: "US Total Liquidity Composite", w: 0.15, vote: v => v > 0 ? 1 : v > -3 ? 0 : -1 },
-    // Consumer spending, ~2/3 of GDP by expenditure (banding matches the card's own thresholds)
-    { name: "Retail Sales (YoY)", w: 0.15, vote: v => v >= 2 ? 1 : v >= 0 ? 0 : -1 },
-    // Above/below-trend growth LEVEL (Investment Clock's own growth-axis definition),
-    // distinct from the momentum signals above. Quarterly — lower weight, slow-moving anchor
-    { name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
-    // Labor data — previously absent from the growth axis entirely (credit
-    // and GDP data are lagging confirmations of a growth turn; payrolls and
-    // claims lead it). Weighted comparably to the credit signals above, not
-    // as a minor addendum. Kept in sync with fetch-macro-data's identical G array.
-    { name: "Payrolls (3M Avg)", w: 0.20, vote: v => v > 100 ? 1 : v >= 0 ? 0 : -1 },
-    { name: "Unemployment Rate Trend", w: 0.15, vote: v => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
-    // Weekly, ~1-week lag — the fastest-reacting growth signal in this
-    // composite, standing in for the ISM employment sub-index (not available
-    // for free scraping).
+  // ── Forward Signal: Near-Term (2-3mo) & Medium-Term (6-18mo) panels ──────
+  // Split per the forward-signal two-horizon spec — see the identical
+  // NEARTERM_*/MEDTERM_* arrays in app/macro/page.jsx and fetch-macro-data.
+  // Kept in sync manually. GDPNow/ISM Manufacturing New Orders/ISM Services
+  // New Orders are new data pulls landing alongside this rewrite — until
+  // ingested, they vote null (graceful degradation, same as any indicator
+  // not yet loaded).
+  const NEARTERM_G: Sig[] = [
+    { name: "GDPNow", w: 0.20, vote: v => v > 2.5 ? 1 : v >= 1.0 ? 0 : -1 },
+    { name: "ISM Manufacturing New Orders", w: 0.15, vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
+    { name: "ISM Services New Orders", w: 0.10, vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
     { name: "Initial Jobless Claims Trend", w: 0.15, vote: v => v < 0 ? 1 : v <= 5 ? 0 : -1 },
-    // GDP & Inflation Regime Metrics spec, G4 "Forward Consensus": is the
-    // economy actually running ahead of or behind what forecasters
-    // expected? A genuine surprise signal, distinct from every other
-    // growth signal above, which measure the economy's own trend rather
-    // than comparing it to a forecast. Kept in sync with fetch-macro-data
-    // and page.jsx's identical entry.
-    { name: "Real GDP Growth", w: 0.15, useSpfSpread: true, vote: v => v > 0.2 ? 1 : v >= -0.2 ? 0 : -1 },
+    { name: "Payrolls (3M Avg)", w: 0.15, vote: v => v > 100 ? 1 : v >= 0 ? 0 : -1 },
+    { name: "Retail Sales (YoY)", w: 0.10, vote: v => v >= 2 ? 1 : v >= 0 ? 0 : -1 },
+    { name: "Unemployment Rate Trend", w: 0.05, vote: v => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
+    { name: "HY Credit Spread (OAS)", w: 0.05, vote: v => v < 4 ? 1 : v <= 6 ? 0 : -1 },
+    { name: "US Total Liquidity Composite", w: 0.05, vote: v => v > 0 ? 1 : v > -3 ? 0 : -1 },
   ];
-  const I: Sig[] = [
-    // 3-month pp-change signals, in raw percentage points (not relative % —
-    // these are already rates, so a relative-%-change would invert sensitivity:
-    // the same absolute pp move reads as huge when the rate is low, trivial
-    // when it's high). PPI's threshold is wider since it's the noisier series
-    // (also why it's weighted lower here).
-    { name: "CPI (YoY)",                       w: 0.20, usePP3m: true,   vote: v => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
-    { name: "PPI (YoY)",                       w: 0.10, usePP3m: true,   vote: v => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
-    { name: "10Y Breakeven Inflation",         w: 0.20,                 vote: v => v > FED_INFLATION_TARGET ? 1 : v >= 1.5 ? 0 : -1 },
-    { name: "Consumer Inflation Expectations", w: 0.15,                 vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
-    { name: "Copper Price",                    w: 0.15, usePct3m: true, vote: v => v > 5   ? 1 : v >= -5 ? 0 : -1 },
-    { name: "WTI Crude Oil",                   w: 0.10, usePct3m: true, vote: v => v > 5   ? 1 : v >= -5 ? 0 : -1 },
-    // Explicit shock override — see fetch-macro-data's identical entry.
+  const NEARTERM_I: Sig[] = [
+    { name: "CPI (YoY)", w: 0.20, usePP3m: true, vote: v => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
+    { name: "PPI (YoY)", w: 0.20, usePP3m: true, vote: v => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
+    { name: "WTI Crude Oil", w: 0.10, usePct3m: true, vote: v => v > 5 ? 1 : v >= -5 ? 0 : -1 },
     { name: "WTI Crude Oil (Shock)", sourceName: "WTI Crude Oil", w: 0.15, useShortPct: true, shockGate: true, vote: v => v > 10 ? 1 : v < -10 ? -1 : 0 },
-    { name: "M2 Growth (YoY)",                 w: 0.10,                 vote: v => v > 8   ? 1 : v >= 3  ? 0 : -1 },
-    // Leads realized inflation by ~6-12mo (Merrill Lynch Investment Clock) — tight
-    // capacity is genuinely forward-looking, unlike CPI/PPI trend which are coincident
-    { name: "Capacity Utilization", w: 0.15, vote: v => v > 80 ? 1 : v >= 74 ? 0 : -1 },
-    // Dollar strength lags into LOWER future inflation (~2mo, cheaper imports) — vote
-    // is inverted relative to a normal "rising = inflationary" reading
+    { name: "Copper Price", w: 0.10, usePct3m: true, vote: v => v > 5 ? 1 : v >= -5 ? 0 : -1 },
     { name: "DXY", w: 0.10, usePct3m: true, vote: v => v > 5 ? -1 : v < -5 ? 1 : 0 },
-    // Unlike CPI/PPI, this has no FRED backfill — macro_snapshots only starts
-    // accumulating from launch, so its 3-month trend (change3m_pp) can't exist
-    // for ~90 days and would vote null the whole time. Votes on the current
-    // LEVEL instead (how much tariffs are adding to CPI right now), which is
-    // itself informative from day one — thresholds match the danger/watch/
-    // healthy bands update-supply-chain-risk already derives for this composite.
-    { name: "Tariff Inflation Impact", w: 0.10, vote: v => v > 0.30 ? 1 : v > 0.10 ? 0 : -1 },
+    { name: "Consumer Inflation Expectations", w: 0.10, useMetaField: "umich_1yr", vote: v => v > 4 ? 1 : v >= 2.5 ? 0 : -1 },
+    { name: "Tariff Inflation Impact", w: 0.05, vote: v => v > 0.30 ? 1 : v > 0.10 ? 0 : -1 },
   ];
+  const NEARTERM_THRESH = 0.15;
+
+  const MEDTERM_G: Sig[] = [
+    { name: "2yr/10yr Yield Spread", w: 0.20, vote: v => v > 0.5 ? 1 : v >= 0 ? 0 : -1 },
+    { name: "3mo/10yr Yield Spread", w: 0.10, vote: v => v > 1 ? 1 : v >= 0 ? 0 : -1 },
+    { name: "Sr Loan Officer Survey", w: 0.15, vote: v => v < 15 ? 1 : v <= 35 ? 0 : -1 },
+    { name: "Building Permits", w: 0.15, usePct3m: true, vote: v => v > 3 ? 1 : v >= -3 ? 0 : -1 },
+    { name: "UMich Consumer Sentiment", w: 0.15, vote: v => v > 80 ? 1 : v >= 60 ? 0 : -1 },
+    { name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
+    { name: "C&I Loan Growth (YoY)", w: 0.10, vote: v => v > 5 ? 1 : v >= 0 ? 0 : -1 },
+    { name: "Real GDP Growth", w: 0.05, useSpfSpread: "spf_consensus_gdp_fwd", vote: v => v > 0.2 ? 1 : v >= -0.2 ? 0 : -1 },
+  ];
+  const MEDTERM_I: Sig[] = [
+    { name: "10Y Breakeven Inflation", w: 0.26, vote: v => v > FED_INFLATION_TARGET ? 1 : v >= 1.5 ? 0 : -1 },
+    { name: "10-Year Expected Inflation", w: 0.16, vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
+    { name: "Unit Labor Costs (YoY)", w: 0.21, vote: v => v > 4 ? 1 : v >= 2 ? 0 : -1 },
+    { name: "M2 Growth (YoY)", w: 0.10, vote: v => v > 8 ? 1 : v >= 3 ? 0 : -1 },
+    { name: "Capacity Utilization", w: 0.16, vote: v => v > 80 ? 1 : v >= 74 ? 0 : -1 },
+    { name: "Tariff Inflation Impact", w: 0.11, vote: v => v > 0.30 ? 1 : v > 0.10 ? 0 : -1 },
+  ];
+  const MEDTERM_THRESH = 0.10;
+
   type Scored = { w: number; vote: number | null };
   const scoreGroup = (sigs: Sig[]): { signals: Scored[]; score: number | null } => {
     let weighted = 0, totalW = 0;
     const signals = sigs.map((s) => {
       const source = s.sourceName ?? s.name;
       if (s.shockGate && !getVolShock(source)) return { w: s.w, vote: null };
-      const val = s.useSpfSpread ? getSpfSpread(source) : s.useShortPct ? getShortPct(source) : s.usePct3m ? getMeta3m(source) : s.usePP3m ? getPP3m(source) : get(source);
+      const val = s.useSpfSpread ? getSpfSpread(source, typeof s.useSpfSpread === "string" ? s.useSpfSpread : "spf_consensus_gdp")
+        : s.useMetaField ? getMetaNum(source, s.useMetaField)
+        : s.useShortPct ? getShortPct(source)
+        : s.usePct3m ? getMeta3m(source)
+        : s.usePP3m ? getPP3m(source)
+        : get(source);
       if (val == null) return { w: s.w, vote: null };
       const v = s.vote(val);
       weighted += v * s.w; totalW += s.w;
@@ -560,53 +560,66 @@ function computeLiveRegimeKeys(
     });
     return { signals, score: totalW > 0 ? weighted / totalW : null };
   };
-  const growth = scoreGroup(G);
-  const infl = scoreGroup(I);
-  const THRESH = 0.10; // dead band — see #8 in the regime-calc work order
-  const dir = (s: number | null) => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
-  const rawGDir = dir(growth.score);
-  const rawIDir = dir(infl.score);
-  const gDir = rawGDir === "neutral" ? (growth.score! >= 0 ? "up" : "down") : rawGDir;
-  const iDir = rawIDir === "neutral" ? (infl.score! >= 0 ? "up" : "down") : rawIDir;
-  const fwdKey =
-    gDir === "up" && iDir === "down" ? "rg_fi" :
-    gDir === "up" && iDir === "up" ? "rg_ri" :
-    gDir === "down" && iDir === "up" ? "fg_ri" :
-    gDir === "down" && iDir === "down" ? "fg_fi" : null;
 
-  let fwdConf: number | null = null;
-  if (fwdKey && gDir && iDir) {
-    const consensus = (signals: Scored[], d: string): number | null => {
-      const target = d === "up" ? 1 : -1;
-      let agreed = 0, total = 0;
-      for (const s of signals) { if (s.vote == null) continue; total += s.w; if (s.vote === target) agreed += s.w; }
-      return total > 0 ? Math.round(agreed / total * 100) : null;
-    };
-    const gConf = consensus(growth.signals, gDir);
-    const iConf = consensus(infl.signals, iDir);
-    fwdConf = gConf != null && iConf != null ? Math.round((gConf + iConf) / 2) : null;
-  }
+  const computePanel = (G: Sig[], I: Sig[], THRESH: number) => {
+    const growth = scoreGroup(G);
+    const infl = scoreGroup(I);
+    const dir = (s: number | null) => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
+    const rawGDir = dir(growth.score);
+    const rawIDir = dir(infl.score);
+    const gDir = rawGDir === "neutral" ? (growth.score! >= 0 ? "up" : "down") : rawGDir;
+    const iDir = rawIDir === "neutral" ? (infl.score! >= 0 ? "up" : "down") : rawIDir;
+    const key =
+      gDir === "up" && iDir === "down" ? "rg_fi" :
+      gDir === "up" && iDir === "up" ? "rg_ri" :
+      gDir === "down" && iDir === "up" ? "fg_ri" :
+      gDir === "down" && iDir === "down" ? "fg_fi" : null;
 
-  // Vol-regime cross-check: VIX/MOVE are countercyclical (rise in downturns,
-  // fall in expansions) — ties to the GROWTH direction specifically, kept in
-  // sync with the identical logic in app/macro/page.jsx's computeForwardSignal.
-  let fwdConfVolMod = 0;
-  if (fwdKey && gDir) {
-    const vixChg = getMeta3m("VIX");
-    const moveChg = getMeta3m("MOVE Index");
-    const trends = [vixChg, moveChg].filter((v): v is number => v != null);
-    if (trends.length) {
-      const avgTrend = trends.reduce((s, v) => s + v, 0) / trends.length;
-      if (avgTrend > 5 || avgTrend < -5) {
-        const volRising = avgTrend > 5;
-        const confirms = (gDir === "down" && volRising) || (gDir === "up" && !volRising);
-        fwdConfVolMod = confirms ? 5 : -8;
-      }
+    let conf: number | null = null;
+    if (key && gDir && iDir) {
+      const consensus = (signals: Scored[], d: string): number | null => {
+        const target = d === "up" ? 1 : -1;
+        let agreed = 0, total = 0;
+        for (const s of signals) { if (s.vote == null) continue; total += s.w; if (s.vote === target) agreed += s.w; }
+        return total > 0 ? Math.round(agreed / total * 100) : null;
+      };
+      const gConf = consensus(growth.signals, gDir);
+      const iConf = consensus(infl.signals, iDir);
+      conf = gConf != null && iConf != null ? Math.round((gConf + iConf) / 2) : null;
     }
-    if (fwdConf != null) fwdConf = Math.max(0, Math.min(100, fwdConf + fwdConfVolMod));
-  }
 
-  return { structuralKey, marketKey, fwdKey, fwdConf, fwdConfVolMod };
+    // Vol-regime cross-check: VIX/MOVE are countercyclical (rise in downturns,
+    // fall in expansions) — ties to the GROWTH direction specifically, kept in
+    // sync with the identical logic in app/macro/page.jsx's computeForwardSignal.
+    let confVolMod = 0;
+    if (key && gDir) {
+      const vixChg = getMeta3m("VIX");
+      const moveChg = getMeta3m("MOVE Index");
+      const trends = [vixChg, moveChg].filter((v): v is number => v != null);
+      if (trends.length) {
+        const avgTrend = trends.reduce((s, v) => s + v, 0) / trends.length;
+        if (avgTrend > 5 || avgTrend < -5) {
+          const volRising = avgTrend > 5;
+          const confirms = (gDir === "down" && volRising) || (gDir === "up" && !volRising);
+          confVolMod = confirms ? 5 : -8;
+        }
+      }
+      if (conf != null) conf = Math.max(0, Math.min(100, conf + confVolMod));
+    }
+    return { key, conf, confVolMod };
+  };
+
+  // Medium-Term keeps the old single Forward Signal's role as the 3rd
+  // tiebreak vote / Clio's prompt "forward signal" — Near-Term does not
+  // vote there, but is surfaced alongside it in the API response.
+  const mediumTerm = computePanel(MEDTERM_G, MEDTERM_I, MEDTERM_THRESH);
+  const nearTerm = computePanel(NEARTERM_G, NEARTERM_I, NEARTERM_THRESH);
+
+  return {
+    structuralKey, marketKey,
+    fwdKey: mediumTerm.key, fwdConf: mediumTerm.conf, fwdConfVolMod: mediumTerm.confVolMod,
+    nearTermFwdKey: nearTerm.key, nearTermFwdConf: nearTerm.conf,
+  };
 }
 
 // ── Reference block shared by the main prompt and the consistency checker ──────
@@ -985,10 +998,12 @@ Deno.serve(async (req: Request) => {
     // Spread between the actual reading and its SPF consensus forecast
     // (stamped onto the indicator's own metadata by update-spf-forecasts) —
     // positive means the economy is beating what forecasters expected.
-    const getSpfSpread = (name: string): number | null => {
+    // `field` selects nearest-available (spf_consensus_gdp) vs pure
+    // multi-quarter-ahead (spf_consensus_gdp_fwd, Medium-Term's "GDP vs SPF").
+    const getSpfSpread = (name: string, field: string = "spf_consensus_gdp"): number | null => {
       const i = (macroRows ?? []).find((x: { name: string; current_value: number | null; metadata: Record<string, unknown> | null }) => x.name === name);
       const actual = i?.current_value != null ? Number(i.current_value) : null;
-      const consensus = i?.metadata?.spf_consensus_gdp;
+      const consensus = (i?.metadata as Record<string, unknown> | null | undefined)?.[field];
       return actual != null && consensus != null ? actual - Number(consensus) : null;
     };
     const creditIndicatorNames = ["HY Credit Spread (OAS)", "IG Credit Spread (OAS)", "Sr Loan Officer Survey", "C&I Loan Growth (YoY)"];
@@ -1001,7 +1016,7 @@ Deno.serve(async (req: Request) => {
     // its nightly update silently failed to run for that day. Computing live
     // means Clio's narrative can never drift from what the Forward Signal tile
     // on the same page shows, regardless of whether the nightly job succeeded.
-    const { structuralKey, marketKey, fwdKey, fwdConf } = computeLiveRegimeKeys(get, getMeta3m, getPP3m, getShortPct, getVolShock, getSpfSpread, getPrev, getMetaNum);
+    const { structuralKey, marketKey, fwdKey, fwdConf, nearTermFwdKey, nearTermFwdConf } = computeLiveRegimeKeys(get, getMeta3m, getPP3m, getShortPct, getVolShock, getSpfSpread, getPrev, getMetaNum);
     const regimeLabel = structuralKey ? (REGIME_LABELS[structuralKey] ?? structuralKey) : "Unknown";
     const marketLabel = marketKey ? (REGIME_LABELS[marketKey] ?? marketKey) : null;
     const fwdLabel = fwdKey ? (REGIME_LABELS[fwdKey] ?? fwdKey) : null;
@@ -1089,6 +1104,8 @@ Deno.serve(async (req: Request) => {
       market_regime: marketLabel,
       forward_key: fwdKey,
       forward_confidence: fwdConf,
+      nearterm_forward_key: nearTermFwdKey,
+      nearterm_forward_confidence: nearTermFwdConf,
       market_snapshot: marketSnapshot,
       generated_at: new Date().toISOString(),
     };

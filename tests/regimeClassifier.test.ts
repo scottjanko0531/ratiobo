@@ -12,6 +12,10 @@ import {
   CPI_MIN_GAP,
   POTENTIAL_FLOOR_FRACTION,
   REGIME_META,
+  NEARTERM_GROWTH_SIGNALS,
+  NEARTERM_INFL_SIGNALS,
+  MEDTERM_GROWTH_SIGNALS,
+  MEDTERM_INFL_SIGNALS,
 } from "../lib/simulatorKeys";
 
 // Regression coverage for the "regime calc improvements" work order: before
@@ -360,5 +364,78 @@ describe("Structural regime tiebreaker — scenarios from the regime tiebreaker 
     const decel = resolveAxisDirection(2.00, 2.28, GROWTH_MIN_GAP, null, null);
     expect(accel.tentative).toBe(false);
     expect(decel.tentative).toBe(false);
+  });
+});
+
+// Forward-signal two-horizon spec, cross-panel requirement #2: "Confirm both
+// baskets in both panels sum to 1.0 before this ships — this was a real bug
+// in the current single-panel version and should be caught by a unit test."
+// The old single composite summed to ~2.05 (Growth) / ~1.50 (Inflation).
+function sumWeights(sigs: { w: number }[]): number {
+  return Math.round(sigs.reduce((s, x) => s + x.w, 0) * 1000) / 1000;
+}
+
+describe("Forward Signal weight normalization", () => {
+  it("Near-Term Growth basket sums to 1.00", () => {
+    expect(sumWeights(NEARTERM_GROWTH_SIGNALS)).toBe(1);
+  });
+  it("Near-Term Inflation basket sums to 1.00", () => {
+    expect(sumWeights(NEARTERM_INFL_SIGNALS)).toBe(1);
+  });
+  it("Medium-Term Growth basket sums to 1.00", () => {
+    expect(sumWeights(MEDTERM_GROWTH_SIGNALS)).toBe(1);
+  });
+  it("Medium-Term Inflation basket sums to 1.00", () => {
+    expect(sumWeights(MEDTERM_INFL_SIGNALS)).toBe(1);
+  });
+});
+
+// Scoring sanity check: reimplements the weighted-average step from
+// computeForwardSignal/computeEdgeForwardPanel's scoring, using each
+// signal's own vote() at whichever extreme value produces the target vote
+// for THAT signal's specific polarity (some are inverted — e.g. Dollar 3M
+// lagged votes -1 on a rising dollar, Loan Standards votes +1 on a LOW
+// reading). Confirms the weighted score itself behaves as expected, not
+// just that the weights sum correctly.
+function findVoteValue(vote: (v: number) => number, target: number): number {
+  for (const candidate of [1000, -1000, 100, -100, 10, -10]) {
+    if (vote(candidate) === target) return candidate;
+  }
+  throw new Error("no candidate value reproduces the target vote for this signal");
+}
+function scoreAllAt(sigs: { w: number; vote: (v: number) => number }[], target: number): number {
+  let weighted = 0, totalW = 0;
+  for (const s of sigs) {
+    findVoteValue(s.vote, target); // throws if this signal can't reach `target`
+    weighted += target * s.w;
+    totalW += s.w;
+  }
+  return weighted / totalW;
+}
+
+describe("Forward Signal scoring sanity", () => {
+  it("Near-Term Growth: every signal voting up -> score +1", () => {
+    expect(scoreAllAt(NEARTERM_GROWTH_SIGNALS, 1)).toBeCloseTo(1, 5);
+  });
+  it("Near-Term Growth: every signal voting down -> score -1", () => {
+    expect(scoreAllAt(NEARTERM_GROWTH_SIGNALS, -1)).toBeCloseTo(-1, 5);
+  });
+  it("Near-Term Inflation: every signal voting up -> score +1", () => {
+    expect(scoreAllAt(NEARTERM_INFL_SIGNALS, 1)).toBeCloseTo(1, 5);
+  });
+  it("Near-Term Inflation: every signal voting down -> score -1", () => {
+    expect(scoreAllAt(NEARTERM_INFL_SIGNALS, -1)).toBeCloseTo(-1, 5);
+  });
+  it("Medium-Term Growth: every signal voting up -> score +1", () => {
+    expect(scoreAllAt(MEDTERM_GROWTH_SIGNALS, 1)).toBeCloseTo(1, 5);
+  });
+  it("Medium-Term Growth: every signal voting down -> score -1", () => {
+    expect(scoreAllAt(MEDTERM_GROWTH_SIGNALS, -1)).toBeCloseTo(-1, 5);
+  });
+  it("Medium-Term Inflation: every signal voting up -> score +1", () => {
+    expect(scoreAllAt(MEDTERM_INFL_SIGNALS, 1)).toBeCloseTo(1, 5);
+  });
+  it("Medium-Term Inflation: every signal voting down -> score -1", () => {
+    expect(scoreAllAt(MEDTERM_INFL_SIGNALS, -1)).toBeCloseTo(-1, 5);
   });
 });

@@ -32,6 +32,12 @@ import {
   getSignalKeys,
   toIntWeights,
   computeAllocationDeltas,
+  NEARTERM_GROWTH_SIGNALS,
+  NEARTERM_INFL_SIGNALS,
+  NEARTERM_THRESH,
+  MEDTERM_GROWTH_SIGNALS,
+  MEDTERM_INFL_SIGNALS,
+  MEDTERM_THRESH,
 } from "../../lib/simulatorKeys";
 import { getAssetData } from "../../lib/data/assetReturns";
 import { applyNaiveRiskParity, solveTrueRiskParity } from "../../lib/riskParity";
@@ -342,67 +348,7 @@ function computeSuggestedPcts(regimeKey, method, assetData) {
   return result;
 }
 
-const FWD_GROWTH_SIGNALS = [
-  { label: "Yield Curve 2/10",  name: "2yr/10yr Yield Spread",     w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
-  { label: "Yield Curve 3m/10", name: "3mo/10yr Yield Spread",     w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
-  { label: "Loan Standards",    name: "Sr Loan Officer Survey",    w: 0.20, vote: v => v < 15  ? 1 : v <= 35   ? 0 : -1 },
-  { label: "LEI",               name: "Conference Board LEI",      w: 0.15, vote: v => v > 0   ? 1 : v >= -0.3 ? 0 : -1 },
-  { label: "HY Spread",         name: "HY Credit Spread (OAS)",   w: 0.10, vote: v => v < 4   ? 1 : v <= 6    ? 0 : -1 },
-  { label: "C&I Loans",         name: "C&I Loan Growth (YoY)",    w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
-  // Liquidity leads growth by ~12-18mo (banding matches the card's own healthy/watch/danger thresholds)
-  { label: "Liquidity",         name: "US Total Liquidity Composite", w: 0.15, vote: v => v > 0 ? 1 : v > -3 ? 0 : -1 },
-  // Consumer spending, ~2/3 of GDP by expenditure (banding matches the card's own thresholds)
-  { label: "Retail Sales",      name: "Retail Sales (YoY)", w: 0.15, vote: v => v >= 2 ? 1 : v >= 0 ? 0 : -1 },
-  // Above/below-trend growth LEVEL (Investment Clock's own growth-axis definition),
-  // distinct from the momentum signals above. Quarterly — lower weight, slow-moving anchor
-  { label: "Output Gap",        name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
-  // Labor data — previously absent from the growth axis entirely. Kept in
-  // sync with the identical G arrays in fetch-macro-data and get-regime-analysis.
-  { label: "Payrolls (3M Avg)", name: "Payrolls (3M Avg)", w: 0.20, vote: v => v > 100 ? 1 : v >= 0 ? 0 : -1 },
-  { label: "Unemployment Trend", name: "Unemployment Rate Trend", w: 0.15, vote: v => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
-  { label: "Jobless Claims",    name: "Initial Jobless Claims Trend", w: 0.15, vote: v => v < 0 ? 1 : v <= 5 ? 0 : -1 },
-  // GDP & Inflation Regime Metrics spec, G4 "Forward Consensus": is the
-  // economy actually running ahead of or behind what forecasters expected?
-  // Reads spf_consensus_gdp (update-spf-forecasts' nearest-available SPF
-  // median forecast, stamped onto "Real GDP Growth"'s own metadata) and
-  // votes on the spread vs the current reading — a genuine surprise
-  // signal, distinct from every other growth signal here, which measure
-  // the economy's own trend rather than comparing it to a forecast.
-  { label: "GDP vs SPF",        name: "Real GDP Growth", w: 0.15, useSpfSpread: true, vote: v => v > 0.2 ? 1 : v >= -0.2 ? 0 : -1 },
-];
-const FWD_INFL_SIGNALS = [
-  // 3-month pp-change signals, in raw percentage points (not relative % — CPI/PPI
-  // YoY are already rates, so a relative-%-change would invert sensitivity: the
-  // same absolute pp move reads huge when the rate is low, trivial when it's
-  // high). PPI's threshold is wider since it's the noisier series (also why
-  // it's weighted lower here).
-  { label: "CPI Trend",         name: "CPI (YoY)",      w: 0.20, getPP3m: true,  vote: v => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
-  { label: "PPI Trend",         name: "PPI (YoY)",      w: 0.10, getPP3m: true,  vote: v => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
-  { label: "10Y Breakeven",     name: "10Y Breakeven Inflation",         w: 0.20, vote: v => v > FED_INFLATION_TARGET ? 1 : v >= 1.5 ? 0 : -1 },
-  // Threshold raised: readings below 5.5% may reflect one-time tariff shock, not structural inflation
-  { label: "Infl Expectations", name: "Consumer Inflation Expectations", w: 0.15, vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
-  { label: "Copper 3M",         name: "Copper Price",   w: 0.15, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
-  { label: "WTI 3M",            name: "WTI Crude Oil",  w: 0.10, getPct3m: true, vote: v => v > 5   ? 1 : v >= -5  ? 0 : -1 },
-  // Explicit shock override — only scores while WTI's realized vol is
-  // flagged (level_with_shock's vol_shock, >55% annualized); silent otherwise.
-  { label: "WTI Shock", name: "WTI Crude Oil (Shock)", sourceName: "WTI Crude Oil", w: 0.15, useShortPct: true, shockGate: true, vote: v => v > 10 ? 1 : v < -10 ? -1 : 0 },
-  { label: "M2 Growth",         name: "M2 Growth (YoY)",w: 0.10, vote: v => v > 8   ? 1 : v >= 3   ? 0 : -1 },
-  // Leads realized inflation by ~6-12mo (Merrill Lynch Investment Clock) — tight
-  // capacity is genuinely forward-looking, unlike CPI/PPI trend which are coincident
-  { label: "Capacity Utilization", name: "Capacity Utilization", w: 0.15, vote: v => v > 80 ? 1 : v >= 74 ? 0 : -1 },
-  // Dollar strength lags into LOWER future inflation (~2mo, cheaper imports) — vote
-  // is inverted relative to a normal "rising = inflationary" reading
-  { label: "Dollar (3M, lagged)", name: "DXY", w: 0.10, getPct3m: true, vote: v => v > 5 ? -1 : v < -5 ? 1 : 0 },
-  // Unlike CPI/PPI, this has no FRED backfill — macro_snapshots only starts
-  // accumulating from launch, so its 3-month trend (change3m_pp) can't exist
-  // for ~90 days and would vote null the whole time. Votes on the current
-  // LEVEL instead (how much tariffs are adding to CPI right now), which is
-  // itself informative from day one — thresholds match the danger/watch/
-  // healthy bands update-supply-chain-risk already derives for this composite.
-  { label: "Tariff Impact", name: "Tariff Inflation Impact", w: 0.10, vote: v => v > 0.30 ? 1 : v > 0.10 ? 0 : -1 },
-];
-
-function computeForwardSignal(indicators) {
+function computeForwardSignal(indicators, growthSignals, inflSignals, thresh) {
   const get = (name) => {
     const ind = indicators.find(i => i.name === name);
     return ind?.current_value != null ? Number(ind.current_value) : null;
@@ -431,18 +377,33 @@ function computeForwardSignal(indicators) {
   // Spread between the actual reading and its SPF consensus forecast
   // (stamped onto the indicator's own metadata by update-spf-forecasts) —
   // positive means the economy is beating what forecasters expected.
-  const getSpfSpread = (name) => {
+  // `field` selects which metadata key to compare against: the
+  // nearest-available consensus (spf_consensus_gdp, includes the horizon-1
+  // nowcast when present) or the pure multi-quarter-ahead forecast
+  // (spf_consensus_gdp_fwd, horizons 2-5 only) — see MEDTERM_GROWTH_SIGNALS.
+  const getSpfSpread = (name, field) => {
     const ind = indicators.find(i => i.name === name);
     const actual = ind?.current_value != null ? Number(ind.current_value) : null;
-    const consensus = ind?.metadata?.spf_consensus_gdp != null ? Number(ind.metadata.spf_consensus_gdp) : null;
+    const consensus = ind?.metadata?.[field] != null ? Number(ind.metadata[field]) : null;
     return actual != null && consensus != null ? actual - consensus : null;
+  };
+  // Reads a raw metadata field directly (e.g. umich_1yr, the I4 attribution
+  // split on "Consumer Inflation Expectations") rather than a computed trend.
+  const getMetaField = (name, key) => {
+    const v = indicators.find(i => i.name === name)?.metadata?.[key];
+    return typeof v === "number" ? v : null;
   };
   const scoreGroup = (sigs) => {
     let weighted = 0, totalW = 0;
     const scored = sigs.map(s => {
       const source = s.sourceName ?? s.name;
       if (s.shockGate && !getVolShock(source)) return { ...s, val: null, vote: null };
-      const val = s.useSpfSpread ? getSpfSpread(source) : s.useShortPct ? getShortPct(source) : s.getPct3m ? getPct3m(source) : s.getPP3m ? getPP3m(source) : get(source);
+      const val = s.useSpfSpread ? getSpfSpread(source, typeof s.useSpfSpread === "string" ? s.useSpfSpread : "spf_consensus_gdp")
+        : s.useMetaField ? getMetaField(source, s.useMetaField)
+        : s.useShortPct ? getShortPct(source)
+        : s.getPct3m ? getPct3m(source)
+        : s.getPP3m ? getPP3m(source)
+        : get(source);
       if (val == null) return { ...s, val: null, vote: null };
       const v = s.vote(val);
       weighted += v * s.w;
@@ -451,9 +412,9 @@ function computeForwardSignal(indicators) {
     });
     return { signals: scored, score: totalW > 0 ? weighted / totalW : null };
   };
-  const growth = scoreGroup(FWD_GROWTH_SIGNALS);
-  const infl   = scoreGroup(FWD_INFL_SIGNALS);
-  const THRESH = 0.10; // dead band — see #8 in the regime-calc work order
+  const growth = scoreGroup(growthSignals);
+  const infl   = scoreGroup(inflSignals);
+  const THRESH = thresh;
   const dir = s => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
   const rawGDir = dir(growth.score);
   const rawIDir = dir(infl.score);
@@ -503,6 +464,17 @@ function computeForwardSignal(indicators) {
   })();
   const confidence = baseConfidence != null ? Math.max(0, Math.min(100, baseConfidence + volMod)) : null;
   return { growth, infl, gDir, iDir, rawGDir, rawIDir, forwardKey, confidence, baseConfidence, volMod };
+}
+
+// Computes both horizon panels independently — they are never averaged or
+// reconciled into one number (see the forward-signal two-horizon spec).
+// mediumTerm keeps the old single Forward Signal's role as the 3rd tiebreak
+// vote in resolveHeadlineRegime; nearTerm does not vote there.
+function computeForwardSignals(indicators) {
+  return {
+    nearTerm: computeForwardSignal(indicators, NEARTERM_GROWTH_SIGNALS, NEARTERM_INFL_SIGNALS, NEARTERM_THRESH),
+    mediumTerm: computeForwardSignal(indicators, MEDTERM_GROWTH_SIGNALS, MEDTERM_INFL_SIGNALS, MEDTERM_THRESH),
+  };
 }
 
 // ── Daily Macro Summary ───────────────────────────────────────────────────────
@@ -578,8 +550,8 @@ function MacroSummary({ indicators }) {
         return "fg_fi";
       })()
     : null;
-  const fwd = computeForwardSignal(indicators);
-  const majorityRegimeKey = resolveHeadlineRegime(structuralRegimeKey, marketRegimeKey, fwd.forwardKey);
+  const fwd = computeForwardSignals(indicators);
+  const majorityRegimeKey = resolveHeadlineRegime(structuralRegimeKey, marketRegimeKey, fwd.mediumTerm.forwardKey);
   const isTransitional = structuralRegimeKey != null && marketRegimeKey != null && majorityRegimeKey == null;
   const incompleteRegimeInputs = getStaleOrMissingRegimeInputs(indicators);
   const regimeKey = majorityRegimeKey
@@ -650,8 +622,8 @@ function MacroSummary({ indicators }) {
   // Notes when the underlying score is actually within the dead band (see
   // #8) rather than always saying "building"/"fading" — gDir/iDir have
   // already collapsed a flat score to a sign for the regime-key computation.
-  const fwdStr = fwd.forwardKey && fwd.confidence != null
-    ? `Forward signals (${fwd.confidence}% confidence) point toward ${REGIME_LABELS[fwd.forwardKey] ?? fwd.forwardKey} — growth momentum is ${fwd.rawGDir === "neutral" ? "flat" : fwd.gDir === "up" ? "building" : "fading"}, inflation pressure is ${fwd.rawIDir === "neutral" ? "flat" : fwd.iDir === "up" ? "rising" : "easing"}.`
+  const fwdStr = fwd.mediumTerm.forwardKey && fwd.mediumTerm.confidence != null
+    ? `Medium-term signals (${fwd.mediumTerm.confidence}% confidence) point toward ${REGIME_LABELS[fwd.mediumTerm.forwardKey] ?? fwd.mediumTerm.forwardKey} — growth momentum is ${fwd.mediumTerm.rawGDir === "neutral" ? "flat" : fwd.mediumTerm.gDir === "up" ? "building" : "fading"}, inflation pressure is ${fwd.mediumTerm.rawIDir === "neutral" ? "flat" : fwd.mediumTerm.iDir === "up" ? "rising" : "easing"}.`
     : null;
 
   // ── Debt sentence ──
@@ -705,9 +677,9 @@ function MacroSummary({ indicators }) {
               </span>
             )}
           </div>
-          {fwd.forwardKey && fwd.forwardKey !== regimeKey && (
+          {fwd.mediumTerm.forwardKey && fwd.mediumTerm.forwardKey !== regimeKey && (
             <p className="text-[10px] text-paper-dim mt-0.5">
-              → <span className={REGIME_META[fwd.forwardKey]?.color ?? "text-paper"}>{REGIME_LABELS[fwd.forwardKey]}</span>
+              → <span className={REGIME_META[fwd.mediumTerm.forwardKey]?.color ?? "text-paper"}>{REGIME_LABELS[fwd.mediumTerm.forwardKey]}</span>
             </p>
           )}
         </div>
@@ -1060,8 +1032,10 @@ function resolveHeadlineRegime(structural, market, forward) {
 // never drifts out of sync with what's really driving the regime call) plus
 // the crossover indicators shown directly in the comparison table.
 const REGIME_INPUT_NAMES = new Set([
-  ...FWD_GROWTH_SIGNALS.map((s) => s.sourceName ?? s.name),
-  ...FWD_INFL_SIGNALS.map((s) => s.sourceName ?? s.name),
+  ...NEARTERM_GROWTH_SIGNALS.map((s) => s.sourceName ?? s.name),
+  ...NEARTERM_INFL_SIGNALS.map((s) => s.sourceName ?? s.name),
+  ...MEDTERM_GROWTH_SIGNALS.map((s) => s.sourceName ?? s.name),
+  ...MEDTERM_INFL_SIGNALS.map((s) => s.sourceName ?? s.name),
   "GDP Growth (2Q Avg)", "GDP Growth (4Q Avg)",
   "CPI Growth (3M Avg)", "CPI Growth (9M Avg)",
 ]);
@@ -1515,6 +1489,86 @@ const ALLOC_ASSET_META = [
   { key: "cash", label: "Cash",          color: "#A8ADB8" },
 ];
 
+// One horizon panel's worth of Forward Signal UI — Near-Term and Medium-Term
+// render from this same function so they can never visually drift apart.
+// They are independently scored and never averaged or reconciled into one
+// number (see the forward-signal two-horizon spec); each gets its own
+// "Current → [panel]" transition since the two can legitimately disagree.
+function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime }) {
+  return (
+    <div>
+      <p className="label mb-3">
+        {title}
+        <span className="text-paper-dim font-normal ml-2 text-[10px] normal-case tracking-normal">{horizonLabel}</span>
+      </p>
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        {[
+          // dir uses the RAW pre-fallback direction (rawGDir/rawIDir), not
+          // gDir/iDir — those already collapse "neutral" to a sign for the
+          // regime-key computation, which would make "Flat / Uncertain" below
+          // unreachable if reused here.
+          { key: "growth", label: "Growth Momentum", sigs: panel.growth.signals, dir: panel.rawGDir, score: panel.growth.score, upLabel: "Expanding", downLabel: "Contracting" },
+          { key: "infl", label: "Inflation Momentum", sigs: panel.infl.signals, dir: panel.rawIDir, score: panel.infl.score, upLabel: "Rising", downLabel: "Falling" },
+        ].map(({ key, label, sigs, dir, score, upLabel, downLabel }) => (
+          <div key={key} className="bg-ink-soft rounded-lg p-3">
+            <p className="label text-[10px] mb-2">{label}</p>
+            <div className="space-y-1 mb-2">
+              {sigs.map(s => (
+                <div key={s.label} className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-paper-dim truncate">{s.label}</span>
+                  <span className="flex items-center gap-1.5 shrink-0">
+                    <span className="num text-[9px] text-paper-dim/50">w{s.w.toFixed(2)}</span>
+                    <span className={`text-[10px] font-medium ${s.vote > 0 ? "text-gain" : s.vote < 0 ? "text-loss" : "text-paper-dim"}`}>
+                      {s.vote == null ? "—" : s.vote > 0 ? "↑" : s.vote < 0 ? "↓" : "→"}
+                    </span>
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="pt-2 border-t border-ink-line flex items-center justify-between">
+              <span className={`text-xs font-semibold ${dir === "up" ? "text-gain" : dir === "down" ? "text-loss" : "text-paper-dim"}`}>
+                {dir === "up" ? `↑ ${upLabel}` : dir === "down" ? `↓ ${downLabel}` : "→ Flat / Uncertain"}
+              </span>
+              <span className="num text-[10px] text-paper-dim">
+                score {score == null ? "—" : `${score >= 0 ? "+" : ""}${score.toFixed(2)}`}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {panel.forwardKey ? (
+        <div className="flex items-center gap-3 bg-ink-soft/50 rounded-lg px-4 py-3">
+          <div>
+            <p className="text-[10px] text-paper-dim mb-0.5">Current</p>
+            <p className={`text-sm font-semibold ${currentRegime?.color ?? "text-paper"}`}>{currentRegime?.label ?? "—"}</p>
+          </div>
+          <svg className="w-6 h-4 text-paper-dim shrink-0" viewBox="0 0 24 16" fill="none">
+            <path d="M1 8h18M13 2l6 6-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <div>
+            <p className="text-[10px] text-paper-dim mb-0.5">{title}</p>
+            <p className={`text-sm font-semibold ${REGIME_META[panel.forwardKey]?.color ?? "text-paper"}`}>
+              {REGIME_META[panel.forwardKey]?.label}
+            </p>
+            <p className="text-[10px] text-paper-dim">{REGIME_META[panel.forwardKey]?.desc}</p>
+          </div>
+          <div className="ml-auto text-right">
+            <p className="text-[10px] text-paper-dim mb-0.5">Signal strength</p>
+            <p className="num text-sm">{panel.confidence}%</p>
+            <p className="text-[10px] text-paper-dim">
+              {panel.confidence >= 60 ? "Strong" : panel.confidence >= 30 ? "Moderate" : "Weak"}
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-ink-soft/50 rounded-lg px-4 py-3 text-xs text-paper-dim">
+          {title} inconclusive — growth and inflation momentum point in the same or unclear direction.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function QuadrantCard({ indicators, holdings, assetData }) {
   const gdp        = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi        = indicators.find((i) => i.name === "CPI (YoY)");
@@ -1612,13 +1666,13 @@ function QuadrantCard({ indicators, holdings, assetData }) {
     : null;
   const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
 
-  const fwd = computeForwardSignal(indicators);
+  const fwd = computeForwardSignals(indicators);
 
   // Headline/allocation key: 2-of-3 majority across Structural / Market /
   // Forward when at least 2 are available and 2 agree; otherwise falls back
   // to the structural read (a stable anchor for portfolio weights even when
   // the lenses are split) so allocation logic never goes fully unset.
-  const majorityRegimeKey = resolveHeadlineRegime(structuralRegimeKey, marketRegimeKey, fwd.forwardKey);
+  const majorityRegimeKey = resolveHeadlineRegime(structuralRegimeKey, marketRegimeKey, fwd.mediumTerm.forwardKey);
   const isTransitional = structuralRegimeKey != null && marketRegimeKey != null && majorityRegimeKey == null;
   const incompleteRegimeInputs = getStaleOrMissingRegimeInputs(indicators);
   const regimeKey = majorityRegimeKey
@@ -1781,7 +1835,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
               </div>
               {isTransitional ? (
                 <p className="text-paper-dim text-sm mt-1">
-                  Lenses diverging — Structural: {structuralMeta?.label ?? "n/a"} · Market: {marketMeta?.label ?? "n/a"} · Forward: {fwd.forwardKey ? (REGIME_META[fwd.forwardKey]?.label ?? "n/a") : "n/a"}
+                  Lenses diverging — Structural: {structuralMeta?.label ?? "n/a"} · Market: {marketMeta?.label ?? "n/a"} · Forward: {fwd.mediumTerm.forwardKey ? (REGIME_META[fwd.mediumTerm.forwardKey]?.label ?? "n/a") : "n/a"}
                 </p>
               ) : (
                 <p className="text-paper-dim text-sm mt-1">{regime.desc}</p>
@@ -2001,78 +2055,12 @@ function QuadrantCard({ indicators, holdings, assetData }) {
             )}
           </div>
 
-          {/* Forward Signal */}
-          <div>
-            <p className="label mb-3">
-              Forward Signal
-              <span className="text-paper-dim font-normal ml-2 text-[10px] normal-case tracking-normal">6–18 month horizon</span>
-            </p>
-            <div className="grid grid-cols-2 gap-3 mb-3">
-              {[
-                // dir uses the RAW pre-fallback direction (rawGDir/rawIDir),
-                // not gDir/iDir — those already collapse "neutral" to a sign
-                // for the regime-key computation, which made the "Flat /
-                // Uncertain" branch below unreachable before this fix (see #8
-                // in the regime-calc work order: a near-zero composite score
-                // was labeled "Rising," inviting over-reading noise as signal).
-                { title: "Growth Momentum", sigs: fwd.growth.signals, dir: fwd.rawGDir, score: fwd.growth.score, upLabel: "Expanding", downLabel: "Contracting" },
-                { title: "Inflation Momentum", sigs: fwd.infl.signals, dir: fwd.rawIDir, score: fwd.infl.score, upLabel: "Rising", downLabel: "Falling" },
-              ].map(({ title, sigs, dir, score, upLabel, downLabel }) => (
-                <div key={title} className="bg-ink-soft rounded-lg p-3">
-                  <p className="label text-[10px] mb-2">{title}</p>
-                  <div className="space-y-1 mb-2">
-                    {sigs.map(s => (
-                      <div key={s.label} className="flex items-center justify-between gap-2">
-                        <span className="text-[10px] text-paper-dim truncate">{s.label}</span>
-                        <span className="flex items-center gap-1.5 shrink-0">
-                          <span className="num text-[9px] text-paper-dim/50">w{s.w.toFixed(2)}</span>
-                          <span className={`text-[10px] font-medium ${s.vote > 0 ? "text-gain" : s.vote < 0 ? "text-loss" : "text-paper-dim"}`}>
-                            {s.vote == null ? "—" : s.vote > 0 ? "↑" : s.vote < 0 ? "↓" : "→"}
-                          </span>
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="pt-2 border-t border-ink-line flex items-center justify-between">
-                    <span className={`text-xs font-semibold ${dir === "up" ? "text-gain" : dir === "down" ? "text-loss" : "text-paper-dim"}`}>
-                      {dir === "up" ? `↑ ${upLabel}` : dir === "down" ? `↓ ${downLabel}` : "→ Flat / Uncertain"}
-                    </span>
-                    <span className="num text-[10px] text-paper-dim">
-                      score {score == null ? "—" : `${score >= 0 ? "+" : ""}${score.toFixed(2)}`}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            {fwd.forwardKey ? (
-              <div className="flex items-center gap-3 bg-ink-soft/50 rounded-lg px-4 py-3">
-                <div>
-                  <p className="text-[10px] text-paper-dim mb-0.5">Current</p>
-                  <p className={`text-sm font-semibold ${regime?.color ?? "text-paper"}`}>{regime?.label ?? "—"}</p>
-                </div>
-                <svg className="w-6 h-4 text-paper-dim shrink-0" viewBox="0 0 24 16" fill="none">
-                  <path d="M1 8h18M13 2l6 6-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-                <div>
-                  <p className="text-[10px] text-paper-dim mb-0.5">Forward Signal</p>
-                  <p className={`text-sm font-semibold ${REGIME_META[fwd.forwardKey]?.color ?? "text-paper"}`}>
-                    {REGIME_META[fwd.forwardKey]?.label}
-                  </p>
-                  <p className="text-[10px] text-paper-dim">{REGIME_META[fwd.forwardKey]?.desc}</p>
-                </div>
-                <div className="ml-auto text-right">
-                  <p className="text-[10px] text-paper-dim mb-0.5">Signal strength</p>
-                  <p className="num text-sm">{fwd.confidence}%</p>
-                  <p className="text-[10px] text-paper-dim">
-                    {fwd.confidence >= 60 ? "Strong" : fwd.confidence >= 30 ? "Moderate" : "Weak"}
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-ink-soft/50 rounded-lg px-4 py-3 text-xs text-paper-dim">
-                Forward signal inconclusive — growth and inflation momentum point in the same or unclear direction.
-              </div>
-            )}
+          {/* Forward Signal — two independent horizon panels (see the
+              forward-signal two-horizon spec). Not averaged or reconciled
+              into one number; they can legitimately disagree. */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ForwardSignalPanel title="Near-Term Signal" horizonLabel="2-3 Month Outlook" panel={fwd.nearTerm} currentRegime={regime} />
+            <ForwardSignalPanel title="Medium-Term Signal" horizonLabel="6-18 Month Outlook" panel={fwd.mediumTerm} currentRegime={regime} />
           </div>
 
           {/* Allocation bars */}

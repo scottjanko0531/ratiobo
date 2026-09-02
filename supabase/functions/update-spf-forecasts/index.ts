@@ -140,7 +140,8 @@ Deno.serve(async (req: Request) => {
     if (rgdpRows.length) {
       const h1 = rgdpRows.find((r) => r.horizon_quarters === 1)?.value ?? null;
       const next4 = rgdpRows.filter((r) => r.horizon_quarters >= 2 && r.horizon_quarters <= 5).map((r) => r.value);
-      const consensusVal = h1 ?? (next4.length ? r2(next4.reduce((a, b) => a + b, 0) / next4.length) : null);
+      const next4Avg = next4.length ? r2(next4.reduce((a, b) => a + b, 0) / next4.length) : null;
+      const consensusVal = h1 ?? next4Avg;
       if (consensusVal != null) {
         const { data: gdpRow } = await supabase
           .from("macro_indicators")
@@ -148,8 +149,19 @@ Deno.serve(async (req: Request) => {
           .eq("name", "Real GDP Growth")
           .maybeSingle();
         if (gdpRow) {
+          // spf_consensus_gdp_fwd: the PURE next-4-quarter-ahead average,
+          // never blended with the horizon-1 nowcast — for the Medium-Term
+          // Forward Signal's "GDP vs SPF" line, which is explicitly the
+          // multi-quarter-ahead forecast, distinct from spf_consensus_gdp
+          // (nearest-available, used by the Near-Term panel/GDP drawer,
+          // which already has GDPNow covering the true nowcast role).
           await supabase.from("macro_indicators").update({
-            metadata: { ...(gdpRow.metadata ?? {}), spf_consensus_gdp: consensusVal, spf_consensus_vintage: rgdpRows[0].vintage_label },
+            metadata: {
+              ...(gdpRow.metadata ?? {}),
+              spf_consensus_gdp: consensusVal,
+              spf_consensus_gdp_fwd: next4Avg,
+              spf_consensus_vintage: rgdpRows[0].vintage_label,
+            },
           }).eq("name", "Real GDP Growth");
         }
       }

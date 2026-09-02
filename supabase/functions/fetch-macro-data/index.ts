@@ -731,6 +731,39 @@ const INDICATORS: Indicator[] = [
     series: "DBC", type: "yahoo_price_with_3m", zscore: true,
     statusFn: v => v > 21 ? "healthy" : v > 16 ? "watch" : "danger",
   },
+  // ── Medium-Term Forward Signal panel additions (forward-signal two-horizon spec) ──
+  {
+    name: "Building Permits",
+    layer: 3, layer_name: "Business Cycle",
+    description: "New private housing units authorized by building permits (thousands, SAAR) — one of the most historically reliable 6-18 month leading indicators for growth. Carries a 3-month trend since the Medium-Term Forward Signal votes on momentum, not the raw level.",
+    fred_series_id: "PERMIT", unit: "K", data_source: "fred", sort_order: 302,
+    series: "PERMIT", type: "level_with_3m",
+    statusFn: v => v > 1400 ? "healthy" : v > 1200 ? "watch" : "danger",
+  },
+  {
+    name: "Unit Labor Costs (YoY)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Nonfarm business sector unit labor costs, YoY — wage-price dynamics unfold over quarters; a classic medium-term persistence signal for inflation.",
+    fred_series_id: "ULCNFB", unit: "%", data_source: "fred", sort_order: 303,
+    series: "ULCNFB", type: "yoy_quarterly",
+    statusFn: v => v < 3 ? "healthy" : v < 5 ? "watch" : "danger",
+  },
+  {
+    name: "UMich Consumer Sentiment",
+    layer: 3, layer_name: "Business Cycle",
+    description: "University of Michigan Consumer Sentiment Index — medium-term consumer confidence proxy. Substitutes for NFIB Small Business Optimism / Conference Board Consumer Confidence, neither of which has a free machine-readable feed.",
+    fred_series_id: "UMCSENT", unit: "index", data_source: "fred", sort_order: 304,
+    series: "UMCSENT", type: "level",
+    statusFn: v => v > 80 ? "healthy" : v > 60 ? "watch" : "danger",
+  },
+  {
+    name: "10-Year Expected Inflation",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Cleveland Fed's model-based 10-year expected inflation estimate — substitutes for UMich's raw 5-10yr survey question, which has no standalone free FRED series (it's part of UMich's paid Surveys of Consumers microdata).",
+    fred_series_id: "EXPINF10YR", unit: "%", data_source: "fred", sort_order: 305,
+    series: "EXPINF10YR", type: "level",
+    statusFn: v => v < 2.5 ? "healthy" : v < 3.5 ? "watch" : "danger",
+  },
 ];
 
 interface ProcessedRow {
@@ -1689,7 +1722,67 @@ async function backfillRegimeHistory(): Promise<void> {
   } catch (e) { console.error("[regime_history] backfill:", e); }
 }
 
-function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null; confidence: number | null } {
+type FwdSig = {
+  name: string; w: number; vote: (v: number) => number;
+  usePct3m?: boolean; usePP3m?: boolean; useShortPct?: boolean; useSpfSpread?: boolean | string; useMetaField?: string;
+  // When set, this signal only participates (and only then does its weight
+  // count) while getVolShock(sourceName ?? name) is true — an explicit
+  // override, not a silent blend into the always-on 3-month term.
+  shockGate?: boolean; sourceName?: string;
+};
+
+// ── Forward Signal: Near-Term (2-3mo) & Medium-Term (6-18mo) panels ────────
+// Split per the forward-signal two-horizon spec — see the identical
+// NEARTERM_*/MEDTERM_* arrays and rationale comments in app/macro/page.jsx.
+// Kept in sync manually (same quadruplicated-logic convention as the
+// Structural/Market classifiers elsewhere in this file). GDPNow/ISM
+// Manufacturing New Orders/ISM Services New Orders are new data pulls
+// landing alongside this rewrite — until ingested, they vote null, same
+// graceful degradation as any indicator not yet loaded.
+const NEARTERM_G: FwdSig[] = [
+  { name: "GDPNow", w: 0.20, vote: v => v > 2.5 ? 1 : v >= 1.0 ? 0 : -1 },
+  { name: "ISM Manufacturing New Orders", w: 0.15, vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
+  { name: "ISM Services New Orders", w: 0.10, vote: v => v > 55 ? 1 : v >= 50 ? 0 : -1 },
+  { name: "Initial Jobless Claims Trend", w: 0.15, vote: v => v < 0 ? 1 : v <= 5 ? 0 : -1 },
+  { name: "Payrolls (3M Avg)", w: 0.15, vote: v => v > 100 ? 1 : v >= 0 ? 0 : -1 },
+  { name: "Retail Sales (YoY)", w: 0.10, vote: v => v >= 2 ? 1 : v >= 0 ? 0 : -1 },
+  { name: "Unemployment Rate Trend", w: 0.05, vote: v => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
+  { name: "HY Credit Spread (OAS)", w: 0.05, vote: v => v < 4 ? 1 : v <= 6 ? 0 : -1 },
+  { name: "US Total Liquidity Composite", w: 0.05, vote: v => v > 0 ? 1 : v > -3 ? 0 : -1 },
+];
+const NEARTERM_I: FwdSig[] = [
+  { name: "CPI (YoY)", w: 0.20, usePP3m: true, vote: v => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
+  { name: "PPI (YoY)", w: 0.20, usePP3m: true, vote: v => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
+  { name: "WTI Crude Oil", w: 0.10, usePct3m: true, vote: v => v > 5 ? 1 : v >= -5 ? 0 : -1 },
+  { name: "WTI Crude Oil (Shock)", sourceName: "WTI Crude Oil", w: 0.15, useShortPct: true, shockGate: true, vote: v => v > 10 ? 1 : v < -10 ? -1 : 0 },
+  { name: "Copper Price", w: 0.10, usePct3m: true, vote: v => v > 5 ? 1 : v >= -5 ? 0 : -1 },
+  { name: "DXY", w: 0.10, usePct3m: true, vote: v => v > 5 ? -1 : v < -5 ? 1 : 0 },
+  { name: "Consumer Inflation Expectations", w: 0.10, useMetaField: "umich_1yr", vote: v => v > 4 ? 1 : v >= 2.5 ? 0 : -1 },
+  { name: "Tariff Inflation Impact", w: 0.05, vote: v => v > 0.30 ? 1 : v > 0.10 ? 0 : -1 },
+];
+const NEARTERM_THRESH = 0.15;
+
+const MEDTERM_G: FwdSig[] = [
+  { name: "2yr/10yr Yield Spread", w: 0.20, vote: v => v > 0.5 ? 1 : v >= 0 ? 0 : -1 },
+  { name: "3mo/10yr Yield Spread", w: 0.10, vote: v => v > 1 ? 1 : v >= 0 ? 0 : -1 },
+  { name: "Sr Loan Officer Survey", w: 0.15, vote: v => v < 15 ? 1 : v <= 35 ? 0 : -1 },
+  { name: "Building Permits", w: 0.15, usePct3m: true, vote: v => v > 3 ? 1 : v >= -3 ? 0 : -1 },
+  { name: "UMich Consumer Sentiment", w: 0.15, vote: v => v > 80 ? 1 : v >= 60 ? 0 : -1 },
+  { name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
+  { name: "C&I Loan Growth (YoY)", w: 0.10, vote: v => v > 5 ? 1 : v >= 0 ? 0 : -1 },
+  { name: "Real GDP Growth", w: 0.05, useSpfSpread: "spf_consensus_gdp_fwd", vote: v => v > 0.2 ? 1 : v >= -0.2 ? 0 : -1 },
+];
+const MEDTERM_I: FwdSig[] = [
+  { name: "10Y Breakeven Inflation", w: 0.26, vote: v => v > FED_INFLATION_TARGET ? 1 : v >= 1.5 ? 0 : -1 },
+  { name: "10-Year Expected Inflation", w: 0.16, vote: v => v > 2.5 ? 1 : v >= 1.5 ? 0 : -1 },
+  { name: "Unit Labor Costs (YoY)", w: 0.21, vote: v => v > 4 ? 1 : v >= 2 ? 0 : -1 },
+  { name: "M2 Growth (YoY)", w: 0.10, vote: v => v > 8 ? 1 : v >= 3 ? 0 : -1 },
+  { name: "Capacity Utilization", w: 0.16, vote: v => v > 80 ? 1 : v >= 74 ? 0 : -1 },
+  { name: "Tariff Inflation Impact", w: 0.11, vote: v => v > 0.30 ? 1 : v > 0.10 ? 0 : -1 },
+];
+const MEDTERM_THRESH = 0.10;
+
+function computeEdgeForwardPanel(rows: ProcessedRow[], G: FwdSig[], I: FwdSig[], THRESH: number): { forwardKey: string | null; confidence: number | null } {
   const get = (name: string) => { const r = rows.find(r => r.name === name); return r?.current_value != null ? Number(r.current_value) : null; };
   // 3-month % change stored in metadata by level_with_3m processor
   const getPct3m = (name: string) => {
@@ -1718,99 +1811,32 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
   };
   // Spread between the actual reading and its SPF consensus forecast
   // (stamped onto the indicator's own metadata by update-spf-forecasts) —
-  // positive means the economy is beating what forecasters expected.
-  const getSpfSpread = (name: string): number | null => {
+  // positive means the economy is beating what forecasters expected. `field`
+  // selects nearest-available (spf_consensus_gdp) vs pure multi-quarter-
+  // ahead (spf_consensus_gdp_fwd, MEDTERM_G's "GDP vs SPF (fwd)").
+  const getSpfSpread = (name: string, field: string): number | null => {
     const r = rows.find(r => r.name === name);
     const actual = r?.current_value != null ? Number(r.current_value) : null;
-    const consensus = (r?.metadata as Record<string, unknown> | undefined)?.spf_consensus_gdp;
+    const consensus = (r?.metadata as Record<string, unknown> | undefined)?.[field];
     return actual != null && consensus != null ? actual - Number(consensus) : null;
   };
-  type Sig = {
-    name: string; w: number; vote: (v: number) => number;
-    usePct3m?: boolean; usePP3m?: boolean; useShortPct?: boolean; useSpfSpread?: boolean;
-    // When set, this signal only participates (and only then does its weight
-    // count) while getVolShock(sourceName ?? name) is true — an explicit
-    // override, not a silent blend into the always-on 3-month term.
-    shockGate?: boolean; sourceName?: string;
+  const getMetaField = (name: string, key: string): number | null => {
+    const r = rows.find(r => r.name === name);
+    const v = (r?.metadata as Record<string, unknown> | undefined)?.[key];
+    return typeof v === "number" ? v : null;
   };
-  const G: Sig[] = [
-    { name: "2yr/10yr Yield Spread",  w: 0.25, vote: v => v > 0.5 ? 1 : v >= 0    ? 0 : -1 },
-    { name: "3mo/10yr Yield Spread",  w: 0.20, vote: v => v > 1   ? 1 : v >= 0    ? 0 : -1 },
-    { name: "Sr Loan Officer Survey", w: 0.20, vote: v => v < 15  ? 1 : v <= 35   ? 0 : -1 },
-    { name: "Conference Board LEI",   w: 0.15, vote: v => v > 0   ? 1 : v >= -0.3 ? 0 : -1 },
-    { name: "HY Credit Spread (OAS)", w: 0.10, vote: v => v < 4   ? 1 : v <= 6    ? 0 : -1 },
-    { name: "C&I Loan Growth (YoY)",  w: 0.10, vote: v => v > 5   ? 1 : v >= 0    ? 0 : -1 },
-    // Liquidity leads growth by ~12-18mo (banding matches the card's own healthy/watch/danger thresholds)
-    { name: "US Total Liquidity Composite", w: 0.15, vote: v => v > 0 ? 1 : v > -3 ? 0 : -1 },
-    // Consumer spending, ~2/3 of GDP by expenditure (banding matches the card's own thresholds)
-    { name: "Retail Sales (YoY)", w: 0.15, vote: v => v >= 2 ? 1 : v >= 0 ? 0 : -1 },
-    // Above/below-trend growth LEVEL (Investment Clock's own growth-axis definition),
-    // distinct from the momentum signals above. Quarterly — lower weight, slow-moving anchor
-    { name: "Output Gap", w: 0.10, vote: v => v > 0.5 ? 1 : v >= -0.5 ? 0 : -1 },
-    // Labor data — previously absent from the growth axis entirely (credit
-    // and GDP data are lagging confirmations of a growth turn; payrolls and
-    // claims lead it). Weighted comparably to the credit signals above, not
-    // as a minor addendum.
-    { name: "Payrolls (3M Avg)", w: 0.20, vote: v => v > 100 ? 1 : v >= 0 ? 0 : -1 },
-    { name: "Unemployment Rate Trend", w: 0.15, vote: v => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
-    // Weekly, ~1-week lag — the fastest-reacting growth signal in this
-    // composite, standing in for the ISM employment sub-index (not available
-    // for free scraping).
-    { name: "Initial Jobless Claims Trend", w: 0.15, vote: v => v < 0 ? 1 : v <= 5 ? 0 : -1 },
-    // NOT implemented: discounting a payrolls print when prior months were
-    // revised down. That needs a per-reference-month value-history table
-    // (nothing today stores "what PAYEMS said for June" as observed on two
-    // different dates, only the latest FRED pull) — a real schema addition,
-    // deliberately deferred rather than approximated.
-    // GDP & Inflation Regime Metrics spec, G4 "Forward Consensus": is the
-    // economy actually running ahead of or behind what forecasters
-    // expected? A genuine surprise signal, distinct from every other
-    // growth signal above, which measure the economy's own trend rather
-    // than comparing it to a forecast. Kept in sync with the identical
-    // entry in page.jsx and get-regime-analysis.
-    { name: "Real GDP Growth", w: 0.15, useSpfSpread: true, vote: v => v > 0.2 ? 1 : v >= -0.2 ? 0 : -1 },
-  ];
-  const I: Sig[] = [
-    // 3-month pp-change signals: CPI/PPI trend captures disinflation momentum
-    // even when levels are elevated. Thresholds are in raw percentage points
-    // (not relative %), since these are already rates — PPI's is wider than
-    // CPI's because PPI is the structurally noisier series (also why it's
-    // weighted lower here).
-    { name: "CPI (YoY)",                       w: 0.20, usePP3m: true,  vote: v => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
-    { name: "PPI (YoY)",                       w: 0.10, usePP3m: true,  vote: v => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
-    { name: "10Y Breakeven Inflation",         w: 0.20,                vote: v => v > FED_INFLATION_TARGET ? 1 : v >= 1.5 ? 0 : -1 },
-    // Threshold raised: readings below 5.5% may reflect tariff shock, not structural demand inflation
-    { name: "Consumer Inflation Expectations", w: 0.15,                vote: v => v > 5.5 ? 1 : v >= 2.5 ? 0 : -1 },
-    // 3M momentum (not absolute level) matches the frontend's getPct3m approach
-    { name: "Copper Price",                    w: 0.15, usePct3m: true, vote: v => v > 5  ? 1 : v >= -5 ? 0 : -1 },
-    { name: "WTI Crude Oil",                   w: 0.10, usePct3m: true, vote: v => v > 5  ? 1 : v >= -5 ? 0 : -1 },
-    // Explicit shock override: only scores while WTI's realized vol is
-    // flagged (level_with_shock's vol_shock, >55% annualized) — a 3-month
-    // trend structurally lags a shock that's only weeks old. Silent (does
-    // not participate) outside of a shock, not blended into the line above.
-    { name: "WTI Crude Oil (Shock)", sourceName: "WTI Crude Oil", w: 0.15, useShortPct: true, shockGate: true, vote: v => v > 10 ? 1 : v < -10 ? -1 : 0 },
-    { name: "M2 Growth (YoY)",                 w: 0.10,                vote: v => v > 8   ? 1 : v >= 3  ? 0 : -1 },
-    // Leads realized inflation by ~6-12mo (Merrill Lynch Investment Clock) — tight
-    // capacity is genuinely forward-looking, unlike CPI/PPI trend which are coincident
-    { name: "Capacity Utilization", w: 0.15, vote: v => v > 80 ? 1 : v >= 74 ? 0 : -1 },
-    // Dollar strength lags into LOWER future inflation (~2mo, cheaper imports) — vote
-    // is inverted relative to a normal "rising = inflationary" reading
-    { name: "DXY", w: 0.10, usePct3m: true, vote: v => v > 5 ? -1 : v < -5 ? 1 : 0 },
-    // Unlike CPI/PPI, this has no FRED backfill — macro_snapshots only starts
-    // accumulating from launch, so its 3-month trend (change3m_pp) can't exist
-    // for ~90 days and would vote null the whole time. Votes on the current
-    // LEVEL instead (how much tariffs are adding to CPI right now), which is
-    // itself informative from day one — thresholds match the danger/watch/
-    // healthy bands update-supply-chain-risk already derives for this composite.
-    { name: "Tariff Inflation Impact", w: 0.10, vote: v => v > 0.30 ? 1 : v > 0.10 ? 0 : -1 },
-  ];
   type ScoreSig = { w: number; vote: number | null };
-  const scoreGroup = (sigs: Sig[]): { signals: ScoreSig[]; score: number | null } => {
+  const scoreGroup = (sigs: FwdSig[]): { signals: ScoreSig[]; score: number | null } => {
     let weighted = 0, totalW = 0;
     const signals: ScoreSig[] = sigs.map(s => {
       const source = s.sourceName ?? s.name;
       if (s.shockGate && !getVolShock(source)) return { w: s.w, vote: null };
-      const val = s.useSpfSpread ? getSpfSpread(source) : s.useShortPct ? getShortPct(source) : s.usePct3m ? getPct3m(source) : s.usePP3m ? getPP3m(source) : get(source);
+      const val = s.useSpfSpread ? getSpfSpread(source, typeof s.useSpfSpread === "string" ? s.useSpfSpread : "spf_consensus_gdp")
+        : s.useMetaField ? getMetaField(source, s.useMetaField)
+        : s.useShortPct ? getShortPct(source)
+        : s.usePct3m ? getPct3m(source)
+        : s.usePP3m ? getPP3m(source)
+        : get(source);
       if (val == null) return { w: s.w, vote: null };
       const v = s.vote(val);
       weighted += v * s.w; totalW += s.w;
@@ -1820,7 +1846,6 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
   };
   const growth = scoreGroup(G);
   const infl   = scoreGroup(I);
-  const THRESH = 0.10; // dead band — see #8 in the regime-calc work order
   const dir = (s: number | null) => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
   const rawGDir = dir(growth.score);
   const rawIDir = dir(infl.score);
@@ -1858,6 +1883,16 @@ function computeEdgeFwdSignal(rows: ProcessedRow[]): { forwardKey: string | null
     }
   }
   return { forwardKey, confidence };
+}
+
+function computeEdgeFwdSignals(rows: ProcessedRow[]): {
+  nearTerm: { forwardKey: string | null; confidence: number | null };
+  mediumTerm: { forwardKey: string | null; confidence: number | null };
+} {
+  return {
+    nearTerm: computeEdgeForwardPanel(rows, NEARTERM_G, NEARTERM_I, NEARTERM_THRESH),
+    mediumTerm: computeEdgeForwardPanel(rows, MEDTERM_G, MEDTERM_I, MEDTERM_THRESH),
+  };
 }
 
 async function backfillForwardSignals(): Promise<void> {
@@ -2049,7 +2084,7 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const periodDate = `${now.getUTCFullYear()}-${String(q * 3 + 1).padStart(2, "0")}-01`;
     const r2 = (n: number) => Math.round(n * 100) / 100;
 
-    const { forwardKey, confidence } = computeEdgeFwdSignal(rowsForSignal);
+    const { nearTerm, mediumTerm } = computeEdgeFwdSignals(rowsForSignal);
     await supabase.from("macro_regime_history").upsert({
       period_date: periodDate,
       gdp_yoy: r2(gdpYoy), cpi_yoy: r2(cpiYoy),
@@ -2103,8 +2138,10 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
           && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
         return mktGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })(),
-      forward_key: forwardKey,
-      forward_confidence: confidence,
+      forward_key: mediumTerm.forwardKey,
+      forward_confidence: mediumTerm.confidence,
+      nearterm_forward_key: nearTerm.forwardKey,
+      nearterm_forward_confidence: nearTerm.confidence,
       updated_at: new Date().toISOString(),
     }, { onConflict: "period_date", ignoreDuplicates: false });
   } catch (e) { console.error("[regime_history] current update:", e); }
