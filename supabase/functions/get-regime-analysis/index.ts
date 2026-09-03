@@ -356,12 +356,14 @@ async function getFedRateOdds(): Promise<FedOdds | null> {
 // this request already fetched, rather than trusting the once-nightly
 // macro_regime_history cache, which was found to silently go a full day stale.
 // Kept in sync with fetch-macro-data's identical constants/formula.
-const GROWTH_MIN_GAP = 0.15;
-// Dead band for the inflation crossover's up/down read — wider than
-// GROWTH_MIN_GAP since inflation prints are noisier month to month than
-// GDP's quarterly cadence. Kept in sync with lib/simulatorKeys.js's
-// identical constant.
-const CPI_MIN_GAP = 0.20;
+// Empirically recalibrated (dead-band-recalibration spec) via
+// supabase/functions/growth-axis-backtest's walk-forward sweep against real
+// FRED history — see that file's/lib/simulatorKeys.js's fuller rationale.
+const GROWTH_MIN_GAP = 0.80;
+// Dead band for the inflation crossover's up/down read. Empirically
+// recalibrated the same way as GROWTH_MIN_GAP above. Kept in sync with
+// lib/simulatorKeys.js's identical constant.
+const CPI_MIN_GAP = 0.80;
 // The Fed's actual inflation mandate, not an arbitrary round number.
 const FED_INFLATION_TARGET = 2.0;
 
@@ -1047,8 +1049,8 @@ Deno.serve(async (req: Request) => {
       const i = (macroRows ?? []).find((x: { name: string; metadata: Record<string, unknown> | null }) => x.name === name);
       return !!i?.metadata?.vol_shock;
     };
-    // Generic metadata-number reader — used for the regime tiebreaker's
-    // Level fallback (zscore_10y/zscore_18y).
+    // Generic metadata-number reader — used by Forward Signal's
+    // useMetaField signals (e.g. Consumer Inflation Expectations' umich_1yr).
     const getMetaNum = (name: string, key: string): number | null => {
       const i = (macroRows ?? []).find((x: { name: string; metadata: Record<string, unknown> | null }) => x.name === name);
       const v = i?.metadata?.[key];

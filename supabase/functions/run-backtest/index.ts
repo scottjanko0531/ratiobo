@@ -236,9 +236,13 @@ function latestOnOrBefore(series: FredObs[], cutoff: string): FredObs | null {
   return result;
 }
 
-// Kept in sync with fetch-macro-data/get-regime-analysis's identical constants/formula.
+// Kept in sync with fetch-macro-data/get-regime-analysis's identical
+// constants/formula. Empirically recalibrated (dead-band-recalibration
+// spec) via supabase/functions/growth-axis-backtest's walk-forward sweep
+// against real FRED history — see that file's/lib/simulatorKeys.js's
+// fuller rationale.
 const POTENTIAL_GDP_GROWTH = 1.9;
-const GROWTH_MIN_GAP = 0.15;
+const GROWTH_MIN_GAP = 0.80;
 const POTENTIAL_FLOOR_FRACTION = 0.85;
 
 // Deliberately excluded from the labor veto that fetch-macro-data/

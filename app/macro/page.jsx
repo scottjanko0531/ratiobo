@@ -1904,14 +1904,15 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   const [cpiCrossoverDrawerOpen, setCpiCrossoverDrawerOpen] = useState(false);
   const [inflExpDrawerOpen, setInflExpDrawerOpen] = useState(false);
 
-  // GDP & Inflation Regime Metrics spec — G1 (z-score vs 10yr window, from
-  // fetch-macro-data's computeRollingZScore, stored on "Real GDP Growth"'s
-  // metadata), G2 (Accelerating/Decelerating/Stable via rateOfChangeLabel,
-  // reusing the same fast/slow crossover the Structural lens already uses),
-  // G3 (direction — the 2Q-avg indicator's own current vs. previous value
-  // already IS MA_2q(t) vs MA_2q(t-1), so no new data is needed).
+  // GDP & Inflation Regime Metrics spec — G1 (z-score vs the fixed 2015-2019
+  // reference window, from fetch-macro-data's computeFixedWindowZScore,
+  // stored on "Real GDP Growth"'s metadata), G2 (Accelerating/Decelerating/
+  // Stable via rateOfChangeLabel, reusing the same fast/slow crossover the
+  // Structural lens already uses), G3 (direction — the 2Q-avg indicator's
+  // own current vs. previous value already IS MA_2q(t) vs MA_2q(t-1), so no
+  // new data is needed).
   const gdpRegimeStats = {
-    zscore: gdp?.metadata?.zscore_10y ?? null,
+    zscore: gdp?.metadata?.zscore ?? null,
     windowMean: gdp?.metadata?.window_mean ?? null,
     windowMin: gdp?.metadata?.window_min ?? null,
     windowMax: gdp?.metadata?.window_max ?? null,
@@ -1921,17 +1922,17 @@ function QuadrantCard({ indicators, holdings, assetData }) {
       ? Math.sign(Number(gdpFastInd.current_value) - Number(gdpFastInd.previous_value)) : null,
     currentValue: gdp?.current_value != null ? Number(gdp.current_value) : null,
   };
-  // I1 (z-score vs 18yr window, on Core CPI — see computeRollingZScore's
-  // guard on "Core CPI (YoY)"), I2 (Accelerating/Decelerating/Stable on
-  // Core CPI's own 3M/9M crossover, wider CPI_MIN_GAP dead band), I3
-  // (direction on the existing HEADLINE CPI 3M-avg indicator — I3 is
-  // deliberately headline, unlike I1/I2's core basis), I4's consumer-
-  // expectations attribution (umich_1yr/nyfed_1yr, set alongside the
-  // existing blended composite_stress_z).
+  // I1 (z-score vs the fixed 2015-2019 reference window, on Core CPI — see
+  // computeFixedWindowZScore's guard on "Core CPI (YoY)"), I2 (Accelerating/
+  // Decelerating/Stable on Core CPI's own 3M/9M crossover, wider CPI_MIN_GAP
+  // dead band), I3 (direction on the existing HEADLINE CPI 3M-avg indicator
+  // — I3 is deliberately headline, unlike I1/I2's core basis), I4's
+  // consumer-expectations attribution (umich_1yr/nyfed_1yr, set alongside
+  // the existing blended composite_stress_z).
   const coreCpiFastVal = coreCpiFastInd?.current_value != null ? Number(coreCpiFastInd.current_value) : null;
   const coreCpiSlowVal = coreCpiSlowInd?.current_value != null ? Number(coreCpiSlowInd.current_value) : null;
   const cpiRegimeStats = {
-    zscore: coreCpiInd?.metadata?.zscore_18y ?? null,
+    zscore: coreCpiInd?.metadata?.zscore ?? null,
     windowMean: coreCpiInd?.metadata?.window_mean ?? null,
     windowMin: coreCpiInd?.metadata?.window_min ?? null,
     windowMax: coreCpiInd?.metadata?.window_max ?? null,
@@ -2083,7 +2084,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
             <div className="flex flex-wrap gap-2">
               {/* GDP: actual vs 4-quarter trend */}
               <div className="bg-ink-soft rounded-lg px-3 py-1.5">
-                <p className="label text-[10px]">GDP Growth</p>
+                <p className="label text-[10px]">GDP Growth (YoY)</p>
                 <p className="num text-sm">{formatValue(gdp?.current_value, "%")}</p>
                 {gdp3yAvg?.current_value != null && (
                   <p className="text-[10px] text-paper-dim mt-0.5">
@@ -2147,7 +2148,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
               {/* Growth row */}
               <div className="grid grid-cols-3 border-b border-ink-line">
                 <div className="px-3 py-3">
-                  <p className="label text-[10px] mb-1">Growth</p>
+                  <p className="label text-[10px] mb-1">Growth (GDP YoY)</p>
                   <p className="num text-sm">{formatValue(gdp?.current_value, "%")}</p>
                 </div>
                 <div
@@ -2164,7 +2165,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                       <>
                         <p className={`font-medium ${state.color}`}>{state.label}</p>
                         <p className="num text-[11px] text-paper-dim mt-0.5">
-                          {gdpFastVal.toFixed(2)}% vs {gdp3yAvgVal.toFixed(2)}% (min gap 0.15pp) · potential floor {(POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION).toFixed(2)}%
+                          {gdpFastVal.toFixed(2)}% vs {gdp3yAvgVal.toFixed(2)}% (min gap {GROWTH_MIN_GAP.toFixed(2)}pp) · potential floor {(POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION).toFixed(2)}%
                         </p>
                         {vintageLabel(gdpFastInd) && (
                           <p className="text-[9px] text-paper-dim/50 mt-0.5">as of {vintageLabel(gdpFastInd)}</p>
@@ -2212,7 +2213,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     return (
                       <>
                         <p className={`font-medium ${state.color}`}>{state.label}</p>
-                        <p className="num text-[11px] text-paper-dim mt-0.5">{cpiFastVal.toFixed(2)}% vs {cpi3yAvgVal.toFixed(2)}% (min gap 0.20pp)</p>
+                        <p className="num text-[11px] text-paper-dim mt-0.5">{cpiFastVal.toFixed(2)}% vs {cpi3yAvgVal.toFixed(2)}% (min gap {CPI_MIN_GAP.toFixed(2)}pp)</p>
                         {vintageLabel(cpiFastInd) && (
                           <p className="text-[9px] text-paper-dim/50 mt-0.5">as of {vintageLabel(cpiFastInd)}</p>
                         )}
@@ -2621,7 +2622,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
           { key: "avg10y", label: "10Y Avg (40Q)", shortLabel: "10Y", color: "#8B6FB3", dash: "1 4" },
         ]}
         regimeStats={gdpRegimeStats}
-        zscoreLabel="vs. 10yr (40Q) window"
+        zscoreLabel="vs. 2015-2019 average"
         consensusVar="RGDP"
         consensusLabel="Real GDP"
       />
@@ -2637,7 +2638,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
           { key: "actual", label: "Actual (this mo.)", shortLabel: "Actual", color: "#7C9CBF", dash: "2 2" },
         ]}
         regimeStats={cpiRegimeStats}
-        zscoreLabel="Core CPI vs. 18yr window"
+        zscoreLabel="Core CPI vs. 2015-2019 average"
         consensusVar="CORECPI"
         consensusLabel="Core CPI"
       />

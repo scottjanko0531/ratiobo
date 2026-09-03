@@ -30,22 +30,23 @@ import {
 
 describe("isGrowthExpanding", () => {
   it("does NOT count a marginal crossover as expanding (the live regression case)", () => {
-    // GDP Growth (2Q Avg) 2.39% vs (4Q Avg) 2.28% — gap of 0.11pp, below
-    // GROWTH_MIN_GAP (0.15pp). This is the exact reading that let the old
-    // binary test call a decelerating economy "Expanding."
+    // GDP Growth (2Q Avg) 2.39% vs (4Q Avg) 2.28% — gap of 0.11pp, well
+    // below GROWTH_MIN_GAP (empirically recalibrated to 0.80pp — see the
+    // dead-band-recalibration spec). This is the exact reading that let the
+    // old binary test call a decelerating economy "Expanding."
     expect(isGrowthExpanding(2.39, 2.28)).toBe(false);
   });
 
   it("counts a real crossover with meaningful margin, near/above potential, as expanding", () => {
-    expect(isGrowthExpanding(3.0, 2.0)).toBe(true);
+    expect(isGrowthExpanding(3.5, 2.0)).toBe(true);
   });
 
   it("rejects a crossover that clears the gap but is still far below potential", () => {
-    // Gap of 0.5pp clears GROWTH_MIN_GAP, but 1.0% fast is well under the
-    // potential floor (POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION).
+    // Gap of 1.0pp clears GROWTH_MIN_GAP (0.80pp), but 1.5% fast is still
+    // under the potential floor (POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION).
     const floor = POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION;
-    expect(1.0).toBeLessThan(floor);
-    expect(isGrowthExpanding(1.0, 0.5)).toBe(false);
+    expect(1.5).toBeLessThan(floor);
+    expect(isGrowthExpanding(1.5, 0.5)).toBe(false);
   });
 
   it("rejects when fast is below slow at all", () => {
@@ -159,12 +160,12 @@ describe("detectRegimeKey — labor veto on the growth axis", () => {
 // symmetric fast-vs-slow gap test with a dead band — distinct from
 // isGrowthExpanding (which also requires clearing the potential-GDP floor).
 describe("rateOfChangeLabel", () => {
-  it("Accelerating when fast clears slow by more than minGap (GDP's 0.15pp)", () => {
-    expect(rateOfChangeLabel(3.0, 2.5, GROWTH_MIN_GAP)).toBe("Accelerating");
+  it("Accelerating when fast clears slow by more than minGap (empirically recalibrated to 0.80pp)", () => {
+    expect(rateOfChangeLabel(3.5, 2.5, GROWTH_MIN_GAP)).toBe("Accelerating");
   });
 
   it("Decelerating when fast trails slow by more than minGap", () => {
-    expect(rateOfChangeLabel(2.0, 2.5, GROWTH_MIN_GAP)).toBe("Decelerating");
+    expect(rateOfChangeLabel(1.5, 2.5, GROWTH_MIN_GAP)).toBe("Decelerating");
   });
 
   it("Stable within the dead band, either side of zero", () => {
@@ -172,12 +173,15 @@ describe("rateOfChangeLabel", () => {
     expect(rateOfChangeLabel(2.45, 2.5, GROWTH_MIN_GAP)).toBe("Stable");
   });
 
-  it("uses inflation's wider 0.20pp dead band when passed CPI_MIN_GAP", () => {
-    // A 0.18pp gap clears GDP's 0.15pp band (would be Accelerating there)
-    // but stays inside inflation's wider 0.20pp band (Stable here) — the
-    // two axes deliberately use different thresholds.
-    expect(rateOfChangeLabel(2.68, 2.5, GROWTH_MIN_GAP)).toBe("Accelerating");
-    expect(rateOfChangeLabel(2.68, 2.5, CPI_MIN_GAP)).toBe("Stable");
+  it("takes minGap as an explicit param, not a hardcoded constant", () => {
+    // Dead-band-recalibration spec: the empirical sweep against real FRED
+    // history happened to land both GROWTH_MIN_GAP and CPI_MIN_GAP at the
+    // same 0.80pp (a coincidence of this calibration pass, not a structural
+    // guarantee) — rateOfChangeLabel still takes minGap as a parameter, so
+    // confirm a gap that's Accelerating under one explicit width and Stable
+    // under a wider one, independent of which named constant is passed.
+    expect(rateOfChangeLabel(3.5, 2.5, 0.80)).toBe("Accelerating");
+    expect(rateOfChangeLabel(3.5, 2.5, 1.50)).toBe("Stable");
   });
 
   // Regression coverage for the regime-table dead-band bug fix: the "Real
@@ -192,16 +196,16 @@ describe("rateOfChangeLabel", () => {
   // presentational wrapper with no separate classification logic), so
   // this single test structurally covers every call site — there is no
   // longer a second function that could drift out of sync.
-  it("the live pair that motivated the bug fix (2.39% vs 2.28%) reads Stable everywhere", () => {
+  it("the live pair that motivated the original bug fix (2.39% vs 2.28%) reads Stable everywhere", () => {
     expect(rateOfChangeLabel(2.39, 2.28, GROWTH_MIN_GAP)).toBe("Stable");
   });
 
   it("a gap clearly above minGap still reads Accelerating", () => {
-    expect(rateOfChangeLabel(2.60, 2.28, GROWTH_MIN_GAP)).toBe("Accelerating");
+    expect(rateOfChangeLabel(3.28, 2.28, GROWTH_MIN_GAP)).toBe("Accelerating");
   });
 
   it("a gap clearly below minGap still reads Decelerating", () => {
-    expect(rateOfChangeLabel(2.00, 2.28, GROWTH_MIN_GAP)).toBe("Decelerating");
+    expect(rateOfChangeLabel(1.28, 2.28, GROWTH_MIN_GAP)).toBe("Decelerating");
   });
 });
 
@@ -213,29 +217,30 @@ describe("rateOfChangeLabel", () => {
 // deliberately does not, since the panel's own label never checked it either.
 describe("isGrowthAccelerating", () => {
   it("true only on a genuine Accelerating read (gap > minGap)", () => {
-    expect(isGrowthAccelerating(2.60, 2.28)).toBe(true);
+    expect(isGrowthAccelerating(3.28, 2.28)).toBe(true);
   });
 
-  it("false for the live pair that motivated the bug fix, even though it's positive and technically clears potential", () => {
-    // 2.39 vs 2.28 is a 0.11pp gap — below the 0.15pp dead band — so this
-    // must be false regardless of whether 2.39% also clears the potential
-    // floor (it does: 2.39 > 1.9*0.85=1.615). The point of this fix is
-    // that potential no longer participates in this test at all.
+  it("false for the live pair that motivated the original bug fix, even though it's positive and technically clears potential", () => {
+    // 2.39 vs 2.28 is a 0.11pp gap — well below the empirically
+    // recalibrated 0.80pp dead band — so this must be false regardless of
+    // whether 2.39% also clears the potential floor (it does: 2.39 >
+    // 1.9*0.85=1.615). The point of this fix is that potential no longer
+    // participates in this test at all.
     expect(isGrowthAccelerating(2.39, 2.28)).toBe(false);
   });
 
   it("false when Decelerating (gap < -minGap)", () => {
-    expect(isGrowthAccelerating(2.00, 2.28)).toBe(false);
+    expect(isGrowthAccelerating(1.28, 2.28)).toBe(false);
   });
 
   it("differs from isGrowthExpanding when a real crossover clears the gap but not the potential floor", () => {
-    // fast=1.0, slow=0.5: gap 0.5pp clears GROWTH_MIN_GAP (0.15pp), but
-    // 1.0% is well below the potential floor (1.9*0.85=1.615%).
+    // fast=1.5, slow=0.5: gap 1.0pp clears GROWTH_MIN_GAP (0.80pp), but
+    // 1.5% is still below the potential floor (1.9*0.85=1.615%).
     // isGrowthExpanding requires both and returns false; isGrowthAccelerating
     // only checks the gap and returns true — this is the exact behavioral
     // difference the fix introduces.
-    expect(isGrowthExpanding(1.0, 0.5)).toBe(false);
-    expect(isGrowthAccelerating(1.0, 0.5)).toBe(true);
+    expect(isGrowthExpanding(1.5, 0.5)).toBe(false);
+    expect(isGrowthAccelerating(1.5, 0.5)).toBe(true);
   });
 });
 
@@ -244,23 +249,24 @@ describe("isGrowthAccelerating", () => {
 // sign test with no dead band at all, unlike growth's GROWTH_MIN_GAP —
 // meaning a hundredth-of-a-point print could flip Reflation to
 // Disinflationary Boom. isInflationAccelerating applies the same
-// rateOfChangeLabel dead-band test (CPI_MIN_GAP, 0.20pp), and the
-// Structural × Inflation table cell now renders off the same function
-// instead of its own separate `>` comparison.
+// rateOfChangeLabel dead-band test (CPI_MIN_GAP, empirically recalibrated
+// to 0.80pp — see the dead-band-recalibration spec), and the Structural ×
+// Inflation table cell now renders off the same function instead of its
+// own separate `>` comparison.
 describe("isInflationAccelerating", () => {
   it("true only on a genuine Accelerating read (gap > CPI_MIN_GAP)", () => {
-    expect(isInflationAccelerating(3.65, 3.13)).toBe(true);
+    expect(isInflationAccelerating(4.13, 3.13)).toBe(true);
   });
 
   it("false for a marginal gap that a bare sign test would have called rising", () => {
-    // 3.65 vs 3.55 is a 0.10pp gap — positive, but below the 0.20pp dead
-    // band. A bare `fast > slow` test would have called this "rising";
+    // 3.65 vs 3.55 is a 0.10pp gap — positive, but well below the 0.80pp
+    // dead band. A bare `fast > slow` test would have called this "rising";
     // isInflationAccelerating correctly calls it Stable (not up).
     expect(isInflationAccelerating(3.65, 3.55)).toBe(false);
   });
 
   it("false when Decelerating (gap < -CPI_MIN_GAP)", () => {
-    expect(isInflationAccelerating(3.00, 3.30)).toBe(false);
+    expect(isInflationAccelerating(2.30, 3.30)).toBe(false);
   });
 });
 
@@ -273,12 +279,12 @@ describe("isInflationAccelerating", () => {
 // Persistence carries its own real confidence instead of suppressing one.
 describe("resolveAxisState", () => {
   it("Accelerating resolves directly, not Persistence", () => {
-    const r = resolveAxisState(2.60, 2.28, GROWTH_MIN_GAP);
+    const r = resolveAxisState(3.28, 2.28, GROWTH_MIN_GAP);
     expect(r).toMatchObject({ up: true, persistence: false, persistenceConfidence: null });
   });
 
   it("Decelerating resolves directly, not Persistence", () => {
-    const r = resolveAxisState(2.00, 2.28, GROWTH_MIN_GAP);
+    const r = resolveAxisState(1.28, 2.28, GROWTH_MIN_GAP);
     expect(r).toMatchObject({ up: false, persistence: false, persistenceConfidence: null });
   });
 
@@ -318,12 +324,14 @@ describe("resolveAxisState", () => {
     expect(r.persistence).toBe(true);
   });
 
-  it("uses inflation's wider 0.20pp dead band when passed CPI_MIN_GAP", () => {
-    // Same gap that clears GROWTH_MIN_GAP (Accelerating) stays inside
-    // CPI_MIN_GAP's wider band (Persistence) — the two axes deliberately
-    // use different thresholds, same as rateOfChangeLabel above.
-    expect(resolveAxisState(2.68, 2.50, GROWTH_MIN_GAP).persistence).toBe(false);
-    expect(resolveAxisState(2.68, 2.50, CPI_MIN_GAP).persistence).toBe(true);
+  it("takes minGap as an explicit param, not a hardcoded constant", () => {
+    // Dead-band-recalibration spec: GROWTH_MIN_GAP and CPI_MIN_GAP happen
+    // to land on the same 0.80pp after the empirical sweep (a coincidence
+    // of this calibration pass, not a structural guarantee) — confirm
+    // resolveAxisState still keys off whatever minGap it's given, same
+    // spirit as rateOfChangeLabel's equivalent test above.
+    expect(resolveAxisState(3.5, 2.50, 0.80).persistence).toBe(false);
+    expect(resolveAxisState(3.5, 2.50, 1.50).persistence).toBe(true);
   });
 });
 
@@ -362,13 +370,13 @@ function classifyStructural(gAxis: ReturnType<typeof resolveAxisState>, iAxis: R
 describe("Structural regime — dead-band-persistence spec scenarios", () => {
   it("Growth Stable (Persistence) + Inflation Accelerating -> null, not a forced quadrant", () => {
     const g = resolveAxisState(2.39, 2.28, GROWTH_MIN_GAP); // Stable
-    const i = resolveAxisState(3.65, 3.13, CPI_MIN_GAP); // Accelerating
+    const i = resolveAxisState(4.13, 3.13, CPI_MIN_GAP); // Accelerating
     expect(classifyStructural(g, i)).toBeNull();
   });
 
   it("Inflation Stable (Persistence) + Growth Accelerating -> null, even though growth clears its own dead band", () => {
-    const g = resolveAxisState(2.60, 2.28, GROWTH_MIN_GAP); // Accelerating
-    const i = resolveAxisState(3.20, 3.13, CPI_MIN_GAP); // gap 0.07 < 0.20 -> Stable
+    const g = resolveAxisState(3.28, 2.28, GROWTH_MIN_GAP); // Accelerating
+    const i = resolveAxisState(3.20, 3.13, CPI_MIN_GAP); // gap 0.07 < 0.80 -> Stable
     expect(classifyStructural(g, i)).toBeNull();
   });
 
@@ -379,26 +387,26 @@ describe("Structural regime — dead-band-persistence spec scenarios", () => {
   });
 
   it("Growth Accelerating + Inflation Accelerating -> Reflation, a real quadrant call", () => {
-    const g = resolveAxisState(2.60, 2.28, GROWTH_MIN_GAP);
-    const i = resolveAxisState(3.65, 3.13, CPI_MIN_GAP);
+    const g = resolveAxisState(3.28, 2.28, GROWTH_MIN_GAP);
+    const i = resolveAxisState(4.13, 3.13, CPI_MIN_GAP);
     expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Reflation");
   });
 
   it("Growth Decelerating + Inflation Accelerating -> Stagflation", () => {
-    const g = resolveAxisState(2.00, 2.28, GROWTH_MIN_GAP);
-    const i = resolveAxisState(3.65, 3.13, CPI_MIN_GAP);
+    const g = resolveAxisState(1.28, 2.28, GROWTH_MIN_GAP);
+    const i = resolveAxisState(4.13, 3.13, CPI_MIN_GAP);
     expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Stagflation");
   });
 
   it("Growth Accelerating + Inflation Decelerating -> Disinflationary Boom", () => {
-    const g = resolveAxisState(2.60, 2.28, GROWTH_MIN_GAP);
-    const i = resolveAxisState(3.00, 3.30, CPI_MIN_GAP);
+    const g = resolveAxisState(3.28, 2.28, GROWTH_MIN_GAP);
+    const i = resolveAxisState(2.30, 3.30, CPI_MIN_GAP);
     expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Disinflationary Boom");
   });
 
   it("Growth Decelerating + Inflation Decelerating -> Deflationary Bust", () => {
-    const g = resolveAxisState(2.00, 2.28, GROWTH_MIN_GAP);
-    const i = resolveAxisState(3.00, 3.30, CPI_MIN_GAP);
+    const g = resolveAxisState(1.28, 2.28, GROWTH_MIN_GAP);
+    const i = resolveAxisState(2.30, 3.30, CPI_MIN_GAP);
     expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Deflationary Bust");
   });
 });

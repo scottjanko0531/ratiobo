@@ -111,33 +111,43 @@ async function fetchFredAnnual(seriesId: string): Promise<{ year: number; value:
     .filter((o) => !isNaN(o.value));
 }
 
-// GDP & Inflation Regime Metrics spec, G1/I1 "Level — Hi vs. Low": z-score
-// of the current YoY reading against a trailing rolling window's own
-// mean/stdev. windowSize is in periods (40 quarters for GDP, 216 months
-// for Core CPI) — the date-matched year-ago lookup (findYearAgo, not a
-// positional offset) is the same gap-safe pattern used by gdp_2q_avg/
-// cpi_3m_avg, extended over a much longer window. Returns null if there
-// isn't enough real history yet to fill most of the window (still-thin
-// data reads as a confident z-score otherwise).
-async function computeRollingZScore(
-  seriesId: string, windowSize: number
+// GDP & Inflation Regime Metrics spec, G1/I1 "Level — Hi vs. Low" — z-score
+// of the current YoY reading against a FIXED calendar reference window
+// (2015-01 through 2019-12, pre-COVID), not a rolling N-periods-back
+// window. A rolling window computed today still contains the 2020 COVID
+// GDP prints (-28.0%/+34.9% QoQ swings folding into GDP's own YoY series)
+// and will keep doing so until ~2030 — silently distorting "how far
+// above/below normal is growth right now" for years. Fixing the window
+// avoids that entirely; see the dead-band-recalibration spec. One extra
+// year of lookback (2014) is fetched so the window's own YoY series can
+// date-match against a year-ago value via the existing findYearAgo, same
+// gap-safe pattern used by gdp_2q_avg/cpi_3m_avg.
+const ZSCORE_WINDOW_START = "2015-01-01";
+const ZSCORE_WINDOW_END = "2019-12-31";
+async function computeFixedWindowZScore(
+  seriesId: string, currentYoy: number
 ): Promise<{ zscore: number; window_mean: number; window_min: number; window_max: number } | null> {
-  const obs = await fetchFredObs(seriesId, windowSize + 20);
+  const url = `${FRED}?series_id=${seriesId}&api_key=${apiKey}&sort_order=asc&observation_start=2014-01-01&observation_end=${ZSCORE_WINDOW_END}&file_type=json`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`FRED ${seriesId} fixed-window: HTTP ${res.status}`);
+  const j = await res.json();
+  const obs = (j.observations as { date: string; value: string }[])
+    .filter((o) => o.value !== "." && o.value !== "")
+    .map((o) => ({ date: o.date, value: parseFloat(o.value) }))
+    .filter((o) => !isNaN(o.value));
   const yoySeries: number[] = [];
-  for (let i = 0; i < windowSize; i++) {
-    const cur = obs[i];
-    if (!cur) break;
-    const ya = findYearAgo(obs, cur.date);
-    if (!ya) break;
-    yoySeries.push((cur.value / ya.value - 1) * 100);
+  for (const o of obs) {
+    if (o.date < ZSCORE_WINDOW_START) continue;
+    const ya = findYearAgo(obs, o.date);
+    if (ya) yoySeries.push((o.value / ya.value - 1) * 100);
   }
-  if (yoySeries.length < windowSize * 0.9) return null;
+  if (yoySeries.length === 0) return null;
   const mean = yoySeries.reduce((a, b) => a + b, 0) / yoySeries.length;
   const variance = yoySeries.reduce((s, v) => s + (v - mean) ** 2, 0) / yoySeries.length;
   const stdev = Math.sqrt(variance) || 1;
   const r2 = (n: number) => Math.round(n * 100) / 100;
   return {
-    zscore: r2((yoySeries[0] - mean) / stdev),
+    zscore: r2((currentYoy - mean) / stdev),
     window_mean: r2(mean),
     window_min: r2(Math.min(...yoySeries)),
     window_max: r2(Math.max(...yoySeries)),
@@ -493,7 +503,7 @@ const INDICATORS: Indicator[] = [
   },
   {
     name: "Real GDP Growth", layer: 3, layer_name: "Business Cycle",
-    description: "Annualized real GDP YoY — expansion vs contraction",
+    description: "Real GDP YoY — expansion vs contraction",
     fred_series_id: "GDPC1", unit: "%", data_source: "fred", sort_order: 16,
     series: "GDPC1", type: "yoy_quarterly",
     statusFn: v => v >= 2 ? "healthy" : v >= 0 ? "watch" : "danger",
@@ -901,14 +911,14 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const yoy = yoyPair(obs);
         if (!yoy) return null;
         current = yoy.current; previous = yoy.previous;
-        // I1 "Level — Hi vs. Low": z-score vs. a trailing 18-year (216mo)
-        // rolling window, computed on Core CPI specifically (not headline —
-        // see the GDP & Inflation Regime Metrics spec's rationale: headline
-        // is noisy from energy/food and would read a supply shock as a
-        // structural regime shift).
+        // I1 "Level — Hi vs. Low": z-score vs. the fixed 2015-2019 reference
+        // window (see computeFixedWindowZScore), computed on Core CPI
+        // specifically (not headline — see the GDP & Inflation Regime
+        // Metrics spec's rationale: headline is noisy from energy/food and
+        // would read a supply shock as a structural regime shift).
         if (ind.name === "Core CPI (YoY)") {
-          const z = await computeRollingZScore(ind.series!, 216);
-          if (z) metadata = { ...metadata, zscore_18y: z.zscore, window_mean: z.window_mean, window_min: z.window_min, window_max: z.window_max };
+          const z = await computeFixedWindowZScore(ind.series!, yoy.current);
+          if (z) metadata = { ...metadata, zscore: z.zscore, window_mean: z.window_mean, window_min: z.window_min, window_max: z.window_max };
         }
         break;
       }
@@ -952,14 +962,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         if (!yoy) return null;
         current = yoy.current; previous = yoy.previous;
         metadata = { reference_period: obs[0].date };
-        // G1 "Level — Hi vs. Low": z-score vs. a trailing 10-year (40Q)
-        // rolling window — runs alongside the existing potential-GDP-floor
-        // anchor (POTENTIAL_GDP_GROWTH), not replacing it; the two answer
-        // different questions ("vs. recent experience" vs. "vs. the
-        // economy's structural speed limit") and can disagree usefully.
+        // G1 "Level — Hi vs. Low": z-score vs. the fixed 2015-2019 reference
+        // window (see computeFixedWindowZScore) — runs alongside the
+        // existing potential-GDP-floor anchor (POTENTIAL_GDP_GROWTH), not
+        // replacing it; the two answer different questions ("vs. a stable
+        // pre-COVID normal" vs. "vs. the economy's structural speed limit")
+        // and can disagree usefully.
         if (ind.name === "Real GDP Growth") {
-          const z = await computeRollingZScore(ind.series!, 40);
-          if (z) metadata = { ...metadata, zscore_10y: z.zscore, window_mean: z.window_mean, window_min: z.window_min, window_max: z.window_max };
+          const z = await computeFixedWindowZScore(ind.series!, yoy.current);
+          if (z) metadata = { ...metadata, zscore: z.zscore, window_mean: z.window_mean, window_min: z.window_min, window_max: z.window_max };
         }
         break;
       }
@@ -1601,14 +1612,23 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
 // live case that motivated this) correctly resolves to the growth-down side
 // of the quadrant instead of "Expanding."
 const POTENTIAL_GDP_GROWTH = 1.9;
-const GROWTH_MIN_GAP = 0.15; // pp — fast line must clear the slow line by more than this
+// Empirically recalibrated (dead-band-recalibration spec) via the new
+// supabase/functions/growth-axis-backtest walk-forward tool, swept against
+// real FRED GDPC1 history — 0.15pp fired a "real" crossover on 78% of
+// quarters at barely-better-than-coinflip 57% 1Q-ahead directional
+// hit-rate; 0.80pp (~the gap series' own historical stdev) plateaus around
+// 72% hit-rate at a still-reasonable signal frequency. Kept in sync with
+// the identical constant in lib/simulatorKeys.js/get-regime-analysis/
+// run-backtest.
+const GROWTH_MIN_GAP = 0.80; // pp — fast line must clear the slow line by more than this
 const POTENTIAL_FLOOR_FRACTION = 0.85; // fast line must be at least this fraction of potential
 
-// Dead band for the inflation crossover's up/down read — wider than
-// GROWTH_MIN_GAP since inflation prints are noisier month to month than
-// GDP's quarterly cadence. Kept in sync with the identical constant in
+// Dead band for the inflation crossover's up/down read. Empirically
+// recalibrated the same way as GROWTH_MIN_GAP above — 0.20pp fired on 56%
+// of months at 55% hit-rate; 0.80pp lifts 1Q-ahead directional hit-rate to
+// ~68%. Kept in sync with the identical constant in
 // lib/simulatorKeys.js/get-regime-analysis.
-const CPI_MIN_GAP = 0.20; // pp
+const CPI_MIN_GAP = 0.80; // pp
 
 // The Fed's actual inflation mandate, not an arbitrary round number. Kept in
 // sync with the identical constant in lib/simulatorKeys.js/get-regime-analysis.
