@@ -1625,10 +1625,14 @@ const POTENTIAL_FLOOR_FRACTION = 0.85; // fast line must be at least this fracti
 
 // Dead band for the inflation crossover's up/down read. Empirically
 // recalibrated the same way as GROWTH_MIN_GAP above — 0.20pp fired on 56%
-// of months at 55% hit-rate; 0.80pp lifts 1Q-ahead directional hit-rate to
-// ~68%. Kept in sync with the identical constant in
-// lib/simulatorKeys.js/get-regime-analysis.
-const CPI_MIN_GAP = 0.80; // pp
+// of months at 55% hit-rate. Unlike growth, a finer sweep (0.80-1.10pp)
+// found NO plateau for inflation — hit-rate climbed steadily and roughly
+// monotonically the whole way (68% at 0.80pp -> 75% at 1.00pp -> 81% at
+// 1.10pp -> 85% at 1.20pp), unlike growth's flat 70-73% band across
+// 0.75-0.90pp. 1.00pp is a deliberate compromise, not CPI's own empirical
+// ceiling — see lib/simulatorKeys.js's fuller rationale. Kept in sync with
+// the identical constant in lib/simulatorKeys.js/get-regime-analysis.
+const CPI_MIN_GAP = 1.00; // pp
 
 // The Fed's actual inflation mandate, not an arbitrary round number. Kept in
 // sync with the identical constant in lib/simulatorKeys.js/get-regime-analysis.

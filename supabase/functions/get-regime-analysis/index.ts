@@ -361,9 +361,12 @@ async function getFedRateOdds(): Promise<FedOdds | null> {
 // FRED history — see that file's/lib/simulatorKeys.js's fuller rationale.
 const GROWTH_MIN_GAP = 0.80;
 // Dead band for the inflation crossover's up/down read. Empirically
-// recalibrated the same way as GROWTH_MIN_GAP above. Kept in sync with
-// lib/simulatorKeys.js's identical constant.
-const CPI_MIN_GAP = 0.80;
+// recalibrated the same way as GROWTH_MIN_GAP above — unlike growth, no
+// plateau was found for inflation across a finer 0.80-1.10pp sweep (hit
+// rate climbed steadily throughout); 1.00pp is a deliberate compromise,
+// not CPI's own empirical ceiling — see lib/simulatorKeys.js's fuller
+// rationale. Kept in sync with lib/simulatorKeys.js's identical constant.
+const CPI_MIN_GAP = 1.00;
 // The Fed's actual inflation mandate, not an arbitrary round number.
 const FED_INFLATION_TARGET = 2.0;
 

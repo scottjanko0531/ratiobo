@@ -178,7 +178,7 @@ Deno.serve(async (req: Request) => {
     // Defaults match the current production GROWTH_MIN_GAP/CPI_MIN_GAP
     // (lib/simulatorKeys.js) so a no-param call reports on live behavior.
     const growthMinGap = Number(url.searchParams.get("growthMinGap") ?? "0.80");
-    const cpiMinGap = Number(url.searchParams.get("cpiMinGap") ?? "0.80");
+    const cpiMinGap = Number(url.searchParams.get("cpiMinGap") ?? "1.00");
     const horizonQ = Number(url.searchParams.get("horizonQ") ?? "1"); // GDP horizon, in quarters
     const horizonM = Number(url.searchParams.get("horizonM") ?? "3"); // CPI horizon, in months (3mo = 1 "quarter-equivalent")
 

@@ -174,12 +174,12 @@ describe("rateOfChangeLabel", () => {
   });
 
   it("takes minGap as an explicit param, not a hardcoded constant", () => {
-    // Dead-band-recalibration spec: the empirical sweep against real FRED
-    // history happened to land both GROWTH_MIN_GAP and CPI_MIN_GAP at the
-    // same 0.80pp (a coincidence of this calibration pass, not a structural
-    // guarantee) — rateOfChangeLabel still takes minGap as a parameter, so
-    // confirm a gap that's Accelerating under one explicit width and Stable
-    // under a wider one, independent of which named constant is passed.
+    // Dead-band-recalibration spec: GROWTH_MIN_GAP (0.80pp) and CPI_MIN_GAP
+    // (1.00pp) were independently empirically calibrated against real FRED
+    // history and land on different values — rateOfChangeLabel still takes
+    // minGap as a parameter, so confirm a gap that's Accelerating under one
+    // explicit width and Stable under a wider one, independent of which
+    // named constant is passed.
     expect(rateOfChangeLabel(3.5, 2.5, 0.80)).toBe("Accelerating");
     expect(rateOfChangeLabel(3.5, 2.5, 1.50)).toBe("Stable");
   });
@@ -250,23 +250,25 @@ describe("isGrowthAccelerating", () => {
 // meaning a hundredth-of-a-point print could flip Reflation to
 // Disinflationary Boom. isInflationAccelerating applies the same
 // rateOfChangeLabel dead-band test (CPI_MIN_GAP, empirically recalibrated
-// to 0.80pp — see the dead-band-recalibration spec), and the Structural ×
-// Inflation table cell now renders off the same function instead of its
-// own separate `>` comparison.
+// to 1.00pp — see the dead-band-recalibration spec; a finer sweep found no
+// plateau for inflation the way growth had one, so this is a deliberate
+// compromise, not CPI's own empirical hit-rate ceiling), and the
+// Structural × Inflation table cell now renders off the same function
+// instead of its own separate `>` comparison.
 describe("isInflationAccelerating", () => {
   it("true only on a genuine Accelerating read (gap > CPI_MIN_GAP)", () => {
-    expect(isInflationAccelerating(4.13, 3.13)).toBe(true);
+    expect(isInflationAccelerating(4.33, 3.13)).toBe(true);
   });
 
   it("false for a marginal gap that a bare sign test would have called rising", () => {
-    // 3.65 vs 3.55 is a 0.10pp gap — positive, but well below the 0.80pp
+    // 3.65 vs 3.55 is a 0.10pp gap — positive, but well below the 1.00pp
     // dead band. A bare `fast > slow` test would have called this "rising";
     // isInflationAccelerating correctly calls it Stable (not up).
     expect(isInflationAccelerating(3.65, 3.55)).toBe(false);
   });
 
   it("false when Decelerating (gap < -CPI_MIN_GAP)", () => {
-    expect(isInflationAccelerating(2.30, 3.30)).toBe(false);
+    expect(isInflationAccelerating(2.10, 3.30)).toBe(false);
   });
 });
 
@@ -325,11 +327,10 @@ describe("resolveAxisState", () => {
   });
 
   it("takes minGap as an explicit param, not a hardcoded constant", () => {
-    // Dead-band-recalibration spec: GROWTH_MIN_GAP and CPI_MIN_GAP happen
-    // to land on the same 0.80pp after the empirical sweep (a coincidence
-    // of this calibration pass, not a structural guarantee) — confirm
-    // resolveAxisState still keys off whatever minGap it's given, same
-    // spirit as rateOfChangeLabel's equivalent test above.
+    // Dead-band-recalibration spec: confirm resolveAxisState keys off
+    // whatever minGap it's given (GROWTH_MIN_GAP=0.80pp and CPI_MIN_GAP=
+    // 1.00pp are independently calibrated, not structurally tied together),
+    // same spirit as rateOfChangeLabel's equivalent test above.
     expect(resolveAxisState(3.5, 2.50, 0.80).persistence).toBe(false);
     expect(resolveAxisState(3.5, 2.50, 1.50).persistence).toBe(true);
   });
@@ -370,13 +371,13 @@ function classifyStructural(gAxis: ReturnType<typeof resolveAxisState>, iAxis: R
 describe("Structural regime — dead-band-persistence spec scenarios", () => {
   it("Growth Stable (Persistence) + Inflation Accelerating -> null, not a forced quadrant", () => {
     const g = resolveAxisState(2.39, 2.28, GROWTH_MIN_GAP); // Stable
-    const i = resolveAxisState(4.13, 3.13, CPI_MIN_GAP); // Accelerating
+    const i = resolveAxisState(4.33, 3.13, CPI_MIN_GAP); // Accelerating
     expect(classifyStructural(g, i)).toBeNull();
   });
 
   it("Inflation Stable (Persistence) + Growth Accelerating -> null, even though growth clears its own dead band", () => {
     const g = resolveAxisState(3.28, 2.28, GROWTH_MIN_GAP); // Accelerating
-    const i = resolveAxisState(3.20, 3.13, CPI_MIN_GAP); // gap 0.07 < 0.80 -> Stable
+    const i = resolveAxisState(3.20, 3.13, CPI_MIN_GAP); // gap 0.07 < 1.00 -> Stable
     expect(classifyStructural(g, i)).toBeNull();
   });
 
@@ -388,25 +389,25 @@ describe("Structural regime — dead-band-persistence spec scenarios", () => {
 
   it("Growth Accelerating + Inflation Accelerating -> Reflation, a real quadrant call", () => {
     const g = resolveAxisState(3.28, 2.28, GROWTH_MIN_GAP);
-    const i = resolveAxisState(4.13, 3.13, CPI_MIN_GAP);
+    const i = resolveAxisState(4.33, 3.13, CPI_MIN_GAP);
     expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Reflation");
   });
 
   it("Growth Decelerating + Inflation Accelerating -> Stagflation", () => {
     const g = resolveAxisState(1.28, 2.28, GROWTH_MIN_GAP);
-    const i = resolveAxisState(4.13, 3.13, CPI_MIN_GAP);
+    const i = resolveAxisState(4.33, 3.13, CPI_MIN_GAP);
     expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Stagflation");
   });
 
   it("Growth Accelerating + Inflation Decelerating -> Disinflationary Boom", () => {
     const g = resolveAxisState(3.28, 2.28, GROWTH_MIN_GAP);
-    const i = resolveAxisState(2.30, 3.30, CPI_MIN_GAP);
+    const i = resolveAxisState(2.10, 3.30, CPI_MIN_GAP);
     expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Disinflationary Boom");
   });
 
   it("Growth Decelerating + Inflation Decelerating -> Deflationary Bust", () => {
     const g = resolveAxisState(1.28, 2.28, GROWTH_MIN_GAP);
-    const i = resolveAxisState(2.30, 3.30, CPI_MIN_GAP);
+    const i = resolveAxisState(2.10, 3.30, CPI_MIN_GAP);
     expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Deflationary Bust");
   });
 });
