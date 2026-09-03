@@ -19,7 +19,8 @@ import {
   ILLIQUID_KEYS,
   detectRegimeKey,
   isInflationAccelerating,
-  resolveAxisDirection,
+  resolveAxisState,
+  persistenceConfidenceTier,
   confidenceTierMultiplier,
   isLaborDeteriorating,
   rateOfChangeLabel,
@@ -435,9 +436,21 @@ function computeForwardSignal(indicators, growthSignals, inflSignals, thresh) {
   const dir = s => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
   const rawGDir = dir(growth.score);
   const rawIDir = dir(infl.score);
-  // fall back to sign when score is in the neutral band
-  const gDir = rawGDir === "neutral" ? (growth.score >= 0 ? "up" : "down") : rawGDir;
-  const iDir = rawIDir === "neutral" ? (infl.score >= 0 ? "up" : "down") : rawIDir;
+  // Dead-band-persistence spec: no more sign-fallback. A neutral score is
+  // Persistence, not a coin-flipped Up/Down — gDir/iDir are null whenever
+  // that axis is in the dead band, and forwardKey (below) correctly
+  // becomes null rather than a forced quadrant. consensus()/volMod already
+  // guard on falsy/"neutral" direction, so this is contained to gDir/
+  // iDir/forwardKey's own nullability.
+  const gDir = rawGDir === "neutral" ? null : rawGDir;
+  const iDir = rawIDir === "neutral" ? null : rawIDir;
+  const growthPersistence = rawGDir === "neutral";
+  const inflPersistence = rawIDir === "neutral";
+  // Same distance-from-center formula as resolveAxisState in
+  // lib/simulatorKeys.js — 100% at dead-band center, 0% at the edge.
+  const persistenceConf = (score) => score == null ? null : Math.round((1 - Math.min(Math.abs(score) / THRESH, 1)) * 100);
+  const growthPersistenceConfidence = growthPersistence ? persistenceConf(growth.score) : null;
+  const inflPersistenceConfidence = inflPersistence ? persistenceConf(infl.score) : null;
   const forwardKey =
     gDir === "up"   && iDir === "down" ? "rg_fi" :
     gDir === "up"   && iDir === "up"   ? "rg_ri" :
@@ -480,7 +493,10 @@ function computeForwardSignal(indicators, growthSignals, inflSignals, thresh) {
     return confirms ? 5 : -8;
   })();
   const confidence = baseConfidence != null ? Math.max(0, Math.min(100, baseConfidence + volMod)) : null;
-  return { growth, infl, gDir, iDir, rawGDir, rawIDir, forwardKey, confidence, baseConfidence, volMod, gConf, iConf };
+  return {
+    growth, infl, gDir, iDir, rawGDir, rawIDir, forwardKey, confidence, baseConfidence, volMod, gConf, iConf,
+    growthPersistence, inflPersistence, growthPersistenceConfidence, inflPersistenceConfidence,
+  };
 }
 
 // Computes both horizon panels independently — they are never averaged or
@@ -535,22 +551,23 @@ function MacroSummary({ indicators }) {
   // GDP: 2-quarter avg (fast) vs 4-quarter avg (slow). CPI: 3-month avg
   // (fast) vs 9-month avg (slow). Falls back to a raw-reading comparison
   // only when the crossover indicators aren't loaded yet.
-  // Tiebreak inputs (Direction/Level) for when Rate of Change reads
-  // "Stable" — see resolveAxisDirection and the regime tiebreaker spec.
-  const gdpDirection = (() => { const c = get("GDP Growth (2Q Avg)"), p = getPrev("GDP Growth (2Q Avg)"); return c != null && p != null ? Math.sign(c - p) : null; })();
-  const gdpZscore    = getMeta("Real GDP Growth", "zscore_10y");
-  const cpiDirection = (() => { const c = get("CPI Growth (3M Avg)"), p = getPrev("CPI Growth (3M Avg)"); return c != null && p != null ? Math.sign(c - p) : null; })();
-  const cpiZscore    = getMeta("Core CPI (YoY)", "zscore_18y");
-  // Growth axis (with tiebreak) is shared by Structural AND Market
-  // Expectations — both read the identical GDP fast/slow crossover, so
-  // both must resolve a Stable read via the same Direction/Level
-  // tiebreaker rather than Market silently defaulting Stable to Down.
-  // See the regime tiebreaker spec and its follow-up carryover-bug fix.
-  const gAxis = resolveAxisDirection(gdpFastVal, gdp3yAvg, GROWTH_MIN_GAP, gdpDirection, gdpZscore);
+  // Growth axis state (Accelerating/Decelerating/Persistence) is shared by
+  // Structural AND Market Expectations — both read the identical GDP
+  // fast/slow crossover, so both must resolve a Stable read as the same
+  // Persistence state rather than Market silently defaulting Stable to
+  // Down (the carryover bug) or either lens coin-flipping a direction (the
+  // dead-band-persistence spec, superseding the earlier Direction/Level
+  // tiebreak).
+  const gAxis = resolveAxisState(gdpFastVal, gdp3yAvg, GROWTH_MIN_GAP);
   const iAxis = cpiFastVal != null && cpiSlowVal != null
-    ? resolveAxisDirection(cpiFastVal, cpiSlowVal, CPI_MIN_GAP, cpiDirection, cpiZscore)
+    ? resolveAxisState(cpiFastVal, cpiSlowVal, CPI_MIN_GAP)
     : null;
-  const structuralRegimeKey = gdpFastVal != null
+  // A lens's key is null — not a coin-flipped quadrant — whenever either
+  // axis is in Persistence. resolveHeadlineRegime already treats a null
+  // vote as "doesn't vote" (see its .filter(Boolean)), so a Persistence
+  // lens correctly stops forcing a spurious quadrant into the majority
+  // check instead of silently biasing it.
+  const structuralRegimeKey = gdpFastVal != null && !gAxis.persistence && !(iAxis?.persistence)
     ? (() => {
         const growthUp = gAxis.up === true && !laborDeteriorating;
         const inflUp   = iAxis?.up === true;
@@ -562,10 +579,10 @@ function MacroSummary({ indicators }) {
     : null;
   // Same market-expectations leg as QuadrantCard, so this card's headline
   // resolves via the identical 2-of-3 majority rather than structural alone.
-  // Growth leg reuses gAxis (identical crossover + tiebreak as Structural,
-  // not a separately-computed test) — only the inflation leg differs
-  // (breakeven vs Fed target, a level comparison with no Stable state).
-  const marketRegimeKey = gdpFastVal != null
+  // Growth leg reuses gAxis (identical crossover as Structural, not a
+  // separately-computed test) — only the inflation leg differs (breakeven
+  // vs Fed target, a level comparison with no Stable/Persistence state).
+  const marketRegimeKey = gdpFastVal != null && !gAxis.persistence
     ? (() => {
         const growthUp = gAxis.up === true && !laborDeteriorating;
         const inflUp   = breakevenVal > FED_INFLATION_TARGET;
@@ -577,7 +594,17 @@ function MacroSummary({ indicators }) {
     : null;
   const fwd = computeForwardSignals(indicators);
   const majorityRegimeKey = resolveHeadlineRegime(structuralRegimeKey, marketRegimeKey, fwd.mediumTerm.forwardKey);
-  const isTransitional = structuralRegimeKey != null && marketRegimeKey != null && majorityRegimeKey == null;
+  // Transitional means the lenses that DO have a real (non-Persistence)
+  // signal actually disagree with each other — not merely that one lens
+  // has nothing new to say. A Persistence lens no longer forces a
+  // spurious "both must be non-null" requirement that would otherwise
+  // block a real 2-of-2 majority from the remaining lenses.
+  const realLensCount = [structuralRegimeKey, marketRegimeKey, fwd.mediumTerm.forwardKey].filter(Boolean).length;
+  const isTransitional = realLensCount >= 2 && majorityRegimeKey == null;
+  // Mirrors QuadrantCard's isPersistenceContinuation so this compact
+  // summary's headline word never disagrees with the detailed card below it.
+  const isPersistenceContinuation = !isTransitional && majorityRegimeKey == null
+    && (gAxis.persistence || (iAxis?.persistence ?? false) || fwd.mediumTerm.growthPersistence || fwd.mediumTerm.inflPersistence);
   const incompleteRegimeInputs = getStaleOrMissingRegimeInputs(indicators);
   const regimeKey = majorityRegimeKey
     ?? structuralRegimeKey
@@ -690,8 +717,8 @@ function MacroSummary({ indicators }) {
         </div>
         <div className="text-right shrink-0">
           <div className="flex items-center justify-end gap-1.5">
-            <p className={`text-sm font-semibold ${isTransitional ? "text-brass-soft" : regimeTextColor}`}>
-              {isTransitional ? "Transitional" : regime.label}
+            <p className={`text-sm font-semibold ${isTransitional || isPersistenceContinuation ? "text-brass-soft" : regimeTextColor}`}>
+              {isTransitional ? "Transitional" : isPersistenceContinuation ? "Regime continuation" : regime.label}
             </p>
             {incompleteRegimeInputs.length > 0 && (
               <span
@@ -1010,16 +1037,42 @@ function rateOfChangeDisplay(fast, slow, minGap) {
   return stateDisplay(rateOfChangeLabel(fast, slow, minGap));
 }
 
-// Describes how resolveAxisDirection resolved an axis, for the Regime Read
-// row's "which path was used" line — see the regime tiebreaker spec. Only
-// meaningful when axis.tentative is true (Rate of Change alone was
-// conclusive, no line needed).
-function describeAxisResolution(label, axis) {
-  if (!axis?.tentative) return null;
-  const via = axis.resolvedVia === "direction" ? "Direction" : axis.resolvedVia === "level" ? "Level" : null;
-  return via
-    ? `${label}: ${axis.rateLabel} → resolved via ${via} (${axis.up ? "Up" : "Down"})`
-    : `${label}: ${axis.rateLabel} → no clear signal (defaulted Down)`;
+// Builds the Regime Read row's "which axis is doing the work" line for
+// Structural/Market Expectations when one of them has no real quadrant to
+// show — per the dead-band-persistence spec, this always means at least
+// one axis (growth or inflation) is in Persistence. Distinguishes both
+// axes Persistence (a stronger continuation signal) from one Persistence
+// + one real (name which, lean toward continuation with that axis's
+// pressure). `inflAxis` is null for Market Expectations, whose inflation
+// leg (breakeven vs Fed target) is a level comparison with no Persistence
+// state — pass `inflRealUp` (a plain boolean) instead in that case.
+// Same >65%/<35%/mid-range vocabulary as the Forward Signal panels'
+// per-leg persistence display, so "how much should I trust this flat
+// read" uses one consistent scale everywhere it appears on the page.
+function persistenceConfidenceSuffix(conf, nearSide) {
+  const tier = persistenceConfidenceTier(conf);
+  if (tier === "high") return " · low risk of near-term shift";
+  if (tier === "low") return ` · near threshold, watch for a break to ${nearSide ?? "a real signal"}`;
+  return "";
+}
+
+function describeAxisContinuation(growthAxis, inflAxis, growthLevel, inflLevel, inflRealUp) {
+  const growthLevelStr = growthLevel != null ? `~${growthLevel.toFixed(1)}%` : null;
+  const inflLevelStr = inflLevel != null ? `~${inflLevel.toFixed(1)}%` : null;
+  const inflPersistent = inflAxis?.persistence ?? false;
+  if (growthAxis.persistence && inflPersistent) {
+    return `Both Growth (${growthAxis.persistenceConfidence}%${persistenceConfidenceSuffix(growthAxis.persistenceConfidence, growthAxis.nearSide)}) and Inflation (${inflAxis.persistenceConfidence}%${persistenceConfidenceSuffix(inflAxis.persistenceConfidence, inflAxis.nearSide)}) reading Persistence — regime continuation, no shift signaled on either axis.`;
+  }
+  if (growthAxis.persistence) {
+    const inflUp = inflAxis ? inflAxis.up : inflRealUp;
+    const realDir = inflUp == null ? null : inflUp ? "↑ rising" : "↓ falling";
+    return `Growth: Persistence${growthLevelStr ? ` (${growthLevelStr} expected to hold)` : ""}, ${growthAxis.persistenceConfidence}% confidence${persistenceConfidenceSuffix(growthAxis.persistenceConfidence, growthAxis.nearSide)}${realDir ? ` / Inflation ${realDir} (real signal)` : ""} → leaning toward continuation with ${realDir ?? "no clear"} inflation pressure.`;
+  }
+  if (inflPersistent) {
+    const realDir = growthAxis.up == null ? null : growthAxis.up ? "↑ accelerating" : "↓ decelerating";
+    return `Inflation: Persistence${inflLevelStr ? ` (${inflLevelStr} expected to hold)` : ""}, ${inflAxis.persistenceConfidence}% confidence${persistenceConfidenceSuffix(inflAxis.persistenceConfidence, inflAxis.nearSide)}${realDir ? ` / Growth ${realDir} (real signal)` : ""} → leaning toward continuation with ${realDir ?? "no clear"} growth momentum.`;
+  }
+  return null;
 }
 
 // Data vintage: which FRED release period a reading actually corresponds
@@ -1551,12 +1604,38 @@ function isNearThreshold(s) {
   return false;
 }
 
+// Builds the "no quadrant call" message for a panel whose forwardKey is
+// null — per the dead-band-persistence spec, this always means at least
+// one axis has no real (non-Persistence) signal, so the panel should say
+// which axis is doing the work rather than a generic "unclear direction."
+// Distinguishes three cases: both axes in Persistence (a stronger
+// continuation signal than either alone); one axis Persistence + the
+// other a real signal (name which axis, lean toward continuation with
+// that signal's own pressure); or genuinely missing data on one/both axes
+// (no score at all, not merely inside the dead band).
+function describePanelContinuation(panel, currentGrowthLevel, currentInflLevel) {
+  const growthLevelStr = currentGrowthLevel != null ? `~${currentGrowthLevel.toFixed(1)}%` : null;
+  const inflLevelStr = currentInflLevel != null ? `~${currentInflLevel.toFixed(1)}%` : null;
+  if (panel.growthPersistence && panel.inflPersistence) {
+    return "Both Growth and Inflation reading Persistence — regime continuation, no shift signaled on either axis.";
+  }
+  if (panel.growthPersistence) {
+    const realDir = panel.iDir === "up" ? "↑ rising" : panel.iDir === "down" ? "↓ falling" : null;
+    return `Growth: Persistence${growthLevelStr ? ` (${growthLevelStr} expected to hold)` : ""}${realDir ? ` / Inflation ${realDir} (real signal)` : ""} → leaning toward continuation with ${realDir ?? "no clear"} inflation pressure.`;
+  }
+  if (panel.inflPersistence) {
+    const realDir = panel.gDir === "up" ? "↑ expanding" : panel.gDir === "down" ? "↓ contracting" : null;
+    return `Inflation: Persistence${inflLevelStr ? ` (${inflLevelStr} expected to hold)` : ""}${realDir ? ` / Growth ${realDir} (real signal)` : ""} → leaning toward continuation with ${realDir ?? "no clear"} growth momentum.`;
+  }
+  return "Inconclusive — insufficient data on growth or inflation momentum.";
+}
+
 // One horizon panel's worth of Forward Signal UI — Near-Term and Medium-Term
 // render from this same function so they can never visually drift apart.
 // They are independently scored and never averaged or reconciled into one
 // number (see the forward-signal two-horizon spec); each gets its own
 // "Current → [panel]" transition since the two can legitimately disagree.
-function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime }) {
+function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime, currentGrowthLevel, currentInflLevel }) {
   return (
     <div>
       <p className="label mb-3">
@@ -1566,15 +1645,15 @@ function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime }) {
       <div className="grid grid-cols-2 gap-3 mb-3">
         {[
           // dir uses the RAW pre-fallback direction (rawGDir/rawIDir), not
-          // gDir/iDir — those already collapse "neutral" to a sign for the
-          // regime-key computation, which would make "Flat / Uncertain" below
-          // unreachable if reused here. conf is this leg's OWN confidence
-          // (B4) — not the blended headline number — so a strong growth
-          // read and a weak inflation read never get averaged into one
-          // misleadingly-middling figure.
-          { key: "growth", label: "Growth Momentum", group: panel.growth, dir: panel.rawGDir, conf: panel.gConf, upLabel: "Expanding", downLabel: "Contracting" },
-          { key: "infl", label: "Inflation Momentum", group: panel.infl, dir: panel.rawIDir, conf: panel.iConf, upLabel: "Rising", downLabel: "Falling" },
-        ].map(({ key, label, group, dir, conf, upLabel, downLabel }) => (
+          // gDir/iDir — those are null whenever that axis is in Persistence
+          // (dead-band-persistence spec), which would make the Persistence
+          // branch below unreachable if reused here. conf is this leg's OWN
+          // confidence (B4) — not the blended headline number — so a
+          // strong growth read and a weak inflation read never get
+          // averaged into one misleadingly-middling figure.
+          { key: "growth", label: "Growth Momentum", group: panel.growth, dir: panel.rawGDir, conf: panel.gConf, persistenceConf: panel.growthPersistenceConfidence, level: currentGrowthLevel, upLabel: "Expanding", downLabel: "Contracting" },
+          { key: "infl", label: "Inflation Momentum", group: panel.infl, dir: panel.rawIDir, conf: panel.iConf, persistenceConf: panel.inflPersistenceConfidence, level: currentInflLevel, upLabel: "Rising", downLabel: "Falling" },
+        ].map(({ key, label, group, dir, conf, persistenceConf, level, upLabel, downLabel }) => (
           <div key={key} className="bg-ink-soft rounded-lg p-3">
             <p className="label text-[10px] mb-2">{label}</p>
             <div className="space-y-1 mb-2">
@@ -1604,20 +1683,36 @@ function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime }) {
               </p>
             )}
             <div className="pt-2 border-t border-ink-line flex items-center justify-between">
-              <span className={`text-xs font-semibold ${dir === "up" ? "text-gain" : dir === "down" ? "text-loss" : "text-paper-dim"}`}>
-                {dir === "up" ? `↑ ${upLabel}` : dir === "down" ? `↓ ${downLabel}` : "→ Flat / Uncertain"}
+              <span className={`text-xs font-semibold ${dir === "up" ? "text-gain" : dir === "down" ? "text-loss" : "text-brass-soft"}`}>
+                {dir === "up" ? `↑ ${upLabel}` : dir === "down" ? `↓ ${downLabel}` : "→ Persistence"}
               </span>
               <span className="num text-[10px] text-paper-dim">
                 score {group.score == null ? "—" : `${group.score >= 0 ? "+" : ""}${group.score.toFixed(2)}`}
               </span>
             </div>
-            {/* B2: a leg whose direction was resolved by the dead-band
-                sign-fallback (dir === "neutral") gets its confidence
-                suppressed — the number would be computed against an
-                arbitrary tiebreak direction, not a real signal. */}
-            <p className="text-[10px] text-paper-dim mt-1">
-              confidence: {dir === "neutral" ? "N/A — inside dead band" : conf != null ? `${conf}%` : "—"}
-            </p>
+            {/* Dead-band-persistence spec: a leg whose score sits inside
+                the dead band no longer coin-flips a direction (superseding
+                the earlier "N/A — inside dead band" suppression, B2). It
+                carries its own point forecast (level held flat, not
+                extrapolated — a near-zero score is exactly what produced
+                the flat read, so extrapolating it would just reintroduce
+                the coin-flip) and a persistence confidence — 100% at
+                dead-band center, 0% at the edge — using the same
+                high/low/mid tiering language as signal-strength elsewhere
+                on the page. */}
+            {dir === "neutral" ? (
+              <p className="text-[10px] text-brass-soft/80 mt-1">
+                Persistence{persistenceConf > 65 ? " (high confidence)" : persistenceConf < 35 ? " (low confidence)" : ""}
+                {level != null && ` — ~${level.toFixed(1)}% expected to hold`}
+                {persistenceConf > 65 && " · low risk of near-term shift"}
+                {persistenceConf < 35 && ` · near threshold, watch for a break to ${group.signals.length ? (group.score >= 0 ? upLabel : downLabel) : "a real signal"}`}
+                {persistenceConf != null && ` (${persistenceConf}%)`}
+              </p>
+            ) : (
+              <p className="text-[10px] text-paper-dim mt-1">
+                confidence: {conf != null ? `${conf}%` : "—"}
+              </p>
+            )}
           </div>
         ))}
       </div>
@@ -1657,8 +1752,8 @@ function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime }) {
           </div>
         </div>
       ) : (
-        <div className="bg-ink-soft/50 rounded-lg px-4 py-3 text-xs text-paper-dim">
-          {title} inconclusive — growth and inflation momentum point in the same or unclear direction.
+        <div className="bg-ink-soft/50 rounded-lg px-4 py-3 text-xs text-brass-soft/80">
+          {describePanelContinuation(panel, currentGrowthLevel, currentInflLevel)}
         </div>
       )}
     </div>
@@ -1712,19 +1807,21 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // not just one noisy print poking through a single threshold the way the
   // prior current-vs-baseline test (and the debt-cycle annual quadrant this
   // used to fall back to) could produce.
-  // Tiebreak inputs (Direction/Level) for when Rate of Change reads
-  // "Stable" — see resolveAxisDirection and the regime tiebreaker spec.
-  const gdpDirection = gdpFastInd?.current_value != null && gdpFastInd?.previous_value != null
-    ? Math.sign(Number(gdpFastInd.current_value) - Number(gdpFastInd.previous_value)) : null;
-  const gdpZscore    = gdp?.metadata?.zscore_10y ?? null;
-  const cpiDirection = cpiFastInd?.current_value != null && cpiFastInd?.previous_value != null
-    ? Math.sign(Number(cpiFastInd.current_value) - Number(cpiFastInd.previous_value)) : null;
-  const cpiZscore    = coreCpiInd?.metadata?.zscore_18y ?? null;
-  const structuralGrowthAxis = resolveAxisDirection(gdpFastVal, gdp3yAvgVal, GROWTH_MIN_GAP, gdpDirection, gdpZscore);
+  // Growth/inflation axis state (Accelerating/Decelerating/Persistence) —
+  // see resolveAxisState and the dead-band-persistence spec, which
+  // supersedes the earlier Direction/Level tiebreak. A Stable crossover no
+  // longer coin-flips a direction; it carries its own Persistence
+  // confidence instead (how solidly centered the read is).
+  const structuralGrowthAxis = resolveAxisState(gdpFastVal, gdp3yAvgVal, GROWTH_MIN_GAP);
   const structuralInflAxis   = cpiFastVal != null && cpi3yAvgVal != null
-    ? resolveAxisDirection(cpiFastVal, cpi3yAvgVal, CPI_MIN_GAP, cpiDirection, cpiZscore)
+    ? resolveAxisState(cpiFastVal, cpi3yAvgVal, CPI_MIN_GAP)
     : null;
+  // A lens's key is null — not a coin-flipped quadrant — whenever either
+  // axis is in Persistence; resolveHeadlineRegime already treats a null
+  // vote as "doesn't vote," so this correctly stops a Persistence lens
+  // from forcing a spurious quadrant into the 2-of-3 majority check.
   const structuralRegimeKey = gdpFastVal != null && gdp3yAvg?.current_value != null
+    && !structuralGrowthAxis.persistence && !(structuralInflAxis?.persistence)
     ? (() => {
         const growthUp = structuralGrowthAxis.up === true && !laborDeteriorating;
         const inflUp   = structuralInflAxis?.up === true;
@@ -1735,14 +1832,11 @@ function QuadrantCard({ indicators, holdings, assetData }) {
       })()
     : null;
   const structuralMeta = structuralRegimeKey ? REGIME_META[structuralRegimeKey] : null;
-  // Tentative when either axis fell through Rate of Change's dead band and
-  // had to resolve via Direction or Level instead of a direct crossover
-  // match — see the regime tiebreaker spec. Market Expectations gets its
-  // own marketTentative below (growth leg only, since it shares
-  // structuralGrowthAxis); this one is not reused for the majority-vote
-  // headline above, which just compares keys.
-  const structuralTentative = structuralRegimeKey != null
-    && (structuralGrowthAxis.tentative || (structuralInflAxis?.tentative ?? false));
+  // True whenever Structural's key is null specifically BECAUSE an axis is
+  // in Persistence (as opposed to null from missing data) — gates the
+  // Regime Read row's continuation messaging.
+  const structuralIsPersistence = gdpFastVal != null && gdp3yAvg?.current_value != null
+    && (structuralGrowthAxis.persistence || (structuralInflAxis?.persistence ?? false));
 
   // Market-expectations regime: is the market pricing sustained inflation above
   // the Fed's own 2% target (FED_INFLATION_TARGET)? CPI > breakeven means the
@@ -1750,14 +1844,11 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // threshold used to be a hardcoded 2.5% — an arbitrary round number that
   // called a 2.31% breakeven "below threshold" when it's actually still above
   // the Fed's real mandate. Growth leg reuses structuralGrowthAxis — the
-  // IDENTICAL crossover + Direction/Level tiebreak as the structural regime
-  // above, not a separately-computed test. This carried the same "Stable
-  // silently defaults to Down" bug the regime tiebreaker spec fixed for
-  // Structural — Market Expectations never got the fix, so an identical
-  // "Stable" crossover (e.g. 2.39% vs 2.28%) resolved differently on the
-  // two lenses purely because Structural checked Direction and Market
-  // didn't. See the follow-up carryover-bug report.
-  const marketRegimeKey = gdpFastVal != null
+  // IDENTICAL crossover as the structural regime above, not a
+  // separately-computed test (this fixed the earlier carryover bug where
+  // Market Expectations silently defaulted a Stable read to Down instead
+  // of matching Structural's treatment).
+  const marketRegimeKey = gdpFastVal != null && !structuralGrowthAxis.persistence
     ? (() => {
         const growthUp = structuralGrowthAxis.up === true && !laborDeteriorating;
         const inflUp   = breakevenVal > FED_INFLATION_TARGET;
@@ -1769,10 +1860,10 @@ function QuadrantCard({ indicators, holdings, assetData }) {
     : null;
   const marketMeta = marketRegimeKey ? REGIME_META[marketRegimeKey] : null;
   // Market's growth leg is structuralGrowthAxis itself, so it can only ever
-  // be tentative when Structural's growth leg is (the inflation leg —
+  // be in Persistence when Structural's growth leg is (the inflation leg —
   // breakeven vs Fed target — is a level comparison with no Stable state,
-  // so it never contributes a tiebreak here).
-  const marketTentative = marketRegimeKey != null && structuralGrowthAxis.tentative;
+  // so it never contributes a Persistence read here).
+  const marketIsPersistence = gdpFastVal != null && structuralGrowthAxis.persistence;
 
   const fwd = computeForwardSignals(indicators);
 
@@ -1781,7 +1872,17 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // to the structural read (a stable anchor for portfolio weights even when
   // the lenses are split) so allocation logic never goes fully unset.
   const majorityRegimeKey = resolveHeadlineRegime(structuralRegimeKey, marketRegimeKey, fwd.mediumTerm.forwardKey);
-  const isTransitional = structuralRegimeKey != null && marketRegimeKey != null && majorityRegimeKey == null;
+  // Transitional means the lenses that DO have a real (non-Persistence)
+  // signal actually disagree with each other — not merely that one lens
+  // has nothing new to say. See the dead-band-persistence spec, Part 3.
+  const realLensCount = [structuralRegimeKey, marketRegimeKey, fwd.mediumTerm.forwardKey].filter(Boolean).length;
+  const isTransitional = realLensCount >= 2 && majorityRegimeKey == null;
+  // True when the top-level read didn't come from a real 2-of-3 majority
+  // specifically because at least one lens is in Persistence (as opposed
+  // to Transitional, where the real-signal lenses disagree, or simply too
+  // few lenses having data at all) — gates the "Regime continuation" framing.
+  const isPersistenceContinuation = !isTransitional && majorityRegimeKey == null
+    && (structuralIsPersistence || marketIsPersistence || fwd.mediumTerm.growthPersistence || fwd.mediumTerm.inflPersistence);
   const incompleteRegimeInputs = getStaleOrMissingRegimeInputs(indicators);
   const regimeKey = majorityRegimeKey
     ?? structuralRegimeKey
@@ -1949,6 +2050,8 @@ function QuadrantCard({ indicators, holdings, assetData }) {
               <div className="flex items-center gap-2">
                 {isTransitional ? (
                   <p className="text-2xl font-bold text-brass-soft">Transitional</p>
+                ) : isPersistenceContinuation ? (
+                  <p className="text-2xl font-bold text-brass-soft">Regime continuation</p>
                 ) : (
                   <p className={`text-2xl font-bold ${regime.color}`}>{regime.label}</p>
                 )}
@@ -1964,6 +2067,14 @@ function QuadrantCard({ indicators, holdings, assetData }) {
               {isTransitional ? (
                 <p className="text-paper-dim text-sm mt-1">
                   Lenses diverging — Structural: {structuralMeta?.label ?? "n/a"} · Market: {marketMeta?.label ?? "n/a"} · Forward (Medium-Term): {fwd.mediumTerm.forwardKey ? (REGIME_META[fwd.mediumTerm.forwardKey]?.label ?? "n/a") : "n/a"}
+                </p>
+              ) : isPersistenceContinuation ? (
+                <p className="text-paper-dim text-sm mt-1">
+                  No shift signaled (currently: {regime?.label ?? "n/a"}) — {[
+                    structuralIsPersistence && "Structural",
+                    marketIsPersistence && "Market",
+                    (fwd.mediumTerm.growthPersistence || fwd.mediumTerm.inflPersistence) && "Forward (Medium-Term)",
+                  ].filter(Boolean).join(" and ")} reading Persistence, not a fresh classification.
                 </p>
               ) : (
                 <p className="text-paper-dim text-sm mt-1">{regime.desc}</p>
@@ -2133,35 +2244,35 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                 <div className="px-3 py-3">
                   <p className="label text-[10px]">Regime Read</p>
                 </div>
-                <div className={`px-3 py-3 border-l border-ink-line ${structuralTentative ? "border-b-2 border-b-brass/40" : ""}`}>
+                <div className={`px-3 py-3 border-l border-ink-line ${structuralIsPersistence ? "border-b-2 border-b-brass/40" : ""}`}>
                   {structuralMeta ? (
                     <>
-                      <p className={`font-semibold ${structuralTentative ? "text-brass-soft" : structuralMeta.color}`}>
-                        {structuralMeta.label}{structuralTentative ? " (Tentative)" : ""}
-                      </p>
+                      <p className={`font-semibold ${structuralMeta.color}`}>{structuralMeta.label}</p>
                       <p className="text-[11px] text-paper-dim mt-0.5">{structuralMeta.desc}</p>
-                      {structuralTentative && (
-                        <p className="text-[10px] text-brass-soft/70 mt-1">
-                          {[describeAxisResolution("Growth", structuralGrowthAxis), describeAxisResolution("Inflation", structuralInflAxis)]
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </p>
-                      )}
+                    </>
+                  ) : structuralIsPersistence ? (
+                    <>
+                      <p className="font-semibold text-brass-soft">Regime continuation</p>
+                      <p className="text-[11px] text-paper-dim mt-0.5">no shift signaled (currently: {regime?.label ?? "n/a"})</p>
+                      <p className="text-[10px] text-brass-soft/70 mt-1">
+                        {describeAxisContinuation(structuralGrowthAxis, structuralInflAxis, gdpFastVal, cpiFastVal)}
+                      </p>
                     </>
                   ) : <p className="text-paper-dim text-[11px]">—</p>}
                 </div>
-                <div className={`px-3 py-3 border-l border-ink-line ${marketTentative ? "border-b-2 border-b-brass/40" : ""}`}>
+                <div className={`px-3 py-3 border-l border-ink-line ${marketIsPersistence ? "border-b-2 border-b-brass/40" : ""}`}>
                   {marketMeta ? (
                     <>
-                      <p className={`font-semibold ${marketTentative ? "text-brass-soft" : marketMeta.color}`}>
-                        {marketMeta.label}{marketTentative ? " (Tentative)" : ""}
-                      </p>
+                      <p className={`font-semibold ${marketMeta.color}`}>{marketMeta.label}</p>
                       <p className="text-[11px] text-paper-dim mt-0.5">{marketMeta.desc}</p>
-                      {marketTentative && (
-                        <p className="text-[10px] text-brass-soft/70 mt-1">
-                          {describeAxisResolution("Growth", structuralGrowthAxis)}
-                        </p>
-                      )}
+                    </>
+                  ) : marketIsPersistence ? (
+                    <>
+                      <p className="font-semibold text-brass-soft">Regime continuation</p>
+                      <p className="text-[11px] text-paper-dim mt-0.5">no shift signaled (currently: {regime?.label ?? "n/a"})</p>
+                      <p className="text-[10px] text-brass-soft/70 mt-1">
+                        {describeAxisContinuation(structuralGrowthAxis, null, gdpFastVal, cpiFastVal, breakevenVal > FED_INFLATION_TARGET)}
+                      </p>
                     </>
                   ) : <p className="text-paper-dim text-[11px]">—</p>}
                 </div>
@@ -2172,7 +2283,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
             {/* Agreement / divergence banner — the headline above already shows
                 the full 3-way breakdown when Transitional, so this stays terse
                 and doesn't repeat that detail. */}
-            {structuralRegimeKey && marketRegimeKey && (
+            {structuralRegimeKey && marketRegimeKey ? (
               <div className={`mt-3 rounded-lg px-3 py-2 text-xs flex items-center gap-2 ${
                 isTransitional
                   ? "bg-loss/10 text-loss border border-loss/20"
@@ -2187,15 +2298,19 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                     : `⚠ Structural/Market diverge — Medium-Term Forward Signal breaks the tie toward ${regime?.label ?? "n/a"}`
                 }
               </div>
-            )}
+            ) : isPersistenceContinuation ? (
+              <div className="mt-3 rounded-lg px-3 py-2 text-xs flex items-center gap-2 bg-brass/10 text-brass-soft border border-brass/20">
+                ⟳ {structuralIsPersistence && marketIsPersistence ? "Structural and Market both" : structuralIsPersistence ? "Structural" : "Market"} reading Persistence — regime continuation, see "Regime continuation" read above
+              </div>
+            ) : null}
           </div>
 
           {/* Forward Signal — two independent horizon panels (see the
               forward-signal two-horizon spec). Not averaged or reconciled
               into one number; they can legitimately disagree. */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <ForwardSignalPanel title="Near-Term Signal" horizonLabel="2-3 Month Outlook" panel={fwd.nearTerm} currentRegime={regime} />
-            <ForwardSignalPanel title="Medium-Term Signal" horizonLabel="6-18 Month Outlook" panel={fwd.mediumTerm} currentRegime={regime} />
+            <ForwardSignalPanel title="Near-Term Signal" horizonLabel="2-3 Month Outlook" panel={fwd.nearTerm} currentRegime={regime} currentGrowthLevel={gdpFastVal} currentInflLevel={cpiFastVal} />
+            <ForwardSignalPanel title="Medium-Term Signal" horizonLabel="6-18 Month Outlook" panel={fwd.mediumTerm} currentRegime={regime} currentGrowthLevel={gdpFastVal} currentInflLevel={cpiFastVal} />
           </div>
 
           {/* Allocation bars */}

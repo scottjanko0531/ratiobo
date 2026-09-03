@@ -1630,24 +1630,22 @@ function isLaborDeteriorating(payrolls3mAvg: number | null, unemploymentTrend: n
   return votes.filter(Boolean).length >= 2;
 }
 
-// Tiebreaker for an axis (growth or inflation) when its fast/slow gap
-// doesn't clear minGap (Rate of Change = Stable): the four-quadrant model
-// needs a binary Up/Down, so Stable can't just silently fall through to
-// Down. Falls back to Direction (the fast indicator's own short-window
-// sign), then to Level (z-score vs the long window) if Direction is also
-// flat/unavailable. Mirrors resolveAxisDirection in lib/simulatorKeys.js
-// and get-regime-analysis's identical resolveAxisUp — kept in sync
-// manually. Used only by updateCurrentRegimeHistory's structural_key
-// (the live "today" computation); backfillRegimeHistory's historical loop
-// below still calls the shared detectRegimeKey, unchanged — a different
-// use case with different data. See the regime tiebreaker spec.
-function resolveAxisUp(gap: number, minGap: number, direction: number | null, zscore: number | null): boolean {
-  if (gap > minGap) return true;
-  if (gap < -minGap) return false;
-  if (direction === 1) return true;
-  if (direction === -1) return false;
-  if (zscore != null && zscore !== 0) return zscore > 0;
-  return false;
+// Replaces the old Direction/Level tiebreaker (resolveAxisUp) per the
+// dead-band-persistence spec: a gap inside the dead band no longer
+// coin-flips a direction via a secondary signal — it's an explicit
+// Persistence state with its own confidence (100% at dead-band center,
+// 0% at the edge). Mirrors resolveAxisState in lib/simulatorKeys.js and
+// get-regime-analysis's identical function — kept in sync manually. Used
+// only by updateCurrentRegimeHistory's structural_key/market_key (the live
+// "today" computation); backfillRegimeHistory's historical loop below
+// still calls the shared detectRegimeKey, unchanged — a different use
+// case with different data. See the dead-band-persistence spec.
+type AxisState = { up: boolean | null; persistence: boolean; persistenceConfidence: number | null };
+function resolveAxisState(gap: number, minGap: number): AxisState {
+  if (gap > minGap) return { up: true, persistence: false, persistenceConfidence: null };
+  if (gap < -minGap) return { up: false, persistence: false, persistenceConfidence: null };
+  const distanceFromCenter = Math.min(Math.abs(gap) / minGap, 1);
+  return { up: null, persistence: true, persistenceConfidence: Math.round((1 - distanceFromCenter) * 100) };
 }
 
 function detectRegimeKey(
@@ -1894,8 +1892,11 @@ function computeEdgeForwardPanel(rows: ProcessedRow[], G: FwdSig[], I: FwdSig[],
   const dir = (s: number | null) => s == null ? null : s > THRESH ? "up" : s < -THRESH ? "down" : "neutral";
   const rawGDir = dir(growth.score);
   const rawIDir = dir(infl.score);
-  const gDir = rawGDir === "neutral" ? (growth.score! >= 0 ? "up" : "down") : rawGDir;
-  const iDir = rawIDir === "neutral" ? (infl.score! >= 0 ? "up" : "down") : rawIDir;
+  // Dead-band-persistence spec: no sign-fallback — a neutral score is
+  // Persistence, not a coin-flipped Up/Down (mirrors app/macro/page.jsx's
+  // computeForwardSignal and get-regime-analysis's computePanel).
+  const gDir = rawGDir === "neutral" ? null : rawGDir;
+  const iDir = rawIDir === "neutral" ? null : rawIDir;
   const forwardKey =
     gDir === "up"   && iDir === "down" ? "rg_fi" :
     gDir === "up"   && iDir === "up"   ? "rg_ri" :
@@ -2084,9 +2085,6 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const gdpSlowRow = processedRows.find(r => r.name === "GDP Growth (4Q Avg)");
     const cpiFastRow = processedRows.find(r => r.name === "CPI Growth (3M Avg)");
     const cpiSlowRow = processedRows.find(r => r.name === "CPI Growth (9M Avg)");
-    // Tiebreaker inputs (Direction/Level) for structural_key below — see
-    // resolveAxisUp and the regime tiebreaker spec.
-    const coreCpiRow = processedRows.find(r => r.name === "Core CPI (YoY)");
     const payrollsRow    = processedRows.find(r => r.name === "Payrolls (3M Avg)");
     const unrateTrendRow = processedRows.find(r => r.name === "Unemployment Rate Trend");
     const claimsTrendRow = processedRows.find(r => r.name === "Initial Jobless Claims Trend");
@@ -2130,19 +2128,14 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
     const r2 = (n: number) => Math.round(n * 100) / 100;
 
     const { nearTerm, mediumTerm } = computeEdgeFwdSignals(rowsForSignal);
-    // Growth-axis tiebreak inputs (Direction/Level) shared by structural_key
-    // AND market_key below — both read the identical GDP fast/slow crossover,
-    // so both must resolve a Stable read via the same Direction/Level
-    // tiebreaker rather than market_key silently defaulting Stable to Down.
-    // See the regime tiebreaker spec and its follow-up carryover-bug fix
-    // (Market Expectations never got the fix Structural received).
-    const gdpDirection = gdpFastRow?.current_value != null && gdpFastRow?.previous_value != null
-      ? Math.sign(Number(gdpFastRow.current_value) - Number(gdpFastRow.previous_value)) : null;
-    const gdpZscore = typeof gdpRow.metadata?.zscore_10y === "number" ? gdpRow.metadata.zscore_10y : null;
-    const cpiDirection = cpiFastRow?.current_value != null && cpiFastRow?.previous_value != null
-      ? Math.sign(Number(cpiFastRow.current_value) - Number(cpiFastRow.previous_value)) : null;
-    const cpiZscore = typeof coreCpiRow?.metadata?.zscore_18y === "number" ? coreCpiRow.metadata.zscore_18y : null;
-    const structGrowthUp = resolveAxisUp(gdpFast - gdpSlow, GROWTH_MIN_GAP, gdpDirection, gdpZscore)
+    // Growth axis shared by structural_key AND market_key below — both read
+    // the identical GDP fast/slow crossover, so both must resolve the SAME
+    // dead-band state (Persistence when Stable, not a coin-flipped Down).
+    // See the dead-band-persistence spec and its predecessor's carryover-bug
+    // fix (Market Expectations never got the fix Structural received).
+    const structuralGrowthAxis = resolveAxisState(gdpFast - gdpSlow, GROWTH_MIN_GAP);
+    const structuralInflAxis = resolveAxisState(cpiFast - cpiSlow, CPI_MIN_GAP);
+    const structGrowthUp = structuralGrowthAxis.up === true
       && !isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend);
 
     await supabase.from("macro_regime_history").upsert({
@@ -2164,23 +2157,23 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       // disagree on the identical fast/slow pair. See the regime-table
       // dead-band bug fix and the follow-up request to stop having an
       // independent GDP-state read.
-      structural_key: (() => {
-        // Inflation axis: same dead-band + tiebreak treatment as growth —
-        // a bare cpiFast > cpiSlow sign test let a print separated by a
-        // hundredth of a point flip the regime read, and a Stable read
-        // used to silently collapse to Down instead of falling back to
-        // Direction/Level. See the regime tiebreaker spec.
-        const structInflUp = resolveAxisUp(cpiFast - cpiSlow, CPI_MIN_GAP, cpiDirection, cpiZscore);
-        return structGrowthUp ? (structInflUp ? "rg_ri" : "rg_fi") : (structInflUp ? "fg_ri" : "fg_fi");
+      // Dead-band-persistence spec: null (not a forced quadrant) whenever
+      // either axis is Persistence — the fast/slow gap never cleared its
+      // dead band, so there's no real Up/Down to report.
+      structural_key: (structuralGrowthAxis.persistence || structuralInflAxis.persistence) ? null : (() => {
+        return structGrowthUp ? (structuralInflAxis.up ? "rg_ri" : "rg_fi") : (structuralInflAxis.up ? "fg_ri" : "fg_fi");
       })(),
       // Market regime: use breakeven vs the Fed's own FED_INFLATION_TARGET
       // (2%, not an arbitrary 2.5%) — is market pricing sustained inflation
       // above the Fed's real mandate? cpiYoy > breakeven means markets expect
       // disinflation, not that inflation is surprising upside. Growth leg
-      // reuses structGrowthUp — the IDENTICAL crossover + tiebreak as the
-      // structural regime above, not a separately-computed test (see the
-      // carryover-bug comment above structGrowthUp's definition).
-      market_key: (() => {
+      // reuses structuralGrowthAxis/structGrowthUp — the IDENTICAL crossover
+      // as the structural regime above, not a separately-computed test (see
+      // the carryover-bug comment above structGrowthUp's definition). Market's
+      // inflation leg is a plain level comparison, not dead-band-gated, so it
+      // has no Persistence state of its own — only the growth leg can force
+      // market_key to null.
+      market_key: structuralGrowthAxis.persistence ? null : (() => {
         const mktInflUp = (bre ?? FED_INFLATION_TARGET) > FED_INFLATION_TARGET;
         return structGrowthUp ? (mktInflUp ? "rg_ri" : "rg_fi") : (mktInflUp ? "fg_ri" : "fg_fi");
       })(),

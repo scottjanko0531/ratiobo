@@ -4,7 +4,8 @@ import {
   isGrowthExpanding,
   isGrowthAccelerating,
   isInflationAccelerating,
-  resolveAxisDirection,
+  resolveAxisState,
+  persistenceConfidenceTier,
   isLaborDeteriorating,
   rateOfChangeLabel,
   POTENTIAL_GDP_GROWTH,
@@ -263,108 +264,142 @@ describe("isInflationAccelerating", () => {
   });
 });
 
-// Regime tiebreaker spec: "Stable" is not a synonym for "Down." The
-// four-quadrant model needs a binary Up/Down, so a Stable crossover read
-// falls back to Direction (G3/I3), then Level (G1/I1), before resolveAxisDirection
-// gives up. Reads resolved via the fallback are marked tentative so the UI
-// doesn't present a coin-flip-resolved regime word with full confidence.
-describe("resolveAxisDirection", () => {
-  it("Accelerating resolves directly via rate, ignoring direction/level even when they'd disagree", () => {
-    const r = resolveAxisDirection(2.60, 2.28, GROWTH_MIN_GAP, -1, -5);
-    expect(r).toMatchObject({ up: true, tentative: false, resolvedVia: "rate" });
+// Dead-band-persistence spec: replaces the Direction/Level tiebreak above.
+// "Stable" is no longer forced into a coin-flipped Up/Down via a secondary
+// signal — it's an explicit Persistence state with its own confidence
+// (100% at dead-band center, 0% at the edge) and a nearSide (which state a
+// break would go toward). This supersedes the regime tiebreaker spec and
+// closes B2 (confidence suppression on dead-band-resolved directions) —
+// Persistence carries its own real confidence instead of suppressing one.
+describe("resolveAxisState", () => {
+  it("Accelerating resolves directly, not Persistence", () => {
+    const r = resolveAxisState(2.60, 2.28, GROWTH_MIN_GAP);
+    expect(r).toMatchObject({ up: true, persistence: false, persistenceConfidence: null });
   });
 
-  it("Decelerating resolves directly via rate, ignoring direction/level even when they'd disagree", () => {
-    const r = resolveAxisDirection(2.00, 2.28, GROWTH_MIN_GAP, 1, 5);
-    expect(r).toMatchObject({ up: false, tentative: false, resolvedVia: "rate" });
+  it("Decelerating resolves directly, not Persistence", () => {
+    const r = resolveAxisState(2.00, 2.28, GROWTH_MIN_GAP);
+    expect(r).toMatchObject({ up: false, persistence: false, persistenceConfidence: null });
   });
 
-  it("Stable + Direction Up falls back to Direction, marked tentative", () => {
-    const r = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 1, -0.15);
-    expect(r).toMatchObject({ up: true, tentative: true, resolvedVia: "direction" });
+  it("Stable is Persistence — no forced Up/Down, no coin flip", () => {
+    const r = resolveAxisState(2.39, 2.28, GROWTH_MIN_GAP);
+    expect(r.up).toBeNull();
+    expect(r.persistence).toBe(true);
+    expect(r.persistenceConfidence).not.toBeNull();
   });
 
-  it("Stable + Direction Down falls back to Direction, marked tentative", () => {
-    const r = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, -1, -0.15);
-    expect(r).toMatchObject({ up: false, tentative: true, resolvedVia: "direction" });
+  it("persistence confidence is 100% exactly at dead-band center", () => {
+    const r = resolveAxisState(2.50, 2.50, GROWTH_MIN_GAP);
+    expect(r.persistenceConfidence).toBe(100);
   });
 
-  it("Stable + Direction flat falls back to Level, sign of the z-score", () => {
-    const above = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 0, 0.5);
-    expect(above).toMatchObject({ up: true, tentative: true, resolvedVia: "level" });
-    const below = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 0, -0.5);
-    expect(below).toMatchObject({ up: false, tentative: true, resolvedVia: "level" });
+  it("persistence confidence is 0% right at the dead-band edge", () => {
+    const r = resolveAxisState(2.50 + GROWTH_MIN_GAP, 2.50, GROWTH_MIN_GAP);
+    expect(r.persistenceConfidence).toBe(0);
   });
 
-  it("Stable + Direction unavailable falls back to Level", () => {
-    const r = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, null, -0.5);
-    expect(r).toMatchObject({ up: false, tentative: true, resolvedVia: "level" });
+  it("persistence confidence is symmetric on either side of center and scales with distance", () => {
+    const above = resolveAxisState(2.50 + GROWTH_MIN_GAP * 0.5, 2.50, GROWTH_MIN_GAP);
+    const below = resolveAxisState(2.50 - GROWTH_MIN_GAP * 0.5, 2.50, GROWTH_MIN_GAP);
+    expect(above.persistenceConfidence).toBe(50);
+    expect(below.persistenceConfidence).toBe(50);
   });
 
-  it("Stable + Direction and Level both unavailable is unresolved but still tentative", () => {
-    const r = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, null, null);
-    expect(r).toMatchObject({ up: null, tentative: true, resolvedVia: null });
+  it("nearSide names which state a break would go toward", () => {
+    const aboveCenter = resolveAxisState(2.51, 2.50, GROWTH_MIN_GAP);
+    expect(aboveCenter.nearSide).toBe("Accelerating");
+    const belowCenter = resolveAxisState(2.49, 2.50, GROWTH_MIN_GAP);
+    expect(belowCenter.nearSide).toBe("Decelerating");
+  });
+
+  it("the live pair that motivated the original dead-band fix (2.39 vs 2.28) reads Persistence", () => {
+    const r = resolveAxisState(2.39, 2.28, GROWTH_MIN_GAP);
+    expect(r.persistence).toBe(true);
+  });
+
+  it("uses inflation's wider 0.20pp dead band when passed CPI_MIN_GAP", () => {
+    // Same gap that clears GROWTH_MIN_GAP (Accelerating) stays inside
+    // CPI_MIN_GAP's wider band (Persistence) — the two axes deliberately
+    // use different thresholds, same as rateOfChangeLabel above.
+    expect(resolveAxisState(2.68, 2.50, GROWTH_MIN_GAP).persistence).toBe(false);
+    expect(resolveAxisState(2.68, 2.50, CPI_MIN_GAP).persistence).toBe(true);
+  });
+});
+
+describe("persistenceConfidenceTier", () => {
+  it("null -> mid", () => {
+    expect(persistenceConfidenceTier(null)).toBe("mid");
+  });
+  it("above 65 -> high", () => {
+    expect(persistenceConfidenceTier(66)).toBe("high");
+    expect(persistenceConfidenceTier(100)).toBe("high");
+  });
+  it("below 35 -> low", () => {
+    expect(persistenceConfidenceTier(34)).toBe("low");
+    expect(persistenceConfidenceTier(0)).toBe("low");
+  });
+  it("mid-range (inclusive of the 35/65 boundaries) -> mid", () => {
+    expect(persistenceConfidenceTier(50)).toBe("mid");
+    expect(persistenceConfidenceTier(35)).toBe("mid");
+    expect(persistenceConfidenceTier(65)).toBe("mid");
   });
 });
 
 // Same "classify structural key from two axes" logic as page.jsx's
-// structuralRegimeKey — reimplemented here so the regime-quadrant mapping
-// itself is covered without importing React components into a unit test.
-function classifyStructural(gAxis: ReturnType<typeof resolveAxisDirection>, iAxis: ReturnType<typeof resolveAxisDirection> | null) {
+// structuralRegimeKey / get-regime-analysis's detectRegimeKeyLive —
+// reimplemented here so the null-on-Persistence mapping (Part 3 of the
+// dead-band-persistence spec: no forced quadrant flip when an axis is in
+// Persistence) is covered without importing React components into a unit
+// test.
+function classifyStructural(gAxis: ReturnType<typeof resolveAxisState>, iAxis: ReturnType<typeof resolveAxisState> | null): string | null {
+  if (gAxis.persistence || iAxis?.persistence) return null;
   const growthUp = gAxis.up === true;
   const inflUp = iAxis?.up === true;
-  const key = growthUp && !inflUp ? "rg_fi" : growthUp && inflUp ? "rg_ri" : !growthUp && inflUp ? "fg_ri" : "fg_fi";
-  const tentative = gAxis.tentative || (iAxis?.tentative ?? false);
-  return { key, tentative };
+  return growthUp && !inflUp ? "rg_fi" : growthUp && inflUp ? "rg_ri" : !growthUp && inflUp ? "fg_ri" : "fg_fi";
 }
 
-describe("Structural regime tiebreaker — scenarios from the regime tiebreaker spec", () => {
-  it("Growth Stable + Direction Up + Inflation Increasing → Reflation (Tentative)", () => {
-    const g = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 1, null);
-    const i = resolveAxisDirection(3.65, 3.13, CPI_MIN_GAP, null, null); // Accelerating
-    const { key, tentative } = classifyStructural(g, i);
-    expect(REGIME_META[key].label).toBe("Reflation");
-    expect(tentative).toBe(true);
+describe("Structural regime — dead-band-persistence spec scenarios", () => {
+  it("Growth Stable (Persistence) + Inflation Accelerating -> null, not a forced quadrant", () => {
+    const g = resolveAxisState(2.39, 2.28, GROWTH_MIN_GAP); // Stable
+    const i = resolveAxisState(3.65, 3.13, CPI_MIN_GAP); // Accelerating
+    expect(classifyStructural(g, i)).toBeNull();
   });
 
-  it("Growth Stable + Direction Down + Inflation Increasing → Stagflation (Tentative)", () => {
-    const g = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, -1, null);
-    const i = resolveAxisDirection(3.65, 3.13, CPI_MIN_GAP, null, null); // Accelerating
-    const { key, tentative } = classifyStructural(g, i);
-    expect(REGIME_META[key].label).toBe("Stagflation");
-    expect(tentative).toBe(true);
+  it("Inflation Stable (Persistence) + Growth Accelerating -> null, even though growth clears its own dead band", () => {
+    const g = resolveAxisState(2.60, 2.28, GROWTH_MIN_GAP); // Accelerating
+    const i = resolveAxisState(3.20, 3.13, CPI_MIN_GAP); // gap 0.07 < 0.20 -> Stable
+    expect(classifyStructural(g, i)).toBeNull();
   });
 
-  it("Growth Stable + Direction Up + Inflation Decreasing → Disinflationary Boom (Tentative)", () => {
-    const g = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 1, null);
-    const i = resolveAxisDirection(3.00, 3.30, CPI_MIN_GAP, null, null); // Decelerating
-    const { key, tentative } = classifyStructural(g, i);
-    expect(REGIME_META[key].label).toBe("Disinflationary Boom");
-    expect(tentative).toBe(true);
+  it("Both axes Persistence -> null, the strongest continuation signal", () => {
+    const g = resolveAxisState(2.39, 2.28, GROWTH_MIN_GAP);
+    const i = resolveAxisState(3.20, 3.13, CPI_MIN_GAP);
+    expect(classifyStructural(g, i)).toBeNull();
   });
 
-  it("Growth Stable + Direction Down + Inflation Decreasing → Deflationary Bust (Tentative)", () => {
-    const g = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, -1, null);
-    const i = resolveAxisDirection(3.00, 3.30, CPI_MIN_GAP, null, null); // Decelerating
-    const { key, tentative } = classifyStructural(g, i);
-    expect(REGIME_META[key].label).toBe("Deflationary Bust");
-    expect(tentative).toBe(true);
+  it("Growth Accelerating + Inflation Accelerating -> Reflation, a real quadrant call", () => {
+    const g = resolveAxisState(2.60, 2.28, GROWTH_MIN_GAP);
+    const i = resolveAxisState(3.65, 3.13, CPI_MIN_GAP);
+    expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Reflation");
   });
 
-  it("Growth Stable + Direction also flat + Level above mean + Inflation Increasing → Reflation (Tentative), resolved via Level", () => {
-    const g = resolveAxisDirection(2.39, 2.28, GROWTH_MIN_GAP, 0, 0.5);
-    const i = resolveAxisDirection(3.65, 3.13, CPI_MIN_GAP, null, null); // Accelerating
-    const { key, tentative } = classifyStructural(g, i);
-    expect(REGIME_META[key].label).toBe("Reflation");
-    expect(tentative).toBe(true);
-    expect(g.resolvedVia).toBe("level");
+  it("Growth Decelerating + Inflation Accelerating -> Stagflation", () => {
+    const g = resolveAxisState(2.00, 2.28, GROWTH_MIN_GAP);
+    const i = resolveAxisState(3.65, 3.13, CPI_MIN_GAP);
+    expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Stagflation");
   });
 
-  it("Growth clearing the dead band directly (Accelerating or Decelerating) is never tentative", () => {
-    const accel = resolveAxisDirection(2.60, 2.28, GROWTH_MIN_GAP, null, null);
-    const decel = resolveAxisDirection(2.00, 2.28, GROWTH_MIN_GAP, null, null);
-    expect(accel.tentative).toBe(false);
-    expect(decel.tentative).toBe(false);
+  it("Growth Accelerating + Inflation Decelerating -> Disinflationary Boom", () => {
+    const g = resolveAxisState(2.60, 2.28, GROWTH_MIN_GAP);
+    const i = resolveAxisState(3.00, 3.30, CPI_MIN_GAP);
+    expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Disinflationary Boom");
+  });
+
+  it("Growth Decelerating + Inflation Decelerating -> Deflationary Bust", () => {
+    const g = resolveAxisState(2.00, 2.28, GROWTH_MIN_GAP);
+    const i = resolveAxisState(3.00, 3.30, CPI_MIN_GAP);
+    expect(REGIME_META[classifyStructural(g, i)!].label).toBe("Deflationary Bust");
   });
 });
 
