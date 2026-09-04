@@ -369,6 +369,12 @@ const GROWTH_MIN_GAP = 0.80;
 const CPI_MIN_GAP = 1.00;
 // The Fed's actual inflation mandate, not an arbitrary round number.
 const FED_INFLATION_TARGET = 2.0;
+// Kept in sync with lib/simulatorKeys.js/fetch-macro-data/run-backtest's
+// identical constants — used only by detectRegimeKeyRaw below (the
+// "currently confirmed regime" anchor), not by the dead-band-aware
+// structuralKey/marketKey classification.
+const POTENTIAL_GDP_GROWTH = 1.9;
+const POTENTIAL_FLOOR_FRACTION = 0.85;
 
 // Labor veto for the growth axis (see lib/simulatorKeys.js's
 // isLaborDeteriorating, the canonical copy — kept in sync manually): a GDP
@@ -385,18 +391,102 @@ function isLaborDeteriorating(payrolls3mAvg: number | null, unemploymentTrend: n
   return votes.filter(Boolean).length >= 2;
 }
 
+// Raw (non-dead-band) classifier — mirrors lib/simulatorKeys.js's
+// detectRegimeKey exactly, including its use of the SAME GROWTH_MIN_GAP
+// constant as the crossover (a raw-spot-vs-4Q-avg gap, not a fast/slow
+// crossover gap — different comparison, same threshold). Used ONLY as the
+// "currently confirmed regime" anchor for the both-Persistent case — the
+// same thing app/macro/page.jsx's regimeKey fallback chain
+// (majorityRegimeKey ?? structuralRegimeKey ?? detectRegimeKey(raw)) ends
+// on when both of the first two are null. NOT part of the dead-band-aware
+// structuralKey/marketKey classification, which stays on
+// detectRegimeKeyLive/resolveAxisState. Computing this live, the same way
+// the frontend does, replaces the earlier macro_regime_history DB lookback
+// — that lookback could name a DIFFERENT quarter's regime than what's
+// currently on screen (confirmed live: it returned "Disinflationary Boom"
+// while the frontend's raw fallback said "Stagflation" for the identical
+// moment), which is exactly the kind of drift Clio's narrative must not have.
+function detectRegimeKeyRaw(
+  gdpGrowth: number, cpiYoy: number, breakeven: number, gdp3yAvg: number,
+  laborInputs?: { payrolls3mAvg: number | null; unemploymentTrend: number | null; joblessClaimsTrend: number | null },
+): string {
+  const growing = (gdpGrowth - gdp3yAvg > GROWTH_MIN_GAP) && (gdpGrowth > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION)
+    && !(laborInputs && isLaborDeteriorating(laborInputs.payrolls3mAvg, laborInputs.unemploymentTrend, laborInputs.joblessClaimsTrend));
+  const risingInflation = cpiYoy > breakeven;
+  if (growing && !risingInflation) return "rg_fi";
+  if (growing && risingInflation) return "rg_ri";
+  if (!growing && risingInflation) return "fg_ri";
+  return "fg_fi";
+}
+
 // Replaces the old Direction/Level tiebreaker (resolveAxisUp) per the
 // dead-band-persistence spec: a gap inside the dead band no longer
 // coin-flips a direction via a secondary signal — it's an explicit
 // Persistence state with its own confidence (100% at dead-band center,
 // 0% at the edge) and a nearSide (which state a break would go toward).
 // Mirrors resolveAxisState in lib/simulatorKeys.js — kept in sync manually.
-type AxisState = { up: boolean | null; persistence: boolean; persistenceConfidence: number | null };
+type AxisState = { up: boolean | null; persistence: boolean; persistenceConfidence: number | null; nearSide: "Accelerating" | "Decelerating" | null };
 function resolveAxisState(gap: number, minGap: number): AxisState {
-  if (gap > minGap) return { up: true, persistence: false, persistenceConfidence: null };
-  if (gap < -minGap) return { up: false, persistence: false, persistenceConfidence: null };
+  if (gap > minGap) return { up: true, persistence: false, persistenceConfidence: null, nearSide: null };
+  if (gap < -minGap) return { up: false, persistence: false, persistenceConfidence: null, nearSide: null };
   const distanceFromCenter = Math.min(Math.abs(gap) / minGap, 1);
-  return { up: null, persistence: true, persistenceConfidence: Math.round((1 - distanceFromCenter) * 100) };
+  return {
+    up: null, persistence: true,
+    persistenceConfidence: Math.round((1 - distanceFromCenter) * 100),
+    nearSide: gap >= 0 ? "Accelerating" : "Decelerating",
+  };
+}
+
+// "Always show a quadrant" follow-up (mirrors app/macro/page.jsx's
+// identical helpers) — a Persistent axis's nearSide (which side of its own
+// dead band its held level currently sits on) stands in for a real
+// directional call when naming a QUADRANT, even though it correctly does
+// NOT stand in for one in the regime-classification vote itself
+// (structuralKey/marketKey/panel.key stay null on Persistence — untouched).
+function leaningUp(axis: AxisState | null | undefined): boolean | null {
+  if (!axis) return null;
+  if (axis.persistence) return axis.nearSide === "Accelerating" ? true : axis.nearSide === "Decelerating" ? false : null;
+  return axis.up;
+}
+
+function leaningQuadrantKey(growthAxis: AxisState | null | undefined, inflAxis: AxisState | null | undefined): string | null {
+  const growthUp = leaningUp(growthAxis);
+  const inflUp = leaningUp(inflAxis);
+  if (growthUp == null || inflUp == null) return null;
+  return growthUp && !inflUp ? "rg_fi" : growthUp && inflUp ? "rg_ri" : !growthUp && inflUp ? "fg_ri" : "fg_fi";
+}
+
+// Hedge text naming which axis is doing the work — only meaningful in the
+// MIXED case (exactly one axis Persistent); both/neither need no hedge.
+function leaningHedge(growthAxis: AxisState | null | undefined, inflAxis: AxisState | null | undefined): string | null {
+  const growthPersistent = !!growthAxis?.persistence;
+  const inflPersistent = !!inflAxis?.persistence;
+  if (growthPersistent === inflPersistent) return null;
+  if (growthPersistent) {
+    const inflUp = leaningUp(inflAxis);
+    return `Inflation ${inflUp ? "rising" : "falling"} is the driver; Growth persistence keeps this provisional.`;
+  }
+  const growthUp = leaningUp(growthAxis);
+  return `Growth ${growthUp ? "expanding" : "contracting"} is the driver; Inflation persistence keeps this provisional.`;
+}
+
+// The label Clio (and the "structural_regime"/"market_regime"/forward-key
+// DB columns the /macro and /portfolios badges render verbatim) actually
+// sees for a lens with no real key: both-Persistent means neither axis
+// moved, so the quadrant IS the already-confirmed one (lastConfirmedLabel)
+// — NOT a freshly nearSide-guessed one, which can disagree with "currently
+// confirmed" and read as contradictory. Mixed uses the nearSide-based
+// leaning quadrant, per the dead-band-persistence "always show a quadrant"
+// follow-up. Mirrors app/macro/page.jsx's identical split exactly, so
+// Clio's prompt and the live page never disagree about which word to use.
+function leaningLabel(
+  growthPersistent: boolean, inflPersistent: boolean,
+  growthAxis: AxisState | null | undefined, inflAxis: AxisState | null | undefined,
+  lastConfirmedLabel: string | null,
+): string {
+  if (growthPersistent && inflPersistent) return lastConfirmedLabel ?? "Persistence";
+  const k = leaningQuadrantKey(growthAxis, inflAxis);
+  return k ? (REGIME_LABELS[k] ?? k) : "Persistence";
 }
 
 function detectRegimeKeyLive(
@@ -442,9 +532,11 @@ function computeLiveRegimeKeys(
   fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number;
   fwdGrowthPersistence: boolean; fwdInflPersistence: boolean;
   fwdGrowthPersistenceConfidence: number | null; fwdInflPersistenceConfidence: number | null;
+  fwdGrowthAxis: AxisState; fwdInflAxis: AxisState;
   nearTermFwdKey: string | null; nearTermFwdConf: number | null;
   nearTermGrowthPersistence: boolean; nearTermInflPersistence: boolean;
   nearTermGrowthPersistenceConfidence: number | null; nearTermInflPersistenceConfidence: number | null;
+  nearTermGrowthAxis: AxisState; nearTermInflAxis: AxisState;
 } {
   // Fast/slow moving-average crossover, not raw-reading-vs-baseline: a
   // regime flip only fires when the fast line actually crosses the slow
@@ -612,10 +704,24 @@ function computeLiveRegimeKeys(
       }
       if (conf != null) conf = Math.max(0, Math.min(100, conf + confVolMod));
     }
+    // AxisState-shaped wrappers (with nearSide) so the handler can compute a
+    // leaning quadrant for this panel's mixed-Persistence case the same way
+    // Structural/Market do — see leaningQuadrantKey/leaningHedge.
+    const growthAxis: AxisState = {
+      up: gDir === "up" ? true : gDir === "down" ? false : null,
+      persistence: growthPersistence, persistenceConfidence: growthPersistenceConfidence,
+      nearSide: growth.score != null ? (growth.score >= 0 ? "Accelerating" : "Decelerating") : null,
+    };
+    const inflAxis: AxisState = {
+      up: iDir === "up" ? true : iDir === "down" ? false : null,
+      persistence: inflPersistence, persistenceConfidence: inflPersistenceConfidence,
+      nearSide: infl.score != null ? (infl.score >= 0 ? "Accelerating" : "Decelerating") : null,
+    };
     return {
       key, conf, confVolMod,
       growthPersistence, inflPersistence,
       growthPersistenceConfidence, inflPersistenceConfidence,
+      growthAxis, inflAxis,
     };
   };
 
@@ -632,33 +738,39 @@ function computeLiveRegimeKeys(
     fwdGrowthPersistence: mediumTerm.growthPersistence, fwdInflPersistence: mediumTerm.inflPersistence,
     fwdGrowthPersistenceConfidence: mediumTerm.growthPersistenceConfidence,
     fwdInflPersistenceConfidence: mediumTerm.inflPersistenceConfidence,
+    fwdGrowthAxis: mediumTerm.growthAxis, fwdInflAxis: mediumTerm.inflAxis,
     nearTermFwdKey: nearTerm.key, nearTermFwdConf: nearTerm.conf,
     nearTermGrowthPersistence: nearTerm.growthPersistence, nearTermInflPersistence: nearTerm.inflPersistence,
     nearTermGrowthPersistenceConfidence: nearTerm.growthPersistenceConfidence,
     nearTermInflPersistenceConfidence: nearTerm.inflPersistenceConfidence,
+    nearTermGrowthAxis: nearTerm.growthAxis, nearTermInflAxis: nearTerm.inflAxis,
   };
 }
 
-// Dead-band-persistence spec: builds the bracketed explanation appended after
-// a "Persistence" label so Clio (and the consistency checker, which shares
-// this exact text via buildReferenceBlock) knows WHY a lens came back
-// without a quadrant name — a level-anchored flat read, not missing data —
-// and is told explicitly to frame it as regime continuation rather than
-// inventing or forcing a new quadrant.
+// "Always show a quadrant" follow-up: builds the bracketed explanation
+// appended after a lens's label so Clio (and the consistency checker,
+// which shares this exact text via buildReferenceBlock) knows the label IS
+// a real quadrant name to use directly — the already-confirmed regime when
+// both axes are Persistent (a stronger continuation signal, not a fresh
+// classification), or a nearSide-based LEANING quadrant with a hedge naming
+// which axis is actually driving it when only one axis is. This replaces
+// the prior instruction to avoid naming a quadrant at all — the live page
+// now always shows one (see app/macro/page.jsx's identical leaningLabel/
+// leaningHedge split), so Clio's prose must match what users see on screen
+// instead of falling back to a bare, uninformative "Persistence."
 function persistenceNote(
-  growthPersistent: boolean, inflPersistent: boolean,
-  growthConf: number | null, inflConf: number | null,
-  anchorLabel: string | null,
+  growthAxis: AxisState | null | undefined, inflAxis: AxisState | null | undefined,
+  anchorLabel: string | null, label: string,
 ): string {
+  const growthPersistent = !!growthAxis?.persistence;
+  const inflPersistent = !!inflAxis?.persistence;
   if (!growthPersistent && !inflPersistent) return "";
   const anchor = anchorLabel ? ` Last confirmed regime: ${anchorLabel}.` : "";
   if (growthPersistent && inflPersistent) {
-    return ` [Persistence: both Growth (${growthConf ?? "?"}% confidence) and Inflation (${inflConf ?? "?"}% confidence) are inside their dead bands — flat readings, not missing data. This is regime continuation, not a new regime; do not force a new quadrant name.${anchor}]`;
+    return ` [Regime continuation — "${label}" is the already-confirmed regime, not a fresh classification: both Growth (${growthAxis?.persistenceConfidence ?? "?"}% confidence) and Inflation (${inflAxis?.persistenceConfidence ?? "?"}% confidence) are inside their dead bands — flat readings, not missing data, and neither axis moved.${anchor}]`;
   }
-  if (growthPersistent) {
-    return ` [Persistence on Growth only (${growthConf ?? "?"}% confidence the flat read holds) — Inflation is a real signal. Frame as continuation leaning on Inflation's direction, not a clean new quadrant.${anchor}]`;
-  }
-  return ` [Persistence on Inflation only (${inflConf ?? "?"}% confidence the flat read holds) — Growth is a real signal. Frame as continuation leaning on Growth's direction, not a clean new quadrant.${anchor}]`;
+  const hedge = leaningHedge(growthAxis, inflAxis);
+  return ` ["${label}" is a LEANING quadrant, provisional — use the name, but hedge it: ${hedge}${anchor}]`;
 }
 
 // ── Reference block shared by the main prompt and the consistency checker ──────
@@ -776,7 +888,7 @@ CONFIDENCE LANGUAGE — HARD CONSTRAINT: When describing confidence in the struc
 
 You have six signals that may conflict. Reconcile them explicitly.
 
-PERSISTENCE — HARD CONSTRAINT: any signal above labeled "Persistence" is a real, level-anchored result (a flat read that's expected to hold, with its own confidence), not missing data and not a coin-flip Up/Down. Never invent a directional call for it. Describe it as regime continuation using the bracketed note next to it, naming which axis (Growth/Inflation) is doing the work when only one is Persistence.
+PERSISTENCE — HARD CONSTRAINT: any signal above followed by a bracketed note is a lens where at least one axis is inside its dead band (a flat, level-anchored read, not missing data and not a coin-flip). The NAME given (e.g. "Reflation") is still the correct word to use — never replace it with the bare word "Persistence" or refuse to name a quadrant. Two cases: (1) "Regime continuation" notes mean BOTH axes are flat — the name is the already-confirmed regime holding steady, describe it as continuation, not a fresh classification. (2) "LEANING quadrant, provisional" notes mean ONE axis is flat — use the name, but hedge it exactly as the note says, naming which axis (Growth/Inflation) is the real driver and which is provisional.
 
 SIGNAL 1 — Structural regime (level-based, 3Y trailing averages):
   ${regimeLabel}${structuralNote}
@@ -789,7 +901,7 @@ SIGNAL 2 — Structural momentum (direction of hard data, 15–60 day lag):
   LEI:      ${n(lei, 2, true)}${delta(lei, prevLei)} ${arrow(lei, prevLei)}
   2/10 spread: ${n(t10y2y, 2, true)} — ${YIELD_CURVE_STATE_NOTE[yieldCurveState]}
   Yield-curve framing constraint: only describe the curve as a "recession warning" if its state is normalizing_from_inversion. If never_inverted_steep, do not call it a recession signal. If inverted, call it an active inversion, not a normalization story.
-  Momentum-implied regime: ${momentumRegime}${momentumDiverges ? ` ⚑ diverges from structural ${regimeLabel}${structuralNote ? " (structural is reading Persistence — see note above; frame this as momentum vs. a flat structural read, not a clean regime conflict)" : ""}` : " ✓ aligns"}
+  Momentum-implied regime: ${momentumRegime}${momentumDiverges ? ` ⚑ diverges from structural ${regimeLabel}${structuralNote ? " (structural's read is provisional/continuation, not a fresh classification — see note above; frame this as momentum vs. a flat structural read, not a clean regime conflict)" : ""}` : " ✓ aligns"}
 
 SIGNAL 2b — Credit stress (leads recessions; check this before asserting a bust case):
 ${creditLines || "  No credit-stress data available."}
@@ -950,7 +1062,7 @@ Current regime signals — all four panels tracked on this page, not just one:
   Market-implied: ${marketLabel ?? "unknown"}${marketNote}
   Near-Term Forward Signal (2-3mo): ${nearTermFwdLabel ?? "none"}${nearTermFwdConf != null ? ` (${nearTermFwdConf}% confidence)` : ""}${nearTermNote}
   Medium-Term Forward Signal (6-18mo): ${fwdLabel ?? "none"}${fwdConf != null ? ` (${fwdConf}% confidence)` : ""}${fwdNote}
-REQUIRED: your second paragraph must explicitly address whether the headline narrative is consistent with BOTH forward signals above, not just the structural/market regime — call out by name any place the Near-Term and Medium-Term panels disagree with each other, since that disagreement (a near-term wobble inside a longer uptrend, or vice versa) is itself informative, not noise to smooth over. Any signal marked "Persistence" above is a real flat-read result, not missing data — describe it as regime continuation per its bracketed note, never as a coin-flipped direction.
+REQUIRED: your second paragraph must explicitly address whether the headline narrative is consistent with BOTH forward signals above, not just the structural/market regime — call out by name any place the Near-Term and Medium-Term panels disagree with each other, since that disagreement (a near-term wobble inside a longer uptrend, or vice versa) is itself informative, not noise to smooth over. Any signal followed by a bracketed note above is a real flat-read result on at least one axis, not missing data and not a coin-flipped direction — the name given is still correct, describe it as regime continuation or a hedged leaning quadrant exactly per its bracketed note.
 
 Top macro headlines (last 24–48 hours):
 ${newsLines}
@@ -1085,50 +1197,86 @@ Deno.serve(async (req: Request) => {
       structuralGrowthAxis, structuralInflAxis, marketGrowthAxis,
       fwdKey, fwdConf, nearTermFwdKey, nearTermFwdConf,
       fwdGrowthPersistence, fwdInflPersistence, fwdGrowthPersistenceConfidence, fwdInflPersistenceConfidence,
+      fwdGrowthAxis, fwdInflAxis,
       nearTermGrowthPersistence, nearTermInflPersistence, nearTermGrowthPersistenceConfidence, nearTermInflPersistenceConfidence,
+      nearTermGrowthAxis, nearTermInflAxis,
     } = computeLiveRegimeKeys(get, getMeta3m, getPP3m, getShortPct, getVolShock, getSpfSpread, getPrev, getMetaNum);
 
     // Dead-band-persistence spec: a null key from computeLiveRegimeKeys can
     // now mean either genuinely missing data OR a level-anchored Persistence
-    // read — disambiguate via the axis-state/persistence flags above so
-    // Clio's prompt (and the "structural_regime"/"market_regime" DB columns,
-    // which the /macro and /portfolios badges render verbatim) say
-    // "Persistence" — a real, short, informative label — instead of the old
-    // "Unknown" that implied absent data.
+    // read — disambiguate via the axis-state/persistence flags above.
     const structuralPersistent = !!structuralGrowthAxis?.persistence || !!structuralInflAxis?.persistence;
     const marketPersistent = !!marketGrowthAxis?.persistence;
-    const regimeLabel = structuralKey ? (REGIME_LABELS[structuralKey] ?? structuralKey) : (structuralPersistent ? "Persistence" : "Unknown");
-    const marketLabel = marketKey ? (REGIME_LABELS[marketKey] ?? marketKey) : (marketPersistent ? "Persistence" : null);
-    const fwdLabel = fwdKey ? (REGIME_LABELS[fwdKey] ?? fwdKey) : ((fwdGrowthPersistence || fwdInflPersistence) ? "Persistence" : null);
-    // Near-Term (2-3mo) Forward Signal — see the forward-signal two-horizon
-    // spec. fwdLabel/fwdConf above are Medium-Term (6-18mo) specifically.
-    const nearTermFwdLabel = nearTermFwdKey ? (REGIME_LABELS[nearTermFwdKey] ?? nearTermFwdKey) : ((nearTermGrowthPersistence || nearTermInflPersistence) ? "Persistence" : null);
     const divergence = !!(structuralKey && marketKey && structuralKey !== marketKey);
+    const breakevenVal = get("10Y Breakeven Inflation") ?? FED_INFLATION_TARGET;
 
-    // Last-confirmed-regime lookback: only queried when at least one lens
-    // came back Persistence, since Clio's continuation framing needs a real
-    // "currently: X" anchor and structuralKey/marketKey/fwdKey may be null.
-    // Mirrors the frontend's simplification (reuse an existing resolved
-    // label) but backend has no analogous fallback chain to reuse, so a
-    // real lookback on the most recent non-null structural_key is used
-    // instead, per the plan's design decision for the backend surface.
+    // "Currently confirmed regime" anchor: computed LIVE via
+    // detectRegimeKeyRaw, the exact same raw fallback
+    // app/macro/page.jsx's regimeKey chain (majorityRegimeKey ??
+    // structuralRegimeKey ?? detectRegimeKey(raw)) ends on once both of the
+    // first two are null — which is exactly the both-Persistent case this
+    // anchor exists for. Previously this ran a macro_regime_history DB
+    // lookback instead (the most recent quarter with a non-null
+    // structural_key); confirmed live that this could name a DIFFERENT
+    // regime than the frontend's own anchor for the identical moment
+    // ("Disinflationary Boom" from the lookback vs. "Stagflation" from the
+    // frontend's raw fallback) — exactly the drift Clio's narrative must
+    // not have, so the lookback is replaced with the identical live
+    // computation instead of a second, independently-drifting source.
     let lastConfirmedLabel: string | null = null;
     if (structuralPersistent || marketPersistent || fwdGrowthPersistence || fwdInflPersistence || nearTermGrowthPersistence || nearTermInflPersistence) {
-      const { data: lastConfirmed } = await sb
-        .from("macro_regime_history")
-        .select("structural_key")
-        .not("structural_key", "is", null)
-        .order("period_date", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      const lastKey = (lastConfirmed as { structural_key?: string } | null)?.structural_key;
-      lastConfirmedLabel = lastKey ? (REGIME_LABELS[lastKey] ?? lastKey) : null;
+      const rawGdp = get("Real GDP Growth");
+      const rawCpi = get("CPI (YoY)");
+      const gdp4qAvg = get("GDP Growth (4Q Avg)") ?? 0;
+      if (rawGdp != null && rawCpi != null) {
+        const rawLaborInputs = {
+          payrolls3mAvg: get("Payrolls (3M Avg)"),
+          unemploymentTrend: get("Unemployment Rate Trend"),
+          joblessClaimsTrend: get("Initial Jobless Claims Trend"),
+        };
+        const rawKey = detectRegimeKeyRaw(rawGdp, rawCpi, breakevenVal, gdp4qAvg, rawLaborInputs);
+        lastConfirmedLabel = REGIME_LABELS[rawKey] ?? rawKey;
+      }
     }
 
-    const structuralNote = structuralKey ? "" : persistenceNote(!!structuralGrowthAxis?.persistence, !!structuralInflAxis?.persistence, structuralGrowthAxis?.persistenceConfidence ?? null, structuralInflAxis?.persistenceConfidence ?? null, lastConfirmedLabel);
-    const marketNote = marketKey ? "" : persistenceNote(!!marketGrowthAxis?.persistence, false, marketGrowthAxis?.persistenceConfidence ?? null, null, lastConfirmedLabel);
-    const fwdNote = fwdKey ? "" : persistenceNote(fwdGrowthPersistence, fwdInflPersistence, fwdGrowthPersistenceConfidence, fwdInflPersistenceConfidence, lastConfirmedLabel);
-    const nearTermNote = nearTermFwdKey ? "" : persistenceNote(nearTermGrowthPersistence, nearTermInflPersistence, nearTermGrowthPersistenceConfidence, nearTermInflPersistenceConfidence, lastConfirmedLabel);
+    // "Always show a quadrant" follow-up (mirrors app/macro/page.jsx's
+    // identical split): Clio (and the "structural_regime"/"market_regime"
+    // DB columns the /macro and /portfolios badges render verbatim) now see
+    // a real quadrant name — the already-confirmed one when both axes are
+    // Persistent, or a nearSide-based leaning one for the mixed case — not
+    // the old bare "Persistence" label that gave no quadrant word at all.
+    // Market's inflation leg (breakeven vs Fed target) is a plain threshold
+    // with no Persistence state of its own — wrap it so leaningQuadrantKey
+    // sees it the same shape as a resolveAxisState object; Market can
+    // therefore only ever land in the mixed case, never both-Persistent.
+    const marketInflAxis: AxisState = { persistence: false, up: breakevenVal > FED_INFLATION_TARGET, persistenceConfidence: null, nearSide: null };
+    const regimeLabel = structuralKey
+      ? (REGIME_LABELS[structuralKey] ?? structuralKey)
+      : structuralPersistent
+        ? leaningLabel(!!structuralGrowthAxis?.persistence, !!structuralInflAxis?.persistence, structuralGrowthAxis, structuralInflAxis, lastConfirmedLabel)
+        : "Unknown";
+    const marketLabel = marketKey
+      ? (REGIME_LABELS[marketKey] ?? marketKey)
+      : marketPersistent
+        ? leaningLabel(true, false, marketGrowthAxis, marketInflAxis, lastConfirmedLabel)
+        : null;
+    const fwdLabel = fwdKey
+      ? (REGIME_LABELS[fwdKey] ?? fwdKey)
+      : (fwdGrowthPersistence || fwdInflPersistence)
+        ? leaningLabel(fwdGrowthPersistence, fwdInflPersistence, fwdGrowthAxis, fwdInflAxis, lastConfirmedLabel)
+        : null;
+    // Near-Term (2-3mo) Forward Signal — see the forward-signal two-horizon
+    // spec. fwdLabel/fwdConf above are Medium-Term (6-18mo) specifically.
+    const nearTermFwdLabel = nearTermFwdKey
+      ? (REGIME_LABELS[nearTermFwdKey] ?? nearTermFwdKey)
+      : (nearTermGrowthPersistence || nearTermInflPersistence)
+        ? leaningLabel(nearTermGrowthPersistence, nearTermInflPersistence, nearTermGrowthAxis, nearTermInflAxis, lastConfirmedLabel)
+        : null;
+
+    const structuralNote = structuralKey ? "" : persistenceNote(structuralGrowthAxis, structuralInflAxis, lastConfirmedLabel, regimeLabel);
+    const marketNote = marketKey ? "" : persistenceNote(marketGrowthAxis, marketInflAxis, lastConfirmedLabel, marketLabel ?? "Persistence");
+    const fwdNote = fwdKey ? "" : persistenceNote(fwdGrowthAxis, fwdInflAxis, lastConfirmedLabel, fwdLabel ?? "Persistence");
+    const nearTermNote = nearTermFwdKey ? "" : persistenceNote(nearTermGrowthAxis, nearTermInflAxis, lastConfirmedLabel, nearTermFwdLabel ?? "Persistence");
 
     const gdp     = get("Real GDP Growth");
     const prevGdp = getPrev("Real GDP Growth");
