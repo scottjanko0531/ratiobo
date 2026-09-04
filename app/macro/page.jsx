@@ -1075,6 +1075,47 @@ function describeAxisContinuation(growthAxis, inflAxis, growthLevel, inflLevel, 
   return null;
 }
 
+// "Always show a quadrant" follow-up to the dead-band-persistence spec: a
+// Persistent axis still carries a nearSide (which side of its own dead band
+// its held level currently sits on — see resolveAxisState) that stands in
+// for a real directional call when computing a QUADRANT NAME, even though
+// it correctly does NOT stand in for a real directional call in the
+// regime-classification vote itself (structuralRegimeKey/marketRegimeKey/
+// panel.forwardKey stay null on Persistence — that logic is untouched).
+// This is purely a display-layer "what would we call this" computation, so
+// a panel never renders with no quadrant word at all. Axis shape expected:
+// { persistence, up, nearSide } — resolveAxisState objects already match;
+// callers with a different data source (Market's inflation leg, Forward
+// Signal panels) build a compatible wrapper inline.
+function leaningUp(axis) {
+  if (!axis) return null;
+  if (axis.persistence) return axis.nearSide === "Accelerating" ? true : axis.nearSide === "Decelerating" ? false : null;
+  return axis.up;
+}
+
+function leaningQuadrantKey(growthAxis, inflAxis) {
+  const growthUp = leaningUp(growthAxis);
+  const inflUp = leaningUp(inflAxis);
+  if (growthUp == null || inflUp == null) return null;
+  return growthUp && !inflUp ? "rg_fi" : growthUp && inflUp ? "rg_ri" : !growthUp && inflUp ? "fg_ri" : "fg_fi";
+}
+
+// Hedge text naming which axis is actually doing the work — only meaningful
+// in the MIXED case (exactly one axis Persistent). Both-Persistent is a
+// stronger continuation signal that needs no hedge (neither axis moved);
+// neither-Persistent is a clean real quadrant call that needs no hedge either.
+function leaningHedge(growthAxis, inflAxis) {
+  const growthPersistent = !!growthAxis?.persistence;
+  const inflPersistent = !!inflAxis?.persistence;
+  if (growthPersistent === inflPersistent) return null;
+  if (growthPersistent) {
+    const inflUp = leaningUp(inflAxis);
+    return `Inflation ${inflUp ? "rising" : "falling"} is the driver; Growth persistence keeps this provisional.`;
+  }
+  const growthUp = leaningUp(growthAxis);
+  return `Growth ${growthUp ? "expanding" : "contracting"} is the driver; Inflation persistence keeps this provisional.`;
+}
+
 // Data vintage: which FRED release period a reading actually corresponds
 // to, and whether it's a hard government release vs. a survey/composite
 // index (LEI/ISM) — NOT the same as a "nowcast" (a model-based estimate
@@ -1604,32 +1645,6 @@ function isNearThreshold(s) {
   return false;
 }
 
-// Builds the "no quadrant call" message for a panel whose forwardKey is
-// null — per the dead-band-persistence spec, this always means at least
-// one axis has no real (non-Persistence) signal, so the panel should say
-// which axis is doing the work rather than a generic "unclear direction."
-// Distinguishes three cases: both axes in Persistence (a stronger
-// continuation signal than either alone); one axis Persistence + the
-// other a real signal (name which axis, lean toward continuation with
-// that signal's own pressure); or genuinely missing data on one/both axes
-// (no score at all, not merely inside the dead band).
-function describePanelContinuation(panel, currentGrowthLevel, currentInflLevel) {
-  const growthLevelStr = currentGrowthLevel != null ? `~${currentGrowthLevel.toFixed(1)}%` : null;
-  const inflLevelStr = currentInflLevel != null ? `~${currentInflLevel.toFixed(1)}%` : null;
-  if (panel.growthPersistence && panel.inflPersistence) {
-    return "Both Growth and Inflation reading Persistence — regime continuation, no shift signaled on either axis.";
-  }
-  if (panel.growthPersistence) {
-    const realDir = panel.iDir === "up" ? "↑ rising" : panel.iDir === "down" ? "↓ falling" : null;
-    return `Growth: Persistence${growthLevelStr ? ` (${growthLevelStr} expected to hold)` : ""}${realDir ? ` / Inflation ${realDir} (real signal)` : ""} → leaning toward continuation with ${realDir ?? "no clear"} inflation pressure.`;
-  }
-  if (panel.inflPersistence) {
-    const realDir = panel.gDir === "up" ? "↑ expanding" : panel.gDir === "down" ? "↓ contracting" : null;
-    return `Inflation: Persistence${inflLevelStr ? ` (${inflLevelStr} expected to hold)` : ""}${realDir ? ` / Growth ${realDir} (real signal)` : ""} → leaning toward continuation with ${realDir ?? "no clear"} growth momentum.`;
-  }
-  return "Inconclusive — insufficient data on growth or inflation momentum.";
-}
-
 // One horizon panel's worth of Forward Signal UI — Near-Term and Medium-Term
 // render from this same function so they can never visually drift apart.
 // They are independently scored and never averaged or reconciled into one
@@ -1716,46 +1731,79 @@ function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime, current
           </div>
         ))}
       </div>
-      {panel.forwardKey ? (
-        <div className="flex items-center gap-3 bg-ink-soft/50 rounded-lg px-4 py-3">
-          <div>
-            <p className="text-[10px] text-paper-dim mb-0.5">Current</p>
-            <p className={`text-sm font-semibold ${currentRegime?.color ?? "text-paper"}`}>{currentRegime?.label ?? "—"}</p>
-          </div>
-          <svg className="w-6 h-4 text-paper-dim shrink-0" viewBox="0 0 24 16" fill="none">
-            <path d="M1 8h18M13 2l6 6-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          <div>
-            <p className="text-[10px] text-paper-dim mb-0.5">{title}</p>
-            <p className={`text-sm font-semibold ${REGIME_META[panel.forwardKey]?.color ?? "text-paper"}`}>
-              {REGIME_META[panel.forwardKey]?.label}
-            </p>
-            <p className="text-[10px] text-paper-dim">{REGIME_META[panel.forwardKey]?.desc}</p>
-          </div>
-          <div className="ml-auto text-right">
-            <p className="text-[10px] text-paper-dim mb-0.5">Signal strength (Combined)</p>
-            <p className="num text-sm">{panel.confidence}%</p>
-            <p className="text-[10px] text-paper-dim">
-              {panel.confidence >= 60 ? "Strong" : panel.confidence >= 30 ? "Moderate" : "Weak"}
-            </p>
-            {/* B3: the vol cross-check's +5/-8 asymmetry is deliberate risk
-                policy (penalize false confidence harder than reward true
-                confidence), not an unexplained constant — surfaced here so
-                a week-to-week confidence swing is attributable to "vol
-                regime flipped" rather than mistaken for a fundamentals
-                change. */}
-            {panel.volMod !== 0 && (
-              <p className={`text-[9px] mt-0.5 ${panel.volMod > 0 ? "text-gain" : "text-loss"}`} title="Vol cross-check: confirming vol behavior adds +5; contradicting behavior subtracts -8 — penalized harder than rewarded, by design.">
-                vol regime {panel.volMod > 0 ? "confirms" : "contradicts"} ({panel.volMod > 0 ? "+" : ""}{panel.volMod})
+      {(() => {
+        // "Always show a quadrant" follow-up: Near-Term gets the exact same
+        // transition box Medium-Term already had, and both now render a
+        // labeled quadrant even when panel.forwardKey is null — a leaning
+        // quadrant (computed from each axis's nearSide when Persistent)
+        // stands in for the real one, with a hedge naming which axis is
+        // actually driving it. See leaningQuadrantKey/leaningHedge.
+        const growthAxisObj = {
+          persistence: panel.growthPersistence,
+          up: panel.gDir === "up" ? true : panel.gDir === "down" ? false : null,
+          nearSide: panel.growth?.score != null ? (panel.growth.score >= 0 ? "Accelerating" : "Decelerating") : null,
+        };
+        const inflAxisObj = {
+          persistence: panel.inflPersistence,
+          up: panel.iDir === "up" ? true : panel.iDir === "down" ? false : null,
+          nearSide: panel.infl?.score != null ? (panel.infl.score >= 0 ? "Accelerating" : "Decelerating") : null,
+        };
+        const bothPersistent = panel.growthPersistence && panel.inflPersistence;
+        // Both-Persistent means neither axis moved, so the quadrant IS the
+        // already-confirmed one (currentRegime, same fallback the top-level
+        // headline uses) — NOT a freshly nearSide-guessed one, which can
+        // disagree with "currently confirmed" and read as contradictory.
+        // leaningQuadrantKey (nearSide-based) is reserved for the mixed
+        // case, where the doc explicitly asks for that computation.
+        const meta = panel.forwardKey ? REGIME_META[panel.forwardKey]
+          : bothPersistent ? currentRegime
+          : (() => { const k = leaningQuadrantKey(growthAxisObj, inflAxisObj); return k ? REGIME_META[k] : null; })();
+        const hedge = panel.forwardKey ? null : leaningHedge(growthAxisObj, inflAxisObj);
+        const rightLabel = panel.forwardKey ? title : bothPersistent ? `${title} · continuation` : `${title} · leans (provisional)`;
+        const rightDesc = panel.forwardKey
+          ? meta?.desc
+          : bothPersistent
+            ? "Both Growth and Inflation reading Persistence — no shift signaled."
+            : hedge;
+        return (
+          <div className="flex items-center gap-3 bg-ink-soft/50 rounded-lg px-4 py-3">
+            <div>
+              <p className="text-[10px] text-paper-dim mb-0.5">Current</p>
+              <p className={`text-sm font-semibold ${currentRegime?.color ?? "text-paper"}`}>{currentRegime?.label ?? "—"}</p>
+            </div>
+            <svg className="w-6 h-4 text-paper-dim shrink-0" viewBox="0 0 24 16" fill="none">
+              <path d="M1 8h18M13 2l6 6-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            <div>
+              <p className="text-[10px] text-paper-dim mb-0.5">{rightLabel}</p>
+              <p className={`text-sm font-semibold ${meta?.color ?? "text-brass-soft"}`}>
+                {meta?.label ?? "—"}
               </p>
+              <p className="text-[10px] text-paper-dim max-w-[220px]">{rightDesc}</p>
+            </div>
+            {panel.forwardKey && (
+              <div className="ml-auto text-right">
+                <p className="text-[10px] text-paper-dim mb-0.5">Signal strength (Combined)</p>
+                <p className="num text-sm">{panel.confidence}%</p>
+                <p className="text-[10px] text-paper-dim">
+                  {panel.confidence >= 60 ? "Strong" : panel.confidence >= 30 ? "Moderate" : "Weak"}
+                </p>
+                {/* B3: the vol cross-check's +5/-8 asymmetry is deliberate risk
+                    policy (penalize false confidence harder than reward true
+                    confidence), not an unexplained constant — surfaced here so
+                    a week-to-week confidence swing is attributable to "vol
+                    regime flipped" rather than mistaken for a fundamentals
+                    change. */}
+                {panel.volMod !== 0 && (
+                  <p className={`text-[9px] mt-0.5 ${panel.volMod > 0 ? "text-gain" : "text-loss"}`} title="Vol cross-check: confirming vol behavior adds +5; contradicting behavior subtracts -8 — penalized harder than rewarded, by design.">
+                    vol regime {panel.volMod > 0 ? "confirms" : "contradicts"} ({panel.volMod > 0 ? "+" : ""}{panel.volMod})
+                  </p>
+                )}
+              </div>
             )}
           </div>
-        </div>
-      ) : (
-        <div className="bg-ink-soft/50 rounded-lg px-4 py-3 text-xs text-brass-soft/80">
-          {describePanelContinuation(panel, currentGrowthLevel, currentInflLevel)}
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -2052,7 +2100,15 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                 {isTransitional ? (
                   <p className="text-2xl font-bold text-brass-soft">Transitional</p>
                 ) : isPersistenceContinuation ? (
-                  <p className="text-2xl font-bold text-brass-soft">Regime continuation</p>
+                  // "Always show a quadrant" follow-up: pair "Regime
+                  // continuation" with the actual quadrant name at equal
+                  // 2xl-bold prominence — the same "labeled pair, not a
+                  // small parenthetical" treatment the sub-panels below get.
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-2xl font-bold text-brass-soft">Regime continuation</p>
+                    <span className="text-paper-dim text-xl">→</span>
+                    <p className={`text-2xl font-bold ${regime.color}`}>{regime.label}</p>
+                  </div>
                 ) : (
                   <p className={`text-2xl font-bold ${regime.color}`}>{regime.label}</p>
                 )}
@@ -2071,7 +2127,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                 </p>
               ) : isPersistenceContinuation ? (
                 <p className="text-paper-dim text-sm mt-1">
-                  No shift signaled (currently: {regime?.label ?? "n/a"}) — {[
+                  No shift signaled — {[
                     structuralIsPersistence && "Structural",
                     marketIsPersistence && "Market",
                     (fwd.mediumTerm.growthPersistence || fwd.mediumTerm.inflPersistence) && "Forward (Medium-Term)",
@@ -2251,15 +2307,36 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                       <p className={`font-semibold ${structuralMeta.color}`}>{structuralMeta.label}</p>
                       <p className="text-[11px] text-paper-dim mt-0.5">{structuralMeta.desc}</p>
                     </>
-                  ) : structuralIsPersistence ? (
-                    <>
-                      <p className="font-semibold text-brass-soft">Regime continuation</p>
-                      <p className="text-[11px] text-paper-dim mt-0.5">no shift signaled (currently: {regime?.label ?? "n/a"})</p>
-                      <p className="text-[10px] text-brass-soft/70 mt-1">
-                        {describeAxisContinuation(structuralGrowthAxis, structuralInflAxis, gdpFastVal, cpiFastVal)}
-                      </p>
-                    </>
-                  ) : <p className="text-paper-dim text-[11px]">—</p>}
+                  ) : structuralIsPersistence ? (() => {
+                    // "Always show a quadrant" follow-up: the quadrant word
+                    // is now the primary bold line — same visual weight a
+                    // real quadrant gets — with "Regime continuation"/
+                    // "Leans" demoted to the qualifier line below it, not
+                    // the other way around. Both-Persistent means neither
+                    // axis moved, so the quadrant IS the already-confirmed
+                    // one (regime.label/regimeKey, the same fallback the
+                    // headline above uses) — NOT a freshly nearSide-guessed
+                    // one, which can disagree with "currently confirmed"
+                    // and read as contradictory (e.g. nearSide leaning
+                    // Reflation while the confirmed regime is Stagflation).
+                    // leaningQuadrantKey is reserved for the mixed case,
+                    // where the doc explicitly asks for that computation.
+                    const bothPersistent = structuralGrowthAxis.persistence && structuralInflAxis?.persistence;
+                    const leanKey = bothPersistent ? regimeKey : leaningQuadrantKey(structuralGrowthAxis, structuralInflAxis);
+                    const meta = leanKey ? REGIME_META[leanKey] : null;
+                    const hedge = bothPersistent ? null : leaningHedge(structuralGrowthAxis, structuralInflAxis);
+                    return (
+                      <>
+                        <p className={`font-semibold ${meta?.color ?? "text-brass-soft"}`}>{meta?.label ?? "—"}</p>
+                        <p className="text-[11px] text-paper-dim mt-0.5">
+                          {bothPersistent ? "Regime continuation — no shift signaled on either axis" : `Leans (provisional) — ${hedge}`}
+                        </p>
+                        <p className="text-[10px] text-brass-soft/70 mt-1">
+                          {describeAxisContinuation(structuralGrowthAxis, structuralInflAxis, gdpFastVal, cpiFastVal)}
+                        </p>
+                      </>
+                    );
+                  })() : <p className="text-paper-dim text-[11px]">—</p>}
                 </div>
                 <div className={`px-3 py-3 border-l border-ink-line ${marketIsPersistence ? "border-b-2 border-b-brass/40" : ""}`}>
                   {marketMeta ? (
@@ -2267,15 +2344,27 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                       <p className={`font-semibold ${marketMeta.color}`}>{marketMeta.label}</p>
                       <p className="text-[11px] text-paper-dim mt-0.5">{marketMeta.desc}</p>
                     </>
-                  ) : marketIsPersistence ? (
-                    <>
-                      <p className="font-semibold text-brass-soft">Regime continuation</p>
-                      <p className="text-[11px] text-paper-dim mt-0.5">no shift signaled (currently: {regime?.label ?? "n/a"})</p>
-                      <p className="text-[10px] text-brass-soft/70 mt-1">
-                        {describeAxisContinuation(structuralGrowthAxis, null, gdpFastVal, cpiFastVal, breakevenVal > FED_INFLATION_TARGET)}
-                      </p>
-                    </>
-                  ) : <p className="text-paper-dim text-[11px]">—</p>}
+                  ) : marketIsPersistence ? (() => {
+                    // Market's inflation leg (breakeven vs Fed target) is a
+                    // plain threshold with no Persistence state of its own —
+                    // wrap it so leaningQuadrantKey/leaningHedge see it the
+                    // same shape as a resolveAxisState object. Market can
+                    // therefore only ever land in the mixed case (growth
+                    // Persistent, inflation real), never both-Persistent.
+                    const marketInflAxis = { persistence: false, up: breakevenVal > FED_INFLATION_TARGET, nearSide: null };
+                    const leanKey = leaningQuadrantKey(structuralGrowthAxis, marketInflAxis);
+                    const meta = leanKey ? REGIME_META[leanKey] : null;
+                    const hedge = leaningHedge(structuralGrowthAxis, marketInflAxis);
+                    return (
+                      <>
+                        <p className={`font-semibold ${meta?.color ?? "text-brass-soft"}`}>{meta?.label ?? "—"}</p>
+                        <p className="text-[11px] text-paper-dim mt-0.5">Leans (provisional) — {hedge}</p>
+                        <p className="text-[10px] text-brass-soft/70 mt-1">
+                          {describeAxisContinuation(structuralGrowthAxis, null, gdpFastVal, cpiFastVal, breakevenVal > FED_INFLATION_TARGET)}
+                        </p>
+                      </>
+                    );
+                  })() : <p className="text-paper-dim text-[11px]">—</p>}
                 </div>
               </div>
 
