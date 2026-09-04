@@ -21,9 +21,6 @@ import {
   isInflationAccelerating,
   resolveAxisState,
   persistenceConfidenceTier,
-  axisConviction,
-  GDP_FORECAST_ERROR_BAND_PP,
-  CPI_FORECAST_ERROR_BAND_PP,
   confidenceTierMultiplier,
   isLaborDeteriorating,
   rateOfChangeLabel,
@@ -1040,6 +1037,18 @@ function rateOfChangeDisplay(fast, slow, minGap) {
   return stateDisplay(rateOfChangeLabel(fast, slow, minGap));
 }
 
+// 3-period-forecast follow-up: GDP's target_date is a quarter-start ISO
+// date (macro_forecast_log convention, matching FRED GDPC1's own dating);
+// CPI's is a month-start. Render each in its series' natural unit rather
+// than a raw ISO date.
+function formatTargetPeriod(dateStr, series) {
+  const d = new Date(dateStr + "T00:00:00Z");
+  if (series === "gdp") {
+    return `Q${Math.floor(d.getUTCMonth() / 3) + 1} ${d.getUTCFullYear()}`;
+  }
+  return d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+}
+
 // Builds the Regime Read row's "which axis is doing the work" line for
 // Structural/Market Expectations when one of them has no real quadrant to
 // show — per the dead-band-persistence spec, this always means at least
@@ -1996,36 +2005,6 @@ function QuadrantCard({ indicators, holdings, assetData }) {
     currentValue: coreCpiInd?.current_value != null ? Number(coreCpiInd.current_value) : null,
   };
 
-  // 3-month-forward-forecast spec: the point forecast is the SAME
-  // level-anchored value (gdpFastVal/cpiFastVal — the same anchor
-  // Persistence already uses) for every axis state, not just Persistence —
-  // momentum-decay extrapolation was tested and disproven twice over (see
-  // growth-axis-backtest's directional-accuracy/bias-correction results).
-  // errorBandPp is the horizon-matched historical MAE (static reference,
-  // periodically refreshed by re-running that tool). confidence reuses
-  // Persistence's own persistenceConfidence, or — for a real Accelerating/
-  // Decelerating call, which carries no existing confidence score on the
-  // Structural axis — axisConviction's mirror-image distance-from-boundary
-  // measure.
-  const gdpForecastStats = gdpFastVal != null ? {
-    value: gdpFastVal,
-    errorBandPp: GDP_FORECAST_ERROR_BAND_PP,
-    confidence: structuralGrowthAxis.persistence
-      ? structuralGrowthAxis.persistenceConfidence
-      : axisConviction(gdpFastVal - gdp3yAvgVal, GROWTH_MIN_GAP),
-    state: structuralGrowthAxis.persistence ? "persistence" : structuralGrowthAxis.up ? "accelerating" : "decelerating",
-    horizonLabel: "1Q ahead",
-  } : null;
-  const cpiForecastStats = cpiFastVal != null && structuralInflAxis ? {
-    value: cpiFastVal,
-    errorBandPp: CPI_FORECAST_ERROR_BAND_PP,
-    confidence: structuralInflAxis.persistence
-      ? structuralInflAxis.persistenceConfidence
-      : axisConviction(cpiFastVal - cpi3yAvgVal, CPI_MIN_GAP),
-    state: structuralInflAxis.persistence ? "persistence" : structuralInflAxis.up ? "accelerating" : "decelerating",
-    horizonLabel: "3mo ahead",
-  } : null;
-
   const signalKeys = regimeKey ? getSignalKeys(regimeKey) : [];
   // BW Modified and RP methods show all 8 market assets; Default shows regime-favored only
   const displayKeys = regimeKey
@@ -2747,7 +2726,6 @@ function QuadrantCard({ indicators, holdings, assetData }) {
         zscoreLabel="vs. 2015-2019 average"
         consensusVar="RGDP"
         consensusLabel="Real GDP"
-        forecastStats={gdpForecastStats}
         forecastSeries="gdp"
       />
       <TwoLineHistoryDrawer
@@ -2765,7 +2743,6 @@ function QuadrantCard({ indicators, holdings, assetData }) {
         zscoreLabel="Core CPI vs. 2015-2019 average"
         consensusVar="CORECPI"
         consensusLabel="Core CPI"
-        forecastStats={cpiForecastStats}
         forecastSeries="cpi"
       />
       <TwoLineHistoryDrawer
@@ -2840,7 +2817,7 @@ const CROSSOVER_PRESETS = [
 function TwoLineHistoryDrawer({
   open, onClose, title, subtitle, fetchUrl, series, unit = "%",
   regimeStats, zscoreLabel, consensusVar, consensusLabel,
-  forecastStats, forecastSeries,
+  forecastSeries,
 }) {
   const [rows, setRows] = useState(null);
   const [fromDate, setFromDate] = useState("2000-01");
@@ -2938,25 +2915,65 @@ function TwoLineHistoryDrawer({
       .catch(() => setConsensus(false));
   }, [open, consensusVar]);
 
-  // 3-month-forward-forecast spec: the accuracy scorecard is computed live
-  // from macro_forecast_log's REAL production forecasts (never backtest
-  // replays), same lazy-on-open pattern as the SPF consensus fetch above —
-  // it starts thin and grows for real, rather than being backfilled from
-  // the historical backtest to look more mature than it is on day one.
+  // 3-period-forecast follow-up: the rolling table AND the accuracy
+  // scorecard are both computed live from macro_forecast_log's REAL
+  // production forecasts (never backtest replays), same lazy-on-open
+  // pattern as the SPF consensus fetch above — starts thin and grows for
+  // real, rather than being backfilled from the historical backtest to
+  // look more mature than it is on day one.
+  const [forecastTable, setForecastTable] = useState(null); // { resolved: [...], pending: [...] } | false
   const [forecastAccuracy, setForecastAccuracy] = useState(null);
 
   useEffect(() => {
     if (!open || !forecastSeries) return;
+    setForecastTable(null);
     setForecastAccuracy(null);
     const minGap = forecastSeries === "gdp" ? GROWTH_MIN_GAP : CPI_MIN_GAP;
+    const isHit = (r) => {
+      const delta = Number(r.actual_value) - Number(r.forecast_value);
+      if (r.state === "persistence") return Math.abs(delta) <= minGap;
+      if (r.state === "accelerating") return delta > minGap;
+      return delta < -minGap;
+    };
     supabase
       .from("macro_forecast_log")
-      .select("state, forecast_value, actual_value")
+      .select("horizon_n, horizon_label, issue_date, target_date, forecast_value, error_band_pp, confidence, state, actual_value")
       .eq("series", forecastSeries)
-      .not("actual_value", "is", null)
+      .order("issue_date", { ascending: false })
+      .limit(1000)
       .then(({ data }) => {
-        if (!data || data.length === 0) { setForecastAccuracy(false); return; }
-        const errs = data.map((r) => Math.abs(Number(r.actual_value) - Number(r.forecast_value)));
+        if (!data || data.length === 0) { setForecastTable(false); setForecastAccuracy(false); return; }
+
+        // Dedup by (horizon_n, target_date): fetch-macro-data logs a fresh
+        // row every run, so many issue_dates can share the same target
+        // period as it approaches — keep only the freshest (most recently
+        // issued) forecast for each specific period. data is already
+        // issue_date DESC, so the first occurrence per key wins.
+        const byKey = new Map();
+        for (const r of data) {
+          const key = `${r.horizon_n}|${r.target_date}`;
+          if (!byKey.has(key)) byKey.set(key, r);
+        }
+        const uniqueRows = [...byKey.values()];
+
+        const resolved = uniqueRows
+          .filter((r) => r.actual_value != null)
+          .sort((a, b) => b.target_date.localeCompare(a.target_date))
+          .slice(0, 3)
+          .sort((a, b) => a.target_date.localeCompare(b.target_date));
+        const pending = uniqueRows
+          .filter((r) => r.actual_value == null)
+          .sort((a, b) => a.target_date.localeCompare(b.target_date))
+          .slice(0, 3);
+        setForecastTable({ resolved, pending });
+
+        // Aggregate scorecard: horizon_n=1 only, never blended across
+        // horizons — a 1-period-ahead forecast's accuracy is a different
+        // question from a 3-period-ahead one's, same principle as keeping
+        // value/directional/continuation accuracy separate from each other.
+        const h1 = uniqueRows.filter((r) => r.horizon_n === 1 && r.actual_value != null);
+        if (h1.length === 0) { setForecastAccuracy(false); return; }
+        const errs = h1.map((r) => Math.abs(Number(r.actual_value) - Number(r.forecast_value)));
         const mae = Math.round((errs.reduce((a, b) => a + b, 0) / errs.length) * 100) / 100;
         // dead-band-recalibration spec, Measure 2: directional accuracy
         // scored ONLY over real Accelerating/Decelerating calls, and only a
@@ -2965,23 +2982,17 @@ function TwoLineHistoryDrawer({
         // any smaller wiggle is "Flat," not a directional move. Persistence
         // periods get their own separate "continuation accuracy" — never
         // blended into one number, per the spec's explicit requirement.
-        const calls = data.filter((r) => r.state === "accelerating" || r.state === "decelerating");
-        const persist = data.filter((r) => r.state === "persistence");
-        const callHits = calls.filter((r) => {
-          const delta = Number(r.actual_value) - Number(r.forecast_value);
-          const actualDir = delta > minGap ? "up" : delta < -minGap ? "down" : "flat";
-          return (r.state === "accelerating" && actualDir === "up") || (r.state === "decelerating" && actualDir === "down");
-        }).length;
-        const persistHits = persist.filter((r) => Math.abs(Number(r.actual_value) - Number(r.forecast_value)) <= minGap).length;
+        const calls = h1.filter((r) => r.state === "accelerating" || r.state === "decelerating");
+        const persist = h1.filter((r) => r.state === "persistence");
         setForecastAccuracy({
-          n: data.length, mae,
+          n: h1.length, mae,
           nCalls: calls.length,
-          directionalHitRate: calls.length ? Math.round((callHits / calls.length) * 100) : null,
+          directionalHitRate: calls.length ? Math.round((calls.filter(isHit).length / calls.length) * 100) : null,
           nPersistence: persist.length,
-          continuationAccuracy: persist.length ? Math.round((persistHits / persist.length) * 100) : null,
+          continuationAccuracy: persist.length ? Math.round((persist.filter(isHit).length / persist.length) * 100) : null,
         });
       })
-      .catch(() => setForecastAccuracy(false));
+      .catch(() => { setForecastTable(false); setForecastAccuracy(false); });
   }, [open, forecastSeries]);
 
   const chartData = useMemo(() => {
@@ -3162,17 +3173,47 @@ function TwoLineHistoryDrawer({
                   })()}
                 </div>
               </div>
-              {forecastStats && (
+              {forecastSeries && (
                 <div className="pt-2 border-t border-ink-line/50">
-                  <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-1">Ratiobo Forecast ({forecastStats.horizonLabel})</p>
-                  <p className="num font-semibold text-paper">
-                    {forecastStats.value.toFixed(1)}% ± {forecastStats.errorBandPp.toFixed(2)}pp
-                  </p>
-                  <p className="text-paper-dim text-[10px] mt-0.5">
-                    {forecastStats.state === "persistence" ? "Persistence" : forecastStats.state === "accelerating" ? "Accelerating" : "Decelerating"}
-                    {forecastStats.confidence != null && ` · ${forecastStats.confidence}% confidence`}
-                    {" · band from horizon-matched historical MAE"}
-                  </p>
+                  <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-1">Ratiobo Forecast — 3 periods</p>
+                  {forecastTable === null ? (
+                    <p className="text-paper-dim text-[10px]">Loading forecast…</p>
+                  ) : forecastTable === false ? (
+                    <p className="text-paper-dim text-[10px]">No forecasts logged yet.</p>
+                  ) : (() => {
+                    const minGap = forecastSeries === "gdp" ? GROWTH_MIN_GAP : CPI_MIN_GAP;
+                    const rows = [...forecastTable.resolved, ...forecastTable.pending];
+                    return (
+                      <div className="grid grid-cols-[3rem_3.5rem_1fr_3.5rem_2.5rem] gap-x-2 gap-y-1 text-[10px] items-center">
+                        <span className="text-paper-dim uppercase tracking-wide">Hz</span>
+                        <span className="text-paper-dim uppercase tracking-wide">Period</span>
+                        <span className="text-paper-dim uppercase tracking-wide">Forecast</span>
+                        <span className="text-paper-dim uppercase tracking-wide">Actual</span>
+                        <span className="text-paper-dim uppercase tracking-wide">Hit</span>
+                        {rows.map((r) => {
+                          const isPending = r.actual_value == null;
+                          const delta = !isPending ? Number(r.actual_value) - Number(r.forecast_value) : null;
+                          const hit = delta == null ? null
+                            : r.state === "persistence" ? Math.abs(delta) <= minGap
+                            : r.state === "accelerating" ? delta > minGap
+                            : delta < -minGap;
+                          return (
+                            <Fragment key={`${r.horizon_n}-${r.target_date}`}>
+                              <span className="text-paper-dim">{r.horizon_label}</span>
+                              <span className="text-paper-dim">{formatTargetPeriod(r.target_date, forecastSeries)}</span>
+                              <span className="num text-paper">
+                                {Number(r.forecast_value).toFixed(1)}% ± {Number(r.error_band_pp).toFixed(2)}pp
+                              </span>
+                              <span className="num text-paper">{isPending ? "pending" : `${Number(r.actual_value).toFixed(1)}%`}</span>
+                              <span className={hit == null ? "text-paper-dim" : hit ? "text-gain" : "text-loss"}>
+                                {hit == null ? "—" : hit ? "✓" : "✗"}
+                              </span>
+                            </Fragment>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                   <div className="mt-1.5 space-y-0.5">
                     {forecastAccuracy === null ? (
                       <p className="text-paper-dim text-[10px]">Loading accuracy…</p>
@@ -3181,7 +3222,7 @@ function TwoLineHistoryDrawer({
                     ) : (
                       <>
                         <p className="text-paper-dim text-[10px]">
-                          Value accuracy ({forecastStats.horizonLabel}, MAE): {forecastAccuracy.mae.toFixed(2)}pp (n={forecastAccuracy.n})
+                          Value accuracy (1-period horizon, MAE): {forecastAccuracy.mae.toFixed(2)}pp (n={forecastAccuracy.n})
                         </p>
                         <p className="text-paper-dim text-[10px]">
                           Directional accuracy: {forecastAccuracy.directionalHitRate != null ? `${forecastAccuracy.directionalHitRate}% (n=${forecastAccuracy.nCalls})` : `no Up/Down calls yet (n=${forecastAccuracy.nCalls})`}

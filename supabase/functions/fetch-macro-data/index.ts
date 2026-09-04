@@ -1638,16 +1638,18 @@ const CPI_MIN_GAP = 1.00; // pp
 // sync with the identical constant in lib/simulatorKeys.js/get-regime-analysis.
 const FED_INFLATION_TARGET = 2.0;
 
-// 3-month-forward-forecast spec: horizon-matched historical MAE from
+// 3-period-forecast follow-up: horizon-matched historical MAE from
 // supabase/functions/growth-axis-backtest's real, large-sample backtest
-// (GDP fullHistory naiveMAE, CPI fullHistory naiveMAE, at the current
-// GROWTH_MIN_GAP/CPI_MIN_GAP calibration) — the error band shown next to
-// the point forecast. A static reference, not recomputed on every
-// ingestion run (that tool hits FRED directly and is meant to be invoked
-// standalone); re-run it and update these two constants if the dead-band
+// (fullHistory naiveMAE at each horizonQ/horizonM, at the current
+// GROWTH_MIN_GAP/CPI_MIN_GAP calibration) — index 0 = 1 period ahead, index
+// 1 = 2 periods, index 2 = 3 periods. Error legitimately grows with horizon
+// (a flat anchor gets less reliable further out); all three horizons still
+// share the SAME point forecast, only the band widens. Static references,
+// not recomputed on every ingestion run; re-run growth-axis-backtest at
+// horizonQ=1,2,3 / horizonM=1,2,3 and update these if the dead-band
 // calibration ever changes again.
-const GDP_FORECAST_ERROR_BAND_PP = 0.93;
-const CPI_FORECAST_ERROR_BAND_PP = 0.64;
+const GDP_FORECAST_ERROR_BAND_PP = [0.93, 1.28, 1.56]; // Q+1, Q+2, Q+3
+const CPI_FORECAST_ERROR_BAND_PP = [0.40, 0.53, 0.64]; // M+1, M+2, M+3
 
 // The point forecast is the SAME level-anchored value for every axis
 // state (Accelerating/Decelerating/Persistence) — momentum-decay
@@ -1668,22 +1670,22 @@ function addMonths(dateStr: string, months: number): string {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, 1)).toISOString().slice(0, 10);
 }
 
-// Upserts one production forecast per (series, issue_date) — idempotent on
-// same-day re-runs. forecast_value/naive_forecast_value are stored
-// identically by design (see macro_forecast_log's table comment); kept as
-// two columns only for schema flexibility if that ever changes.
+// Upserts one production forecast per (series, issue_date, horizon_n) —
+// idempotent on same-day re-runs. forecast_value/naive_forecast_value are
+// stored identically by design (see macro_forecast_log's table comment);
+// kept as two columns only for schema flexibility if that ever changes.
 async function logForecast(
-  series: "gdp" | "cpi", issueDate: string, targetDate: string, horizonLabel: string,
+  series: "gdp" | "cpi", issueDate: string, targetDate: string, horizonLabel: string, horizonN: 1 | 2 | 3,
   forecastValue: number, errorBandPp: number, confidence: number | null,
   state: "accelerating" | "decelerating" | "persistence",
 ): Promise<void> {
   const v = Math.round(forecastValue * 100) / 100;
   const { error } = await supabase.from("macro_forecast_log").upsert({
-    series, issue_date: issueDate, target_date: targetDate, horizon_label: horizonLabel,
+    series, issue_date: issueDate, target_date: targetDate, horizon_label: horizonLabel, horizon_n: horizonN,
     forecast_value: v, naive_forecast_value: v,
     error_band_pp: errorBandPp, confidence, state,
-  }, { onConflict: "series,issue_date", ignoreDuplicates: false });
-  if (error) console.error(`[forecast_log] upsert ${series}:`, error);
+  }, { onConflict: "series,issue_date,horizon_n", ignoreDuplicates: false });
+  if (error) console.error(`[forecast_log] upsert ${series} h${horizonN}:`, error);
 }
 
 // Fills actual_value for pending forecasts once the real print for
@@ -2296,28 +2298,48 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       updated_at: new Date().toISOString(),
     }, { onConflict: "period_date", ignoreDuplicates: false });
 
-    // 3-month-forward-forecast spec: log today's production forecast for
-    // each series — real forecasts only, never backtest replays (those
-    // live solely in growth-axis-backtest's stateless reports). Reuses the
-    // SAME structuralGrowthAxis/structuralInflAxis just computed above for
-    // the regime classification, so the forecast's state can never drift
-    // from what the Structural crossover panel itself shows.
+    // 3-period-forecast follow-up: log today's production forecast for each
+    // series at 3 simultaneous horizons (GDP: Q+1/Q+2/Q+3; CPI: M+1/M+2/
+    // M+3) — real forecasts only, never backtest replays (those live
+    // solely in growth-axis-backtest's stateless reports). All three
+    // horizons share the SAME point value (gdpFast/cpiFast, the flat
+    // anchor) and the SAME state/confidence (a statement about TODAY's
+    // classification, which doesn't change by how far out you're looking)
+    // — only target_date and the horizon-matched error band differ.
+    // Reuses the SAME structuralGrowthAxis/structuralInflAxis just
+    // computed above for the regime classification, so the forecast's
+    // state can never drift from what the Structural crossover panel
+    // itself shows.
     const issueDate = now.toISOString().slice(0, 10);
-    const gdpTargetDate = addMonths(periodDate, 3); // GDP: 1 quarter ahead
-    const cpiIssuePeriod = typeof cpiFastRow?.metadata?.reference_period === "string" ? cpiFastRow.metadata.reference_period : issueDate;
-    const cpiTargetDate = addMonths(cpiIssuePeriod, 3); // CPI: 3 months ahead
+    // Anchored to TODAY's calendar month, not cpiFastRow's own (lagged,
+    // ~1-2mo behind) reference_period — CPI's reporting lag means "M+1
+    // from the data's own vintage" can land BEFORE today's calendar date
+    // (confirmed live: 2026-08-01 while today was 2026-09-04), which isn't
+    // a future forecast at all. GDP's periodDate below has the same
+    // calendar-anchored property already (built from `now`, not from the
+    // data's vintage) — this keeps both series' horizons genuinely
+    // forward-looking and anchored the same way.
+    const cpiPeriodDate = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
 
     const gdpState = structuralGrowthAxis.persistence ? "persistence" : structuralGrowthAxis.up ? "accelerating" : "decelerating";
     const gdpConfidence = structuralGrowthAxis.persistence
       ? structuralGrowthAxis.persistenceConfidence
       : axisConviction(gdpFast - gdpSlow, GROWTH_MIN_GAP);
-    await logForecast("gdp", issueDate, gdpTargetDate, "1Q ahead", gdpFast, GDP_FORECAST_ERROR_BAND_PP, gdpConfidence, gdpState);
-
     const cpiState = structuralInflAxis.persistence ? "persistence" : structuralInflAxis.up ? "accelerating" : "decelerating";
     const cpiConfidence = structuralInflAxis.persistence
       ? structuralInflAxis.persistenceConfidence
       : axisConviction(cpiFast - cpiSlow, CPI_MIN_GAP);
-    await logForecast("cpi", issueDate, cpiTargetDate, "3mo ahead", cpiFast, CPI_FORECAST_ERROR_BAND_PP, cpiConfidence, cpiState);
+
+    for (const h of [1, 2, 3] as const) {
+      await logForecast(
+        "gdp", issueDate, addMonths(periodDate, h * 3), `Q+${h}`, h,
+        gdpFast, GDP_FORECAST_ERROR_BAND_PP[h - 1], gdpConfidence, gdpState,
+      );
+      await logForecast(
+        "cpi", issueDate, addMonths(cpiPeriodDate, h), `M+${h}`, h,
+        cpiFast, CPI_FORECAST_ERROR_BAND_PP[h - 1], cpiConfidence, cpiState,
+      );
+    }
 
     await backfillForecastActuals();
   } catch (e) { console.error("[regime_history] current update:", e); }
