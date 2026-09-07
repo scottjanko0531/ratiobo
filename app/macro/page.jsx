@@ -3069,10 +3069,6 @@ function TwoLineHistoryDrawer({
   // horizon-1 nowcast targeting the current quarter's first month, when
   // that month has already printed) — drop any forecast row whose date is
   // already covered by actual data rather than showing both.
-  const actualDates = useMemo(() => new Set((rows ?? []).map((r) => r.date)), [rows]);
-  const forecastRows = consensusVar && consensus && consensus.forecastRows
-    ? consensus.forecastRows.filter((r) => !actualDates.has(r.date))
-    : [];
   // Ratiobo's own past forecast, reconstructed rather than looked up from
   // macro_forecast_log (which only has real entries from when that table
   // started logging — too sparse to fill a "recent readings" table going
@@ -3083,11 +3079,27 @@ function TwoLineHistoryDrawer({
   // GDP (1Q horizon) and CPI (3mo horizon) target "3 calendar months
   // ahead," so the same offset works for both drawers.
   const rowsByDate = useMemo(() => new Map((rows ?? []).map((r) => [r.date, r])), [rows]);
-  function ratioboForecastFor(dateStr) {
-    const d = new Date(dateStr + "T00:00:00Z");
+  // Full reconstruction, not just the point value: state (accelerating/
+  // decelerating/persistence) comes from the SAME gap-vs-minGap dead-band
+  // classification used everywhere else this session, computed from the
+  // issue-date row's own fast/slow (both already in `rows` — no new fetch).
+  // hit/valueAcc reuse the identical Measure 2 definition already used by
+  // the "CPI Forecast Components" table above: a real call is a hit only
+  // if the actual print cleared the dead band in the called direction;
+  // Persistence is a hit if the actual print stayed inside the dead band.
+  function ratioboForecastFor(row) {
+    const d = new Date(row.date + "T00:00:00Z");
     const issueDate = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 3, 1)).toISOString().slice(0, 10);
     const issueRow = rowsByDate.get(issueDate);
-    return issueRow?.fast ?? null;
+    if (!issueRow || issueRow.fast == null || issueRow.slow == null) return null;
+    const minGap = forecastSeries === "gdp" ? GROWTH_MIN_GAP : CPI_MIN_GAP;
+    const gap = issueRow.fast - issueRow.slow;
+    const state = Math.abs(gap) <= minGap ? "persistence" : gap > 0 ? "accelerating" : "decelerating";
+    const forecastValue = issueRow.fast;
+    if (row.actual == null) return { value: forecastValue, state, valueAcc: null, hit: null };
+    const delta = row.actual - forecastValue;
+    const hit = state === "persistence" ? Math.abs(delta) <= minGap : state === "accelerating" ? delta > minGap : delta < -minGap;
+    return { value: forecastValue, state, valueAcc: Math.abs(delta), hit };
   }
 
   return (
@@ -3442,13 +3454,13 @@ function TwoLineHistoryDrawer({
             </div>
           )}
 
-          {rows !== null && (summaryRows.length > 0 || forecastRows.length > 0) && (
+          {rows !== null && summaryRows.length > 0 && (
             <div>
-              <p className="label text-[10px] mb-2">Recent readings{forecastRows.length ? " + SPF forecast" : ""}</p>
+              <p className="label text-[10px] mb-2">Recent readings</p>
               <div className="border border-ink-line rounded-lg overflow-hidden text-xs">
                 <div
                   className="grid gap-px bg-ink-line"
-                  style={{ gridTemplateColumns: `1fr repeat(${series.length}, 1fr)${forecastSeries ? " 1fr" : ""}${consensusVar ? " 1fr" : ""}` }}
+                  style={{ gridTemplateColumns: `1fr repeat(${series.length}, 1fr)${forecastSeries ? " 1fr 1fr 1fr" : ""}` }}
                 >
                   <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim">Date</div>
                   {series.map((s) => (
@@ -3457,55 +3469,40 @@ function TwoLineHistoryDrawer({
                     </div>
                   ))}
                   {forecastSeries && (
-                    <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Ratiobo</div>
+                    <>
+                      <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Ratiobo</div>
+                      <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Value Acc.</div>
+                      <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Dir. Acc.</div>
+                    </>
                   )}
-                  {consensusVar && (
-                    <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">SPF</div>
-                  )}
-                  {forecastRows.map((r) => (
-                    <Fragment key={`f-${r.date}`}>
-                      <div className="bg-ink px-2 py-1.5 text-paper-dim/60 italic">
-                        {new Date(r.date + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })}
-                      </div>
-                      {series.map((s) => (
-                        <div key={s.key} className="bg-ink px-2 py-1.5 text-right text-paper-dim/30">—</div>
-                      ))}
-                      {forecastSeries && (
-                        <div className="bg-ink px-2 py-1.5 text-right text-paper-dim/30">—</div>
-                      )}
-                      <div className="bg-ink px-2 py-1.5 text-right num text-brass-soft">
-                        {r.value.toFixed(2)}{unit}
-                      </div>
-                    </Fragment>
-                  ))}
-                  {summaryRows.map((r) => (
-                    <Fragment key={r.date}>
-                      <div className="bg-ink px-2 py-1.5 text-paper-dim">
-                        {new Date(r.date + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })}
-                      </div>
-                      {series.map((s) => (
-                        <div key={s.key} className="bg-ink px-2 py-1.5 text-right num" style={{ color: s.color }}>
-                          {r[s.key] != null ? `${r[s.key].toFixed(2)}${unit}` : "—"}
+                  {summaryRows.map((r) => {
+                    const fcst = forecastSeries ? ratioboForecastFor(r) : null;
+                    return (
+                      <Fragment key={r.date}>
+                        <div className="bg-ink px-2 py-1.5 text-paper-dim">
+                          {new Date(r.date + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })}
                         </div>
-                      ))}
-                      {forecastSeries && (() => {
-                        const fcst = ratioboForecastFor(r.date);
-                        return (
-                          <div className={`bg-ink px-2 py-1.5 text-right num ${fcst != null ? "text-paper" : "text-paper-dim/30"}`}>
-                            {fcst != null ? `${fcst.toFixed(2)}${unit}` : "—"}
+                        {series.map((s) => (
+                          <div key={s.key} className="bg-ink px-2 py-1.5 text-right num" style={{ color: s.color }}>
+                            {r[s.key] != null ? `${r[s.key].toFixed(2)}${unit}` : "—"}
                           </div>
-                        );
-                      })()}
-                      {consensusVar && (() => {
-                        const spf = consensus?.pointForecastByDate?.[r.date];
-                        return (
-                          <div className={`bg-ink px-2 py-1.5 text-right num ${spf != null ? "text-brass-soft/70" : "text-paper-dim/30"}`}>
-                            {spf != null ? `${spf.toFixed(2)}${unit}` : "—"}
-                          </div>
-                        );
-                      })()}
-                    </Fragment>
-                  ))}
+                        ))}
+                        {forecastSeries && (
+                          <>
+                            <div className={`bg-ink px-2 py-1.5 text-right num ${fcst ? "text-paper" : "text-paper-dim/30"}`}>
+                              {fcst ? `${fcst.value.toFixed(2)}${unit}` : "—"}
+                            </div>
+                            <div className={`bg-ink px-2 py-1.5 text-right num ${fcst?.valueAcc != null ? "text-paper" : "text-paper-dim/30"}`}>
+                              {fcst?.valueAcc != null ? `${fcst.valueAcc.toFixed(2)}pp` : "—"}
+                            </div>
+                            <div className={`bg-ink px-2 py-1.5 text-right ${fcst?.hit == null ? "text-paper-dim/30" : fcst.hit ? "text-gain" : "text-loss"}`}>
+                              {fcst?.hit == null ? "—" : fcst.hit ? "Hit" : "Miss"}
+                            </div>
+                          </>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </div>
               </div>
             </div>
