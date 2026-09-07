@@ -2923,11 +2923,18 @@ function TwoLineHistoryDrawer({
   // look more mature than it is on day one.
   const [forecastTable, setForecastTable] = useState(null); // { resolved: [...], pending: [...] } | false
   const [forecastAccuracy, setForecastAccuracy] = useState(null);
+  // CPI drawer only (see render below) — same horizon_n=1-only, never-
+  // blended-with-directional principle as forecastAccuracy above, just
+  // sliced by calendar window instead of collapsed into one all-time
+  // number, so a reader can see whether accuracy is holding up recently
+  // vs. only looking good averaged over the feature's whole life.
+  const [forecastAccuracyWindows, setForecastAccuracyWindows] = useState(null);
 
   useEffect(() => {
     if (!open || !forecastSeries) return;
     setForecastTable(null);
     setForecastAccuracy(null);
+    setForecastAccuracyWindows(null);
     const minGap = forecastSeries === "gdp" ? GROWTH_MIN_GAP : CPI_MIN_GAP;
     const isHit = (r) => {
       const delta = Number(r.actual_value) - Number(r.forecast_value);
@@ -2942,7 +2949,7 @@ function TwoLineHistoryDrawer({
       .order("issue_date", { ascending: false })
       .limit(1000)
       .then(({ data }) => {
-        if (!data || data.length === 0) { setForecastTable(false); setForecastAccuracy(false); return; }
+        if (!data || data.length === 0) { setForecastTable(false); setForecastAccuracy(false); setForecastAccuracyWindows(false); return; }
 
         // Dedup by (horizon_n, target_date): fetch-macro-data logs a fresh
         // row every run, so many issue_dates can share the same target
@@ -2972,7 +2979,7 @@ function TwoLineHistoryDrawer({
         // question from a 3-period-ahead one's, same principle as keeping
         // value/directional/continuation accuracy separate from each other.
         const h1 = uniqueRows.filter((r) => r.horizon_n === 1 && r.actual_value != null);
-        if (h1.length === 0) { setForecastAccuracy(false); return; }
+        if (h1.length === 0) { setForecastAccuracy(false); setForecastAccuracyWindows(false); return; }
         const errs = h1.map((r) => Math.abs(Number(r.actual_value) - Number(r.forecast_value)));
         const mae = Math.round((errs.reduce((a, b) => a + b, 0) / errs.length) * 100) / 100;
         // dead-band-recalibration spec, Measure 2: directional accuracy
@@ -2991,8 +2998,42 @@ function TwoLineHistoryDrawer({
           nPersistence: persist.length,
           continuationAccuracy: persist.length ? Math.round((persist.filter(isHit).length / persist.length) * 100) : null,
         });
+
+        // Windowed accuracy (CPI drawer's "Forecast Accuracy Summary" —
+        // same h1-only, directional-scored-on-real-calls-only rules as
+        // above, just bucketed by calendar window instead of one all-time
+        // figure. "Accuracy" = value MAE (pp); "Directional Accuracy" = %
+        // of real Up/Down calls that hit, in that window — Persistence
+        // periods are excluded from the directional column here (same
+        // never-blend-continuation-with-real-calls rule), not folded in.
+        const now = new Date();
+        const priorMonthDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+        const priorMonthKey = priorMonthDate.toISOString().slice(0, 7);
+        const qStartMonth = Math.floor(now.getUTCMonth() / 3) * 3;
+        const currQStart = new Date(Date.UTC(now.getUTCFullYear(), qStartMonth, 1)).toISOString().slice(0, 10);
+        const currQEnd = new Date(Date.UTC(now.getUTCFullYear(), qStartMonth + 3, 1)).toISOString().slice(0, 10);
+        const yearStart = `${now.getUTCFullYear()}-01-01`;
+        const windowRows = {
+          "Prior Month": h1.filter((r) => r.target_date.slice(0, 7) === priorMonthKey),
+          "Curr Qtr": h1.filter((r) => r.target_date >= currQStart && r.target_date < currQEnd),
+          "YTD": h1.filter((r) => r.target_date >= yearStart),
+          "All Time": h1,
+        };
+        const summarizeWindow = (rows) => {
+          if (rows.length === 0) return { n: 0, mae: null, nCalls: 0, directionalHitRate: null };
+          const werrs = rows.map((r) => Math.abs(Number(r.actual_value) - Number(r.forecast_value)));
+          const wmae = Math.round((werrs.reduce((a, b) => a + b, 0) / werrs.length) * 100) / 100;
+          const wcalls = rows.filter((r) => r.state === "accelerating" || r.state === "decelerating");
+          return {
+            n: rows.length, mae: wmae, nCalls: wcalls.length,
+            directionalHitRate: wcalls.length ? Math.round((wcalls.filter(isHit).length / wcalls.length) * 100) : null,
+          };
+        };
+        setForecastAccuracyWindows(
+          Object.fromEntries(Object.entries(windowRows).map(([label, rows]) => [label, summarizeWindow(rows)]))
+        );
       })
-      .catch(() => { setForecastTable(false); setForecastAccuracy(false); });
+      .catch(() => { setForecastTable(false); setForecastAccuracy(false); setForecastAccuracyWindows(false); });
   }, [open, forecastSeries]);
 
   const chartData = useMemo(() => {
@@ -3173,7 +3214,77 @@ function TwoLineHistoryDrawer({
                   })()}
                 </div>
               </div>
-              {forecastSeries && (
+              {forecastSeries === "cpi" && (
+                <>
+                  <div className="pt-2 border-t border-ink-line/50">
+                    <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-1">CPI Forecast Components</p>
+                    {forecastTable === null ? (
+                      <p className="text-paper-dim text-[10px]">Loading forecast…</p>
+                    ) : forecastTable === false ? (
+                      <p className="text-paper-dim text-[10px]">No forecasts logged yet.</p>
+                    ) : (() => {
+                      const rows = [...forecastTable.resolved, ...forecastTable.pending].sort((a, b) => a.horizon_n - b.horizon_n);
+                      const dirLabel = (state) => state === "accelerating" ? "↑ Up" : state === "decelerating" ? "↓ Down" : "→ Flat";
+                      const dirColor = (state) => state === "accelerating" ? "text-gain" : state === "decelerating" ? "text-loss" : "text-paper-dim";
+                      return (
+                        <div className="grid grid-cols-[2.5rem_1fr_3.5rem_3.5rem_3rem] gap-x-2 gap-y-1 text-[10px] items-center">
+                          <span className="text-paper-dim uppercase tracking-wide">Hz</span>
+                          <span className="text-paper-dim uppercase tracking-wide">Forecast Value</span>
+                          <span className="text-paper-dim uppercase tracking-wide">Direction</span>
+                          <span className="text-paper-dim uppercase tracking-wide">Value Acc.</span>
+                          <span className="text-paper-dim uppercase tracking-wide">Dir. Acc.</span>
+                          {rows.map((r) => {
+                            const isPending = r.actual_value == null;
+                            const delta = !isPending ? Number(r.actual_value) - Number(r.forecast_value) : null;
+                            const hit = delta == null ? null
+                              : r.state === "persistence" ? Math.abs(delta) <= CPI_MIN_GAP
+                              : r.state === "accelerating" ? delta > CPI_MIN_GAP
+                              : delta < -CPI_MIN_GAP;
+                            return (
+                              <Fragment key={`${r.horizon_n}-${r.target_date}`}>
+                                <span className="text-paper-dim">{r.horizon_label}</span>
+                                <span className="num text-paper">
+                                  {Number(r.forecast_value).toFixed(1)}% ± {Number(r.error_band_pp).toFixed(2)}pp
+                                </span>
+                                <span className={dirColor(r.state)}>{dirLabel(r.state)}</span>
+                                <span className="num text-paper">{isPending ? "pending" : `${Math.abs(delta).toFixed(2)}pp`}</span>
+                                <span className={hit == null ? "text-paper-dim" : hit ? "text-gain" : "text-loss"}>
+                                  {hit == null ? "pending" : hit ? "Hit" : "Miss"}
+                                </span>
+                              </Fragment>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                  <div className="pt-2 border-t border-ink-line/50">
+                    <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-1">Forecast Accuracy Summary</p>
+                    {forecastAccuracyWindows === null ? (
+                      <p className="text-paper-dim text-[10px]">Loading accuracy…</p>
+                    ) : forecastAccuracyWindows === false ? (
+                      <p className="text-paper-dim text-[10px]">Accuracy tracking just started — not enough completed forecasts yet.</p>
+                    ) : (
+                      <div className="grid grid-cols-[4.5rem_1fr_1fr] gap-x-2 gap-y-1 text-[10px] items-center">
+                        <span className="text-paper-dim uppercase tracking-wide"></span>
+                        <span className="text-paper-dim uppercase tracking-wide">Accuracy</span>
+                        <span className="text-paper-dim uppercase tracking-wide">Directional Accuracy</span>
+                        {["Prior Month", "Curr Qtr", "YTD", "All Time"].map((label) => {
+                          const w = forecastAccuracyWindows[label];
+                          return (
+                            <Fragment key={label}>
+                              <span className="text-paper-dim">{label}</span>
+                              <span className="num text-paper">{w.n === 0 ? "—" : `${w.mae.toFixed(2)}pp (n=${w.n})`}</span>
+                              <span className="num text-paper">{w.nCalls === 0 ? "—" : `${w.directionalHitRate}% (n=${w.nCalls})`}</span>
+                            </Fragment>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+              {forecastSeries === "gdp" && (
                 <div className="pt-2 border-t border-ink-line/50">
                   <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-1">Ratiobo Forecast — 3 periods</p>
                   {forecastTable === null ? (
@@ -3181,7 +3292,7 @@ function TwoLineHistoryDrawer({
                   ) : forecastTable === false ? (
                     <p className="text-paper-dim text-[10px]">No forecasts logged yet.</p>
                   ) : (() => {
-                    const minGap = forecastSeries === "gdp" ? GROWTH_MIN_GAP : CPI_MIN_GAP;
+                    const minGap = GROWTH_MIN_GAP;
                     const rows = [...forecastTable.resolved, ...forecastTable.pending];
                     return (
                       <div className="grid grid-cols-[3rem_3.5rem_1fr_3.5rem_2.5rem] gap-x-2 gap-y-1 text-[10px] items-center">
