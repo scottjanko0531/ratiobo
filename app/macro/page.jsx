@@ -3080,12 +3080,23 @@ function TwoLineHistoryDrawer({
       .filter((x) => x.fcst && x.fcst.valueAcc != null);
     if (scored.length === 0) return false;
 
-    const now = new Date();
-    const priorMonthKey = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
-    const qStartMonth = Math.floor(now.getUTCMonth() / 3) * 3;
-    const currQStart = new Date(Date.UTC(now.getUTCFullYear(), qStartMonth, 1)).toISOString().slice(0, 10);
-    const currQEnd = new Date(Date.UTC(now.getUTCFullYear(), qStartMonth + 3, 1)).toISOString().slice(0, 10);
-    const yearStart = `${now.getUTCFullYear()}-01-01`;
+    // Anchor "recent" windows on the LATEST COMPLETED period, not today's
+    // real calendar date — today's own month/quarter/year almost never has
+    // a resolved print yet (the 3-month forecast lag alone guarantees it),
+    // so a calendar-anchored window would show blank for Prior Month/Curr
+    // Qtr most of the time, and would show nothing for YTD until the new
+    // year's data actually starts resolving. Anchoring on the newest row
+    // that's actually resolved means Prior Month and Curr Qtr agree
+    // whenever the current quarter has exactly one resolved reading so
+    // far, and YTD always reflects the most recently completed year-to-
+    // date, never an empty just-rolled-over calendar year.
+    const latestDate = scored.reduce((max, x) => (x.date > max ? x.date : max), scored[0].date);
+    const anchor = new Date(latestDate + "T00:00:00Z");
+    const priorMonthKey = latestDate.slice(0, 7);
+    const qStartMonth = Math.floor(anchor.getUTCMonth() / 3) * 3;
+    const currQStart = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth, 1)).toISOString().slice(0, 10);
+    const currQEnd = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth + 3, 1)).toISOString().slice(0, 10);
+    const yearStart = `${anchor.getUTCFullYear()}-01-01`;
     const windows = {
       "Prior Month": scored.filter((x) => x.date.slice(0, 7) === priorMonthKey),
       "Curr Qtr": scored.filter((x) => x.date >= currQStart && x.date < currQEnd),
