@@ -2923,18 +2923,11 @@ function TwoLineHistoryDrawer({
   // look more mature than it is on day one.
   const [forecastTable, setForecastTable] = useState(null); // { resolved: [...], pending: [...] } | false
   const [forecastAccuracy, setForecastAccuracy] = useState(null);
-  // CPI drawer only (see render below) — same horizon_n=1-only, never-
-  // blended-with-directional principle as forecastAccuracy above, just
-  // sliced by calendar window instead of collapsed into one all-time
-  // number, so a reader can see whether accuracy is holding up recently
-  // vs. only looking good averaged over the feature's whole life.
-  const [forecastAccuracyWindows, setForecastAccuracyWindows] = useState(null);
 
   useEffect(() => {
     if (!open || !forecastSeries) return;
     setForecastTable(null);
     setForecastAccuracy(null);
-    setForecastAccuracyWindows(null);
     const minGap = forecastSeries === "gdp" ? GROWTH_MIN_GAP : CPI_MIN_GAP;
     const isHit = (r) => {
       const delta = Number(r.actual_value) - Number(r.forecast_value);
@@ -2949,7 +2942,7 @@ function TwoLineHistoryDrawer({
       .order("issue_date", { ascending: false })
       .limit(1000)
       .then(({ data }) => {
-        if (!data || data.length === 0) { setForecastTable(false); setForecastAccuracy(false); setForecastAccuracyWindows(false); return; }
+        if (!data || data.length === 0) { setForecastTable(false); setForecastAccuracy(false); return; }
 
         // Dedup by (horizon_n, target_date): fetch-macro-data logs a fresh
         // row every run, so many issue_dates can share the same target
@@ -2979,7 +2972,7 @@ function TwoLineHistoryDrawer({
         // question from a 3-period-ahead one's, same principle as keeping
         // value/directional/continuation accuracy separate from each other.
         const h1 = uniqueRows.filter((r) => r.horizon_n === 1 && r.actual_value != null);
-        if (h1.length === 0) { setForecastAccuracy(false); setForecastAccuracyWindows(false); return; }
+        if (h1.length === 0) { setForecastAccuracy(false); return; }
         const errs = h1.map((r) => Math.abs(Number(r.actual_value) - Number(r.forecast_value)));
         const mae = Math.round((errs.reduce((a, b) => a + b, 0) / errs.length) * 100) / 100;
         // dead-band-recalibration spec, Measure 2: directional accuracy
@@ -2998,42 +2991,8 @@ function TwoLineHistoryDrawer({
           nPersistence: persist.length,
           continuationAccuracy: persist.length ? Math.round((persist.filter(isHit).length / persist.length) * 100) : null,
         });
-
-        // Windowed accuracy (CPI drawer's "Forecast Accuracy Summary" —
-        // same h1-only, directional-scored-on-real-calls-only rules as
-        // above, just bucketed by calendar window instead of one all-time
-        // figure. "Accuracy" = value MAE (pp); "Directional Accuracy" = %
-        // of real Up/Down calls that hit, in that window — Persistence
-        // periods are excluded from the directional column here (same
-        // never-blend-continuation-with-real-calls rule), not folded in.
-        const now = new Date();
-        const priorMonthDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-        const priorMonthKey = priorMonthDate.toISOString().slice(0, 7);
-        const qStartMonth = Math.floor(now.getUTCMonth() / 3) * 3;
-        const currQStart = new Date(Date.UTC(now.getUTCFullYear(), qStartMonth, 1)).toISOString().slice(0, 10);
-        const currQEnd = new Date(Date.UTC(now.getUTCFullYear(), qStartMonth + 3, 1)).toISOString().slice(0, 10);
-        const yearStart = `${now.getUTCFullYear()}-01-01`;
-        const windowRows = {
-          "Prior Month": h1.filter((r) => r.target_date.slice(0, 7) === priorMonthKey),
-          "Curr Qtr": h1.filter((r) => r.target_date >= currQStart && r.target_date < currQEnd),
-          "YTD": h1.filter((r) => r.target_date >= yearStart),
-          "All Time": h1,
-        };
-        const summarizeWindow = (rows) => {
-          if (rows.length === 0) return { n: 0, mae: null, nCalls: 0, directionalHitRate: null };
-          const werrs = rows.map((r) => Math.abs(Number(r.actual_value) - Number(r.forecast_value)));
-          const wmae = Math.round((werrs.reduce((a, b) => a + b, 0) / werrs.length) * 100) / 100;
-          const wcalls = rows.filter((r) => r.state === "accelerating" || r.state === "decelerating");
-          return {
-            n: rows.length, mae: wmae, nCalls: wcalls.length,
-            directionalHitRate: wcalls.length ? Math.round((wcalls.filter(isHit).length / wcalls.length) * 100) : null,
-          };
-        };
-        setForecastAccuracyWindows(
-          Object.fromEntries(Object.entries(windowRows).map(([label, rows]) => [label, summarizeWindow(rows)]))
-        );
       })
-      .catch(() => { setForecastTable(false); setForecastAccuracy(false); setForecastAccuracyWindows(false); });
+      .catch(() => { setForecastTable(false); setForecastAccuracy(false); });
   }, [open, forecastSeries]);
 
   const chartData = useMemo(() => {
@@ -3104,6 +3063,47 @@ function TwoLineHistoryDrawer({
     const hit = state === "persistence" ? Math.abs(delta) <= minGap : state === "accelerating" ? delta > minGap : delta < -minGap;
     return { value: forecastValue, state, valueAcc: Math.abs(delta), hit };
   }
+
+  // "Forecast Accuracy Summary" (CPI drawer only, see render below) —
+  // reconstructed from the same full-history data as the Recent Readings
+  // table above, not macro_forecast_log (which only started logging in
+  // Sept 2025 and is still mostly pending — nowhere near enough resolved
+  // rows to fill four calendar windows). Every past row already has
+  // everything needed via ratioboForecastFor; this just buckets those by
+  // calendar window instead of one all-time figure. Same never-blend rule
+  // throughout: Directional Accuracy is scored only over real (non-
+  // Persistence) calls, never mixed with continuation.
+  const forecastAccuracyWindows = useMemo(() => {
+    if (!forecastSeries || !rows || !rows.length) return null;
+    const scored = rows
+      .map((r) => ({ date: r.date, fcst: ratioboForecastFor(r) }))
+      .filter((x) => x.fcst && x.fcst.valueAcc != null);
+    if (scored.length === 0) return false;
+
+    const now = new Date();
+    const priorMonthKey = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
+    const qStartMonth = Math.floor(now.getUTCMonth() / 3) * 3;
+    const currQStart = new Date(Date.UTC(now.getUTCFullYear(), qStartMonth, 1)).toISOString().slice(0, 10);
+    const currQEnd = new Date(Date.UTC(now.getUTCFullYear(), qStartMonth + 3, 1)).toISOString().slice(0, 10);
+    const yearStart = `${now.getUTCFullYear()}-01-01`;
+    const windows = {
+      "Prior Month": scored.filter((x) => x.date.slice(0, 7) === priorMonthKey),
+      "Curr Qtr": scored.filter((x) => x.date >= currQStart && x.date < currQEnd),
+      "YTD": scored.filter((x) => x.date >= yearStart),
+      "All Time": scored,
+    };
+    const summarizeWindow = (arr) => {
+      if (arr.length === 0) return { n: 0, mae: null, nCalls: 0, directionalHitRate: null };
+      const mae = Math.round((arr.reduce((s, x) => s + x.fcst.valueAcc, 0) / arr.length) * 100) / 100;
+      const calls = arr.filter((x) => x.fcst.state !== "persistence");
+      const hits = calls.filter((x) => x.fcst.hit === true).length;
+      return {
+        n: arr.length, mae, nCalls: calls.length,
+        directionalHitRate: calls.length ? Math.round((hits / calls.length) * 100) : null,
+      };
+    };
+    return Object.fromEntries(Object.entries(windows).map(([label, arr]) => [label, summarizeWindow(arr)]));
+  }, [rows, forecastSeries]);
 
   return (
     <>
