@@ -3073,6 +3073,22 @@ function TwoLineHistoryDrawer({
   const forecastRows = consensusVar && consensus && consensus.forecastRows
     ? consensus.forecastRows.filter((r) => !actualDates.has(r.date))
     : [];
+  // Ratiobo's own past forecast, reconstructed rather than looked up from
+  // macro_forecast_log (which only has real entries from when that table
+  // started logging — too sparse to fill a "recent readings" table going
+  // back years). The flat/level-anchored forecast design (same value for
+  // every state, only the error band differs) means the forecast for any
+  // past date is simply the fast (3M/2Q) line's value 1 horizon-length
+  // earlier — already present in `rows`, no separate fetch needed. Both
+  // GDP (1Q horizon) and CPI (3mo horizon) target "3 calendar months
+  // ahead," so the same offset works for both drawers.
+  const rowsByDate = useMemo(() => new Map((rows ?? []).map((r) => [r.date, r])), [rows]);
+  function ratioboForecastFor(dateStr) {
+    const d = new Date(dateStr + "T00:00:00Z");
+    const issueDate = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 3, 1)).toISOString().slice(0, 10);
+    const issueRow = rowsByDate.get(issueDate);
+    return issueRow?.fast ?? null;
+  }
 
   return (
     <>
@@ -3432,7 +3448,7 @@ function TwoLineHistoryDrawer({
               <div className="border border-ink-line rounded-lg overflow-hidden text-xs">
                 <div
                   className="grid gap-px bg-ink-line"
-                  style={{ gridTemplateColumns: `1fr repeat(${series.length}, 1fr)${consensusVar ? " 1fr" : ""}` }}
+                  style={{ gridTemplateColumns: `1fr repeat(${series.length}, 1fr)${forecastSeries ? " 1fr" : ""}${consensusVar ? " 1fr" : ""}` }}
                 >
                   <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim">Date</div>
                   {series.map((s) => (
@@ -3440,6 +3456,9 @@ function TwoLineHistoryDrawer({
                       {s.shortLabel ?? s.label}
                     </div>
                   ))}
+                  {forecastSeries && (
+                    <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Ratiobo</div>
+                  )}
                   {consensusVar && (
                     <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">SPF</div>
                   )}
@@ -3451,6 +3470,9 @@ function TwoLineHistoryDrawer({
                       {series.map((s) => (
                         <div key={s.key} className="bg-ink px-2 py-1.5 text-right text-paper-dim/30">—</div>
                       ))}
+                      {forecastSeries && (
+                        <div className="bg-ink px-2 py-1.5 text-right text-paper-dim/30">—</div>
+                      )}
                       <div className="bg-ink px-2 py-1.5 text-right num text-brass-soft">
                         {r.value.toFixed(2)}{unit}
                       </div>
@@ -3466,6 +3488,14 @@ function TwoLineHistoryDrawer({
                           {r[s.key] != null ? `${r[s.key].toFixed(2)}${unit}` : "—"}
                         </div>
                       ))}
+                      {forecastSeries && (() => {
+                        const fcst = ratioboForecastFor(r.date);
+                        return (
+                          <div className={`bg-ink px-2 py-1.5 text-right num ${fcst != null ? "text-paper" : "text-paper-dim/30"}`}>
+                            {fcst != null ? `${fcst.toFixed(2)}${unit}` : "—"}
+                          </div>
+                        );
+                      })()}
                       {consensusVar && (() => {
                         const spf = consensus?.pointForecastByDate?.[r.date];
                         return (
