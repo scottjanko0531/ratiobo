@@ -3062,7 +3062,10 @@ function TwoLineHistoryDrawer({
   }, [chartData, series]);
 
   const latest = rows && rows.length ? rows[rows.length - 1] : null;
-  const summaryRows = useMemo(() => (rows?.length ? rows.slice(-8).reverse() : []), [rows]);
+  // Full history (whatever the From/To pickers above the chart currently
+  // select — same chartData the chart itself plots), newest first, not
+  // truncated to a handful of recent rows — the table scrolls instead.
+  const summaryRows = useMemo(() => chartData.slice().reverse(), [chartData]);
   // Forecast dates are quantized to a quarter's first month (see the
   // consensus effect above); for a monthly series like CPI, that can land
   // on the same month as an already-released actual reading (e.g. a
@@ -3459,20 +3462,20 @@ function TwoLineHistoryDrawer({
               <p className="label text-[10px] mb-2">Recent readings</p>
               <div className="border border-ink-line rounded-lg overflow-hidden text-xs">
                 <div
-                  className="grid gap-px bg-ink-line"
+                  className="grid gap-px bg-ink-line max-h-[480px] overflow-y-auto"
                   style={{ gridTemplateColumns: `1fr repeat(${series.length}, 1fr)${forecastSeries ? " 1fr 1fr 1fr" : ""}` }}
                 >
-                  <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim">Date</div>
+                  <div className="sticky top-0 z-10 bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim">Date</div>
                   {series.map((s) => (
-                    <div key={s.key} className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">
+                    <div key={s.key} className="sticky top-0 z-10 bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">
                       {s.shortLabel ?? s.label}
                     </div>
                   ))}
                   {forecastSeries && (
                     <>
-                      <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Ratiobo</div>
-                      <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Value Acc.</div>
-                      <div className="bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Dir. Acc.</div>
+                      <div className="sticky top-0 z-10 bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Ratiobo</div>
+                      <div className="sticky top-0 z-10 bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Value Acc.</div>
+                      <div className="sticky top-0 z-10 bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Dir. Acc.</div>
                     </>
                   )}
                   {summaryRows.map((r) => {
@@ -3489,7 +3492,10 @@ function TwoLineHistoryDrawer({
                         ))}
                         {forecastSeries && (
                           <>
-                            <div className={`bg-ink px-2 py-1.5 text-right num ${fcst ? "text-paper" : "text-paper-dim/30"}`}>
+                            <div
+                              className={`bg-ink px-2 py-1.5 text-right num ${fcst ? "text-paper" : "text-paper-dim/30"}`}
+                              title={fcst ? undefined : "No reading available for this row's issue month — a gap in the underlying source data, not a missing calculation"}
+                            >
                               {fcst ? `${fcst.value.toFixed(2)}${unit}` : "—"}
                             </div>
                             <div className={`bg-ink px-2 py-1.5 text-right num ${fcst?.valueAcc != null ? "text-paper" : "text-paper-dim/30"}`}>
