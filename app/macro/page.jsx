@@ -2037,6 +2037,33 @@ function QuadrantCard({ indicators, holdings, assetData }) {
 
   const [actionsOpen, setActionsOpen] = useState(false);
 
+  // VAMS-equivalent Bottom-Up resize overlay: per-symbol risk-state signal
+  // (asset_resize_signals, written daily by compute-asset-resize-signals)
+  // scales a holding's target allocation on top of the regime-driven bucket
+  // target above — same two-stage Target x exposure-multiplier design as
+  // KISS's own Top-Down/Bottom-Up split. Only symbols with a calibrated rule
+  // in asset_resize_rule_config get a multiplier; anything else defaults to
+  // 1 (no resize) in computeAllocationDeltas.
+  const [resizeSignals, setResizeSignals] = useState({});
+  useEffect(() => {
+    Promise.all([
+      supabase.from("asset_resize_rule_config").select("symbol, rule_type, confidence_note"),
+      supabase.from("asset_resize_signals").select("symbol, date, reduced, exposure_multiplier, indicator_value").order("date", { ascending: false }),
+    ]).then(([{ data: configs }, { data: signals }]) => {
+      const configBySymbol = new Map((configs ?? []).map((c) => [c.symbol, c]));
+      const latestBySymbol = {};
+      for (const s of signals ?? []) {
+        if (latestBySymbol[s.symbol]) continue; // already sorted date desc — first hit is latest
+        latestBySymbol[s.symbol] = { ...s, ...configBySymbol.get(s.symbol) };
+      }
+      setResizeSignals(latestBySymbol);
+    }).catch(() => setResizeSignals({}));
+  }, []);
+  const exposureMultipliers = useMemo(
+    () => Object.fromEntries(Object.entries(resizeSignals).map(([sym, s]) => [sym, Number(s.exposure_multiplier)])),
+    [resizeSignals]
+  );
+
   const prevRegimeKeyRef = useRef(null);
   const [prevRegimeKey, setPrevRegimeKey] = useState(null);
   const [regimeChangedAt, setRegimeChangedAt] = useState(null);
@@ -2059,7 +2086,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // Check panel instead of duplicated. suggestedPcts is already gated on
   // regimeKey at its own definition above.
   const { byKey, grandTotal, actionRows, buyRows } = computeAllocationDeltas(
-    holdings, suggestedPcts, { illiquidKeys: ILLIQUID_KEYS }
+    holdings, suggestedPcts, { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers }
   );
 
   const pct = (val) => (grandTotal > 0 ? Math.round((val / grandTotal) * 100) : 0);
@@ -2635,9 +2662,21 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                       actionLabel = `Sell $${absD < 1000 ? absD.toFixed(0) : (absD / 1000).toFixed(1) + "k"}`;
                       actionClass = "text-loss";
                     }
+                    const resize = resizeSignals[r.symbol];
+                    const isResized = resize && resize.reduced;
                     return (
                       <div key={`${r.symbol}-${r.key}`} className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-2 border-b border-ink-line/50 items-center">
-                        <span className="font-medium text-paper truncate">{r.symbol}</span>
+                        <span className="min-w-0">
+                          <span className="font-medium text-paper truncate block">{r.symbol}</span>
+                          {isResized && (
+                            <span
+                              className="text-[9px] text-brass-soft/80 block truncate"
+                              title={resize.confidence_note ?? undefined}
+                            >
+                              Reduced — {resize.rule_type === "trend_ma" ? "trend" : resize.rule_type === "vol_regime" ? "vol regime" : "drawdown"} · {(r.exposureMultiplier * 100).toFixed(0)}% of target
+                            </span>
+                          )}
+                        </span>
                         <span className="num text-paper-dim text-right">
                           {r.currentVal < 1000 ? `$${r.currentVal.toFixed(0)}` : `$${(r.currentVal / 1000).toFixed(1)}k`}
                         </span>
