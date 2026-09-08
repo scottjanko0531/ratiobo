@@ -3503,6 +3503,7 @@ function RegimeAccuracyDrawer({ open, onClose }) {
     const nearSideOf = (gap) => (gap > 0 ? "accelerating" : "decelerating");
 
     let lastConfirmed = null;
+    let latestIssueDate = null, latestForecastKey = null;
     const out = [];
     for (const g of gdpRows) {
       const c = cpiByDate.get(g.date);
@@ -3520,6 +3521,8 @@ function RegimeAccuracyDrawer({ open, onClose }) {
         const iLean = iState === "persistence" ? nearSideOf(iGap) : iState;
         forecastKey = regimeQuadrantKey(gLean, iLean);
       }
+      latestIssueDate = g.date;
+      latestForecastKey = forecastKey;
 
       // Target = 1 quarter (3 calendar months) ahead — same horizon as
       // both series' own forecasts, both a GDP-quarter-start and a
@@ -3542,8 +3545,30 @@ function RegimeAccuracyDrawer({ open, onClose }) {
         }
         hit = forecastKey != null && actualKey != null ? forecastKey === actualKey : null;
       }
-      out.push({ date: targetDate, forecastKey, actualKey, hit });
+      // horizonLabel is set below, only for the row whose target is truly
+      // the latest issue's own +1Q projection — a pending row can also
+      // occur on a genuinely PAST target date purely from a source-data
+      // gap (e.g. the known CPIAUCSL Oct-2025 gap), which must not get
+      // labeled "Q+1" just because hit happens to be null there too.
+      out.push({ date: targetDate, forecastKey, actualKey, hit, issueDate: g.date });
     }
+    const lastRow = out[out.length - 1];
+    if (lastRow && lastRow.issueDate === latestIssueDate) lastRow.horizonLabel = "Q+1";
+
+    // Forward regime forecast, Q+2/Q+3: the flat-forecast design means
+    // neither axis's state changes between horizons — only the error band
+    // widens — so the SAME joint call from the latest issue date (already
+    // producing the Q+1-equivalent row above) projects forward unchanged,
+    // same principle as GDP/CPI's own Forecast Components tables repeating
+    // one point value across Q+1/Q+2/Q+3. Not three independent calls.
+    if (latestIssueDate && latestForecastKey != null) {
+      const d = new Date(latestIssueDate + "T00:00:00Z");
+      for (const h of [2, 3]) {
+        const targetDate = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + h * 3, 1)).toISOString().slice(0, 10);
+        out.push({ date: targetDate, forecastKey: latestForecastKey, actualKey: null, hit: null, horizonLabel: `Q+${h}` });
+      }
+    }
+
     return out.filter((r) => r.hit !== null || r.forecastKey != null).sort((a, b) => a.date < b.date ? -1 : 1);
   }, [gdpRows, cpiRows]);
 
@@ -3637,12 +3662,14 @@ function RegimeAccuracyDrawer({ open, onClose }) {
                   {recentRows.map((r) => {
                     const fMeta = r.forecastKey ? REGIME_META[r.forecastKey] : null;
                     const aMeta = r.actualKey ? REGIME_META[r.actualKey] : null;
+                    const isForward = r.hit == null;
                     return (
                       <Fragment key={r.date}>
-                        <div className="bg-ink px-2 py-1.5 text-paper-dim">
+                        <div className={`bg-ink px-2 py-1.5 text-paper-dim ${isForward ? "italic" : ""}`}>
+                          {r.horizonLabel && <span className="text-brass-soft/70 mr-1">{r.horizonLabel}</span>}
                           {new Date(r.date + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })}
                         </div>
-                        <div className={`bg-ink px-2 py-1.5 ${fMeta?.color ?? "text-paper-dim"}`}>{fMeta?.label ?? "—"}</div>
+                        <div className={`bg-ink px-2 py-1.5 ${isForward ? "italic" : ""} ${fMeta?.color ?? "text-paper-dim"}`}>{fMeta?.label ?? "—"}</div>
                         <div className={`bg-ink px-2 py-1.5 ${aMeta?.color ?? "text-paper-dim"}`}>{r.hit == null ? "pending" : (aMeta?.label ?? "—")}</div>
                         <div className={`bg-ink px-2 py-1.5 text-right ${r.hit == null ? "text-paper-dim" : r.hit ? "text-gain" : "text-loss"}`}>
                           {r.hit == null ? "—" : r.hit ? "Hit" : "Miss"}
