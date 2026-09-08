@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import Shell from "../../components/Shell";
 import { supabase } from "../../lib/supabase";
-import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META } from "../../lib/simulatorKeys";
+import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META, ILLIQUID_KEYS, computeAllocationDeltas } from "../../lib/simulatorKeys";
 import HoldingDetailDrawer from "../../components/HoldingDetailDrawer";
 
 const usd = (v) => {
@@ -182,6 +182,33 @@ export default function PortfoliosPage() {
       .order("shifted_at", { ascending: false })
       .then(({ data }) => setRegimeShifts(data ?? []));
   }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework]);
+
+  // VAMS-equivalent Bottom-Up resize overlay (same fetch pattern as
+  // app/macro/page.jsx's QuadrantCard — duplicated per-page rather than
+  // shared, matching this codebase's existing style): per-symbol risk-state
+  // signal scales a "resize_overlay" portfolio's target allocations on top
+  // of its manually-set bucket targets. Only fetched when a resize_overlay
+  // portfolio is actually open, not on every page load.
+  const [resizeSignals, setResizeSignals] = useState({});
+  useEffect(() => {
+    if (!viewingPortfolio || viewingPortfolio.strategy_framework !== "resize_overlay") { setResizeSignals({}); return; }
+    Promise.all([
+      supabase.from("asset_resize_rule_config").select("symbol, rule_type, confidence_note"),
+      supabase.from("asset_resize_signals").select("symbol, date, reduced, exposure_multiplier, indicator_value").order("date", { ascending: false }),
+    ]).then(([{ data: configs }, { data: signals }]) => {
+      const configBySymbol = new Map((configs ?? []).map((c) => [c.symbol, c]));
+      const latestBySymbol = {};
+      for (const s of signals ?? []) {
+        if (latestBySymbol[s.symbol]) continue;
+        latestBySymbol[s.symbol] = { ...s, ...configBySymbol.get(s.symbol) };
+      }
+      setResizeSignals(latestBySymbol);
+    }).catch(() => setResizeSignals({}));
+  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework]);
+  const exposureMultipliers = useMemo(
+    () => Object.fromEntries(Object.entries(resizeSignals).map(([sym, s]) => [sym, Number(s.exposure_multiplier)])),
+    [resizeSignals]
+  );
 
   // Full per-holding snapshot history for the open portfolio, fetched on demand
   // (not part of the page's initial load, which only pulls today's row) — feeds
@@ -641,6 +668,144 @@ export default function PortfoliosPage() {
                   })()}
                 </div>
 
+                {/* Portfolio Actions — resize_overlay portfolios only. Same
+                   computeAllocationDeltas call + row/badge rendering already
+                   shipped on /macro's QuadrantCard, scoped here to this
+                   portfolio's own holdings/target_allocations instead of the
+                   global combined set.
+
+                   Weight freed up by a resized leg (e.g. Gold cut to 0% of
+                   its 30% target) doesn't just vanish — it needs somewhere
+                   to sit, same as the kiss-portfolio-backtest's own design
+                   (freed weight parks in the liquidity sleeve). Computed
+                   here as each bucket's target times (1 - its holdings'
+                   average exposure multiplier), summed and added to the
+                   "cash" bucket target before the real computeAllocationDeltas
+                   call — cash's own holdings (e.g. USFR) aren't themselves
+                   resize-monitored so they keep multiplier 1 and absorb the
+                   full top-up.
+
+                   byKeyTotals intentionally includes zero-value holdings
+                   (no val>0 filter) — a bucket like Gold can be entirely
+                   unheld right now (GLDM already sold to $0, matching its
+                   own live "Reduced" signal) while still needing its
+                   multiplier known, both for the freed-weight sum above and
+                   for scaling buyRows below (computeAllocationDeltas's
+                   buyRows path is bucket-only, no symbol to look up a
+                   multiplier for, so it never applies exposureMultipliers on
+                   its own — a reduced bucket with nothing currently held
+                   would otherwise show a full-size, stale "Add" recommendation). */}
+                {pf.strategy_framework === "resize_overlay" && (() => {
+                  const rawTargets = pf.target_allocations || {};
+                  const byKeyTotals = {};
+                  for (const h of hs) {
+                    const key = resolveSimulatorKey(h);
+                    if (!key) continue;
+                    const val = Number(h.current_value ?? 0);
+                    const mult = exposureMultipliers[h.symbol] ?? 1;
+                    if (!byKeyTotals[key]) byKeyTotals[key] = { total: 0, weightedMultSum: 0, count: 0, multSum: 0 };
+                    byKeyTotals[key].total += val;
+                    byKeyTotals[key].weightedMultSum += val * mult;
+                    byKeyTotals[key].count += 1;
+                    byKeyTotals[key].multSum += mult;
+                  }
+                  const avgMultFor = (key) => {
+                    const bt = byKeyTotals[key];
+                    if (!bt) return 1;
+                    return bt.total > 0 ? bt.weightedMultSum / bt.total : (bt.count > 0 ? bt.multSum / bt.count : 1);
+                  };
+                  let freedPct = 0;
+                  for (const [key, pct] of Object.entries(rawTargets)) {
+                    if (key === "cash" || !byKeyTotals[key]) continue;
+                    freedPct += pct * (1 - avgMultFor(key));
+                  }
+                  const effectiveTargets = freedPct > 0 ? { ...rawTargets, cash: (rawTargets.cash ?? 0) + freedPct } : rawTargets;
+                  const { actionRows, buyRows: rawBuyRows } = computeAllocationDeltas(
+                    hs, effectiveTargets, { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers }
+                  );
+                  const buyRows = rawBuyRows
+                    .map((r) => {
+                      const m = avgMultFor(r.key);
+                      return { ...r, targetPct: r.targetPct * m, targetVal: r.targetVal * m };
+                    })
+                    .filter((r) => r.targetPct >= 0.05);
+                  if (actionRows.length === 0 && buyRows.length === 0) return null;
+                  return (
+                    <div className="px-5 py-4 border-b border-ink-line">
+                      <p className="label mb-3">Portfolio Actions</p>
+                      <div className="border border-ink-line rounded-lg overflow-hidden text-[11px]">
+                        <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-1.5 bg-ink-soft/50 border-b border-ink-line text-[10px] text-paper-dim">
+                          <span>Holding</span>
+                          <span className="text-right">Current</span>
+                          <span className="text-right">Cur %</span>
+                          <span>Action</span>
+                          <span className="text-right">New %</span>
+                        </div>
+                        {actionRows.map((r) => {
+                          const delta = r.deltaVal;
+                          const absD = Math.abs(delta);
+                          const isNoop = absD < s.totalValue * 0.005;
+                          let actionLabel, actionClass;
+                          if (r.isIlliquid && delta < 0) {
+                            actionLabel = "Illiquid — hold";
+                            actionClass = "text-paper-dim italic";
+                          } else if (isNoop) {
+                            actionLabel = "Hold";
+                            actionClass = "text-paper-dim";
+                          } else if (delta > 0) {
+                            actionLabel = `Add $${absD < 1000 ? absD.toFixed(0) : (absD / 1000).toFixed(1) + "k"}`;
+                            actionClass = "text-gain";
+                          } else {
+                            actionLabel = `Sell $${absD < 1000 ? absD.toFixed(0) : (absD / 1000).toFixed(1) + "k"}`;
+                            actionClass = "text-loss";
+                          }
+                          const resize = resizeSignals[r.symbol];
+                          const isResized = resize && resize.reduced;
+                          return (
+                            <div key={`${r.symbol}-${r.key}`} className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-2 border-b border-ink-line/50 items-center">
+                              <span className="min-w-0">
+                                <span className="font-medium text-paper truncate block">{r.symbol}</span>
+                                {isResized && (
+                                  <span
+                                    className="text-[9px] text-brass-soft/80 block truncate"
+                                    title={resize.confidence_note ?? undefined}
+                                  >
+                                    Reduced — {resize.rule_type === "trend_ma" ? "trend" : resize.rule_type === "vol_regime" ? "vol regime" : "drawdown"} · {(r.exposureMultiplier * 100).toFixed(0)}% of target
+                                  </span>
+                                )}
+                              </span>
+                              <span className="num text-paper-dim text-right">
+                                {r.currentVal < 1000 ? `$${r.currentVal.toFixed(0)}` : `$${(r.currentVal / 1000).toFixed(1)}k`}
+                              </span>
+                              <span className="num text-paper-dim text-right">{r.currentPct.toFixed(1)}%</span>
+                              <span className={`${actionClass} font-medium`}>{actionLabel}</span>
+                              <span className={`num text-right ${isNoop || (r.isIlliquid && delta < 0) ? "text-paper-dim" : delta > 0 ? "text-gain" : "text-loss"}`}>
+                                {(r.isIlliquid && delta < 0 ? r.currentPct : r.newPct).toFixed(1)}%
+                              </span>
+                            </div>
+                          );
+                        })}
+                        {buyRows.length > 0 && (
+                          <>
+                            <div className="px-3 py-1.5 bg-ink-soft/30 border-b border-ink-line text-[10px] text-paper-dim font-medium">
+                              Recommendations — no current holding
+                            </div>
+                            {buyRows.map((r) => (
+                              <div key={r.key} className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-2 border-b border-ink-line/50 last:border-0 items-center">
+                                <span className="font-medium text-paper truncate">{r.label}</span>
+                                <span className="num text-paper-dim text-right">—</span>
+                                <span className="num text-paper-dim text-right">0.0%</span>
+                                <span className="text-gain font-medium">Add ${r.targetVal < 1000 ? r.targetVal.toFixed(0) : (r.targetVal / 1000).toFixed(1) + "k"}</span>
+                                <span className="num text-right text-gain">{r.targetPct.toFixed(1)}%</span>
+                              </div>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Holdings grouped by simulator bucket */}
                 <div className="px-5 py-4">
                   <p className="label mb-3">Holdings ({hs.length})</p>
@@ -901,10 +1066,13 @@ export default function PortfoliosPage() {
                   <option value="static">Static — regime-agnostic (e.g. All Weather, risk parity)</option>
                   <option value="tactical">Tactical — discretionary regime-responsive tilts</option>
                   <option value="regime_driven">Regime-driven — target allocations auto-follow the Forward Signal</option>
+                  <option value="resize_overlay">Resize overlay — per-holding VAMS-style risk signal scales target allocations</option>
                 </select>
                 <p className="text-[10px] text-paper-dim/60 mt-1">
                   {form.strategy_framework === "regime_driven"
                     ? "Target Allocations below are managed automatically once saved — a daily job tracks the Forward Signal (6-18mo leading-indicator composite) and shifts targets only once a new regime has held 30 consecutive days AND Forward Signal confidence is at least 60% (avoids both whipsaw and low-conviction commitments). Manual edits below will be overwritten."
+                    : form.strategy_framework === "resize_overlay"
+                    ? "Target Allocations below are set manually (same as Static/Tactical — not auto-managed). Once saved, a Portfolio Actions section appears below showing each holding's target scaled down by its own calibrated risk-state signal (asset_resize_rule_config) when one exists for that symbol — e.g. a holding currently flagged \"Reduced\" gets a smaller effective target than the raw bucket %. Mutually exclusive with Regime-driven under the current single-framework field — a portfolio can't be both at once yet."
                     : "Determines how Daily Analysis reasons about rebalancing vs. tactical tilts. Leave on auto-detect unless you want it locked explicitly."}
                 </p>
               </div>
