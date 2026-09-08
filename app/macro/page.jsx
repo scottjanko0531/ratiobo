@@ -3076,8 +3076,8 @@ function TwoLineHistoryDrawer({
   const forecastAccuracyWindows = useMemo(() => {
     if (!forecastSeries || !rows || !rows.length) return null;
     const scored = rows
-      .map((r) => ({ date: r.date, fcst: ratioboForecastFor(r) }))
-      .filter((x) => x.fcst && x.fcst.valueAcc != null);
+      .map((r) => ({ date: r.date, actual: r.actual, fcst: ratioboForecastFor(r) }))
+      .filter((x) => x.fcst && x.fcst.valueAcc != null && x.actual);
     if (scored.length === 0) return false;
 
     // Anchor "recent" windows on the LATEST COMPLETED period, not today's
@@ -3110,12 +3110,27 @@ function TwoLineHistoryDrawer({
     // convention used elsewhere on this page (e.g. CPI Forecast
     // Components' Dir. Acc.) — that convention still applies there; this
     // summary specifically wants one blended rate per window.
+    // Accuracy = 100% - mean absolute percentage error (|actual - forecast|
+    // / |actual|), i.e. "how close was the forecast, as a % of the actual
+    // reading" — not the raw pp variance. Averaging (100 - pctErr_i) is
+    // algebraically identical to 100 - mean(pctErr_i), so this is a true
+    // MAPE-based accuracy score, not an approximation.
+    // A handful of historical periods have an actual reading essentially at
+    // zero (e.g. 0.01% in Feb 2009/Sep 2015) — dividing by that blows a
+    // trivial pp miss up into a four-digit "percent error" and drags the
+    // whole average deeply negative, which misrepresents periods the
+    // forecast was actually fine on. Below this floor, the actual itself
+    // carries no real percentage base to measure against, so that period
+    // counts as 100% accurate (0 pct error) rather than computing a
+    // degenerate ratio.
+    const NEAR_ZERO_ACTUAL = 0.1; // pp
     const summarizeWindow = (arr) => {
-      if (arr.length === 0) return { n: 0, mae: null, directionalHitRate: null };
-      const mae = Math.round((arr.reduce((s, x) => s + x.fcst.valueAcc, 0) / arr.length) * 100) / 100;
+      if (arr.length === 0) return { n: 0, accuracyPct: null, directionalHitRate: null };
+      const pctErrs = arr.map((x) => Math.abs(x.actual) < NEAR_ZERO_ACTUAL ? 0 : (x.fcst.valueAcc / Math.abs(x.actual)) * 100);
+      const accuracyPct = Math.round((100 - pctErrs.reduce((a, b) => a + b, 0) / pctErrs.length) * 10) / 10;
       const hits = arr.filter((x) => x.fcst.hit === true).length;
       return {
-        n: arr.length, mae,
+        n: arr.length, accuracyPct,
         directionalHitRate: Math.round((hits / arr.length) * 1000) / 10,
       };
     };
@@ -3322,7 +3337,7 @@ function TwoLineHistoryDrawer({
                           return (
                             <Fragment key={label}>
                               <span className="text-paper-dim">{label}</span>
-                              <span className="num text-paper">{w.n === 0 ? "—" : `${w.mae.toFixed(2)}pp (n=${w.n})`}</span>
+                              <span className="num text-paper">{w.n === 0 ? "—" : `${w.accuracyPct.toFixed(1)}% (n=${w.n})`}</span>
                               <span className="num text-paper">{w.n === 0 ? "—" : `${w.directionalHitRate.toFixed(1)}% (n=${w.n})`}</span>
                             </Fragment>
                           );
