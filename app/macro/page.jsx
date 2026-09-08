@@ -1037,17 +1037,6 @@ function rateOfChangeDisplay(fast, slow, minGap) {
   return stateDisplay(rateOfChangeLabel(fast, slow, minGap));
 }
 
-// 3-period-forecast follow-up: GDP's target_date is a quarter-start ISO
-// date (macro_forecast_log convention, matching FRED GDPC1's own dating);
-// CPI's is a month-start. Render each in its series' natural unit rather
-// than a raw ISO date.
-function formatTargetPeriod(dateStr, series) {
-  const d = new Date(dateStr + "T00:00:00Z");
-  if (series === "gdp") {
-    return `Q${Math.floor(d.getUTCMonth() / 3) + 1} ${d.getUTCFullYear()}`;
-  }
-  return d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
-}
 
 // Builds the Regime Read row's "which axis is doing the work" line for
 // Structural/Market Expectations when one of them has no real quadrant to
@@ -2922,19 +2911,10 @@ function TwoLineHistoryDrawer({
   // real, rather than being backfilled from the historical backtest to
   // look more mature than it is on day one.
   const [forecastTable, setForecastTable] = useState(null); // { resolved: [...], pending: [...] } | false
-  const [forecastAccuracy, setForecastAccuracy] = useState(null);
 
   useEffect(() => {
     if (!open || !forecastSeries) return;
     setForecastTable(null);
-    setForecastAccuracy(null);
-    const minGap = forecastSeries === "gdp" ? GROWTH_MIN_GAP : CPI_MIN_GAP;
-    const isHit = (r) => {
-      const delta = Number(r.actual_value) - Number(r.forecast_value);
-      if (r.state === "persistence") return Math.abs(delta) <= minGap;
-      if (r.state === "accelerating") return delta > minGap;
-      return delta < -minGap;
-    };
     supabase
       .from("macro_forecast_log")
       .select("horizon_n, horizon_label, issue_date, target_date, forecast_value, error_band_pp, confidence, state, actual_value")
@@ -2942,7 +2922,7 @@ function TwoLineHistoryDrawer({
       .order("issue_date", { ascending: false })
       .limit(1000)
       .then(({ data }) => {
-        if (!data || data.length === 0) { setForecastTable(false); setForecastAccuracy(false); return; }
+        if (!data || data.length === 0) { setForecastTable(false); return; }
 
         // Dedup by (horizon_n, target_date): fetch-macro-data logs a fresh
         // row every run, so many issue_dates can share the same target
@@ -2966,33 +2946,8 @@ function TwoLineHistoryDrawer({
           .sort((a, b) => a.target_date.localeCompare(b.target_date))
           .slice(0, 3);
         setForecastTable({ resolved, pending });
-
-        // Aggregate scorecard: horizon_n=1 only, never blended across
-        // horizons — a 1-period-ahead forecast's accuracy is a different
-        // question from a 3-period-ahead one's, same principle as keeping
-        // value/directional/continuation accuracy separate from each other.
-        const h1 = uniqueRows.filter((r) => r.horizon_n === 1 && r.actual_value != null);
-        if (h1.length === 0) { setForecastAccuracy(false); return; }
-        const errs = h1.map((r) => Math.abs(Number(r.actual_value) - Number(r.forecast_value)));
-        const mae = Math.round((errs.reduce((a, b) => a + b, 0) / errs.length) * 100) / 100;
-        // dead-band-recalibration spec, Measure 2: directional accuracy
-        // scored ONLY over real Accelerating/Decelerating calls, and only a
-        // hit if the actual print cleared the SAME dead band the crossover
-        // itself uses relative to the forecast (the level at issue time) —
-        // any smaller wiggle is "Flat," not a directional move. Persistence
-        // periods get their own separate "continuation accuracy" — never
-        // blended into one number, per the spec's explicit requirement.
-        const calls = h1.filter((r) => r.state === "accelerating" || r.state === "decelerating");
-        const persist = h1.filter((r) => r.state === "persistence");
-        setForecastAccuracy({
-          n: h1.length, mae,
-          nCalls: calls.length,
-          directionalHitRate: calls.length ? Math.round((calls.filter(isHit).length / calls.length) * 100) : null,
-          nPersistence: persist.length,
-          continuationAccuracy: persist.length ? Math.round((persist.filter(isHit).length / persist.length) * 100) : null,
-        });
       })
-      .catch(() => { setForecastTable(false); setForecastAccuracy(false); });
+      .catch(() => { setForecastTable(false); });
   }, [open, forecastSeries]);
 
   const chartData = useMemo(() => {
@@ -3282,15 +3237,16 @@ function TwoLineHistoryDrawer({
                   })()}
                 </div>
               </div>
-              {forecastSeries === "cpi" && (
+              {forecastSeries && (
                 <>
                   <div className="pt-2 border-t border-ink-line/50">
-                    <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-1">CPI Forecast Components</p>
+                    <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-1">{forecastSeries === "gdp" ? "GDP" : "CPI"} Forecast Components</p>
                     {forecastTable === null ? (
                       <p className="text-paper-dim text-[10px]">Loading forecast…</p>
                     ) : forecastTable === false ? (
                       <p className="text-paper-dim text-[10px]">No forecasts logged yet.</p>
                     ) : (() => {
+                      const minGap = forecastSeries === "gdp" ? GROWTH_MIN_GAP : CPI_MIN_GAP;
                       const rows = [...forecastTable.resolved, ...forecastTable.pending].sort((a, b) => a.horizon_n - b.horizon_n);
                       const dirLabel = (state) => state === "accelerating" ? "↑ Up" : state === "decelerating" ? "↓ Down" : "→ Flat";
                       const dirColor = (state) => state === "accelerating" ? "text-gain" : state === "decelerating" ? "text-loss" : "text-paper-dim";
@@ -3305,9 +3261,9 @@ function TwoLineHistoryDrawer({
                             const isPending = r.actual_value == null;
                             const delta = !isPending ? Number(r.actual_value) - Number(r.forecast_value) : null;
                             const hit = delta == null ? null
-                              : r.state === "persistence" ? Math.abs(delta) <= CPI_MIN_GAP
-                              : r.state === "accelerating" ? delta > CPI_MIN_GAP
-                              : delta < -CPI_MIN_GAP;
+                              : r.state === "persistence" ? Math.abs(delta) <= minGap
+                              : r.state === "accelerating" ? delta > minGap
+                              : delta < -minGap;
                             return (
                               <Fragment key={`${r.horizon_n}-${r.target_date}`}>
                                 <span className="text-paper-dim">{r.horizon_label}</span>
@@ -3351,66 +3307,6 @@ function TwoLineHistoryDrawer({
                     )}
                   </div>
                 </>
-              )}
-              {forecastSeries === "gdp" && (
-                <div className="pt-2 border-t border-ink-line/50">
-                  <p className="text-paper-dim text-[10px] uppercase tracking-wide mb-1">Ratiobo Forecast — 3 periods</p>
-                  {forecastTable === null ? (
-                    <p className="text-paper-dim text-[10px]">Loading forecast…</p>
-                  ) : forecastTable === false ? (
-                    <p className="text-paper-dim text-[10px]">No forecasts logged yet.</p>
-                  ) : (() => {
-                    const minGap = GROWTH_MIN_GAP;
-                    const rows = [...forecastTable.resolved, ...forecastTable.pending];
-                    return (
-                      <div className="grid grid-cols-[3rem_3.5rem_1fr_3.5rem_2.5rem] gap-x-2 gap-y-1 text-[10px] items-center">
-                        <span className="text-paper-dim uppercase tracking-wide">Hz</span>
-                        <span className="text-paper-dim uppercase tracking-wide">Period</span>
-                        <span className="text-paper-dim uppercase tracking-wide">Forecast</span>
-                        <span className="text-paper-dim uppercase tracking-wide">Actual</span>
-                        <span className="text-paper-dim uppercase tracking-wide">Hit</span>
-                        {rows.map((r) => {
-                          const isPending = r.actual_value == null;
-                          const delta = !isPending ? Number(r.actual_value) - Number(r.forecast_value) : null;
-                          const hit = delta == null ? null
-                            : r.state === "persistence" ? Math.abs(delta) <= minGap
-                            : r.state === "accelerating" ? delta > minGap
-                            : delta < -minGap;
-                          return (
-                            <Fragment key={`${r.horizon_n}-${r.target_date}`}>
-                              <span className="text-paper-dim">{r.horizon_label}</span>
-                              <span className="text-paper-dim">{formatTargetPeriod(r.target_date, forecastSeries)}</span>
-                              <span className="num text-paper">
-                                {Number(r.forecast_value).toFixed(1)}% ± {Number(r.error_band_pp).toFixed(2)}pp
-                              </span>
-                              <span className="num text-paper">{isPending ? "pending" : `${Number(r.actual_value).toFixed(1)}%`}</span>
-                              <span className={hit == null ? "text-paper-dim" : hit ? "text-gain" : "text-loss"}>
-                                {hit == null ? "—" : hit ? "✓" : "✗"}
-                              </span>
-                            </Fragment>
-                          );
-                        })}
-                      </div>
-                    );
-                  })()}
-                  <div className="mt-1.5 space-y-0.5">
-                    {forecastAccuracy === null ? (
-                      <p className="text-paper-dim text-[10px]">Loading accuracy…</p>
-                    ) : forecastAccuracy === false || forecastAccuracy.n === 0 ? (
-                      <p className="text-paper-dim text-[10px]">Accuracy tracking just started — not enough completed forecasts yet.</p>
-                    ) : (
-                      <>
-                        <p className="text-paper-dim text-[10px]">
-                          Value accuracy (1-period horizon, MAE): {forecastAccuracy.mae.toFixed(2)}pp (n={forecastAccuracy.n})
-                        </p>
-                        <p className="text-paper-dim text-[10px]">
-                          Directional accuracy: {forecastAccuracy.directionalHitRate != null ? `${forecastAccuracy.directionalHitRate}% (n=${forecastAccuracy.nCalls})` : `no Up/Down calls yet (n=${forecastAccuracy.nCalls})`}
-                          {" · "}Continuation held {forecastAccuracy.continuationAccuracy != null ? `${forecastAccuracy.continuationAccuracy}%` : "—"} of Persistence periods (n={forecastAccuracy.nPersistence})
-                        </p>
-                      </>
-                    )}
-                  </div>
-                </div>
               )}
               {(regimeStats.umich1yr != null || regimeStats.nyfed1yr != null) && (
                 <div className="pt-2 border-t border-ink-line/50">
