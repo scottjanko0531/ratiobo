@@ -1952,6 +1952,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   const [gdpDrawerOpen, setGdpDrawerOpen] = useState(false);
   const [cpiCrossoverDrawerOpen, setCpiCrossoverDrawerOpen] = useState(false);
   const [inflExpDrawerOpen, setInflExpDrawerOpen] = useState(false);
+  const [regimeDrawerOpen, setRegimeDrawerOpen] = useState(false);
 
   // GDP & Inflation Regime Metrics spec — G1 (z-score vs the fixed 2015-2019
   // reference window, from fetch-macro-data's computeFixedWindowZScore,
@@ -2302,7 +2303,12 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                 <div className="px-3 py-3">
                   <p className="label text-[10px]">Regime Read</p>
                 </div>
-                <div className={`px-3 py-3 border-l border-ink-line ${structuralIsPersistence ? "border-b-2 border-b-brass/40" : ""}`}>
+                <button
+                  type="button"
+                  onClick={() => setRegimeDrawerOpen(true)}
+                  className={`w-full block text-left px-3 py-3 border-l border-ink-line hover:bg-ink-line/20 transition-colors cursor-pointer ${structuralIsPersistence ? "border-b-2 border-b-brass/40" : ""}`}
+                  title="View regime forecast accuracy"
+                >
                   {structuralMeta ? (
                     <>
                       <p className={`font-semibold ${structuralMeta.color}`}>{structuralMeta.label}</p>
@@ -2338,7 +2344,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
                       </>
                     );
                   })() : <p className="text-paper-dim text-[11px]">—</p>}
-                </div>
+                </button>
                 <div className={`px-3 py-3 border-l border-ink-line ${marketIsPersistence ? "border-b-2 border-b-brass/40" : ""}`}>
                   {marketMeta ? (
                     <>
@@ -2745,6 +2751,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
           { key: "breakeven", label: "10Y Breakeven (market)", shortLabel: "T10YIE", color: "#3FB984", dash: "5 3" },
         ]}
       />
+      <RegimeAccuracyDrawer open={regimeDrawerOpen} onClose={() => setRegimeDrawerOpen(false)} />
     </div>
   );
 }
@@ -3446,6 +3453,207 @@ function TwoLineHistoryDrawer({
               </div>
             </div>
           )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// Structural Regime Read's own forecast-accuracy drawer — same visual shell
+// as TwoLineHistoryDrawer (same width/backdrop/header pattern), but the
+// underlying question is different: not "how close was one series' value,"
+// but "did the joint quadrant call (Growth x Inflation) actually match
+// what happened." Reconstructed client-side from the same two crossover-
+// history endpoints the GDP/CPI drawers already use — no new backend
+// endpoint. Both-Persistent uses the already-confirmed quadrant (carried
+// forward from the last period both axes cleanly resolved), never a
+// nearSide guess for that case — nearSide leaning is reserved for the
+// mixed case — mirroring growth-axis-backtest's regimeAccuracyTest exactly,
+// just computed from live data instead of a backtest replay.
+function regimeQuadrantKey(g, i) {
+  if (g === "accelerating" && i === "accelerating") return "rg_ri";
+  if (g === "accelerating" && i === "decelerating") return "rg_fi";
+  if (g === "decelerating" && i === "accelerating") return "fg_ri";
+  return "fg_fi";
+}
+function RegimeAccuracyDrawer({ open, onClose }) {
+  const [gdpRows, setGdpRows] = useState(null);
+  const [cpiRows, setCpiRows] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setGdpRows(null);
+    setCpiRows(null);
+    Promise.all([
+      fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-gdp-crossover-history`).then((r) => r.json()),
+      fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-cpi-crossover-history`).then((r) => r.json()),
+    ])
+      .then(([g, c]) => {
+        setGdpRows(Array.isArray(g) ? g : []);
+        setCpiRows(Array.isArray(c) ? c : []);
+      })
+      .catch(() => { setGdpRows([]); setCpiRows([]); });
+  }, [open]);
+
+  const reconstruction = useMemo(() => {
+    if (!gdpRows || !cpiRows || !gdpRows.length) return null;
+    const cpiByDate = new Map(cpiRows.map((r) => [r.date, r]));
+    const gdpByDate = new Map(gdpRows.map((r) => [r.date, r]));
+    const stateOf = (gap, minGap) => Math.abs(gap) <= minGap ? "persistence" : gap > 0 ? "accelerating" : "decelerating";
+    const nearSideOf = (gap) => (gap > 0 ? "accelerating" : "decelerating");
+
+    let lastConfirmed = null;
+    const out = [];
+    for (const g of gdpRows) {
+      const c = cpiByDate.get(g.date);
+      if (!c || g.fast == null || g.slow == null || c.fast == null || c.slow == null) continue;
+
+      const gGap = g.fast - g.slow, iGap = c.fast - c.slow;
+      const gState = stateOf(gGap, GROWTH_MIN_GAP), iState = stateOf(iGap, CPI_MIN_GAP);
+      let forecastKey;
+      if (gState !== "persistence" && iState !== "persistence") {
+        forecastKey = regimeQuadrantKey(gState, iState);
+      } else if (gState === "persistence" && iState === "persistence") {
+        forecastKey = lastConfirmed;
+      } else {
+        const gLean = gState === "persistence" ? nearSideOf(gGap) : gState;
+        const iLean = iState === "persistence" ? nearSideOf(iGap) : iState;
+        forecastKey = regimeQuadrantKey(gLean, iLean);
+      }
+
+      // Target = 1 quarter (3 calendar months) ahead — same horizon as
+      // both series' own forecasts, both a GDP-quarter-start and a
+      // CPI-month-start date.
+      const d = new Date(g.date + "T00:00:00Z");
+      const targetDate = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 3, 1)).toISOString().slice(0, 10);
+      const gTarget = gdpByDate.get(targetDate);
+      const cTarget = cpiByDate.get(targetDate);
+
+      let actualKey = null, hit = null;
+      if (gTarget?.actual != null && cTarget?.actual != null) {
+        const gDelta = gTarget.actual - g.fast, iDelta = cTarget.actual - c.fast;
+        const gDir = Math.abs(gDelta) > GROWTH_MIN_GAP ? (gDelta > 0 ? "accelerating" : "decelerating") : "flat";
+        const iDir = Math.abs(iDelta) > CPI_MIN_GAP ? (iDelta > 0 ? "accelerating" : "decelerating") : "flat";
+        if (gDir !== "flat" && iDir !== "flat") {
+          actualKey = regimeQuadrantKey(gDir, iDir);
+          lastConfirmed = actualKey;
+        } else {
+          actualKey = lastConfirmed;
+        }
+        hit = forecastKey != null && actualKey != null ? forecastKey === actualKey : null;
+      }
+      out.push({ date: targetDate, forecastKey, actualKey, hit });
+    }
+    return out.filter((r) => r.hit !== null || r.forecastKey != null).sort((a, b) => a.date < b.date ? -1 : 1);
+  }, [gdpRows, cpiRows]);
+
+  const windows = useMemo(() => {
+    if (!reconstruction) return null;
+    const scored = reconstruction.filter((r) => r.hit !== null);
+    if (scored.length === 0) return false;
+    const latestDate = scored.reduce((max, r) => (r.date > max ? r.date : max), scored[0].date);
+    const anchor = new Date(latestDate + "T00:00:00Z");
+    const priorMonthKey = latestDate.slice(0, 7);
+    const qStartMonth = Math.floor(anchor.getUTCMonth() / 3) * 3;
+    const currQStart = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth, 1)).toISOString().slice(0, 10);
+    const currQEnd = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth + 3, 1)).toISOString().slice(0, 10);
+    const yearStart = `${anchor.getUTCFullYear()}-01-01`;
+    const rolling12Start = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() - 11, 1)).toISOString().slice(0, 10);
+    const buckets = {
+      "Prior Month": scored.filter((r) => r.date.slice(0, 7) === priorMonthKey),
+      "Curr Qtr": scored.filter((r) => r.date >= currQStart && r.date < currQEnd),
+      "YTD": scored.filter((r) => r.date >= yearStart),
+      "Rolling 12mo": scored.filter((r) => r.date >= rolling12Start),
+      "All Time": scored,
+    };
+    return Object.fromEntries(Object.entries(buckets).map(([label, arr]) => {
+      if (arr.length === 0) return [label, { n: 0, accuracyPct: null }];
+      const hits = arr.filter((r) => r.hit === true).length;
+      return [label, { n: arr.length, accuracyPct: Math.round((hits / arr.length) * 1000) / 10 }];
+    }));
+  }, [reconstruction]);
+
+  const recentRows = useMemo(() => (reconstruction ? reconstruction.slice().reverse() : []), [reconstruction]);
+
+  return (
+    <>
+      <div
+        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed right-0 top-0 h-full w-[780px] max-w-[95vw] bg-ink-soft border-l border-ink-line z-50 flex flex-col transition-transform duration-300 ease-out ${open ? "translate-x-0" : "translate-x-full"}`}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-ink-line shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">Structural Regime — Forecast vs Actual</h2>
+            <p className="text-[10px] text-paper-dim mt-0.5">Joint Growth x Inflation quadrant call, 1 quarter ahead · reconstructed from GDP/CPI crossover history</p>
+          </div>
+          <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
+            <CloseIcon />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+          <div className="card p-4 space-y-3">
+            <p className="label text-[10px]">Regime Forecast Accuracy Summary</p>
+            {windows === null ? (
+              <p className="text-paper-dim text-[10px]">Loading…</p>
+            ) : windows === false ? (
+              <p className="text-paper-dim text-[10px]">Not enough resolved periods yet.</p>
+            ) : (
+              <div className="grid grid-cols-[6rem_1fr] gap-x-2 gap-y-1 text-[10px] items-center">
+                <span className="text-paper-dim uppercase tracking-wide"></span>
+                <span className="text-paper-dim uppercase tracking-wide">Accuracy</span>
+                {["Prior Month", "Curr Qtr", "YTD", "Rolling 12mo", "All Time"].map((label) => {
+                  const w = windows[label];
+                  return (
+                    <Fragment key={label}>
+                      <span className="text-paper-dim">{label}</span>
+                      <span className="num text-paper">{w.n === 0 ? "—" : `${w.accuracyPct.toFixed(1)}% (n=${w.n})`}</span>
+                    </Fragment>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <p className="label text-[10px] mb-2">Recent Readings</p>
+            {reconstruction === null ? (
+              <p className="text-paper-dim text-[10px]">Loading…</p>
+            ) : recentRows.length === 0 ? (
+              <p className="text-paper-dim text-[10px]">No resolved periods yet.</p>
+            ) : (
+              <div className="border border-ink-line rounded-lg overflow-hidden text-xs">
+                <div
+                  className="grid gap-px bg-ink-line max-h-[480px] overflow-y-auto"
+                  style={{ gridTemplateColumns: "5rem 1fr 1fr 3rem" }}
+                >
+                  <div className="sticky top-0 z-10 bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim">Date</div>
+                  <div className="sticky top-0 z-10 bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim">Forecasted Regime</div>
+                  <div className="sticky top-0 z-10 bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim">Actual Regime</div>
+                  <div className="sticky top-0 z-10 bg-ink-soft px-2 py-1.5 text-[10px] text-paper-dim text-right">Hit</div>
+                  {recentRows.map((r) => {
+                    const fMeta = r.forecastKey ? REGIME_META[r.forecastKey] : null;
+                    const aMeta = r.actualKey ? REGIME_META[r.actualKey] : null;
+                    return (
+                      <Fragment key={r.date}>
+                        <div className="bg-ink px-2 py-1.5 text-paper-dim">
+                          {new Date(r.date + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })}
+                        </div>
+                        <div className={`bg-ink px-2 py-1.5 ${fMeta?.color ?? "text-paper-dim"}`}>{fMeta?.label ?? "—"}</div>
+                        <div className={`bg-ink px-2 py-1.5 ${aMeta?.color ?? "text-paper-dim"}`}>{r.hit == null ? "pending" : (aMeta?.label ?? "—")}</div>
+                        <div className={`bg-ink px-2 py-1.5 text-right ${r.hit == null ? "text-paper-dim" : r.hit ? "text-gain" : "text-loss"}`}>
+                          {r.hit == null ? "—" : r.hit ? "Hit" : "Miss"}
+                        </div>
+                      </Fragment>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </>
