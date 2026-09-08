@@ -1,5 +1,6 @@
 "use client";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import ThreeForcesChart from "../../components/ThreeForcesChart";
@@ -7666,13 +7667,21 @@ export default function MacroDashboard() {
           <h1 className="text-xl font-semibold tracking-tight">Macro Dashboard</h1>
           {lastFetched && <p className="label mt-0.5">Updated {timeAgo(lastFetched)}</p>}
         </div>
-        <button
-          onClick={refreshData}
-          disabled={refreshing}
-          className="px-4 py-1.5 text-sm rounded-lg border border-brass/40 text-brass-soft hover:bg-brass/10 disabled:opacity-50 transition-colors"
-        >
-          {refreshing ? "Refreshing…" : "Refresh Data"}
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/macro/grid"
+            className="px-4 py-1.5 text-sm rounded-lg border border-ink-line text-paper-dim hover:text-paper hover:bg-ink-line/30 transition-colors"
+          >
+            GRID
+          </Link>
+          <button
+            onClick={refreshData}
+            disabled={refreshing}
+            className="px-4 py-1.5 text-sm rounded-lg border border-brass/40 text-brass-soft hover:bg-brass/10 disabled:opacity-50 transition-colors"
+          >
+            {refreshing ? "Refreshing…" : "Refresh Data"}
+          </button>
+        </div>
       </div>
 
       {error && (
