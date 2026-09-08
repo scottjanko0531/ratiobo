@@ -3097,10 +3097,15 @@ function TwoLineHistoryDrawer({
     const currQStart = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth, 1)).toISOString().slice(0, 10);
     const currQEnd = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth + 3, 1)).toISOString().slice(0, 10);
     const yearStart = `${anchor.getUTCFullYear()}-01-01`;
+    // 12 calendar months ending at the anchor (latest completed period),
+    // inclusive — the anchor month plus the 11 months before it, not a
+    // fixed Jan-Dec window like YTD.
+    const rolling12Start = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() - 11, 1)).toISOString().slice(0, 10);
     const windows = {
       "Prior Month": scored.filter((x) => x.date.slice(0, 7) === priorMonthKey),
       "Curr Qtr": scored.filter((x) => x.date >= currQStart && x.date < currQEnd),
       "YTD": scored.filter((x) => x.date >= yearStart),
+      "Rolling 12mo": scored.filter((x) => x.date >= rolling12Start),
       "All Time": scored,
     };
     // Directional Accuracy = Hits / total observations x 100 (1 decimal),
@@ -3332,7 +3337,7 @@ function TwoLineHistoryDrawer({
                         <span className="text-paper-dim uppercase tracking-wide"></span>
                         <span className="text-paper-dim uppercase tracking-wide">Accuracy</span>
                         <span className="text-paper-dim uppercase tracking-wide">Directional Accuracy</span>
-                        {["Prior Month", "Curr Qtr", "YTD", "All Time"].map((label) => {
+                        {["Prior Month", "Curr Qtr", "YTD", "Rolling 12mo", "All Time"].map((label) => {
                           const w = forecastAccuracyWindows[label];
                           return (
                             <Fragment key={label}>
