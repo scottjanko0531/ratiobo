@@ -3044,30 +3044,26 @@ function TwoLineHistoryDrawer({
 
     // Anchor "recent" windows on the LATEST COMPLETED period, not today's
     // real calendar date — today's own month/quarter/year almost never has
-    // a resolved print yet (the 3-month forecast lag alone guarantees it),
-    // so a calendar-anchored window would show blank for Prior Month/Curr
-    // Qtr most of the time, and would show nothing for YTD until the new
-    // year's data actually starts resolving. Anchoring on the newest row
-    // that's actually resolved means Prior Month and Curr Qtr agree
-    // whenever the current quarter has exactly one resolved reading so
-    // far, and YTD always reflects the most recently completed year-to-
-    // date, never an empty just-rolled-over calendar year.
+    // a resolved print yet (the 3-month forecast lag alone guarantees it).
+    // Prior Qtr and Last 4 Qtr are both defined relative to the quarter
+    // containing the anchor (the "current" quarter), which may itself be
+    // incomplete — so both windows stop at currQStart, never reaching into
+    // that in-progress quarter. Prior Qtr = the one calendar quarter just
+    // before it; Last 4 Qtr = the four calendar quarters before it
+    // (i.e. Prior Qtr plus the three before that), so it always reflects
+    // four fully completed quarters, not a trailing 12-month lookback that
+    // could include partial data.
     const latestDate = scored.reduce((max, x) => (x.date > max ? x.date : max), scored[0].date);
     const anchor = new Date(latestDate + "T00:00:00Z");
-    const priorMonthKey = latestDate.slice(0, 7);
     const qStartMonth = Math.floor(anchor.getUTCMonth() / 3) * 3;
     const currQStart = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth, 1)).toISOString().slice(0, 10);
-    const currQEnd = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth + 3, 1)).toISOString().slice(0, 10);
+    const priorQStart = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth - 3, 1)).toISOString().slice(0, 10);
     const yearStart = `${anchor.getUTCFullYear()}-01-01`;
-    // 12 calendar months ending at the anchor (latest completed period),
-    // inclusive — the anchor month plus the 11 months before it, not a
-    // fixed Jan-Dec window like YTD.
-    const rolling12Start = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() - 11, 1)).toISOString().slice(0, 10);
+    const last4QStart = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth - 12, 1)).toISOString().slice(0, 10);
     const windows = {
-      "Prior Month": scored.filter((x) => x.date.slice(0, 7) === priorMonthKey),
-      "Curr Qtr": scored.filter((x) => x.date >= currQStart && x.date < currQEnd),
+      "Prior Qtr": scored.filter((x) => x.date >= priorQStart && x.date < currQStart),
       "YTD": scored.filter((x) => x.date >= yearStart),
-      "Rolling 12mo": scored.filter((x) => x.date >= rolling12Start),
+      "Last 4 Qtr": scored.filter((x) => x.date >= last4QStart && x.date < currQStart),
       "All Time": scored,
     };
     // Directional Accuracy = Hits / total observations x 100 (1 decimal),
@@ -3300,7 +3296,7 @@ function TwoLineHistoryDrawer({
                         <span className="text-paper-dim uppercase tracking-wide"></span>
                         <span className="text-paper-dim uppercase tracking-wide">Accuracy</span>
                         <span className="text-paper-dim uppercase tracking-wide">Directional Accuracy</span>
-                        {["Prior Month", "Curr Qtr", "YTD", "Rolling 12mo", "All Time"].map((label) => {
+                        {["Prior Qtr", "YTD", "Last 4 Qtr", "All Time"].map((label) => {
                           const w = forecastAccuracyWindows[label];
                           return (
                             <Fragment key={label}>
@@ -3578,17 +3574,15 @@ function RegimeAccuracyDrawer({ open, onClose }) {
     if (scored.length === 0) return false;
     const latestDate = scored.reduce((max, r) => (r.date > max ? r.date : max), scored[0].date);
     const anchor = new Date(latestDate + "T00:00:00Z");
-    const priorMonthKey = latestDate.slice(0, 7);
     const qStartMonth = Math.floor(anchor.getUTCMonth() / 3) * 3;
     const currQStart = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth, 1)).toISOString().slice(0, 10);
-    const currQEnd = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth + 3, 1)).toISOString().slice(0, 10);
+    const priorQStart = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth - 3, 1)).toISOString().slice(0, 10);
     const yearStart = `${anchor.getUTCFullYear()}-01-01`;
-    const rolling12Start = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() - 11, 1)).toISOString().slice(0, 10);
+    const last4QStart = new Date(Date.UTC(anchor.getUTCFullYear(), qStartMonth - 12, 1)).toISOString().slice(0, 10);
     const buckets = {
-      "Prior Month": scored.filter((r) => r.date.slice(0, 7) === priorMonthKey),
-      "Curr Qtr": scored.filter((r) => r.date >= currQStart && r.date < currQEnd),
+      "Prior Qtr": scored.filter((r) => r.date >= priorQStart && r.date < currQStart),
       "YTD": scored.filter((r) => r.date >= yearStart),
-      "Rolling 12mo": scored.filter((r) => r.date >= rolling12Start),
+      "Last 4 Qtr": scored.filter((r) => r.date >= last4QStart && r.date < currQStart),
       "All Time": scored,
     };
     return Object.fromEntries(Object.entries(buckets).map(([label, arr]) => {
@@ -3630,7 +3624,7 @@ function RegimeAccuracyDrawer({ open, onClose }) {
               <div className="grid grid-cols-[6rem_1fr] gap-x-2 gap-y-1 text-[10px] items-center">
                 <span className="text-paper-dim uppercase tracking-wide"></span>
                 <span className="text-paper-dim uppercase tracking-wide">Accuracy</span>
-                {["Prior Month", "Curr Qtr", "YTD", "Rolling 12mo", "All Time"].map((label) => {
+                {["Prior Qtr", "YTD", "Last 4 Qtr", "All Time"].map((label) => {
                   const w = windows[label];
                   return (
                     <Fragment key={label}>
