@@ -3103,14 +3103,20 @@ function TwoLineHistoryDrawer({
       "YTD": scored.filter((x) => x.date >= yearStart),
       "All Time": scored,
     };
+    // Directional Accuracy = Hits / total observations x 100 (1 decimal),
+    // the SAME denominator as Accuracy (n) for each window — every scored
+    // period counts, real call or Persistence, per instruction. This is a
+    // deliberate departure from the strict "score only real calls"
+    // convention used elsewhere on this page (e.g. CPI Forecast
+    // Components' Dir. Acc.) — that convention still applies there; this
+    // summary specifically wants one blended rate per window.
     const summarizeWindow = (arr) => {
-      if (arr.length === 0) return { n: 0, mae: null, nCalls: 0, directionalHitRate: null };
+      if (arr.length === 0) return { n: 0, mae: null, directionalHitRate: null };
       const mae = Math.round((arr.reduce((s, x) => s + x.fcst.valueAcc, 0) / arr.length) * 100) / 100;
-      const calls = arr.filter((x) => x.fcst.state !== "persistence");
-      const hits = calls.filter((x) => x.fcst.hit === true).length;
+      const hits = arr.filter((x) => x.fcst.hit === true).length;
       return {
-        n: arr.length, mae, nCalls: calls.length,
-        directionalHitRate: calls.length ? Math.round((hits / calls.length) * 100) : null,
+        n: arr.length, mae,
+        directionalHitRate: Math.round((hits / arr.length) * 1000) / 10,
       };
     };
     return Object.fromEntries(Object.entries(windows).map(([label, arr]) => [label, summarizeWindow(arr)]));
@@ -3317,7 +3323,7 @@ function TwoLineHistoryDrawer({
                             <Fragment key={label}>
                               <span className="text-paper-dim">{label}</span>
                               <span className="num text-paper">{w.n === 0 ? "—" : `${w.mae.toFixed(2)}pp (n=${w.n})`}</span>
-                              <span className="num text-paper">{w.nCalls === 0 ? "—" : `${w.directionalHitRate}% (n=${w.nCalls})`}</span>
+                              <span className="num text-paper">{w.n === 0 ? "—" : `${w.directionalHitRate.toFixed(1)}% (n=${w.n})`}</span>
                             </Fragment>
                           );
                         })}
