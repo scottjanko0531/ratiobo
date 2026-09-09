@@ -26,7 +26,7 @@ interface Portfolio {
   id: string; portfolio_name: string; description: string | null;
   strategy_detail: string | null; target_allocations: Record<string, number> | null;
   rebalance_band_pct: number | null;
-  strategy_framework: "static" | "tactical" | "regime_driven" | null;
+  strategy_framework: "static" | "tactical" | "regime_driven" | "resize_overlay" | null;
   current_regime_key: string | null; regime_confirmed_since: string | null;
 }
 
@@ -68,6 +68,92 @@ function bandStatus(pct: number, target: number | null, bandPct: number): { effe
   return { effectiveBand, drift, outOfBand: Math.abs(drift) > effectiveBand };
 }
 
+// RESIZE_OVERLAY portfolios (app/portfolios/page.jsx's Portfolio Actions
+// section) don't rebalance to their raw strategic weights directly — each
+// holding's EFFECTIVE target is scaled by that specific SYMBOL's own
+// calibrated risk-state signal (asset_resize_rule_config/asset_resize_signals
+// — trailing drawdown, trend/MA break, or vol regime, never a macro or
+// return-forecast call). Ported verbatim from the same logic in
+// app/portfolios/page.jsx's Portfolio Actions block (byKeyTotals/avgMultFor/
+// freedPct) since that's React state, not importable into this Deno function.
+// Freed weight (a reduced holding's target minus its effective target) is
+// redirected into the "cash" bucket, same as the live UI and
+// kiss-portfolio-backtest's own design — without this, Clio would grade a
+// resize_overlay portfolio's bucket drift against the WRONG (raw, un-adjusted)
+// target and flag an intentionally-de-risked holding as "out of band."
+async function computeResizeContext(
+  sb: ReturnType<typeof createClient>,
+  holdings: HoldingValued[],
+  rawTargets: Record<string, number> | null,
+): Promise<{ effectiveTargets: Record<string, number> | null; resizeNotes: Map<string, string> }> {
+  if (!rawTargets) return { effectiveTargets: rawTargets, resizeNotes: new Map() };
+
+  const symbols = [...new Set(holdings.map(h => h.symbol))];
+  const [{ data: configs }, { data: signals }] = await Promise.all([
+    sb.from("asset_resize_rule_config").select("symbol, rule_type, confidence_note").in("symbol", symbols),
+    sb.from("asset_resize_signals").select("symbol, date, reduced, exposure_multiplier, indicator_value")
+      .in("symbol", symbols).order("date", { ascending: false }),
+  ]);
+  if (!configs?.length) return { effectiveTargets: rawTargets, resizeNotes: new Map() };
+
+  const configBySymbol = new Map((configs ?? []).map((c: { symbol: string }) => [c.symbol, c]));
+  const latestSignalBySymbol = new Map<string, { reduced: boolean; exposure_multiplier: number; indicator_value: number | null }>();
+  for (const s of (signals ?? []) as { symbol: string; reduced: boolean; exposure_multiplier: number; indicator_value: number | null }[]) {
+    if (!latestSignalBySymbol.has(s.symbol)) latestSignalBySymbol.set(s.symbol, s);
+  }
+
+  const exposureMultipliers: Record<string, number> = {};
+  const resizeNotes = new Map<string, string>();
+  for (const h of holdings) {
+    const sig = latestSignalBySymbol.get(h.symbol);
+    if (!sig) continue;
+    exposureMultipliers[h.symbol] = Number(sig.exposure_multiplier);
+    if (sig.reduced) {
+      const cfg = configBySymbol.get(h.symbol) as { rule_type: string; confidence_note: string | null } | undefined;
+      const ruleLabel = cfg?.rule_type === "trend_ma" ? "trend/moving-average break"
+        : cfg?.rule_type === "vol_regime" ? "realized-volatility regime spike"
+        : "trailing drawdown-from-peak threshold";
+      resizeNotes.set(h.symbol, `${h.symbol} is currently REDUCED to ${(Number(sig.exposure_multiplier) * 100).toFixed(0)}% of its nominal target by its own calibrated ${ruleLabel} signal${cfg?.confidence_note ? ` (confidence note: ${cfg.confidence_note})` : ""} — this is the overlay working as designed, not a gap to fill.`);
+    }
+  }
+
+  const byKeyTotals = new Map<string, { total: number; weightedMultSum: number; count: number; multSum: number }>();
+  for (const h of holdings) {
+    const key = resolveSimulatorKey(h);
+    const val = Number(h.current_value ?? 0);
+    const mult = exposureMultipliers[h.symbol] ?? 1;
+    if (!byKeyTotals.has(key)) byKeyTotals.set(key, { total: 0, weightedMultSum: 0, count: 0, multSum: 0 });
+    const bt = byKeyTotals.get(key)!;
+    bt.total += val; bt.weightedMultSum += val * mult; bt.count += 1; bt.multSum += mult;
+  }
+  const avgMultFor = (key: string): number => {
+    const bt = byKeyTotals.get(key);
+    if (!bt) return 1;
+    return bt.total > 0 ? bt.weightedMultSum / bt.total : (bt.count > 0 ? bt.multSum / bt.count : 1);
+  };
+
+  // Unlike the frontend's Portfolio Actions block — where computeAllocationDeltas
+  // already applies each EXISTING holding's own exposureMultiplier internally
+  // (holdingTargetPct = bucketTargetPct * holdingShare * multiplier), this
+  // function's downstream consumer (computePortfolioSummary) compares a flat
+  // bucket % against a flat target with no per-holding multiplier concept at
+  // all — so a reduced bucket's OWN target must be scaled down here directly,
+  // not just topped up elsewhere, or a $0-held bucket like a fully-reduced
+  // Gold position would still show its full un-adjusted 30% target and get
+  // flagged OUT OF BAND for something the overlay already intentionally did.
+  const effectiveTargets: Record<string, number> = { ...rawTargets };
+  let freedPct = 0;
+  for (const [key, pct] of Object.entries(rawTargets)) {
+    if (key === "cash" || !byKeyTotals.has(key)) continue;
+    const m = avgMultFor(key);
+    effectiveTargets[key] = pct * m;
+    freedPct += pct * (1 - m);
+  }
+  if (freedPct > 0) effectiveTargets.cash = (rawTargets.cash ?? 0) + freedPct;
+
+  return { effectiveTargets, resizeNotes };
+}
+
 function computePortfolioSummary(holdings: HoldingValued[], targets: Record<string, number> | null, bandPct: number) {
   const totalValue = holdings.reduce((s, h) => s + Number(h.current_value ?? 0), 0);
   const costBasis = holdings.reduce((s, h) => s + Number(h.cost_basis ?? 0), 0);
@@ -106,13 +192,14 @@ async function generatePortfolioAnalysis(params: {
   mediumTermForwardKey: string | null; mediumTermForwardConfidence: number | null;
   clioAnalysis: string | null; clioMusing: string | null;
   macroStatusCounts: { healthy: number; watch: number; danger: number };
+  resizeNotes?: Map<string, string>;
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY) return null;
   try {
     const {
       portfolio, summary, dayChg, today, structuralRegime, marketRegime,
       nearTermForwardKey, nearTermForwardConfidence, mediumTermForwardKey, mediumTermForwardConfidence,
-      clioAnalysis, clioMusing, macroStatusCounts,
+      clioAnalysis, clioMusing, macroStatusCounts, resizeNotes,
     } = params;
     const todayFormatted = new Date(today + "T00:00:00Z").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
@@ -126,9 +213,11 @@ async function generatePortfolioAnalysis(params: {
             ? `OUT OF BAND (±${a.effectiveBand!.toFixed(1)}pt tolerance) — rebalancing this bucket is warranted`
             : `within ±${a.effectiveBand!.toFixed(1)}pt band — no rebalancing action needed here`
           : "";
-        const header = `  ${a.label}: ${a.pct.toFixed(1)}%${a.target != null ? ` (target ${a.target}%, ${driftTxt}, ${bandTxt})` : ""}`;
+        const targetLabel = portfolio.strategy_framework === "resize_overlay" ? "effective target (post-resize-signal)" : "target";
+        const header = `  ${a.label}: ${a.pct.toFixed(1)}%${a.target != null ? ` (${targetLabel} ${a.target}%, ${driftTxt}, ${bandTxt})` : ""}`;
         const holdingsList = a.holdings.map(h => `${h.symbol}${h.name ? ` (${h.name})` : ""}`).join(", ");
-        return `${header}\n    Holdings: ${holdingsList || "none"}`;
+        const notesHere = resizeNotes ? a.holdings.map(h => resizeNotes.get(h.symbol)).filter(Boolean) : [];
+        return `${header}\n    Holdings: ${holdingsList || "none"}${notesHere.length ? `\n    ${notesHere.join("\n    ")}` : ""}`;
       })
       .join("\n") || "  No holdings assigned.";
     const anyOutOfBand = summary.allocation.some(a => a.outOfBand);
@@ -138,10 +227,12 @@ async function generatePortfolioAnalysis(params: {
     const regimeDrivenLabel = portfolio.current_regime_key ? (REGIME_LABELS[portfolio.current_regime_key] ?? portfolio.current_regime_key) : null;
     const REGIME_DRIVEN_TEXT = `This portfolio is explicitly configured as REGIME-DRIVEN: its target allocations shown above are set AUTOMATICALLY by a daily job that tracks the Forward Signal (the app's 6-18 month leading-indicator composite, not the structural or market-implied regime) and only shifts targets once a new regime has held for 30 consecutive days AND the Forward Signal confidence is at least 60% on the day it commits (avoiding both whipsaw and low-conviction commitments — a decayed-confidence candidate will not commit just because 30 days passed) — currently targeting ${regimeDrivenLabel ?? "an unset regime"}${portfolio.regime_confirmed_since ? `, confirmed since ${portfolio.regime_confirmed_since}` : ""}. The regime tilt has ALREADY happened at the target-allocation level — treat this exactly like a static framework for recommendation purposes: stay within rebalancing back to the CURRENT target shown above, do NOT layer additional freelance tactical tilts on top of what the automated target already encodes. If you believe the live Forward Signal differs from what's targeted, note that as context only — do not recommend the portfolio manually front-run the confirmation window.`;
     const UNSET_TEXT = `Determine from the stated strategy and actual holdings above whether this portfolio is a static, regime-agnostic asset-allocation framework (e.g. risk parity, All Weather — explicitly designed so the investor does NOT need to predict which macro regime is active) or a tactical, regime-responsive framework (e.g. explicitly built to rotate or tilt exposure based on the macro cycle, such as BW Modified). If static/regime-agnostic, recommendations must stay within rebalancing back to the target allocations shown above — do NOT recommend new sector, style, or duration tilts driven by today's regime call. Judge holding composition on its own terms (e.g. a broad total-market fund like VTI or ITOT is not a "mega-cap" bet) rather than speculating about what a bucket might contain. If tactical/regime-responsive, regime-driven tilts are appropriate and expected — ground any such tilt in the Near-Term Forward Signal (2-3mo) below, not the Medium-Term composite.`;
+    const RESIZE_OVERLAY_TEXT = `This portfolio is explicitly configured with a RESIZE OVERLAY: its Target Allocations are FIXED strategic weights (NOT regime-responsive, NOT auto-tilted by the macro cycle) — but each holding's effective target has already been scaled by that specific SYMBOL's own calibrated risk-state signal (a per-symbol backtested rule — trailing drawdown-from-peak, trend/moving-average break, or realized-volatility regime spike — NEVER a macro call or return forecast) whenever that symbol currently reads "Reduced." The percentages and OUT OF BAND verdicts above ALREADY reflect this — they are the resize-adjusted effective targets, not the raw strategic weights, and any per-holding note under a bucket's holdings list explains exactly which signal is active and why. A holding sitting far below its nominal strategic weight (e.g. Gold at 0% instead of a 30% strategic weight) is NOT a missing hedge, a diversification gap, or an oversight — it is the overlay ACTIVELY de-risking that one holding on a live, named signal. Weight freed this way is redirected into the Cash bucket, which is why Cash may sit meaningfully above its own nominal weight — that is correct, not a cash drag to fix. Do NOT recommend restoring a reduced holding to its full strategic weight, adding a different/replacement hedge in its place, or reframing the reduction as something to correct — that is the overlay working as designed. If a resize signal's own confidence note flags it as thin evidence, you may mention that nuance, but do not treat it as license to override or second-guess the live signal.`;
     const frameworkConstraint = "FRAMEWORK CONSTRAINT: " + (
       portfolio.strategy_framework === "static" ? STATIC_TEXT
       : portfolio.strategy_framework === "tactical" ? TACTICAL_TEXT
       : portfolio.strategy_framework === "regime_driven" ? REGIME_DRIVEN_TEXT
+      : portfolio.strategy_framework === "resize_overlay" ? RESIZE_OVERLAY_TEXT
       : UNSET_TEXT
     );
 
@@ -225,7 +316,14 @@ async function analyzeOnePortfolio(
     if (!holdings?.length) return { portfolioId: portfolio.id, ok: false, error: "no valued holdings" };
 
     const bandPct = portfolio.rebalance_band_pct ?? 5;
-    const summary = computePortfolioSummary(holdings as HoldingValued[], portfolio.target_allocations, bandPct);
+    let effectiveTargets = portfolio.target_allocations;
+    let resizeNotes = new Map<string, string>();
+    if (portfolio.strategy_framework === "resize_overlay") {
+      const resizeCtx = await computeResizeContext(sb, holdings as HoldingValued[], portfolio.target_allocations);
+      effectiveTargets = resizeCtx.effectiveTargets;
+      resizeNotes = resizeCtx.resizeNotes;
+    }
+    const summary = computePortfolioSummary(holdings as HoldingValued[], effectiveTargets, bandPct);
 
     // Day change: today's opening snapshot (written by the nightly-portfolio-snapshot
     // cron) vs. current live value — same convention the frontend drawer already uses.
@@ -248,6 +346,7 @@ async function analyzeOnePortfolio(
       mediumTermForwardKey: macroCtx.mediumTermForwardKey, mediumTermForwardConfidence: macroCtx.mediumTermForwardConfidence,
       clioAnalysis: macroCtx.clioAnalysis, clioMusing: macroCtx.clioMusing,
       macroStatusCounts: macroCtx.macroStatusCounts,
+      resizeNotes,
     });
     if (!analysis) return { portfolioId: portfolio.id, ok: false, error: "generation failed" };
 
