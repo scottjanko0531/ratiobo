@@ -193,13 +193,15 @@ async function generatePortfolioAnalysis(params: {
   clioAnalysis: string | null; clioMusing: string | null;
   macroStatusCounts: { healthy: number; watch: number; danger: number };
   resizeNotes?: Map<string, string>;
+  eligibleSymbols?: string[];
+  eligibleBuckets?: string[];
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY) return null;
   try {
     const {
       portfolio, summary, dayChg, today, structuralRegime, marketRegime,
       nearTermForwardKey, nearTermForwardConfidence, mediumTermForwardKey, mediumTermForwardConfidence,
-      clioAnalysis, clioMusing, macroStatusCounts, resizeNotes,
+      clioAnalysis, clioMusing, macroStatusCounts, resizeNotes, eligibleSymbols, eligibleBuckets,
     } = params;
     const todayFormatted = new Date(today + "T00:00:00Z").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
@@ -270,12 +272,16 @@ CLIO'S NEWS MUSING (already published today):
 ${clioMusing ?? "Not yet generated today."}
 
 ${frameworkConstraint}
-
+${portfolio.strategy_framework === "resize_overlay" && eligibleSymbols && eligibleBuckets ? `
+HARD CONSTRAINT — CLOSED UNIVERSE, checked mechanically after you answer — violating this fails the whole response: this portfolio's recommendations may reference ONLY these symbols: ${eligibleSymbols.join(", ")}; and ONLY these asset-class buckets: ${eligibleBuckets.map(k => BUCKET_LABELS[k] ?? k).join(", ")}. Do NOT recommend any other instrument, symbol, ticker, futures/options contract, or asset class under any circumstance — no new commodities sleeve, no TIPS position, no crude oil calls, no different gold/real-asset vehicle, nothing not on this exact list — regardless of the macro backdrop, regime read, or news musing above. This portfolio's strategy is to trade only within its own defined symbols/buckets; anything else is out of scope for a recommendation no matter how strong the macro case sounds. You may mention an out-of-universe asset class as color/context in Part 1 only (explicitly framed as outside this portfolio's scope), never as a Part 2 bullet.` : ""}
+${resizeNotes && resizeNotes.size > 0 ? `
+HARD CONSTRAINT, checked mechanically after you answer — violating this fails the whole response: the following symbols are under an active, calibrated risk-reduction signal right now: ${[...resizeNotes.keys()].join(", ")}. For EACH of these symbols and the bucket(s) they belong to, your only permitted recommendation is "hold" / "no action — signal-driven" / explaining why the reduction stands. You may NOT, for any of these symbols or their buckets, recommend: restoring them toward their nominal strategic weight, buying more of them, buying a DIFFERENT instrument in the same asset class as a substitute (e.g. a different gold ETF, a commodities fund, a futures/options position, a "real-asset hedge") to replace what the signal reduced, or any new position whose purpose is to re-create the exposure the signal just removed. This holds even if the macro backdrop, regime read, or news musing above seems to argue for that asset class — the signal is a symbol-specific, backtested risk-timing rule, not a macro call, and today's narrative content is not grounds to override it. If you believe the macro case for that asset class is strong, say so as commentary only, explicitly framed as "outside what this portfolio's resize signal currently allows," not as a recommendation.
+` : ""}
 Structure your answer in two parts, separated by a blank line:
 (1) A paragraph assessing this portfolio's health: is its current allocation appropriate given its stated strategy AND the macro backdrop above? Where is it well-positioned, and where is it exposed? If it has no stated strategy, note that explicitly and assess purely against the macro backdrop.
-(2) A "Recommendations:" section: one short lead-in sentence, then 3-5 bullet points (each on its own line, starting with "- "), each a specific, actionable instruction naming a real bucket, asset class, or holding in this portfolio and what to do with it. Any rebalancing trade must be justified by a bucket marked OUT OF BAND above — never recommend trimming or adding to a bucket that's within its band purely because it has nonzero drift or because of the macro regime call (for static/regime-agnostic frameworks per the constraint above). Bullets not about rebalancing (e.g. macro-driven tactical calls for a tactical framework) don't need a band justification, just the macro tie-in — and that tie-in must cite the Near-Term Forward Signal (2-3mo) above, not the Medium-Term composite.
+(2) A "Recommendations:" section: one short lead-in sentence, then 3-5 bullet points (each on its own line, starting with "- "), each a specific, actionable instruction naming a real bucket, asset class, or holding in this portfolio and what to do with it. Any rebalancing trade must be justified by a bucket marked OUT OF BAND above — never recommend trimming or adding to a bucket that's within its band purely because it has nonzero drift or because of the macro regime call (for static/regime-agnostic frameworks per the constraint above)${resizeNotes && resizeNotes.size > 0 ? `, and never for any symbol/bucket listed in the HARD CONSTRAINT above regardless of its band status` : ""}${portfolio.strategy_framework === "resize_overlay" ? `, and never outside the CLOSED UNIVERSE listed above` : ""}. Bullets not about rebalancing (e.g. macro-driven tactical calls for a tactical framework) don't need a band justification, just the macro tie-in — and that tie-in must cite the Near-Term Forward Signal (2-3mo) above, not the Medium-Term composite.
 
-Part 1 must be plain prose — no bullets, no bold, no headers. Part 2 must be lead-in sentence + bullets only.`;
+Part 1 must be plain prose — no bullets, no bold, no headers. Part 2 must be lead-in sentence + bullets only. Before finalizing, re-read every bullet in Part 2 against the HARD CONSTRAINT above (if present) and delete/rewrite any bullet that violates it.`;
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -323,6 +329,16 @@ async function analyzeOnePortfolio(
       effectiveTargets = resizeCtx.effectiveTargets;
       resizeNotes = resizeCtx.resizeNotes;
     }
+    // Closed-universe scope for resize_overlay portfolios (per the user's
+    // explicit rule: no recommendations outside this portfolio's own
+    // existing symbols/buckets) — eligibleSymbols from the FULL holdings
+    // list (not value-filtered, so a currently-$0 holding like a
+    // fully-de-risked GLDM still counts as "this portfolio's own symbol,"
+    // eligible for a hold/no-action recommendation but nothing else new).
+    const eligibleSymbols = portfolio.strategy_framework === "resize_overlay"
+      ? [...new Set((holdings as HoldingValued[]).map(h => h.symbol))] : undefined;
+    const eligibleBuckets = portfolio.strategy_framework === "resize_overlay" && effectiveTargets
+      ? Object.keys(effectiveTargets) : undefined;
     const summary = computePortfolioSummary(holdings as HoldingValued[], effectiveTargets, bandPct);
 
     // Day change: today's opening snapshot (written by the nightly-portfolio-snapshot
@@ -346,7 +362,7 @@ async function analyzeOnePortfolio(
       mediumTermForwardKey: macroCtx.mediumTermForwardKey, mediumTermForwardConfidence: macroCtx.mediumTermForwardConfidence,
       clioAnalysis: macroCtx.clioAnalysis, clioMusing: macroCtx.clioMusing,
       macroStatusCounts: macroCtx.macroStatusCounts,
-      resizeNotes,
+      resizeNotes, eligibleSymbols, eligibleBuckets,
     });
     if (!analysis) return { portfolioId: portfolio.id, ok: false, error: "generation failed" };
 
