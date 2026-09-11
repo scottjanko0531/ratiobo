@@ -210,6 +210,29 @@ export default function PortfoliosPage() {
     [resizeSignals]
   );
 
+  // Regime-driven equity-sector tilt (e.g. "All Weather With Equity
+  // Tilting"): a static per-regime weight table, not a live signal like the
+  // resize overlay above — just looked up by whichever regime is currently
+  // confirmed on the portfolio. Empty for any portfolio with no rows in
+  // portfolio_sector_targets (the common case), so this is safe to always
+  // query rather than gating on a specific portfolio name.
+  const [sectorTargets, setSectorTargets] = useState({});
+  useEffect(() => {
+    if (!viewingPortfolio || viewingPortfolio.strategy_framework !== "regime_driven" || !viewingPortfolio.current_regime_key) {
+      setSectorTargets({});
+      return;
+    }
+    supabase
+      .from("portfolio_sector_targets")
+      .select("symbol, target_pct_of_bucket")
+      .eq("portfolio_id", viewingPortfolio.id)
+      .eq("regime_key", viewingPortfolio.current_regime_key)
+      .then(({ data }) => {
+        setSectorTargets(Object.fromEntries((data ?? []).map((r) => [r.symbol, Number(r.target_pct_of_bucket)])));
+      })
+      .catch(() => setSectorTargets({}));
+  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework, viewingPortfolio?.current_regime_key]);
+
   // Full per-holding snapshot history for the open portfolio, fetched on demand
   // (not part of the page's initial load, which only pulls today's row) — feeds
   // the monthly gain/loss chart below. cost_basis is pulled alongside market_value
@@ -498,16 +521,20 @@ export default function PortfoliosPage() {
                 )}
 
                 {/* Regime-driven status */}
-                {pf.strategy_framework === "regime_driven" && (
+                {pf.strategy_framework === "regime_driven" && (() => {
+                  const horizon = pf.regime_signal_horizon === "near_term" ? "near_term" : "medium_term";
+                  const confirmDays = horizon === "near_term" ? 7 : 30;
+                  const horizonLabel = horizon === "near_term" ? "Near-Term Forward Signal (2-3mo)" : "Medium-Term Forward Signal (6-18mo)";
+                  return (
                   <div className="px-5 py-3 border-b border-ink-line bg-ink/30">
-                    <p className="label text-[10px] mb-1">Regime-Driven Targets</p>
+                    <p className="label text-[10px] mb-1">Regime-Driven Targets <span className="text-paper-dim/50 normal-case">· driven by {horizonLabel}</span></p>
                     {pf.current_regime_key ? (
                       <p className="text-xs text-paper-dim leading-relaxed">
                         Currently targeting <span className="text-paper font-medium">{REGIME_META[pf.current_regime_key]?.label ?? pf.current_regime_key}</span> weights
                         {pf.regime_confirmed_since && `, confirmed since ${pf.regime_confirmed_since}`}.
                         {pf.pending_regime_key && pf.pending_regime_key !== pf.current_regime_key && (
                           <span className="block mt-1 text-brass-soft">
-                            Watching a shift to {REGIME_META[pf.pending_regime_key]?.label ?? pf.pending_regime_key} — confirms after 30 days if it persists (since {pf.pending_regime_since}).
+                            Watching a shift to {REGIME_META[pf.pending_regime_key]?.label ?? pf.pending_regime_key} — confirms after {confirmDays} days if it persists (since {pf.pending_regime_since}).
                           </span>
                         )}
                       </p>
@@ -526,7 +553,8 @@ export default function PortfoliosPage() {
                       </div>
                     )}
                   </div>
-                )}
+                  );
+                })()}
 
                 {/* Summary metrics */}
                 <div className="grid grid-cols-4 sm:grid-cols-8 gap-px border-b border-ink-line">
@@ -668,11 +696,16 @@ export default function PortfoliosPage() {
                   })()}
                 </div>
 
-                {/* Portfolio Actions — resize_overlay portfolios only. Same
-                   computeAllocationDeltas call + row/badge rendering already
-                   shipped on /macro's QuadrantCard, scoped here to this
-                   portfolio's own holdings/target_allocations instead of the
-                   global combined set.
+                {/* Portfolio Actions — resize_overlay and regime_driven
+                   portfolios. Same computeAllocationDeltas call + row/badge
+                   rendering already shipped on /macro's QuadrantCard, scoped
+                   here to this portfolio's own holdings/target_allocations
+                   instead of the global combined set. regime_driven portfolios
+                   skip the resize-specific machinery below (no per-symbol
+                   resize signal exists for them) and instead pass sectorTargets
+                   — a static regime-keyed equity-sector tilt (see
+                   portfolio_sector_targets), currently only populated for
+                   "All Weather With Equity Tilting".
 
                    Weight freed up by a resized leg (e.g. Gold cut to 0% of
                    its 30% target) doesn't just vanish — it needs somewhere
@@ -695,33 +728,50 @@ export default function PortfoliosPage() {
                    multiplier for, so it never applies exposureMultipliers on
                    its own — a reduced bucket with nothing currently held
                    would otherwise show a full-size, stale "Add" recommendation). */}
-                {pf.strategy_framework === "resize_overlay" && (() => {
+                {(pf.strategy_framework === "resize_overlay" || pf.strategy_framework === "regime_driven") && (() => {
                   const rawTargets = pf.target_allocations || {};
-                  const byKeyTotals = {};
-                  for (const h of hs) {
-                    const key = resolveSimulatorKey(h);
-                    if (!key) continue;
-                    const val = Number(h.current_value ?? 0);
-                    const mult = exposureMultipliers[h.symbol] ?? 1;
-                    if (!byKeyTotals[key]) byKeyTotals[key] = { total: 0, weightedMultSum: 0, count: 0, multSum: 0 };
-                    byKeyTotals[key].total += val;
-                    byKeyTotals[key].weightedMultSum += val * mult;
-                    byKeyTotals[key].count += 1;
-                    byKeyTotals[key].multSum += mult;
+                  const isResizeOverlay = pf.strategy_framework === "resize_overlay";
+
+                  // resize_overlay-only machinery: a resized leg's freed weight
+                  // parks in cash, and buyRows (bucket-only, no symbol to look up
+                  // a multiplier for) need scaling after the fact. regime_driven
+                  // portfolios have no per-symbol resize signal, so they skip all
+                  // of this and pass target_allocations straight through — their
+                  // only extra input is the static equity-sector tilt (sectorTargets),
+                  // which computeAllocationDeltas already treats as a no-op when empty.
+                  let effectiveTargets = rawTargets;
+                  let avgMultFor = () => 1;
+                  if (isResizeOverlay) {
+                    const byKeyTotals = {};
+                    for (const h of hs) {
+                      const key = resolveSimulatorKey(h);
+                      if (!key) continue;
+                      const val = Number(h.current_value ?? 0);
+                      const mult = exposureMultipliers[h.symbol] ?? 1;
+                      if (!byKeyTotals[key]) byKeyTotals[key] = { total: 0, weightedMultSum: 0, count: 0, multSum: 0 };
+                      byKeyTotals[key].total += val;
+                      byKeyTotals[key].weightedMultSum += val * mult;
+                      byKeyTotals[key].count += 1;
+                      byKeyTotals[key].multSum += mult;
+                    }
+                    avgMultFor = (key) => {
+                      const bt = byKeyTotals[key];
+                      if (!bt) return 1;
+                      return bt.total > 0 ? bt.weightedMultSum / bt.total : (bt.count > 0 ? bt.multSum / bt.count : 1);
+                    };
+                    let freedPct = 0;
+                    for (const [key, pct] of Object.entries(rawTargets)) {
+                      if (key === "cash" || !byKeyTotals[key]) continue;
+                      freedPct += pct * (1 - avgMultFor(key));
+                    }
+                    effectiveTargets = freedPct > 0 ? { ...rawTargets, cash: (rawTargets.cash ?? 0) + freedPct } : rawTargets;
                   }
-                  const avgMultFor = (key) => {
-                    const bt = byKeyTotals[key];
-                    if (!bt) return 1;
-                    return bt.total > 0 ? bt.weightedMultSum / bt.total : (bt.count > 0 ? bt.multSum / bt.count : 1);
-                  };
-                  let freedPct = 0;
-                  for (const [key, pct] of Object.entries(rawTargets)) {
-                    if (key === "cash" || !byKeyTotals[key]) continue;
-                    freedPct += pct * (1 - avgMultFor(key));
-                  }
-                  const effectiveTargets = freedPct > 0 ? { ...rawTargets, cash: (rawTargets.cash ?? 0) + freedPct } : rawTargets;
+
                   const { actionRows, buyRows: rawBuyRows } = computeAllocationDeltas(
-                    hs, effectiveTargets, { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers }
+                    hs, effectiveTargets,
+                    isResizeOverlay
+                      ? { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers }
+                      : { illiquidKeys: ILLIQUID_KEYS, sectorTargets }
                   );
                   const buyRows = rawBuyRows
                     .map((r) => {
