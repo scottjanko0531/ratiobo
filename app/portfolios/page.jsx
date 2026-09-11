@@ -186,12 +186,16 @@ export default function PortfoliosPage() {
   // VAMS-equivalent Bottom-Up resize overlay (same fetch pattern as
   // app/macro/page.jsx's QuadrantCard — duplicated per-page rather than
   // shared, matching this codebase's existing style): per-symbol risk-state
-  // signal scales a "resize_overlay" portfolio's target allocations on top
-  // of its manually-set bucket targets. Only fetched when a resize_overlay
-  // portfolio is actually open, not on every page load.
+  // signal scales a portfolio's target allocations on top of its own bucket
+  // targets. Fetched for both "resize_overlay" (KISS) and "regime_driven"
+  // portfolios — asset_resize_rule_config/asset_resize_signals are global,
+  // per-symbol tables, so any regime_driven portfolio holding a symbol that
+  // already has a backtested rule (e.g. All Weather Alpha's VTI/GLD) picks
+  // it up automatically; symbols with no rule just get multiplier 1 (no
+  // effect), the same safe fallback used everywhere else this table is read.
   const [resizeSignals, setResizeSignals] = useState({});
   useEffect(() => {
-    if (!viewingPortfolio || viewingPortfolio.strategy_framework !== "resize_overlay") { setResizeSignals({}); return; }
+    if (!viewingPortfolio || (viewingPortfolio.strategy_framework !== "resize_overlay" && viewingPortfolio.strategy_framework !== "regime_driven")) { setResizeSignals({}); return; }
     Promise.all([
       supabase.from("asset_resize_rule_config").select("symbol, rule_type, confidence_note"),
       supabase.from("asset_resize_signals").select("symbol, date, reduced, exposure_multiplier, indicator_value").order("date", { ascending: false }),
@@ -700,15 +704,21 @@ export default function PortfoliosPage() {
                    portfolios. Same computeAllocationDeltas call + row/badge
                    rendering already shipped on /macro's QuadrantCard, scoped
                    here to this portfolio's own holdings/target_allocations
-                   instead of the global combined set. regime_driven portfolios
-                   skip the resize-specific machinery below (no per-symbol
-                   resize signal exists for them) and instead pass sectorTargets
-                   — a static regime-keyed equity-sector tilt (see
-                   portfolio_sector_targets), currently only populated for
-                   "All Weather With Equity Tilting".
+                   instead of the global combined set. Both exposureMultipliers
+                   (per-symbol resize overlay, e.g. VTI/GLD's already-backtested
+                   trend/vol-regime rules) and sectorTargets (the static
+                   regime-keyed equity-sector tilt for "All Weather With
+                   Equity Tilting", see portfolio_sector_targets) are applied
+                   unconditionally now, not gated by strategy_framework —
+                   each is independently a no-op when its data is empty
+                   (exposureMultipliers is only ever populated for symbols
+                   with a real backtested rule; sectorTargets only for the
+                   one portfolio with rows in that table), so a regime_driven
+                   portfolio like All Weather Alpha correctly gets its VTI/GLD
+                   resize overlay without needing its own separate framework.
 
                    Weight freed up by a resized leg (e.g. Gold cut to 0% of
-                   its 30% target) doesn't just vanish — it needs somewhere
+                   its 12% target) doesn't just vanish — it needs somewhere
                    to sit, same as the kiss-portfolio-backtest's own design
                    (freed weight parks in the liquidity sleeve). Computed
                    here as each bucket's target times (1 - its holdings'
@@ -730,48 +740,34 @@ export default function PortfoliosPage() {
                    would otherwise show a full-size, stale "Add" recommendation). */}
                 {(pf.strategy_framework === "resize_overlay" || pf.strategy_framework === "regime_driven") && (() => {
                   const rawTargets = pf.target_allocations || {};
-                  const isResizeOverlay = pf.strategy_framework === "resize_overlay";
 
-                  // resize_overlay-only machinery: a resized leg's freed weight
-                  // parks in cash, and buyRows (bucket-only, no symbol to look up
-                  // a multiplier for) need scaling after the fact. regime_driven
-                  // portfolios have no per-symbol resize signal, so they skip all
-                  // of this and pass target_allocations straight through — their
-                  // only extra input is the static equity-sector tilt (sectorTargets),
-                  // which computeAllocationDeltas already treats as a no-op when empty.
-                  let effectiveTargets = rawTargets;
-                  let avgMultFor = () => 1;
-                  if (isResizeOverlay) {
-                    const byKeyTotals = {};
-                    for (const h of hs) {
-                      const key = resolveSimulatorKey(h);
-                      if (!key) continue;
-                      const val = Number(h.current_value ?? 0);
-                      const mult = exposureMultipliers[h.symbol] ?? 1;
-                      if (!byKeyTotals[key]) byKeyTotals[key] = { total: 0, weightedMultSum: 0, count: 0, multSum: 0 };
-                      byKeyTotals[key].total += val;
-                      byKeyTotals[key].weightedMultSum += val * mult;
-                      byKeyTotals[key].count += 1;
-                      byKeyTotals[key].multSum += mult;
-                    }
-                    avgMultFor = (key) => {
-                      const bt = byKeyTotals[key];
-                      if (!bt) return 1;
-                      return bt.total > 0 ? bt.weightedMultSum / bt.total : (bt.count > 0 ? bt.multSum / bt.count : 1);
-                    };
-                    let freedPct = 0;
-                    for (const [key, pct] of Object.entries(rawTargets)) {
-                      if (key === "cash" || !byKeyTotals[key]) continue;
-                      freedPct += pct * (1 - avgMultFor(key));
-                    }
-                    effectiveTargets = freedPct > 0 ? { ...rawTargets, cash: (rawTargets.cash ?? 0) + freedPct } : rawTargets;
+                  const byKeyTotals = {};
+                  for (const h of hs) {
+                    const key = resolveSimulatorKey(h);
+                    if (!key) continue;
+                    const val = Number(h.current_value ?? 0);
+                    const mult = exposureMultipliers[h.symbol] ?? 1;
+                    if (!byKeyTotals[key]) byKeyTotals[key] = { total: 0, weightedMultSum: 0, count: 0, multSum: 0 };
+                    byKeyTotals[key].total += val;
+                    byKeyTotals[key].weightedMultSum += val * mult;
+                    byKeyTotals[key].count += 1;
+                    byKeyTotals[key].multSum += mult;
                   }
+                  const avgMultFor = (key) => {
+                    const bt = byKeyTotals[key];
+                    if (!bt) return 1;
+                    return bt.total > 0 ? bt.weightedMultSum / bt.total : (bt.count > 0 ? bt.multSum / bt.count : 1);
+                  };
+                  let freedPct = 0;
+                  for (const [key, pct] of Object.entries(rawTargets)) {
+                    if (key === "cash" || !byKeyTotals[key]) continue;
+                    freedPct += pct * (1 - avgMultFor(key));
+                  }
+                  const effectiveTargets = freedPct > 0 ? { ...rawTargets, cash: (rawTargets.cash ?? 0) + freedPct } : rawTargets;
 
                   const { actionRows, buyRows: rawBuyRows } = computeAllocationDeltas(
                     hs, effectiveTargets,
-                    isResizeOverlay
-                      ? { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers }
-                      : { illiquidKeys: ILLIQUID_KEYS, sectorTargets }
+                    { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers, sectorTargets }
                   );
                   const buyRows = rawBuyRows
                     .map((r) => {
