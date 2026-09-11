@@ -4,6 +4,7 @@ import { supabase } from "../lib/supabase";
 import ProvenanceBadge from "./ProvenanceBadge";
 import { computeAllocationDeltas, ILLIQUID_KEYS, BW_ALLOC, SIMULATOR_KEYS } from "../lib/simulatorKeys";
 import { DALIO_BENCHMARKS } from "../lib/dalioBenchmarks";
+import StageInfoIcon from "./StageInfoIcon";
 
 const KEY_LABEL = Object.fromEntries(SIMULATOR_KEYS.map((s) => [s.key, s.label]));
 
@@ -30,6 +31,21 @@ const TRIP_WIRE_LABELS = {
   fiscal_dominance_confirmed: "Fiscal-dominance regime confirmed",
 };
 
+// Plain-language definitions for each trip-wire's actual trigger condition —
+// see supabase/functions/_shared/debtCycleTripWires.ts for the live logic
+// these describe. Kept here (not pulled from the DB) since they're static
+// prose about how the test works, not live data.
+const TRIP_WIRE_DEFINITIONS = {
+  mp2_onset_watch:
+    "Fires when the Fed Balance Sheet (% of GDP) shows two consecutive weekly increases — a turn from flat/falling to rising — while CPI YoY is still running above 2.5%. This is an early warning that fresh balance-sheet expansion (QE) may be starting into a backdrop where inflation hasn't actually been tamed yet, the kind of setup that historically precedes an official MP2 shift.",
+  auction_demand_deterioration:
+    "Fires when the Indirect Bidder Share on 10-Year/30-Year Treasury auctions (the standard proxy for foreign-official and other price-insensitive demand) has failed to close back above ~65% for 6 consecutive auctions — a persistent shortfall, not one weak print. A sustained decline means primary dealers are absorbing more of each auction themselves, the substitution away from price-insensitive buyers this wire exists to catch.",
+  dollar_divergence_widening:
+    "Fires when the 30-Year Treasury yield sets a new cycle high while the Dollar Index's trailing 3-month change is flat or negative over the same stretch. Rising long yields and dollar strength normally move together — both reflect compensation demanded for holding US assets. Yields pushing to new highs without the dollar confirming suggests investors are demanding more compensation for the debt itself, not building broader confidence in the currency.",
+  fiscal_dominance_confirmed:
+    "Fires when the 90-day rolling correlation between stocks and bonds has stayed positive for the entire trailing 90-day window — bonds have stopped acting as an equity hedge. Normally stocks and bonds move opposite (bad news sells stocks but rallies bonds via flight-to-safety); under fiscal dominance, bad news hurts both at once because rate policy is constrained by debt-service concerns rather than free to respond to growth/inflation news. Requiring the full window (not just a day or two) confirms the market has actually repriced Treasuries this way, not just noise.",
+};
+
 function fmtDateTime(d) {
   return d ? new Date(d).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—";
 }
@@ -37,6 +53,7 @@ function fmtDateTime(d) {
 export default function DebtCyclePositionCheck({ metrics }) {
   const [audit, setAudit] = useState(null);
   const [firedCount, setFiredCount] = useState(0);
+  const [openWireKey, setOpenWireKey] = useState(null);
   const [holdings, setHoldings] = useState([]);
   const [brief, setBrief] = useState(null);
   const [loadingBrief, setLoadingBrief] = useState(true);
@@ -183,12 +200,26 @@ export default function DebtCyclePositionCheck({ metrics }) {
                 const armed = Boolean(tw?.armed);
                 return (
                   <div key={key} className="flex items-center justify-between text-xs">
-                    <span className={armed ? "text-brass-soft" : "text-paper-dim"}>{armed ? "⚑" : "—"} {label}</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className={armed ? "text-brass-soft" : "text-paper-dim"}>{armed ? "⚑" : "—"} {label}</span>
+                      <StageInfoIcon
+                        isCurrent={armed}
+                        active={openWireKey === key}
+                        onClick={() => setOpenWireKey((v) => (v === key ? null : key))}
+                        label={`About ${label}`}
+                      />
+                    </span>
                     {armed && tw?.sinceDate && <span className="text-paper-dim/50 text-[10px]">since {tw.sinceDate}</span>}
                   </div>
                 );
               })}
             </div>
+            {openWireKey && (
+              <div className="mt-2 p-3 rounded-lg border border-ink-line bg-ink text-[11px] leading-relaxed">
+                <p className="text-paper font-semibold mb-1">{TRIP_WIRE_LABELS[openWireKey]}</p>
+                <p className="text-paper-dim">{TRIP_WIRE_DEFINITIONS[openWireKey]}</p>
+              </div>
+            )}
           </div>
 
           {/* Portfolio gap */}

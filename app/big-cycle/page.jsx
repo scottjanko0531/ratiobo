@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Shell from "../../components/Shell";
 import DebtCyclePositionCheck from "../../components/DebtCyclePositionCheck";
+import StageInfoIcon from "../../components/StageInfoIcon";
 import { supabase } from "../../lib/supabase";
 
 const STATUS_META = {
@@ -27,26 +28,6 @@ const STAGE_DEFINITIONS_BY_CYCLE = {
   },
 };
 
-function StageInfoIcon({ isCurrent, active, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label="About this stage"
-      title="About this stage"
-      className={`w-[13px] h-[13px] rounded-full border text-[8px] font-bold flex items-center justify-center shrink-0 transition-colors ${
-        active
-          ? "border-brass text-brass bg-brass/10"
-          : isCurrent
-          ? "border-ink/40 text-ink/70 hover:border-ink hover:text-ink"
-          : "border-paper-dim/40 text-paper-dim/70 hover:border-paper-dim hover:text-paper-dim"
-      }`}
-    >
-      i
-    </button>
-  );
-}
-
 function StageTracker({ stages, color, definitions }) {
   const [openLabel, setOpenLabel] = useState(null);
   const openDef = openLabel && definitions?.[openLabel];
@@ -69,6 +50,7 @@ function StageTracker({ stages, color, definitions }) {
                     isCurrent={s.is_current}
                     active={openLabel === s.label}
                     onClick={() => setOpenLabel((v) => (v === s.label ? null : s.label))}
+                    label="About this stage"
                   />
                 )}
               </div>
