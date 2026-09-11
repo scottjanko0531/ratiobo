@@ -784,8 +784,14 @@ async function evaluateTripWires(sb: ReturnType<typeof createClient>): Promise<R
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "30Y Treasury Yield").order("snapshot_date", { ascending: false }).limit(260),
       sb.from("macro_indicators").select("metadata").eq("name", "DXY").maybeSingle(),
+      // No small limit here on purpose: evalFiscalDominanceConfirmed's
+      // sinceDate now walks backward through this full set to find the
+      // streak's true start, not just a 90-day window boundary — a small
+      // cap (previously 100 rows) would silently truncate that walk for
+      // any streak running longer than the cap. 5000 comfortably covers
+      // ~19 years of daily rows against the table's actual ~4.5-year history.
       sb.from("stock_bond_correlation").select("obs_date, corr_90d")
-        .not("corr_90d", "is", null).order("obs_date", { ascending: false }).limit(100),
+        .not("corr_90d", "is", null).order("obs_date", { ascending: false }).limit(5000),
     ]);
 
     const cpiYoy = cpiRow?.current_value != null ? Number(cpiRow.current_value) : null;

@@ -74,7 +74,20 @@ export function evalDollarDivergenceWidening(
 // TW4 "fiscal-dominance regime confirmed": Stock/Bond 90d correlation has
 // stayed positive continuously over the trailing ~3 months (90 calendar
 // days) — Treasuries have stopped hedging equities for a sustained stretch,
-// not just a noisy day or two.
+// not just a noisy day or two. `armed` is still gated on that 90-day window
+// (this wire is deliberately about "has it been positive for at least a
+// confirming stretch," not the streak's full length).
+//
+// `sinceDate` is a SEPARATE question — "when did this streak actually
+// start" — and must NOT be capped at the same 90-day window, or it silently
+// creeps forward by ~1 day every single day the condition holds, forever,
+// no matter how long the streak has actually run (confirmed live: a streak
+// that started 2026-02-20 was showing "since 2026-06-12," ~90 days behind
+// the evaluation date, because the old code just reported the window's own
+// boundary date). Instead, walk backward through the FULL history the
+// caller provides (assumed sorted desc by obs_date, with no row limit that
+// would truncate a long-running streak — see update-big-cycle-metrics.ts's
+// query) to find the actual first day of the unbroken positive run.
 export function evalFiscalDominanceConfirmed(
   rows: { obs_date: string; corr_90d: number }[],
 ): TripWireResult {
@@ -86,9 +99,21 @@ export function evalFiscalDominanceConfirmed(
   const window = rows.filter((r) => r.obs_date >= cutoffStr);
   if (!window.length) return { armed: false, sinceDate: null, values: { latest: rows[0].corr_90d } };
   const armed = window.every((r) => r.corr_90d > 0);
+
+  let sinceDate: string | null = null;
+  let ranOutOfHistory = false;
+  if (armed) {
+    let streakStartIdx = rows.length - 1;
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].corr_90d <= 0) { streakStartIdx = i - 1; break; }
+      if (i === rows.length - 1) ranOutOfHistory = true; // never found a negative day — streak may predate available data
+    }
+    sinceDate = streakStartIdx >= 0 ? rows[streakStartIdx].obs_date : null;
+  }
+
   return {
     armed,
-    sinceDate: armed ? window[window.length - 1].obs_date : null,
-    values: { latest: rows[0].corr_90d, windowDays: window.length },
+    sinceDate,
+    values: { latest: rows[0].corr_90d, windowDays: window.length, sinceDateIsDataFloor: ranOutOfHistory ? 1 : 0 },
   };
 }

@@ -84,4 +84,31 @@ describe("evalFiscalDominanceConfirmed", () => {
     const result = evalFiscalDominanceConfirmed(rows);
     expect(result.armed).toBe(false);
   });
+
+  it("sinceDate reflects the streak's true start, not the 90-day window boundary, when the streak runs longer than 90 days", () => {
+    // 200 days of history: negative through day 150 (oldest), positive from
+    // day 149 down to today (0) — a ~150-day unbroken streak, well past the
+    // 90-day window this wire's `armed` check uses. The old implementation
+    // reported window[window.length-1].obs_date here (~daysAgo(90)); the
+    // fix must report the streak's real start instead.
+    const rows = Array.from({ length: 201 }, (_, i) => ({
+      obs_date: daysAgo(i),
+      corr_90d: i <= 149 ? 0.1 : -0.05,
+    }));
+    const result = evalFiscalDominanceConfirmed(rows);
+    expect(result.armed).toBe(true);
+    expect(result.sinceDate).toBe(daysAgo(149));
+    expect(result.sinceDate).not.toBe(daysAgo(90));
+  });
+
+  it("flags sinceDateIsDataFloor when the positive streak runs to the edge of available history", () => {
+    // Every row provided is positive — the true onset predates the data we
+    // have, so sinceDate should fall back to the oldest available row and
+    // be flagged as a floor, not presented as if it were the real start.
+    const rows = Array.from({ length: 95 }, (_, i) => ({ obs_date: daysAgo(i), corr_90d: 0.1 }));
+    const result = evalFiscalDominanceConfirmed(rows);
+    expect(result.armed).toBe(true);
+    expect(result.sinceDate).toBe(daysAgo(94));
+    expect(result.values.sinceDateIsDataFloor).toBe(1);
+  });
 });
