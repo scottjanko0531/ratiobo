@@ -203,7 +203,6 @@ export default function DebtCyclePositionCheck({ metrics }) {
                     <span className="flex items-center gap-1.5">
                       <span className={armed ? "text-brass-soft" : "text-paper-dim"}>{armed ? "⚑" : "—"} {label}</span>
                       <StageInfoIcon
-                        isCurrent={armed}
                         active={openWireKey === key}
                         onClick={() => setOpenWireKey((v) => (v === key ? null : key))}
                         label={`About ${label}`}
