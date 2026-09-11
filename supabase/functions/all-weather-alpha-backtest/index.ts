@@ -14,11 +14,11 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 // Backtest window: PDBC's inception (2014-11-07, the binding constraint --
 // VTI/VXUS/VWO/TLT/VTIP/GLD all have longer history) to today.
 //
-// Cash's reduced-exposure/freed-weight return is modeled as flat 0% (same
-// simplification flagged in equity-resize-backtest's own header) -- unlike
-// KISS, this portfolio holds no actual cash-equivalent (USFR) to earn a
-// real yield on freed weight, so this is the correct, honest choice, not
-// an inconsistency with KISS's own methodology.
+// Cash's return (both the baseline 3% allocation and any weight freed by
+// the overlay) is modeled on USFR's real historical return -- same
+// cash-parking asset KISS's own backtest uses -- not the flat 0%
+// simplification the first pass of this tool used, which was a real,
+// fixable drag unrelated to whether the resize rules themselves work.
 //
 // Rule params hardcoded to match asset_resize_rule_config exactly, same
 // "kept in sync by hand" convention as kiss-portfolio-backtest, for a
@@ -138,7 +138,14 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-    const symbols = Object.values(SYMBOL);
+    // USFR fetched separately from the 7 bucket symbols -- it's not one of
+    // target_allocations' own buckets, it's the REAL asset the "cash"
+    // bucket's dollars are held in (both the baseline 3% allocation and any
+    // weight freed by the overlay), replacing the flat-0%-return
+    // simplification from the first pass. USFR's own history (from
+    // 2014-02) predates PDBC's inception, so it's never the binding
+    // constraint and needs the same forward-fill treatment as the others.
+    const symbols = [...Object.values(SYMBOL), "USFR"];
     const priceRows = await Promise.all(symbols.map((s) => fetchPrices(supabase, s)));
     const byDate: Record<string, Map<string, number>> = {};
     symbols.forEach((s, i) => { byDate[s] = new Map(priceRows[i].map((r) => [r.date, r.close])); });
@@ -196,12 +203,12 @@ Deno.serve(async (req: Request) => {
         const total = Object.values(w).reduce((a, b) => a + b, 0);
         let portRet = 0;
         for (const b of BUCKETS) {
-          const r = b === "cash" ? 0 : dailyRet[SYMBOL[b]][t];
+          const r = b === "cash" ? dailyRet.USFR[t] : dailyRet[SYMBOL[b]][t];
           portRet += (w[b] / total) * r;
         }
         rets.push(portRet);
         for (const b of BUCKETS) {
-          const r = b === "cash" ? 0 : dailyRet[SYMBOL[b]][t];
+          const r = b === "cash" ? dailyRet.USFR[t] : dailyRet[SYMBOL[b]][t];
           w[b] *= (1 + r);
         }
       }
@@ -215,12 +222,12 @@ Deno.serve(async (req: Request) => {
         const total = Object.values(w).reduce((a, b) => a + b, 0);
         let portRet = 0;
         for (const b of BUCKETS) {
-          const r = b === "cash" ? 0 : dailyRet[SYMBOL[b]][t];
+          const r = b === "cash" ? dailyRet.USFR[t] : dailyRet[SYMBOL[b]][t];
           portRet += (w[b] / total) * r;
         }
         rets.push(portRet);
         for (const b of BUCKETS) {
-          const r = b === "cash" ? 0 : dailyRet[SYMBOL[b]][t];
+          const r = b === "cash" ? dailyRet.USFR[t] : dailyRet[SYMBOL[b]][t];
           w[b] *= (1 + r);
         }
 
