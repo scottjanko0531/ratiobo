@@ -526,10 +526,11 @@ function computeLiveRegimeKeys(
   get: Getter, getMeta3m: Getter, getPP3m: Getter,
   getShortPct: Getter, getVolShock: (name: string) => boolean, getSpfSpread: SpfGetter,
   getPrev: Getter, getMetaNum: (name: string, key: string) => number | null,
+  bigCycleArmedCount: number | null,
 ): {
   structuralKey: string | null; marketKey: string | null;
   structuralGrowthAxis: AxisState | null; structuralInflAxis: AxisState | null; marketGrowthAxis: AxisState | null;
-  fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number;
+  fwdKey: string | null; fwdConf: number | null; fwdConfVolMod: number; fwdStructMod: number;
   fwdGrowthPersistence: boolean; fwdInflPersistence: boolean;
   fwdGrowthPersistenceConfidence: number | null; fwdInflPersistenceConfidence: number | null;
   fwdGrowthAxis: AxisState; fwdInflAxis: AxisState;
@@ -731,10 +732,29 @@ function computeLiveRegimeKeys(
   const mediumTerm = computePanel(MEDTERM_G, MEDTERM_I, MEDTERM_THRESH);
   const nearTerm = computePanel(NEARTERM_G, NEARTERM_I, NEARTERM_THRESH);
 
+  // Big Cycle structural cross-check: medium-term only (see the fetch site's
+  // comment for why near-term is excluded). 2+ armed debt-cycle trip-wires is
+  // "material structural stress" — ties to the INFLATION direction (debt
+  // monetization / fiscal dominance are debasement risks), not growth, so
+  // this reads mediumTerm.inflAxis.up rather than gDir the way the VIX/MOVE
+  // modifier above does. Same confirm/contradict asymmetry as that modifier:
+  // a confirming read only nudges +5, but a contradicting read (panel says
+  // disinflating while the debt cycle is under stress) is a bigger red flag
+  // at -8, since it suggests the medium-term inflation read is out of step
+  // with a slower-moving structural backdrop it can't outrun.
+  let structMod = 0;
+  if (mediumTerm.key && bigCycleArmedCount != null && bigCycleArmedCount >= 2) {
+    const iUp = mediumTerm.inflAxis.up;
+    if (iUp != null) {
+      structMod = iUp ? 5 : -8;
+      if (mediumTerm.conf != null) mediumTerm.conf = Math.max(0, Math.min(100, mediumTerm.conf + structMod));
+    }
+  }
+
   return {
     structuralKey, marketKey,
     structuralGrowthAxis, structuralInflAxis, marketGrowthAxis,
-    fwdKey: mediumTerm.key, fwdConf: mediumTerm.conf, fwdConfVolMod: mediumTerm.confVolMod,
+    fwdKey: mediumTerm.key, fwdConf: mediumTerm.conf, fwdConfVolMod: mediumTerm.confVolMod, fwdStructMod: structMod,
     fwdGrowthPersistence: mediumTerm.growthPersistence, fwdInflPersistence: mediumTerm.inflPersistence,
     fwdGrowthPersistenceConfidence: mediumTerm.growthPersistenceConfidence,
     fwdInflPersistenceConfidence: mediumTerm.inflPersistenceConfidence,
@@ -1115,7 +1135,7 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const [{ data: macroRows }, marketSnapshot, topNews, mvItem, watchedTopics, supplyChain, yieldCurve, fedOdds, liquidity] = await Promise.all([
+    const [{ data: macroRows }, marketSnapshot, topNews, mvItem, watchedTopics, supplyChain, yieldCurve, fedOdds, liquidity, { data: bigCycleAudit }] = await Promise.all([
       sb.from("macro_indicators").select("name,current_value,previous_value,status,metadata"),
       getMarketSnapshot(),
       fetchTopNews(5),
@@ -1125,7 +1145,21 @@ Deno.serve(async (req: Request) => {
       getYieldCurveState(),
       getFedRateOdds(),
       getLiquiditySnapshot(sb),
+      // Latest Big Cycle trip-wire run — used as a medium-term-only structural
+      // modifier below (see computeLiveRegimeKeys's bigCycleArmedCount param).
+      // Debt-cycle stress moves far slower than the medium-term panel's own
+      // 6-18mo horizon, so this is deliberately NOT applied to the near-term
+      // (2-3mo) panel — see the regime/Big-Cycle coupling discussion.
+      sb.from("big_cycle_stage_audit_log")
+        .select("trip_wires")
+        .eq("cycle_id", "da204e3f-ae22-47dd-95bb-2844d4f75685")
+        .order("run_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
     ]);
+    const bigCycleArmedCount = bigCycleAudit?.trip_wires
+      ? Object.values(bigCycleAudit.trip_wires as Record<string, { armed?: boolean }>).filter((w) => w?.armed).length
+      : null;
     const dedupedWatched = watchedTopics.filter((w) => !topNews.some((t) => t.headline === w.headline));
     const headlines: NewsItem[] = [
       ...(mvItem ? [mvItem] : []),
@@ -1200,7 +1234,7 @@ Deno.serve(async (req: Request) => {
       fwdGrowthAxis, fwdInflAxis,
       nearTermGrowthPersistence, nearTermInflPersistence, nearTermGrowthPersistenceConfidence, nearTermInflPersistenceConfidence,
       nearTermGrowthAxis, nearTermInflAxis,
-    } = computeLiveRegimeKeys(get, getMeta3m, getPP3m, getShortPct, getVolShock, getSpfSpread, getPrev, getMetaNum);
+    } = computeLiveRegimeKeys(get, getMeta3m, getPP3m, getShortPct, getVolShock, getSpfSpread, getPrev, getMetaNum, bigCycleArmedCount);
 
     // Dead-band-persistence spec: a null key from computeLiveRegimeKeys can
     // now mean either genuinely missing data OR a level-anchored Persistence

@@ -359,7 +359,7 @@ function computeSuggestedPcts(regimeKey, method, assetData, tiltMultiplier = 1) 
   return result;
 }
 
-function computeForwardSignal(indicators, growthSignals, inflSignals, thresh) {
+function computeForwardSignal(indicators, growthSignals, inflSignals, thresh, structuralArmedCount = null) {
   const get = (name) => {
     const ind = indicators.find(i => i.name === name);
     return ind?.current_value != null ? Number(ind.current_value) : null;
@@ -493,9 +493,20 @@ function computeForwardSignal(indicators, growthSignals, inflSignals, thresh) {
     const confirms = (gDir === "down" && volRising) || (gDir === "up" && !volRising);
     return confirms ? 5 : -8;
   })();
-  const confidence = baseConfidence != null ? Math.max(0, Math.min(100, baseConfidence + volMod)) : null;
+  const confidenceAfterVol = baseConfidence != null ? Math.max(0, Math.min(100, baseConfidence + volMod)) : null;
+  // Big Cycle structural cross-check — mirrors get-regime-analysis's
+  // identical medium-term-only modifier (kept in manual sync, same as
+  // volMod above). structuralArmedCount is only ever passed for the
+  // medium-term call in computeForwardSignals; near-term always gets the
+  // default null, so this is a no-op there. Ties to iDir (debt-cycle
+  // stress is a debasement/inflation risk), not gDir.
+  const structMod = (() => {
+    if (!forwardKey || structuralArmedCount == null || structuralArmedCount < 2 || !iDir) return 0;
+    return iDir === "up" ? 5 : -8;
+  })();
+  const confidence = confidenceAfterVol != null ? Math.max(0, Math.min(100, confidenceAfterVol + structMod)) : null;
   return {
-    growth, infl, gDir, iDir, rawGDir, rawIDir, forwardKey, confidence, baseConfidence, volMod, gConf, iConf,
+    growth, infl, gDir, iDir, rawGDir, rawIDir, forwardKey, confidence, baseConfidence, volMod, structMod, gConf, iConf,
     growthPersistence, inflPersistence, growthPersistenceConfidence, inflPersistenceConfidence,
   };
 }
@@ -504,16 +515,16 @@ function computeForwardSignal(indicators, growthSignals, inflSignals, thresh) {
 // reconciled into one number (see the forward-signal two-horizon spec).
 // mediumTerm keeps the old single Forward Signal's role as the 3rd tiebreak
 // vote in resolveHeadlineRegime; nearTerm does not vote there.
-function computeForwardSignals(indicators) {
+function computeForwardSignals(indicators, bigCycleArmedCount = null) {
   return {
     nearTerm: computeForwardSignal(indicators, NEARTERM_GROWTH_SIGNALS, NEARTERM_INFL_SIGNALS, NEARTERM_THRESH),
-    mediumTerm: computeForwardSignal(indicators, MEDTERM_GROWTH_SIGNALS, MEDTERM_INFL_SIGNALS, MEDTERM_THRESH),
+    mediumTerm: computeForwardSignal(indicators, MEDTERM_GROWTH_SIGNALS, MEDTERM_INFL_SIGNALS, MEDTERM_THRESH, bigCycleArmedCount),
   };
 }
 
 // ── Daily Macro Summary ───────────────────────────────────────────────────────
 
-function MacroSummary({ indicators }) {
+function MacroSummary({ indicators, bigCycleArmedCount }) {
   const get     = (name) => { const i = indicators.find(x => x.name === name); return i?.current_value  != null ? Number(i.current_value)  : null; };
   const getPrev = (name) => { const i = indicators.find(x => x.name === name); return i?.previous_value != null ? Number(i.previous_value) : null; };
   const getMeta = (name, key) => { const v = indicators.find(x => x.name === name)?.metadata?.[key]; return typeof v === "number" ? v : null; };
@@ -593,7 +604,7 @@ function MacroSummary({ indicators }) {
         return "fg_fi";
       })()
     : null;
-  const fwd = computeForwardSignals(indicators);
+  const fwd = computeForwardSignals(indicators, bigCycleArmedCount);
   const majorityRegimeKey = resolveHeadlineRegime(structuralRegimeKey, marketRegimeKey, fwd.mediumTerm.forwardKey);
   // Transitional means the lenses that DO have a real (non-Persistence)
   // signal actually disagree with each other — not merely that one lens
@@ -1801,6 +1812,16 @@ function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime, current
                     vol regime {panel.volMod > 0 ? "confirms" : "contradicts"} ({panel.volMod > 0 ? "+" : ""}{panel.volMod})
                   </p>
                 )}
+                {/* Medium-term only (near-term's structMod is always 0 — see
+                    computeForwardSignal) — same +5/-8 confirm/contradict
+                    asymmetry as the vol cross-check above, but tied to 2+
+                    armed Big Cycle trip-wires vs. this panel's own inflation
+                    direction. */}
+                {panel.structMod !== 0 && (
+                  <p className={`text-[9px] mt-0.5 ${panel.structMod > 0 ? "text-gain" : "text-loss"}`} title="Big Cycle cross-check: 2+ armed debt-cycle trip-wires confirming this panel's inflation direction adds +5; contradicting it subtracts -8.">
+                    debt cycle {panel.structMod > 0 ? "confirms" : "contradicts"} ({panel.structMod > 0 ? "+" : ""}{panel.structMod})
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -1810,7 +1831,7 @@ function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime, current
   );
 }
 
-function QuadrantCard({ indicators, holdings, assetData }) {
+function QuadrantCard({ indicators, holdings, assetData, bigCycleArmedCount }) {
   const gdp        = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi        = indicators.find((i) => i.name === "CPI (YoY)");
   // Prefer the real, currently-updated indicator over a legacy/orphaned
@@ -1915,7 +1936,7 @@ function QuadrantCard({ indicators, holdings, assetData }) {
   // so it never contributes a Persistence read here).
   const marketIsPersistence = gdpFastVal != null && structuralGrowthAxis.persistence;
 
-  const fwd = computeForwardSignals(indicators);
+  const fwd = computeForwardSignals(indicators, bigCycleArmedCount);
 
   // Headline/allocation key: 2-of-3 majority across Structural / Market /
   // Forward when at least 2 are available and 2 agree; otherwise falls back
@@ -7617,6 +7638,7 @@ export default function MacroDashboard() {
   const [custodyDrawerOpen, setCustodyDrawerOpen] = useState(false);
   const [indirectBidderDrawerOpen, setIndirectBidderDrawerOpen] = useState(false);
   const [regimeHistory, setRegimeHistory] = useState([]);
+  const [bigCycleArmedCount, setBigCycleArmedCount] = useState(null);
 
   const fetchIndicators = useCallback(async () => {
     const { data, error: err } = await supabase
@@ -7638,6 +7660,25 @@ export default function MacroDashboard() {
       .order("period_date", { ascending: true })
       .then(({ data }) => { if (data) setRegimeHistory(data); })
       .catch(() => {});
+  }, []);
+
+  // Latest Big Cycle trip-wire run — feeds the medium-term Forward Signal's
+  // structural cross-check (mirrors the identical read in get-regime-analysis,
+  // kept in manual sync). Near-term intentionally never reads this.
+  useEffect(() => {
+    supabase
+      .from("big_cycle_stage_audit_log")
+      .select("trip_wires")
+      .eq("cycle_id", "da204e3f-ae22-47dd-95bb-2844d4f75685")
+      .order("run_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        setBigCycleArmedCount(
+          data?.trip_wires ? Object.values(data.trip_wires).filter((w) => w?.armed).length : null
+        );
+      })
+      .catch(() => setBigCycleArmedCount(null));
   }, []);
 
   useEffect(() => {
@@ -7740,9 +7781,9 @@ export default function MacroDashboard() {
         <p className="text-paper-dim text-sm py-12 text-center">Loading…</p>
       ) : (
         <>
-          <MacroSummary indicators={indicators} />
+          <MacroSummary indicators={indicators} bigCycleArmedCount={bigCycleArmedCount} />
           <StructuralRegimeCard />
-          <QuadrantCard indicators={indicators} holdings={portfolioHoldings} assetData={assetData} />
+          <QuadrantCard indicators={indicators} holdings={portfolioHoldings} assetData={assetData} bigCycleArmedCount={bigCycleArmedCount} />
           <RegimeAnalysisCard />
 
           {regimeHistory.length > 0 && (
