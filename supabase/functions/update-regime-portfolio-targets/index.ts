@@ -34,23 +34,24 @@ const REGIME_DEFAULT_WEIGHTS: Record<string, Record<string, number>> = {
 
 // Regime shifts must persist for this many days before a regime-driven portfolio's
 // target_allocations actually moves — avoids whipsawing a real portfolio's targets
-// on a noisy week.
-const CONFIRMATION_DAYS = 30;
+// on a noisy week. Near-term uses a much shorter window than medium-term, matching
+// its own 2-3mo horizon (30 days on a 2-3mo signal would eat a third to half of the
+// entire forecast window and defeat the point of using a faster signal at all).
+const CONFIRMATION_DAYS: Record<"near_term" | "medium_term", number> = {
+  near_term: 7,
+  medium_term: 30,
+};
 
-// Driven by the Forward Signal (6-18mo leading-indicator composite) rather than the
-// structural or market-implied regime: both of those share the same maximally-lagging
-// 3-year-trailing GDP test for their growth axis, which combined with a 30-day
-// confirmation window would make this feature barely distinguishable from a static
-// portfolio. Forward Signal is more responsive and, uniquely among the three, comes
-// with its own confidence score — used below as a hard floor. Below this floor the
-// signal is "moderate" at best on the app's own confidenceQualifier scale, not the
-// "unambiguous" bar Clio's own portfolio framework requires before tilting.
+// Same floor for both horizons — below this the signal is "moderate" at best on the
+// app's own confidenceQualifier scale, not the "unambiguous" bar Clio's own portfolio
+// framework requires before tilting, regardless of which horizon is driving it.
 const CONFIDENCE_FLOOR = 60;
 
 interface RegimePortfolio {
   id: string; portfolio_name: string;
   current_regime_key: string | null; regime_confirmed_since: string | null;
   pending_regime_key: string | null; pending_regime_since: string | null;
+  regime_signal_horizon: "near_term" | "medium_term" | null;
 }
 
 function daysBetween(a: string, b: Date): number {
@@ -67,15 +68,18 @@ Deno.serve(async (req: Request) => {
     const todayStr = today.toISOString().slice(0, 10);
 
     // This can run before a human has visited /macro today — ensure Clio's regime
-    // analysis (which now also persists forward_key/forward_confidence) exists.
+    // analysis (which persists forward_key/forward_confidence AND
+    // nearterm_forward_key/nearterm_forward_confidence) exists.
     const { data: todayRegime } = await sb
       .from("dalio_regime_analysis")
-      .select("analysis_date,forward_key,forward_confidence")
+      .select("analysis_date,forward_key,forward_confidence,nearterm_forward_key,nearterm_forward_confidence")
       .eq("analysis_date", todayStr)
       .maybeSingle();
-    let liveKey = todayRegime?.forward_key as string | null | undefined;
-    let liveConfidence = todayRegime?.forward_confidence as number | null | undefined;
-    if (liveKey === undefined) {
+    let liveMediumKey = todayRegime?.forward_key as string | null | undefined;
+    let liveMediumConfidence = todayRegime?.forward_confidence as number | null | undefined;
+    let liveNearKey = todayRegime?.nearterm_forward_key as string | null | undefined;
+    let liveNearConfidence = todayRegime?.nearterm_forward_confidence as number | null | undefined;
+    if (liveMediumKey === undefined) {
       try {
         const res = await fetch(`${SUPABASE_URL}/functions/v1/get-regime-analysis`, {
           method: "GET",
@@ -83,26 +87,33 @@ Deno.serve(async (req: Request) => {
         });
         if (res.ok) {
           const j = await res.json();
-          liveKey = j?.forward_key ?? null;
-          liveConfidence = j?.forward_confidence ?? null;
+          liveMediumKey = j?.forward_key ?? null;
+          liveMediumConfidence = j?.forward_confidence ?? null;
+          liveNearKey = j?.nearterm_forward_key ?? null;
+          liveNearConfidence = j?.nearterm_forward_confidence ?? null;
         }
       } catch (e) { console.error("[regime-targets] triggering get-regime-analysis:", e); }
     }
 
     const { data: portfolios } = await sb
       .from("portfolios")
-      .select("id,portfolio_name,current_regime_key,regime_confirmed_since,pending_regime_key,pending_regime_since")
+      .select("id,portfolio_name,current_regime_key,regime_confirmed_since,pending_regime_key,pending_regime_since,regime_signal_horizon")
       .eq("strategy_framework", "regime_driven");
 
     const results: { portfolioId: string; action: string }[] = [];
-    const meetsFloor = !!liveKey && liveConfidence != null && liveConfidence >= CONFIDENCE_FLOOR;
 
     for (const pf of (portfolios ?? []) as RegimePortfolio[]) {
+      const horizon = pf.regime_signal_horizon === "near_term" ? "near_term" : "medium_term";
+      const liveKey = horizon === "near_term" ? liveNearKey : liveMediumKey;
+      const liveConfidence = horizon === "near_term" ? liveNearConfidence : liveMediumConfidence;
+      const confirmationDays = CONFIRMATION_DAYS[horizon];
+      const meetsFloor = !!liveKey && liveConfidence != null && liveConfidence >= CONFIDENCE_FLOOR;
+
       // First-ever activation requires a qualifying (>= floor) reading too — no point
       // adopting a low-conviction baseline. Stays unactivated until one comes along.
       if (!pf.current_regime_key) {
         if (!meetsFloor) {
-          results.push({ portfolioId: pf.id, action: `awaiting_qualifying_signal (${liveConfidence ?? "n/a"}%)` });
+          results.push({ portfolioId: pf.id, action: `awaiting_qualifying_signal (${liveConfidence ?? "n/a"}%, ${horizon})` });
           continue;
         }
         await sb.from("portfolios").update({
@@ -117,14 +128,14 @@ Deno.serve(async (req: Request) => {
           portfolio_id: pf.id, from_key: null, to_key: liveKey,
           from_label: null, to_label: REGIME_LABELS[liveKey!],
         });
-        results.push({ portfolioId: pf.id, action: "activated" });
+        results.push({ portfolioId: pf.id, action: `activated (${horizon})` });
         continue;
       }
 
       // No qualifying signal today at all — leave whatever's pending untouched
       // (neither advances nor resets; see the pending-branch comment below for why).
       if (!meetsFloor) {
-        results.push({ portfolioId: pf.id, action: `no_qualifying_signal (${liveConfidence ?? "n/a"}%)` });
+        results.push({ portfolioId: pf.id, action: `no_qualifying_signal (${liveConfidence ?? "n/a"}%, ${horizon})` });
         continue;
       }
 
@@ -144,11 +155,12 @@ Deno.serve(async (req: Request) => {
       // Live signal differs from the active target and matches what's already
       // pending — check whether it's been persistent AND still qualifies today.
       // Requiring the floor again here (not just when the clock started) means a
-      // candidate that looked confident 29 days ago but has since decayed into a
-      // toss-up won't quietly commit just because the calendar hit 30 days.
+      // candidate that looked confident near the end of the window has since
+      // decayed into a toss-up won't quietly commit just because the calendar
+      // caught up.
       if (liveKey === pf.pending_regime_key && pf.pending_regime_since) {
         const daysPending = daysBetween(pf.pending_regime_since, today);
-        if (daysPending >= CONFIRMATION_DAYS) {
+        if (daysPending >= confirmationDays) {
           const fromKey = pf.current_regime_key;
           await sb.from("portfolios").update({
             target_allocations: REGIME_DEFAULT_WEIGHTS[liveKey],
@@ -164,7 +176,7 @@ Deno.serve(async (req: Request) => {
           });
           results.push({ portfolioId: pf.id, action: "shifted" });
         } else {
-          results.push({ portfolioId: pf.id, action: `pending (${daysPending}/${CONFIRMATION_DAYS}d)` });
+          results.push({ portfolioId: pf.id, action: `pending (${daysPending}/${confirmationDays}d)` });
         }
         continue;
       }
@@ -175,7 +187,11 @@ Deno.serve(async (req: Request) => {
       results.push({ portfolioId: pf.id, action: "pending_started" });
     }
 
-    return json({ liveKey: liveKey ?? null, liveConfidence: liveConfidence ?? null, meetsFloor, processed: results.length, results });
+    return json({
+      liveMediumKey: liveMediumKey ?? null, liveMediumConfidence: liveMediumConfidence ?? null,
+      liveNearKey: liveNearKey ?? null, liveNearConfidence: liveNearConfidence ?? null,
+      processed: results.length, results,
+    });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
