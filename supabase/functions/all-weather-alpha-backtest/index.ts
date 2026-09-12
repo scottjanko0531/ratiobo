@@ -215,9 +215,15 @@ Deno.serve(async (req: Request) => {
       return rets;
     }
 
+    // Also tracks the daily value curve (downsampled to one point per month,
+    // last trading day) so run-backtest can consume this variant as a real
+    // portfolio series, same reasoning as kiss-portfolio-backtest's identical
+    // addition.
     function runRebalanced(useOverlay: boolean) {
       const w: Record<Bucket, number> = { ...TARGET };
       const rets: number[] = [];
+      let value = 1;
+      const monthlyCurve: { date: string; value: number }[] = [];
       for (let t = 1; t < n; t++) {
         const total = Object.values(w).reduce((a, b) => a + b, 0);
         let portRet = 0;
@@ -226,6 +232,7 @@ Deno.serve(async (req: Request) => {
           portRet += (w[b] / total) * r;
         }
         rets.push(portRet);
+        value *= (1 + portRet);
         for (const b of BUCKETS) {
           const r = b === "cash" ? dailyRet.USFR[t] : dailyRet[SYMBOL[b]][t];
           w[b] *= (1 + r);
@@ -249,13 +256,17 @@ Deno.serve(async (req: Request) => {
           }
           for (const b of BUCKETS) w[b] = t2[b] * newTotal;
         }
+        const isLastOfMonth = t === n - 1 || aligned[t + 1].date.slice(0, 7) !== aligned[t].date.slice(0, 7);
+        if (isLastOfMonth) monthlyCurve.push({ date: aligned[t].date.slice(0, 7) + "-01", value });
       }
-      return rets;
+      return { rets, monthlyCurve };
     }
 
     const staticDrift = computeStats(runStaticDrift());
-    const staticRebalancedMonthly = computeStats(runRebalanced(false));
-    const overlayRebalancedMonthly = computeStats(runRebalanced(true));
+    const staticRebalancedRun = runRebalanced(false);
+    const overlayRebalancedRun = runRebalanced(true);
+    const staticRebalancedMonthly = computeStats(staticRebalancedRun.rets);
+    const overlayRebalancedMonthly = computeStats(overlayRebalancedRun.rets);
 
     return new Response(JSON.stringify({
       portfolio: "All Weather Alpha (95fc88e6-2ddf-484a-8092-93126055e989)",
@@ -264,6 +275,8 @@ Deno.serve(async (req: Request) => {
       targetAllocations: TARGET,
       symbols: SYMBOL,
       variants: { staticDrift, staticRebalancedMonthly, overlayRebalancedMonthly },
+      overlayMonthlyCurve: overlayRebalancedRun.monthlyCurve,
+      staticMonthlyCurve: staticRebalancedRun.monthlyCurve,
     }, null, 2), {
       headers: { ...CORS, "Content-Type": "application/json" },
     });

@@ -11,10 +11,12 @@ const pctS = (v, digits = 1) => v == null ? "—" : `${v >= 0 ? "+" : ""}${(v * 
 const f2   = (v) => v == null ? "—" : v.toFixed(2);
 
 const PORTFOLIO_COLORS = {
-  standard_gb:    { label: "Standard GB",            th: "text-paper",     badge: "bg-ink-soft text-paper-dim border-ink-line" },
-  hedged_gb:      { label: "Hedged GB (+DBMF)",       th: "text-brass-soft", badge: "bg-brass/10 text-brass-soft border-brass/30" },
-  bw_modified:    { label: "BW All Weather Mod.",     th: "text-sky",        badge: "bg-sky/10 text-sky border-sky/30" },
-  regime_driven:  { label: "Regime-Driven",           th: "text-gain",       badge: "bg-gain/10 text-gain border-gain/30" },
+  standard_gb:       { label: "Standard GB",            th: "text-paper",      badge: "bg-ink-soft text-paper-dim border-ink-line" },
+  hedged_gb:         { label: "Hedged GB (+DBMF)",       th: "text-brass-soft", badge: "bg-brass/10 text-brass-soft border-brass/30" },
+  bw_modified:       { label: "BW All Weather Mod.",     th: "text-sky",        badge: "bg-sky/10 text-sky border-sky/30" },
+  regime_driven:     { label: "Regime-Driven",           th: "text-gain",       badge: "bg-gain/10 text-gain border-gain/30" },
+  kiss:              { label: "KISS (+ overlay)",        th: "text-loss",       badge: "bg-loss/10 text-loss border-loss/30" },
+  all_weather_alpha: { label: "All Weather Alpha",       th: "text-brass",      badge: "bg-brass/10 text-brass border-brass/30" },
 };
 
 const REGIME_LABELS = {
@@ -41,9 +43,20 @@ const METRIC_ROWS = [
 const WEIGHT_FMT = (v) => `${(v * 100).toFixed(0)}%`;
 
 const PORTFOLIO_WEIGHTS = {
-  standard_gb: { VTI: 0.20, IJS: 0.20, GLD: 0.20, TLT: 0.20, SHY: 0.20 },
-  hedged_gb:   { VTI: 0.20, IJS: 0.20, GLD: 0.20, TLT: 0.15, SHY: 0.15, DBMF: 0.10 },
-  bw_modified: { VTI: 0.20, VXUS: 0.08, VWO: 0.05, TLT: 0.20, SCHP: 0.20, DBC: 0.12, GLD: 0.12, SHY: 0.03 },
+  standard_gb:       { VTI: 0.20, IJS: 0.20, GLD: 0.20, TLT: 0.20, SHY: 0.20 },
+  hedged_gb:         { VTI: 0.20, IJS: 0.20, GLD: 0.20, TLT: 0.15, SHY: 0.15, DBMF: 0.10 },
+  bw_modified:       { VTI: 0.20, VXUS: 0.08, VWO: 0.05, TLT: 0.20, SCHP: 0.20, DBC: 0.12, GLD: 0.12, SHY: 0.03 },
+  kiss:              { VT: 0.60, GLDM: 0.30, FBTC: 0.10 },
+  all_weather_alpha: { VTI: 0.20, VXUS: 0.08, VWO: 0.05, TLT: 0.20, VTIP: 0.20, PDBC: 0.12, GLD: 0.12, USFR: 0.03 },
+};
+
+// KISS and All Weather Alpha's cards get this extra note — their shown
+// weights are the strategic/target allocation, but each leg's LIVE weight
+// is scaled by its own backtested resize signal (asset_resize_rule_config)
+// at each monthly rebalance; freed weight parks in USFR. See Methodology.
+const OVERLAY_NOTE = {
+  kiss: "+ per-symbol resize overlay (trend/vol-regime/drawdown rules), freed weight → USFR",
+  all_weather_alpha: "+ per-symbol resize overlay (trend/vol-regime rules), freed weight → USFR",
 };
 
 function StarBadge() {
@@ -239,31 +252,27 @@ function StressTable({ stressPeriods, portfolioKeys }) {
   );
 }
 
-// Regime-Driven doesn't have one fixed weight vector — it switches between the
-// four structural regimes' target allocations year to year, so it needs its
-// own card instead of WeightsCard's flat ticker:weight bar list.
+// Regime-Driven doesn't have one fixed weight vector — it shifts between the
+// four structural regimes' target allocations at whichever real dates the
+// Forward Signal state machine actually confirmed a change, so it needs its
+// own card (date-range segments) instead of WeightsCard's flat bar list.
 function RegimeDrivenCard({ history }) {
   const color = PORTFOLIO_COLORS.regime_driven;
-  const uniqueRegimes = [];
-  const seen = new Set();
-  for (const r of history ?? []) {
-    if (!seen.has(r.regime_key)) { seen.add(r.regime_key); uniqueRegimes.push(r); }
-  }
-  const yearCounts = {};
-  for (const r of history ?? []) yearCounts[r.regime_key] = (yearCounts[r.regime_key] ?? 0) + 1;
+  const fmtDate = (d) => d ? new Date(d + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric" }) : "present";
 
   return (
     <div className="rounded-lg border border-ink-line bg-ink-soft/40 p-4 sm:col-span-2 lg:col-span-3">
       <p className={`text-xs font-medium mb-1 ${color?.th}`}>{color?.label}</p>
       <p className="text-[11px] text-paper-dim/70 mb-3">
-        Switches annually to that year's structurally-classified regime (GDP YoY vs. 3Y avg, CPI YoY vs. 3Y avg) —
-        not a live replay of the actual portfolio feature's 30-day-confirmation logic. See Methodology below.
+        Real replay of the live portfolio feature's own activation logic (60% Forward Signal confidence floor +
+        confirmation window) against actual historical Forward Signal history — shifts only at the dates that
+        logic would really have confirmed a new regime, not a fixed annual reclassification. See Methodology below.
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {uniqueRegimes.map((r) => (
-          <div key={r.regime_key}>
+        {(history ?? []).map((r) => (
+          <div key={r.since_date}>
             <p className="text-[11px] text-paper-dim mb-1.5">
-              {r.regime_label} <span className="text-paper-dim/50">({yearCounts[r.regime_key]} yrs)</span>
+              {r.regime_label} <span className="text-paper-dim/50">({fmtDate(r.since_date)} – {fmtDate(r.until_date)})</span>
             </p>
             <div className="space-y-1">
               {Object.entries(r.weights_pct).filter(([, w]) => w > 0).map(([key, w]) => (
@@ -285,6 +294,10 @@ function RegimeDrivenCard({ history }) {
 
 function WeightsCard({ portfolioKey, weights }) {
   const color = PORTFOLIO_COLORS[portfolioKey];
+  const barClass = {
+    hedged_gb: "bg-brass/60", bw_modified: "bg-sky/60",
+    kiss: "bg-loss/60", all_weather_alpha: "bg-brass/60",
+  }[portfolioKey] ?? "bg-paper/40";
   return (
     <div className="rounded-lg border border-ink-line bg-ink-soft/40 p-4">
       <p className={`text-xs font-medium mb-3 ${color?.th}`}>{color?.label}</p>
@@ -293,18 +306,15 @@ function WeightsCard({ portfolioKey, weights }) {
           <div key={ticker} className="flex items-center gap-2">
             <span className="text-xs text-paper-dim w-10 font-mono">{ticker}</span>
             <div className="flex-1 bg-ink-line rounded-full h-1.5 overflow-hidden">
-              <div
-                className={`h-full rounded-full ${
-                  portfolioKey === "hedged_gb" ? "bg-brass/60" :
-                  portfolioKey === "bw_modified" ? "bg-sky/60" : "bg-paper/40"
-                }`}
-                style={{ width: `${w * 100}%` }}
-              />
+              <div className={`h-full rounded-full ${barClass}`} style={{ width: `${w * 100}%` }} />
             </div>
             <span className="text-xs text-paper-dim font-mono w-8 text-right">{WEIGHT_FMT(w)}</span>
           </div>
         ))}
       </div>
+      {OVERLAY_NOTE[portfolioKey] && (
+        <p className="text-[10px] text-paper-dim/60 mt-2.5 leading-relaxed">{OVERLAY_NOTE[portfolioKey]}</p>
+      )}
     </div>
   );
 }
@@ -351,7 +361,7 @@ export default function BacktestingPage() {
     }
   }
 
-  const portfolioKeys = ["standard_gb", "hedged_gb", "bw_modified", "regime_driven"];
+  const portfolioKeys = ["standard_gb", "hedged_gb", "bw_modified", "regime_driven", "kiss", "all_weather_alpha"];
 
   return (
     <Shell>

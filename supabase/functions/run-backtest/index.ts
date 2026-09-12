@@ -14,9 +14,6 @@ const supabase = createClient(
 const RF_ANN = 0.04;
 const r4 = (n: number) => Math.round(n * 10000) / 10000;
 
-const FRED = "https://api.stlouisfed.org/fred/series/observations";
-const FRED_KEY = Deno.env.get("FRED_API_KEY")!;
-
 // ── Yahoo Finance monthly fetch ───────────────────────────────────────────────
 async function fetchMonthly(ticker: string): Promise<Map<string, number>> {
   const enc = encodeURIComponent(ticker);
@@ -154,19 +151,23 @@ function runBacktest(
 }
 
 // ── Regime-driven dynamic-weight backtest ──────────────────────────────────────
-// Reconstructs, for each calendar year, which of the four structural regimes
-// (same GDP 2Q/4Q-avg and CPI 3M/9M-avg fast/slow crossover used live by
-// get-regime-analysis.ts's detectRegimeKeyLive and fetch-macro-data's
-// detectRegimeKey) was in effect, then holds that year's REGIME_DEFAULT_WEIGHTS
-// allocation, rebalancing annually — same cadence as the three static
-// portfolios above.
+// Was: reconstruct, for each calendar year, which structural regime was in
+// effect from FRED GDP/CPI alone, then hold that year's target weights —
+// explicitly NOT a replay of the live portfolio feature's real activation
+// logic (60% Forward Signal confidence floor + confirmation window), because
+// historical Forward Signal confidence was never stored.
 //
-// This is NOT a replay of the live regime_driven portfolio's actual activation
-// logic (30-day confirmation + 60% Forward Signal confidence floor): Forward
-// Signal confidence was never stored historically, so it can't be reconstructed.
-// What's modeled here is simpler and more optimistic: "always held that year's
-// structurally-classified regime weights," not the live feature's whipsaw-
-// avoidance behavior.
+// It's stored now: macro_regime_history (forward_key/forward_confidence,
+// quarterly, 2004-present) — the same real data this session's "does the
+// medium-term signal ever fire" analysis used. This replaces the old FRED-
+// reconstruction with a real replay of the live pending/confirm state
+// machine (see update-regime-portfolio-targets's identical logic) against
+// that actual history: a candidate regime must clear the 60% floor and
+// remain the live read at the NEXT quarterly snapshot (~91 days later,
+// comfortably past the real 30-day medium-term confirmation window) before
+// the portfolio actually shifts. Quarterly resolution can only under-count
+// fires that would have confirmed mid-quarter under live daily monitoring —
+// a conservative, not optimistic, reconstruction.
 const REGIME_LABELS: Record<string, string> = {
   rg_fi: "Disinflationary Boom", rg_ri: "Reflation", fg_ri: "Stagflation", fg_fi: "Deflationary Bust",
 };
@@ -192,137 +193,75 @@ const REGIME_TICKER_WEIGHTS: Record<string, Record<string, number>> = {
 };
 const REGIME_TICKERS = ["VTI", "VXUS", "VWO", "TLT", "SCHP", "DBC", "GLD", "SHY"];
 
-interface FredObs { date: string; value: number }
+const REGIME_CONFIDENCE_FLOOR = 60;
 
-async function fetchFredSeries(seriesId: string): Promise<FredObs[]> {
-  const url = `${FRED}?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json&sort_order=asc&observation_start=1990-01-01`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`FRED ${seriesId}: HTTP ${res.status}`);
-  const j = await res.json();
-  const obs = (j.observations ?? []) as { date: string; value: string }[];
-  return obs.map((o) => ({ date: o.date, value: parseFloat(o.value) })).filter((o) => !isNaN(o.value));
-}
+interface RegimeSegment { sinceDate: string; regimeKey: string; }
 
-// Date-matched (same calendar month, one year earlier), not a fixed positional
-// offset — a positional lag silently misaligns every comparison downstream of
-// any gap in the source series (e.g. CPIAUCSL's missing October 2025 print),
-// off-by-one-ing the "12 months back" lookup into an actual 11- or 13-month
-// comparison. Works for both quarterly (GDPC1) and monthly (CPIAUCSL) series
-// since both land on the 1st of a month either way.
-function yoy(obs: FredObs[]): FredObs[] {
-  const byDate = new Map(obs.map((o) => [o.date, o.value]));
-  const out: FredObs[] = [];
-  for (const o of obs) {
-    const d = new Date(o.date);
-    const yaKey = new Date(Date.UTC(d.getUTCFullYear() - 1, d.getUTCMonth(), 1)).toISOString().slice(0, 10);
-    const prev = byDate.get(yaKey);
-    if (prev != null && prev !== 0) out.push({ date: o.date, value: (o.value / prev - 1) * 100 });
+// Real replay of the pending/confirm state machine (see the header comment
+// above) against macro_regime_history's actual quarterly forward-signal
+// series. Starts from the FIRST row's own structural_key — "start invested
+// per whatever the confirmed regime already was" — exactly the baseline
+// this session's earlier forward-vs-reactive comparison used.
+async function fetchRegimeSegments(): Promise<RegimeSegment[]> {
+  const { data, error } = await supabase
+    .from("macro_regime_history")
+    .select("period_date, structural_key, forward_key, forward_confidence")
+    .order("period_date", { ascending: true });
+  if (error) throw new Error(`macro_regime_history: ${error.message}`);
+  const rows = (data ?? []).filter(
+    (r: { structural_key: string | null }) => r.structural_key != null
+  ) as { period_date: string; structural_key: string; forward_key: string | null; forward_confidence: number | null }[];
+  if (rows.length === 0) return [];
+
+  let current = rows[0].structural_key;
+  let pendingKey: string | null = null;
+  const segments: RegimeSegment[] = [{ sinceDate: rows[0].period_date, regimeKey: current }];
+
+  for (let i = 1; i < rows.length; i++) {
+    const { forward_key: fwd, forward_confidence: conf, period_date: date } = rows[i];
+    if (fwd == null || conf == null) continue;
+    if (fwd === current) { pendingKey = null; continue; }
+    if (conf < REGIME_CONFIDENCE_FLOOR) continue;
+    if (pendingKey === fwd) {
+      current = fwd;
+      pendingKey = null;
+      segments.push({ sinceDate: date, regimeKey: current });
+    } else {
+      pendingKey = fwd;
+    }
   }
-  return out;
+  return segments;
 }
 
-function trailingAvg(series: FredObs[], n: number): FredObs[] {
-  const out: FredObs[] = [];
-  for (let i = n - 1; i < series.length; i++) {
-    const window = series.slice(i - n + 1, i + 1);
-    out.push({ date: series[i].date, value: window.reduce((s, o) => s + o.value, 0) / window.length });
-  }
-  return out;
-}
-
-function latestOnOrBefore(series: FredObs[], cutoff: string): FredObs | null {
-  let result: FredObs | null = null;
-  for (const o of series) { if (o.date <= cutoff) result = o; else break; }
-  return result;
-}
-
-// Kept in sync with fetch-macro-data/get-regime-analysis's identical
-// constants/formula. Empirically recalibrated (dead-band-recalibration
-// spec) via supabase/functions/growth-axis-backtest's walk-forward sweep
-// against real FRED history — see that file's/lib/simulatorKeys.js's
-// fuller rationale.
-const POTENTIAL_GDP_GROWTH = 1.9;
-const GROWTH_MIN_GAP = 0.80;
-const POTENTIAL_FLOOR_FRACTION = 0.85;
-
-// Deliberately excluded from the labor veto that fetch-macro-data/
-// get-regime-analysis apply to their growth axis (see isLaborDeteriorating):
-// this function only has annual GDP/CPI FRED series wired in, with no
-// historical payrolls/unemployment/jobless-claims time series sourced.
-// Backfilling that is a much larger lift (new historical data ingestion) —
-// same kind of scope-out the original regime-calc work order made for the
-// revision-discount term.
-function detectRegimeKey(gdpYoy: number, cpiYoy: number, gdp3y: number, cpi3y: number): string {
-  const growing = (gdpYoy - gdp3y > GROWTH_MIN_GAP) && (gdpYoy > POTENTIAL_GDP_GROWTH * POTENTIAL_FLOOR_FRACTION);
-  const rising = cpiYoy > cpi3y;
-  if (growing && !rising) return "rg_fi";
-  if (growing && rising) return "rg_ri";
-  if (!growing && rising) return "fg_ri";
-  return "fg_fi";
-}
-
-// Point-in-time by design: each year Y's weights are chosen from GDP/CPI data
-// dated on or before September 30 of year Y-1 — a buffer past BEA/BLS release
-// lags so this never "knows" data a January 1 rebalance couldn't actually have
-// seen. Avoids look-ahead bias.
-async function buildYearlyRegimeWeights(
-  startYear: number, endYear: number,
-): Promise<{ year: number; regimeKey: string; weights: Record<string, number> }[]> {
-  const [gdpRaw, cpiRaw] = await Promise.all([fetchFredSeries("GDPC1"), fetchFredSeries("CPIAUCSL")]);
-  const gdpYoy = yoy(gdpRaw);
-  const cpiYoy = yoy(cpiRaw);
-  // Fast/slow moving-average crossover, not raw-reading-vs-baseline: a regime
-  // flip only fires when the fast line actually crosses the slow line, which
-  // requires a real, sustained shift rather than one noisy print. GDP: 2Q avg
-  // (fast) vs 4Q avg (slow), GDP's native cadence. CPI: 3-month avg (fast) vs
-  // 9-month avg (slow), matching the live "CPI Growth (3M/9M Avg)" indicators.
-  const gdpFast = trailingAvg(gdpYoy, 2);
-  const gdpSlow = trailingAvg(gdpYoy, 4);
-  const cpiFast = trailingAvg(cpiYoy, 3);
-  const cpiSlow = trailingAvg(cpiYoy, 9);
-
-  const out: { year: number; regimeKey: string; weights: Record<string, number> }[] = [];
-  for (let year = startYear; year <= endYear; year++) {
-    const cutoff = `${year - 1}-09-30`;
-    const gf = latestOnOrBefore(gdpFast, cutoff);
-    const gs = latestOnOrBefore(gdpSlow, cutoff);
-    const cf = latestOnOrBefore(cpiFast, cutoff);
-    const cs = latestOnOrBefore(cpiSlow, cutoff);
-    if (!gf || !gs || !cf || !cs) continue;
-    const regimeKey = detectRegimeKey(gf.value, cf.value, gs.value, cs.value);
-    out.push({ year, regimeKey, weights: REGIME_TICKER_WEIGHTS[regimeKey] });
-  }
-  return out;
+function regimeKeyForDate(segments: RegimeSegment[], date: string): string {
+  let key = segments[0]?.regimeKey ?? "rg_ri";
+  for (const seg of segments) { if (seg.sinceDate <= date) key = seg.regimeKey; else break; }
+  return key;
 }
 
 // Same annual-rebalance mechanics as runBacktest above, except the weight
-// vector applied at each year's rebalance is looked up dynamically instead of
-// being fixed for the whole run.
-function runBacktestDynamic(
-  yearWeights: Map<number, Record<string, number>>,
+// vector applied is looked up per-date from the real regime segments (which
+// can change mid-year, unlike the old Jan-1-only annual reclassification),
+// re-evaluated every month so a mid-year regime shift takes effect the month
+// it actually happened rather than waiting for the next calendar year.
+function runBacktestBySegments(
+  segments: RegimeSegment[],
   tickers: string[],
   returns: Record<string, Map<string, number>>,
   dates: string[],
 ): { date: string; value: number }[] {
-  const knownYears = [...yearWeights.keys()].sort((a, b) => a - b);
-  const weightsForYear = (y: number): Record<string, number> => {
-    if (yearWeights.has(y)) return yearWeights.get(y)!;
-    const fallback = knownYears.find((yy) => yy >= y) ?? knownYears[knownYears.length - 1];
-    return yearWeights.get(fallback) ?? {};
-  };
-
-  let curYear = -1;
+  let curKey = "";
   let curW: number[] = [];
   let value = 1.0;
   const out: { date: string; value: number }[] = [];
 
   for (let i = 0; i < dates.length; i++) {
     const d = dates[i];
-    const year = parseInt(d.slice(0, 4));
-    if (year !== curYear) {
-      const w = weightsForYear(year);
+    const liveKey = regimeKeyForDate(segments, d);
+    if (liveKey !== curKey) {
+      const w = REGIME_TICKER_WEIGHTS[liveKey] ?? {};
       curW = tickers.map((t) => w[t] ?? 0);
-      curYear = year;
+      curKey = liveKey;
     }
 
     const assetRets = tickers.map((t) => returns[t]?.get(d) ?? 0);
@@ -404,13 +343,27 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    // Fetch all tickers in parallel, alongside the FRED series the regime
-    // classification needs — independent data sources, no reason to serialize.
+    // Fetch all tickers in parallel, alongside the real regime-segment
+    // history and the two resize-overlay portfolios' own already-validated
+    // backtests — independent data sources/functions, no reason to serialize.
     const TICKERS = ["VTI","IJS","GLD","TLT","SHY","DBC","DBMF","VXUS","VWO","SCHP",
                      "VTSMX","VISVX","GC=F","VUSTX","VFISX","PCRIX","VGTSX","VEIEX","VIPSX"];
-    const [settled, regimeYearWeights] = await Promise.all([
+    const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const SB_URL = Deno.env.get("SUPABASE_URL")!;
+    async function fetchOverlayPortfolio(fn: string): Promise<{ overlayMonthlyCurve: { date: string; value: number }[] }> {
+      const res = await fetch(`${SB_URL}/functions/v1/${fn}`, {
+        headers: { Authorization: `Bearer ${SERVICE_KEY}`, apikey: SERVICE_KEY },
+      });
+      if (!res.ok) throw new Error(`${fn}: HTTP ${res.status}`);
+      const j = await res.json();
+      if (j.error) throw new Error(`${fn}: ${j.error}`);
+      return j;
+    }
+    const [settled, regimeSegments, kissRaw, awaRaw] = await Promise.all([
       Promise.allSettled(TICKERS.map(t => fetchMonthly(t))),
-      buildYearlyRegimeWeights(1999, new Date().getUTCFullYear() + 1),
+      fetchRegimeSegments(),
+      fetchOverlayPortfolio("kiss-portfolio-backtest"),
+      fetchOverlayPortfolio("all-weather-alpha-backtest"),
     ]);
     const rets: Record<string, Map<string, number>> = {};
     const errors: string[] = [];
@@ -478,16 +431,30 @@ Deno.serve(async (req: Request) => {
     });
 
     // Regime-driven: dynamic weights, same 8 tickers (and thus same date
-    // window) as bw_modified — see runBacktestDynamic / buildYearlyRegimeWeights.
-    const regimeYearWeightsMap = new Map(regimeYearWeights.map(r => [r.year, r.weights]));
+    // window) as bw_modified — see runBacktestBySegments / fetchRegimeSegments.
     const regimeDates = commonFor(REGIME_TICKERS);
-    const regimeValues = runBacktestDynamic(regimeYearWeightsMap, REGIME_TICKERS, asset, regimeDates);
+    const regimeValues = runBacktestBySegments(regimeSegments, REGIME_TICKERS, asset, regimeDates);
     const regimeResult = {
-      key: "regime_driven", name: "Regime-Driven (structural)",
+      key: "regime_driven", name: "Regime-Driven (real Forward Signal history)",
       metrics: computeMetrics(regimeValues), monthly_values: regimeValues,
     };
 
-    const portfolioResults = [...staticResults, regimeResult];
+    // KISS and All Weather Alpha: real per-symbol resize-overlay portfolios,
+    // already backtested at daily resolution by their own dedicated
+    // functions (kiss-portfolio-backtest / all-weather-alpha-backtest) —
+    // consumed here as their monthly-downsampled curve so they plug into
+    // the exact same computeMetrics/decade/stress-period machinery as every
+    // other portfolio on this page, no separate rendering path needed.
+    const kissResult = {
+      key: "kiss", name: "KISS (+ resize overlay)",
+      metrics: computeMetrics(kissRaw.overlayMonthlyCurve), monthly_values: kissRaw.overlayMonthlyCurve,
+    };
+    const allWeatherAlphaResult = {
+      key: "all_weather_alpha", name: "All Weather Alpha (+ resize overlay)",
+      metrics: computeMetrics(awaRaw.overlayMonthlyCurve), monthly_values: awaRaw.overlayMonthlyCurve,
+    };
+
+    const portfolioResults = [...staticResults, regimeResult, kissResult, allWeatherAlphaResult];
 
     // Stress periods for DBMF
     const STRESS = [
@@ -535,16 +502,22 @@ Deno.serve(async (req: Request) => {
     const windowStart = commonDatesAll[0];
     const windowEnd   = commonDatesAll[commonDatesAll.length - 1];
 
-    // Transparency table for the frontend: which regime applied each year of
-    // the actual backtest window, and what each of the four possible target
-    // allocations looks like (asset-class %, not the ticker-fractional form
-    // used internally for the return math).
-    const regimeDrivenHistory = regimeYearWeights
-      .filter(r => r.year >= parseInt(windowStart.slice(0, 4)) && r.year <= parseInt(windowEnd.slice(0, 4)))
-      .map(r => ({
-        year: r.year, regime_key: r.regimeKey, regime_label: REGIME_LABELS[r.regimeKey],
-        weights_pct: REGIME_DEFAULT_WEIGHTS_PCT[r.regimeKey],
-      }));
+    // Transparency table for the frontend: each real confirmed-regime segment
+    // within the backtest window (date range, not calendar year — a segment
+    // can start and end mid-year now that this replays the real forward-
+    // signal state machine instead of a Jan-1-only annual reclassification),
+    // and what each segment's target allocation looks like (asset-class %,
+    // not the ticker-fractional form used internally for the return math).
+    const regimeDrivenHistory = regimeSegments.map((seg, i) => {
+      const nextSince = regimeSegments[i + 1]?.sinceDate ?? null;
+      return {
+        since_date: seg.sinceDate,
+        until_date: nextSince,
+        regime_key: seg.regimeKey,
+        regime_label: REGIME_LABELS[seg.regimeKey],
+        weights_pct: REGIME_DEFAULT_WEIGHTS_PCT[seg.regimeKey],
+      };
+    }).filter(r => r.since_date >= windowStart || (r.until_date == null || r.until_date >= windowStart));
 
     const output = {
       portfolios:    portfolioResults.map(p => ({ ...p, monthly_values: undefined })),  // strip large array
@@ -555,7 +528,7 @@ Deno.serve(async (req: Request) => {
       window_start:   windowStart,
       window_end:     windowEnd,
       computed_at:    new Date().toISOString(),
-      proxies:        "VTSMX→VTI, VISVX→IJS, GC=F→GLD, VUSTX→TLT, VFISX→SHY, PCRIX→DBC, VGTSX→VXUS, VEIEX→VWO, VIPSX→SCHP; DBMF pre-2019 = 12M TSMOM factor (scaled to 11.2% vol, −0.85% fee). Regime-Driven: annually rebalanced to that year's structurally-classified regime (GDP 2Q avg vs. 4Q avg, CPI 3-month avg vs. 9-month avg, fast/slow crossover, using data known by Sep 30 of the prior year) — models 'always held the structural regime's target weights,' not the live portfolio feature's 30-day-confirmation/60%-confidence activation logic, which needs historical Forward Signal confidence data that was never stored.",
+      proxies:        "VTSMX→VTI, VISVX→IJS, GC=F→GLD, VUSTX→TLT, VFISX→SHY, PCRIX→DBC, VGTSX→VXUS, VEIEX→VWO, VIPSX→SCHP; DBMF pre-2019 = 12M TSMOM factor (scaled to 11.2% vol, −0.85% fee). Regime-Driven: real replay of the live 60%-confidence-floor/confirmation-window state machine against macro_regime_history's actual quarterly Forward Signal history (2004-present) — shifts only when a candidate regime clears 60% confidence and is still the live read ~1 quarter later, not a Jan-1-only annual reclassification. KISS and All Weather Alpha: each holds its own real per-symbol resize overlay (asset_resize_rule_config — trend/vol-regime/drawdown rules backtested per asset), monthly-rebalanced, freed weight parked in USFR; computed by their own dedicated functions (kiss-portfolio-backtest, all-weather-alpha-backtest) at daily resolution, consumed here as a monthly-downsampled curve.",
       fetch_errors:   errors,
     };
 

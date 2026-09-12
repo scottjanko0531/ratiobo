@@ -225,15 +225,22 @@ Deno.serve(async (req: Request) => {
     // Variant 2 & 3 share a monthly-rebalance loop; variant 3 additionally
     // scales each leg's target weight by its resize state at each rebalance
     // and parks the freed weight in USFR (accruing USFR's real return until
-    // the next rebalance re-evaluates state).
+    // the next rebalance re-evaluates state). Also tracks the daily value
+    // curve (downsampled to one point per month, last trading day) so
+    // run-backtest can consume this variant as a real portfolio series
+    // alongside its other monthly-resolution portfolios, instead of
+    // duplicating this whole resize-overlay simulation a third time.
     function runRebalanced(useOverlay: boolean) {
       let wVt = 0.6, wGldm = 0.3, wBtc = 0.1, wUsfr = 0;
       const rets: number[] = [];
+      let value = 1;
+      const monthlyCurve: { date: string; value: number }[] = [];
       for (let t = 1; t < n; t++) {
         const total = wVt + wGldm + wBtc + wUsfr;
         const portRet = (wVt / total) * vtRet[t] + (wGldm / total) * gldmRet[t]
           + (wBtc / total) * btcRet[t] + (wUsfr / total) * usfrRet[t];
         rets.push(portRet);
+        value *= (1 + portRet);
         wVt *= (1 + vtRet[t]); wGldm *= (1 + gldmRet[t]); wBtc *= (1 + btcRet[t]); wUsfr *= (1 + usfrRet[t]);
 
         if (isFirstTradingDayOfMonth(t)) {
@@ -248,13 +255,17 @@ Deno.serve(async (req: Request) => {
           }
           wVt = tVt * newTotal; wGldm = tGldm * newTotal; wBtc = tBtc * newTotal; wUsfr = tUsfr * newTotal;
         }
+        const isLastOfMonth = t === n - 1 || aligned[t + 1].date.slice(0, 7) !== aligned[t].date.slice(0, 7);
+        if (isLastOfMonth) monthlyCurve.push({ date: aligned[t].date.slice(0, 7) + "-01", value });
       }
-      return rets;
+      return { rets, monthlyCurve };
     }
 
     const staticDrift = computeStats(runStaticDrift());
-    const staticRebalancedMonthly = computeStats(runRebalanced(false));
-    const overlayRebalancedMonthly = computeStats(runRebalanced(true));
+    const staticRebalancedRun = runRebalanced(false);
+    const overlayRebalancedRun = runRebalanced(true);
+    const staticRebalancedMonthly = computeStats(staticRebalancedRun.rets);
+    const overlayRebalancedMonthly = computeStats(overlayRebalancedRun.rets);
 
     return new Response(JSON.stringify({
       portfolio: "KISS (c457d30b-1073-413c-8749-af30bab2a126)",
@@ -262,6 +273,7 @@ Deno.serve(async (req: Request) => {
       backtestWindow: { from: aligned[0]?.date, to: aligned[n - 1]?.date, tradingDays: n },
       strategicWeight: "60% VT / 30% GLDM / 10% Bitcoin (BTC-USD proxy for FBTC)",
       variants: { staticDrift, staticRebalancedMonthly, overlayRebalancedMonthly },
+      overlayMonthlyCurve: overlayRebalancedRun.monthlyCurve,
     }, null, 2), {
       headers: { ...CORS, "Content-Type": "application/json" },
     });
