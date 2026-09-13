@@ -154,16 +154,25 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-    const [vtRows, gldmRows, btcRows, usfrRows] = await Promise.all([
+    const [vtRows, gldmRows, btcRows, usfrRows, dbmfRows] = await Promise.all([
       fetchPrices(supabase, "VT"),
       fetchPrices(supabase, "GLDM"),
       fetchPrices(supabase, "BTC-USD"),
       fetchPrices(supabase, "USFR"),
+      fetchPrices(supabase, "DBMF"),
     ]);
 
     const gldmByDate = new Map(gldmRows.map((r) => [r.date, r.close]));
     const btcByDate = new Map(btcRows.map((r) => [r.date, r.close]));
     const usfrByDate = new Map(usfrRows.map((r) => [r.date, r.close]));
+    // DBMF's real inception (2019-05-08) is ~11 months after GLDM's
+    // (2018-06-26, this backtest's own start) — NOT carried forward like
+    // BTC/USFR above. A missing DBMF price means "not investable yet," so
+    // the split-scheme functions below fall back to 100% USFR for any date
+    // before DBMF actually existed, rather than inventing a pre-inception
+    // proxy for a ~11-month gap.
+    const dbmfByDate = new Map(dbmfRows.map((r) => [r.date, r.close]));
+    const dbmfStart = dbmfRows[0]?.date ?? "9999-99-99";
 
     // Master calendar = VT's trading days (equity calendar), starting from
     // GLDM's inception (the binding constraint), with the most recent prior
@@ -171,8 +180,8 @@ Deno.serve(async (req: Request) => {
     // missing (BTC trades 7 days/wk so this is rare; USFR trades the same
     // equity calendar as VT so this should essentially never fire).
     const gldmStart = gldmRows[0]?.date;
-    let lastGldm: number | null = null, lastBtc: number | null = null, lastUsfr: number | null = null;
-    const aligned: { date: string; vt: number; gldm: number; btc: number; usfr: number }[] = [];
+    let lastGldm: number | null = null, lastBtc: number | null = null, lastUsfr: number | null = null, lastDbmf: number | null = null;
+    const aligned: { date: string; vt: number; gldm: number; btc: number; usfr: number; dbmf: number | null }[] = [];
     for (const v of vtRows) {
       if (!gldmStart || v.date < gldmStart) continue;
       const g = gldmByDate.get(v.date) ?? lastGldm;
@@ -180,7 +189,10 @@ Deno.serve(async (req: Request) => {
       const u = usfrByDate.get(v.date) ?? lastUsfr;
       if (g == null || b == null || u == null) continue;
       lastGldm = g; lastBtc = b; lastUsfr = u;
-      aligned.push({ date: v.date, vt: v.close, gldm: g, btc: b, usfr: u });
+      // DBMF: carry forward once it exists, stay null before its inception.
+      const d = v.date >= dbmfStart ? (dbmfByDate.get(v.date) ?? lastDbmf) : null;
+      if (d != null) lastDbmf = d;
+      aligned.push({ date: v.date, vt: v.close, gldm: g, btc: b, usfr: u, dbmf: d });
     }
 
     const n = aligned.length;
@@ -195,6 +207,14 @@ Deno.serve(async (req: Request) => {
       return out;
     };
     const vtRet = dailyRet(vtCloses), gldmRet = dailyRet(gldmCloses), btcRet = dailyRet(btcCloses), usfrRet = dailyRet(usfrCloses);
+    // DBMF return is null for any day either side of the pair lacks a real
+    // price (pre-inception, or a rare individual gap) — callers must check
+    // for null before using it, never silently treat it as a 0% return.
+    const dbmfRet: (number | null)[] = [null];
+    for (let i = 1; i < n; i++) {
+      const p0 = aligned[i - 1].dbmf, p1 = aligned[i].dbmf;
+      dbmfRet.push(p0 != null && p1 != null ? p1 / p0 - 1 : null);
+    }
 
     // Calibrated rules — must match asset_resize_rule_config exactly (kept
     // in sync by hand since this is a standalone backtest, not a live query
@@ -208,6 +228,22 @@ Deno.serve(async (req: Request) => {
     const BTC_EXPOSURE_WHEN_REDUCED = 0;
 
     const isFirstTradingDayOfMonth = (i: number) => i === 0 || aligned[i].date.slice(0, 7) !== aligned[i - 1].date.slice(0, 7);
+
+    // Consecutive-trading-days-reduced counter, resetting to 0 whenever the
+    // state flips back to false -- the "conviction" proxy for the DBMF-split
+    // schemes below: a trend that's ALREADY persisted N days is more likely
+    // to keep going than one that tripped yesterday, unlike "how far below
+    // the MA / how deep the drawdown," which a fast V-shaped crash-and-
+    // recover (e.g. COVID) trips just as hard as a genuine multi-month
+    // decline despite being exactly the wrong regime for a trend-follower
+    // like DBMF.
+    function computeStreak(states: boolean[]): number[] {
+      const streak = new Array(states.length).fill(0);
+      for (let t = 0; t < states.length; t++) streak[t] = states[t] ? (t > 0 ? streak[t - 1] + 1 : 1) : 0;
+      return streak;
+    }
+    const vtStreak = computeStreak(vtReduced);
+    const btcStreak = computeStreak(btcReduced);
 
     // Variant 1: static drift (buy and hold from inception, weights drift).
     function runStaticDrift() {
@@ -267,6 +303,69 @@ Deno.serve(async (req: Request) => {
     const staticRebalancedMonthly = computeStats(staticRebalancedRun.rets);
     const overlayRebalancedMonthly = computeStats(overlayRebalancedRun.rets);
 
+    // ── DBMF-split experiment ────────────────────────────────────────────
+    // Answers: instead of parking 100% of a reduced leg's freed weight in
+    // USFR, does redirecting some of it into DBMF (trend-following/managed
+    // futures — historically a "crisis alpha" strategy that tends to do
+    // well in sustained directional declines) actually help? Scoped to
+    // VT and BTC only -- both are TREND-type triggers (drawdown, MA cross),
+    // the kind of sustained move DBMF's edge applies to. GLDM's trigger is
+    // a vol-SPIKE (realized-vol regime), not a trend signal, so its freed
+    // weight always goes 100% USFR in every scheme below, unchanged from
+    // the baseline overlay variant.
+    function runRebalancedWithDbmfSplit(dbmfFraction: (streakDays: number) => number) {
+      let wVt = 0.6, wGldm = 0.3, wBtc = 0.1, wUsfr = 0, wDbmf = 0;
+      const rets: number[] = [];
+      for (let t = 1; t < n; t++) {
+        const dRet = dbmfRet[t];
+        const total = wVt + wGldm + wBtc + wUsfr + wDbmf;
+        let portRet = (wVt / total) * vtRet[t] + (wGldm / total) * gldmRet[t]
+          + (wBtc / total) * btcRet[t] + (wUsfr / total) * usfrRet[t];
+        if (wDbmf > 0) portRet += (wDbmf / total) * (dRet ?? 0);
+        rets.push(portRet);
+        wVt *= (1 + vtRet[t]); wGldm *= (1 + gldmRet[t]); wBtc *= (1 + btcRet[t]); wUsfr *= (1 + usfrRet[t]);
+        if (wDbmf > 0) wDbmf *= (1 + (dRet ?? 0));
+
+        if (isFirstTradingDayOfMonth(t)) {
+          const newTotal = wVt + wGldm + wBtc + wUsfr + wDbmf;
+          const vtMult = vtReduced[t] ? VT_EXPOSURE_WHEN_REDUCED : 1;
+          const gldmMult = gldmReduced[t] ? GLDM_EXPOSURE_WHEN_REDUCED : 1;
+          const btcMult = btcReduced[t] ? BTC_EXPOSURE_WHEN_REDUCED : 1;
+          const tVt = 0.6 * vtMult, tGldm = 0.3 * gldmMult, tBtc = 0.1 * btcMult;
+          const vtFreed = 0.6 - tVt, btcFreed = 0.1 - tBtc, gldmFreed = 0.3 - tGldm;
+
+          // DBMF only gets an allocation once it actually exists (real
+          // inception 2019-05-08) -- before that, or whenever the fraction
+          // function returns 0, everything falls back to USFR.
+          const dbmfAvailable = aligned[t].dbmf != null;
+          const vtDbmfFrac = vtReduced[t] && dbmfAvailable ? dbmfFraction(vtStreak[t]) : 0;
+          const btcDbmfFrac = btcReduced[t] && dbmfAvailable ? dbmfFraction(btcStreak[t]) : 0;
+
+          const tDbmf = vtFreed * vtDbmfFrac + btcFreed * btcDbmfFrac;
+          const tUsfr = gldmFreed + vtFreed * (1 - vtDbmfFrac) + btcFreed * (1 - btcDbmfFrac);
+
+          wVt = tVt * newTotal; wGldm = tGldm * newTotal; wBtc = tBtc * newTotal;
+          wUsfr = tUsfr * newTotal; wDbmf = tDbmf * newTotal;
+        }
+      }
+      return rets;
+    }
+
+    const DBMF_SCHEMES: { key: string; label: string; dbmfFraction: (streakDays: number) => number }[] = [
+      { key: "flat_50_50", label: "Flat 50/50 split whenever reduced",
+        dbmfFraction: () => 0.5 },
+      { key: "flat_100_dbmf", label: "Pure swap -- 100% DBMF whenever reduced",
+        dbmfFraction: () => 1.0 },
+      { key: "graduated_conservative", label: "Graduated: 0% <1mo, 33% 1-3mo, 66% 3mo+",
+        dbmfFraction: (d) => d < 21 ? 0 : d < 63 ? 0.33 : 0.66 },
+      { key: "graduated_aggressive", label: "Graduated: 0% <1mo, 50% 1-3mo, 100% 3mo+",
+        dbmfFraction: (d) => d < 21 ? 0 : d < 63 ? 0.5 : 1.0 },
+    ];
+    const dbmfSplitResults = DBMF_SCHEMES.map((s) => ({
+      key: s.key, label: s.label,
+      metrics: computeStats(runRebalancedWithDbmfSplit(s.dbmfFraction)),
+    }));
+
     return new Response(JSON.stringify({
       portfolio: "KISS (c457d30b-1073-413c-8749-af30bab2a126)",
       realHoldingsAsOf: { VT: 30252.96, GLDM: 0.00, FBTC: 10164.78, USFR: 60038.31 },
@@ -274,6 +373,11 @@ Deno.serve(async (req: Request) => {
       strategicWeight: "60% VT / 30% GLDM / 10% Bitcoin (BTC-USD proxy for FBTC)",
       variants: { staticDrift, staticRebalancedMonthly, overlayRebalancedMonthly },
       overlayMonthlyCurve: overlayRebalancedRun.monthlyCurve,
+      dbmfSplitExperiment: {
+        note: "Scoped to VT (trailing_drawdown) and BTC (trend_ma) only -- both trend-type triggers. GLDM's vol-spike trigger keeps 100% USFR in every scheme. 'streakDays' = consecutive trading days the trigger has already been active as of that month's rebalance -- the conviction proxy discussed with the user, not distance-below-MA (which a fast V-shaped crash trips just as hard as a genuine sustained decline). DBMF only gets an allocation from 2019-05-08 (its real inception) onward; before that every scheme behaves identically to overlayRebalancedMonthly (100% USFR).",
+        baseline_100pct_usfr: overlayRebalancedMonthly,
+        schemes: dbmfSplitResults,
+      },
     }, null, 2), {
       headers: { ...CORS, "Content-Type": "application/json" },
     });
