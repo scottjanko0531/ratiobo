@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Shell from "../../components/Shell";
 import DebtCyclePositionCheck from "../../components/DebtCyclePositionCheck";
+import FiscalParadigmSection from "../../components/FiscalParadigmSection";
 import StageInfoIcon from "../../components/StageInfoIcon";
 import { supabase } from "../../lib/supabase";
 
@@ -379,6 +380,8 @@ export default function BigCyclePage() {
             ))}
 
             <DebtCyclePositionCheck metrics={metrics} />
+
+            <FiscalParadigmSection />
 
             {cycles.filter((c) => c.slug !== "debt").map((cycle) => (
               <CycleSection
