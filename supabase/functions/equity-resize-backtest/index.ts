@@ -204,9 +204,12 @@ Deno.serve(async (req: Request) => {
     };
     const rules = report.rules as Record<string, unknown>;
 
-    // Rule 1: trend/MA state
+    // Rule 1: trend/MA state. 10/20/30 added to test the "faster lookback =
+    // earlier warning" hypothesis directly (no volume data needed for this
+    // half of it — that's the separate, untested VWAP/distribution-day
+    // question) alongside the original 50-252 sweep.
     const trendResults: Record<string, unknown> = {};
-    for (const N of [50, 100, 150, 200, 252]) {
+    for (const N of [10, 20, 30, 50, 100, 150, 200, 252]) {
       const states = trendRuleStates(closes, N);
       for (const exp of reducedExposureLevels) {
         const { portfolioReturns, transitions, pctTimeReduced } = simulate(closes, states, exp);
