@@ -129,22 +129,30 @@ function monthLabel(dateStr) {
   return new Date(dateStr + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" });
 }
 
-function AccuracyCard({ title, windows }) {
+function AccuracyCard({ title, windows, showDirectional }) {
   return (
     <div className="card p-4 space-y-2">
       <p className="label text-[10px]">{title}</p>
       {windows === false ? (
         <p className="text-paper-dim text-[10px]">Not enough resolved periods yet.</p>
       ) : (
-        <div className="grid grid-cols-[5.5rem_1fr] gap-x-2 gap-y-1 text-[10px] items-center">
+        <div
+          className={`grid gap-x-2 gap-y-1 text-[10px] items-center ${showDirectional ? "grid-cols-[5.5rem_1fr_1fr]" : "grid-cols-[5.5rem_1fr]"}`}
+        >
           <span />
-          <span className="text-paper-dim uppercase tracking-wide">Accuracy</span>
+          <span className="text-paper-dim uppercase tracking-wide">{showDirectional ? "Value" : "Accuracy"}</span>
+          {showDirectional && <span className="text-paper-dim uppercase tracking-wide">Direction</span>}
           {["Prior Qtr", "YTD", "Last 4 Qtr", "All Time"].map((label) => {
             const w = windows[label];
             return (
               <Fragment key={label}>
                 <span className="text-paper-dim">{label}</span>
                 <span className="num text-paper">{w.n === 0 ? "—" : `${w.accuracyPct.toFixed(1)}% (n=${w.n})`}</span>
+                {showDirectional && (
+                  <span className="num text-paper">
+                    {w.n === 0 || w.directionalHitRate == null ? "—" : `${w.directionalHitRate.toFixed(1)}%`}
+                  </span>
+                )}
               </Fragment>
             );
           })}
@@ -297,8 +305,8 @@ export default function GridModelPage() {
         <div className="space-y-5">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <AccuracyCard title="Regime Forecast Accuracy" windows={regimeWindows} />
-            <AccuracyCard title="GDP YoY Forecast Accuracy" windows={gdpWindows} />
-            <AccuracyCard title="CPI YoY Forecast Accuracy" windows={cpiWindows} />
+            <AccuracyCard title="GDP YoY Forecast Accuracy" windows={gdpWindows} showDirectional />
+            <AccuracyCard title="CPI YoY Forecast Accuracy" windows={cpiWindows} showDirectional />
           </div>
 
           <div className="card p-4">
