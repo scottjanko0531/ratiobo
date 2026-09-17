@@ -732,12 +732,16 @@ export default function PortfoliosPage() {
                    (no val>0 filter) — a bucket like Gold can be entirely
                    unheld right now (GLDM already sold to $0, matching its
                    own live "Reduced" signal) while still needing its
-                   multiplier known, both for the freed-weight sum above and
-                   for scaling buyRows below (computeAllocationDeltas's
-                   buyRows path is bucket-only, no symbol to look up a
-                   multiplier for, so it never applies exposureMultipliers on
-                   its own — a reduced bucket with nothing currently held
-                   would otherwise show a full-size, stale "Add" recommendation). */}
+                   multiplier known for the freed-weight sum above.
+
+                   computeAllocationDeltas is called here with
+                   includeZeroValueHoldings — a symbol linked to this
+                   portfolio but currently at $0 (e.g. GLDM, resized to 0% by
+                   its own live signal) still shows up as its own actionRow
+                   (Reduced badge, $0/0% Hold) instead of silently vanishing.
+                   buyRows is then only buckets with NO linked holding at
+                   all, so there's no double-counting against the specific
+                   per-symbol row above. */}
                 {(pf.strategy_framework === "resize_overlay" || pf.strategy_framework === "regime_driven") && (() => {
                   const rawTargets = pf.target_allocations || {};
 
@@ -767,14 +771,14 @@ export default function PortfoliosPage() {
 
                   const { actionRows, buyRows: rawBuyRows } = computeAllocationDeltas(
                     hs, effectiveTargets,
-                    { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers, sectorTargets }
+                    { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers, sectorTargets, includeZeroValueHoldings: true }
                   );
-                  const buyRows = rawBuyRows
-                    .map((r) => {
-                      const m = avgMultFor(r.key);
-                      return { ...r, targetPct: r.targetPct * m, targetVal: r.targetVal * m };
-                    })
-                    .filter((r) => r.targetPct >= 0.05);
+                  // No per-row exposure-multiplier scaling needed here anymore:
+                  // with includeZeroValueHoldings, buyRows only contains
+                  // buckets with NO linked holding at all (a resized-to-zero
+                  // bucket like Gold now surfaces as its own actionRow via
+                  // GLDM instead), so avgMultFor(r.key) would always be 1.
+                  const buyRows = rawBuyRows.filter((r) => r.targetPct >= 0.05);
                   if (actionRows.length === 0 && buyRows.length === 0) return null;
                   return (
                     <div className="px-5 py-4 border-b border-ink-line">
