@@ -336,7 +336,7 @@ export default function AccountsPage() {
     const [{ data }, { data: snaps }] = await Promise.all([
       supabase
         .from("holdings_valued")
-        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain, simulator_key, interest_rate, maturity_date")
+        .select("id, account_id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain, simulator_key, interest_rate, maturity_date")
         .eq("account_id", account.id)
         .order("asset_type")
         .order("symbol"),
@@ -407,7 +407,7 @@ export default function AccountsPage() {
         .order("txn_date", { ascending: false }),
       supabase
         .from("holdings_valued")
-        .select("id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain, simulator_key, interest_rate, maturity_date")
+        .select("id, account_id, symbol, name, asset_type, quantity, price_override, cost_basis, current_value, net_gain, simulator_key, interest_rate, maturity_date")
         .eq("id", holding.id)
         .single(),
       supabase
