@@ -176,7 +176,12 @@ function computePortfolioSummary(holdings: HoldingValued[], targets: Record<stri
       .filter(h => Number(h.current_value ?? 0) > 0)
       .sort((a, b) => Number(b.current_value ?? 0) - Number(a.current_value ?? 0));
     const band = bandStatus(pct, target, bandPct);
-    return { key, label: BUCKET_LABELS[key] ?? key, pct, target, holdings: holdingsHere, ...band };
+    // Precomputed so the LLM never has to do its own $-amount arithmetic
+    // (it was producing dollar figures inconsistent with its own stated
+    // percentage moves) -- positive means this bucket needs an inflow to
+    // reach target, negative means an outflow.
+    const driftDollar = target != null ? (target / 100) * totalValue - value : null;
+    return { key, label: BUCKET_LABELS[key] ?? key, pct, value, target, driftDollar, holdings: holdingsHere, ...band };
   }).sort((a, b) => b.pct - a.pct);
 
   return { totalValue, costBasis, totalGain, returnPct, count: holdings.length, allocation };
@@ -210,9 +215,16 @@ async function generatePortfolioAnalysis(params: {
     const allocLines = summary.allocation
       .map(a => {
         const driftTxt = a.target != null ? `${a.drift! >= 0 ? "+" : ""}${a.drift!.toFixed(1)}pt` : "";
+        // Exact dollar trade size, precomputed here — do not let the LLM
+        // compute this itself, it was producing $ figures inconsistent with
+        // its own stated percentage moves (e.g. citing a 14.8pt move on a
+        // $187k portfolio as a "$2,797" trade instead of ~$27,700).
+        const tradeDollarTxt = a.target != null && a.outOfBand
+          ? `, required trade: ${a.driftDollar! >= 0 ? "BUY" : "SELL"} ${usd(Math.abs(a.driftDollar!))}`
+          : "";
         const bandTxt = a.target != null
           ? a.outOfBand
-            ? `OUT OF BAND (±${a.effectiveBand!.toFixed(1)}pt tolerance) — rebalancing this bucket is warranted`
+            ? `OUT OF BAND (±${a.effectiveBand!.toFixed(1)}pt tolerance) — rebalancing this bucket is warranted${tradeDollarTxt}`
             : `within ±${a.effectiveBand!.toFixed(1)}pt band — no rebalancing action needed here`
           : "";
         const targetLabel = (portfolio.strategy_framework === "resize_overlay" || portfolio.strategy_framework === "regime_driven")
@@ -224,6 +236,7 @@ async function generatePortfolioAnalysis(params: {
       })
       .join("\n") || "  No holdings assigned.";
     const anyOutOfBand = summary.allocation.some(a => a.outOfBand);
+    const outOfBandCount = summary.allocation.filter(a => a.outOfBand).length;
 
     const STATIC_TEXT = `This portfolio is explicitly configured as a STATIC, regime-agnostic framework (e.g. risk parity, All Weather) — it does NOT need to predict which macro regime is active, because diversification comes from the mix of asset classes itself. Your recommendations must stay within rebalancing back to the target allocations shown above — do NOT recommend new sector, style, or duration tilts driven by today's regime call (e.g. "shift into small-cap/value," "avoid mega-cap"), since that contradicts this framework's own design philosophy. Judge holding composition on its own terms from what's actually listed above (e.g. a broad total-market fund like VTI or ITOT is not a "mega-cap" or "duration" bet — it's simply unstyled market-cap-weighted exposure) rather than speculating about what a bucket might contain.`;
     const TACTICAL_TEXT = `This portfolio is explicitly configured as a TACTICAL, regime-responsive framework — it is meant to rotate or tilt exposure based on the macro cycle. Regime-driven tilts, including within a single sleeve and beyond simple rebalancing to target, are appropriate and expected. Ground any tilt recommendation in the Near-Term Forward Signal (2-3mo) below, not the Medium-Term composite — tactical portfolio actions taken today should track the near-dated outlook, not a 6-18 month view (that longer horizon is what REGIME-DRIVEN portfolios' automated targets already track, a different mechanism from this framework).`;
@@ -281,11 +294,11 @@ HARD CONSTRAINT, checked mechanically after you answer — violating this fails 
 ` : ""}
 Structure your answer in two parts, separated by a blank line:
 (1) A paragraph assessing this portfolio's health: is its current allocation appropriate given its stated strategy AND the macro backdrop above? Where is it well-positioned, and where is it exposed? If it has no stated strategy, note that explicitly and assess purely against the macro backdrop.
-(2) A "Recommendations:" section: one short lead-in sentence, then 3-5 bullet points (each on its own line, starting with "- "), each a specific, actionable instruction naming a real bucket, asset class, or holding in this portfolio and what to do with it. Any rebalancing trade must be justified by a bucket marked OUT OF BAND above — never recommend trimming or adding to a bucket that's within its band purely because it has nonzero drift or because of the macro regime call (for static/regime-agnostic frameworks per the constraint above)${resizeNotes && resizeNotes.size > 0 ? `, and never for any symbol/bucket listed in the HARD CONSTRAINT above regardless of its band status` : ""}${portfolio.strategy_framework === "resize_overlay" ? `, and never outside the CLOSED UNIVERSE listed above` : ""}. Bullets not about rebalancing (e.g. macro-driven tactical calls for a tactical framework) don't need a band justification, just the macro tie-in — and that tie-in must cite the Near-Term Forward Signal (2-3mo) above, not the Medium-Term composite.
+(2) A "Recommendations:" section: one short lead-in sentence, then exactly one bullet per bucket marked OUT OF BAND above${outOfBandCount > 0 ? ` — there ${outOfBandCount === 1 ? "is" : "are"} ${outOfBandCount} such bucket${outOfBandCount === 1 ? "" : "s"} today, so Part 2 must contain exactly ${outOfBandCount} rebalancing bullet${outOfBandCount === 1 ? "" : "s"}: one per bucket, never skipping one, never merging two buckets into a single bullet, never adding a rebalancing bullet for an in-band bucket` : ` — none today (every bucket is within band per the REBALANCING CONSTRAINT above), so Part 2 must contain zero rebalancing bullets`}. Each rebalancing bullet must name that bucket/holding and state BOTH the exact destination percentage AND the exact dollar trade size already given for that bucket in the allocation list above (copy the "required trade" figure verbatim — never compute, round, or invent your own dollar amount)${resizeNotes && resizeNotes.size > 0 ? `, and never for any symbol/bucket listed in the HARD CONSTRAINT above regardless of its band status` : ""}${portfolio.strategy_framework === "resize_overlay" ? `, and never outside the CLOSED UNIVERSE listed above` : ""}. You may append up to 2 further bullets ONLY for non-rebalancing tactical color (e.g. macro-driven tilts appropriate for a tactical framework) — these don't need a band justification, just the macro tie-in, and that tie-in must cite the Near-Term Forward Signal (2-3mo) above, not the Medium-Term composite; do not add tactical-color bullets for a static or regime-driven framework per the constraint above.
 
-HARD CONSTRAINT — NUMBERS MUST MATCH THE APP'S OWN TRADE ENGINE, checked mechanically after you answer: a separate, deterministic calculator (not you) already computes the exact rebalancing trades for this portfolio, sizing every trade to bring each OUT OF BAND bucket all the way to the target/effective-target percentage already given above for that bucket in the allocation list — never a partial move to some other percentage. When a bullet recommends rebalancing a bucket, the destination percentage (or dollar amount) you state MUST be that bucket's own EXACT target/effective-target percentage from the allocation list above (e.g. if US Equities' target above reads 60%, recommend moving it to 60%, not 55% or any other invented intermediate figure) — do not soften, round, or partially size a rebalancing recommendation on your own judgment. If you want to caveat that a full move might be executed gradually, say so as a plain-language aside about execution pacing, but the stated target percentage/amount itself must still equal the exact figure above.
+HARD CONSTRAINT — NUMBERS MUST MATCH THE APP'S OWN TRADE ENGINE, checked mechanically after you answer: a separate, deterministic calculator (not you) already computed the exact rebalancing trade for every OUT OF BAND bucket above — both the destination target/effective-target percentage AND the exact dollar trade size ("required trade: BUY/SELL $X") are given directly in the allocation list. When a bullet recommends rebalancing a bucket, you MUST copy that bucket's own EXACT percentage and EXACT dollar figure from the allocation list verbatim (e.g. if US Equities' target above reads 35% with "required trade: BUY $27,707", recommend moving it to 35% and cite $27,707 — not 30%, not $2,797, not any other invented figure) — do not soften, round, recompute, or partially size either number on your own judgment. If you want to caveat that a full move might be executed gradually, say so as a plain-language aside about execution pacing, but the stated percentage and dollar amount themselves must still equal the exact figures above.
 
-Part 1 must be plain prose — no bullets, no bold, no headers. Part 2 must be lead-in sentence + bullets only. Before finalizing, re-read every bullet in Part 2 against every HARD CONSTRAINT block above (if present) and delete/rewrite any bullet that violates any of them, including checking that any stated target percentage exactly matches the allocation list above.`;
+Part 1 must be plain prose — no bullets, no bold, no headers. Part 2 must be lead-in sentence + bullets only. Before finalizing, re-read every bullet in Part 2 against every HARD CONSTRAINT block above (if present) and delete/rewrite any bullet that violates any of them, including checking that every stated target percentage AND dollar amount exactly match the allocation list above, and that the total bullet count matches instruction (2)'s required count.`;
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
