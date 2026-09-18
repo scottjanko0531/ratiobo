@@ -215,7 +215,8 @@ async function generatePortfolioAnalysis(params: {
             ? `OUT OF BAND (±${a.effectiveBand!.toFixed(1)}pt tolerance) — rebalancing this bucket is warranted`
             : `within ±${a.effectiveBand!.toFixed(1)}pt band — no rebalancing action needed here`
           : "";
-        const targetLabel = portfolio.strategy_framework === "resize_overlay" ? "effective target (post-resize-signal)" : "target";
+        const targetLabel = (portfolio.strategy_framework === "resize_overlay" || portfolio.strategy_framework === "regime_driven")
+          ? "effective target (post-resize-signal)" : "target";
         const header = `  ${a.label}: ${a.pct.toFixed(1)}%${a.target != null ? ` (${targetLabel} ${a.target}%, ${driftTxt}, ${bandTxt})` : ""}`;
         const holdingsList = a.holdings.map(h => `${h.symbol}${h.name ? ` (${h.name})` : ""}`).join(", ");
         const notesHere = resizeNotes ? a.holdings.map(h => resizeNotes.get(h.symbol)).filter(Boolean) : [];
@@ -229,11 +230,12 @@ async function generatePortfolioAnalysis(params: {
     const regimeDrivenLabel = portfolio.current_regime_key ? (REGIME_LABELS[portfolio.current_regime_key] ?? portfolio.current_regime_key) : null;
     const REGIME_DRIVEN_TEXT = `This portfolio is explicitly configured as REGIME-DRIVEN: its target allocations shown above are set AUTOMATICALLY by a daily job that tracks the Forward Signal (the app's 6-18 month leading-indicator composite, not the structural or market-implied regime) and only shifts targets once a new regime has held for 30 consecutive days AND the Forward Signal confidence is at least 60% on the day it commits (avoiding both whipsaw and low-conviction commitments — a decayed-confidence candidate will not commit just because 30 days passed) — currently targeting ${regimeDrivenLabel ?? "an unset regime"}${portfolio.regime_confirmed_since ? `, confirmed since ${portfolio.regime_confirmed_since}` : ""}. The regime tilt has ALREADY happened at the target-allocation level — treat this exactly like a static framework for recommendation purposes: stay within rebalancing back to the CURRENT target shown above, do NOT layer additional freelance tactical tilts on top of what the automated target already encodes. If you believe the live Forward Signal differs from what's targeted, note that as context only — do not recommend the portfolio manually front-run the confirmation window.`;
     const UNSET_TEXT = `Determine from the stated strategy and actual holdings above whether this portfolio is a static, regime-agnostic asset-allocation framework (e.g. risk parity, All Weather — explicitly designed so the investor does NOT need to predict which macro regime is active) or a tactical, regime-responsive framework (e.g. explicitly built to rotate or tilt exposure based on the macro cycle, such as BW Modified). If static/regime-agnostic, recommendations must stay within rebalancing back to the target allocations shown above — do NOT recommend new sector, style, or duration tilts driven by today's regime call. Judge holding composition on its own terms (e.g. a broad total-market fund like VTI or ITOT is not a "mega-cap" bet) rather than speculating about what a bucket might contain. If tactical/regime-responsive, regime-driven tilts are appropriate and expected — ground any such tilt in the Near-Term Forward Signal (2-3mo) below, not the Medium-Term composite.`;
+    const REGIME_DRIVEN_RESIZE_ADDENDUM = ` On top of that regime-driven target, one or more individual holdings are ALSO under an active, symbol-specific resize signal (a per-symbol backtested risk-timing rule — trailing drawdown, trend/moving-average break, or vol-regime spike — never a macro call) that scales that ONE holding's effective target down further; the percentages above already reflect this, and weight freed this way is redirected into Cash, which is why Cash may sit above its own regime-driven weight — that is correct, not a cash drag to fix. Do NOT recommend restoring a resized holding toward its regime-driven weight or substituting a different instrument in its place — see the HARD CONSTRAINT below for exactly which symbols this applies to.`;
     const RESIZE_OVERLAY_TEXT = `This portfolio is explicitly configured with a RESIZE OVERLAY: its Target Allocations are FIXED strategic weights (NOT regime-responsive, NOT auto-tilted by the macro cycle) — but each holding's effective target has already been scaled by that specific SYMBOL's own calibrated risk-state signal (a per-symbol backtested rule — trailing drawdown-from-peak, trend/moving-average break, or realized-volatility regime spike — NEVER a macro call or return forecast) whenever that symbol currently reads "Reduced." The percentages and OUT OF BAND verdicts above ALREADY reflect this — they are the resize-adjusted effective targets, not the raw strategic weights, and any per-holding note under a bucket's holdings list explains exactly which signal is active and why. A holding sitting far below its nominal strategic weight (e.g. Gold at 0% instead of a 30% strategic weight) is NOT a missing hedge, a diversification gap, or an oversight — it is the overlay ACTIVELY de-risking that one holding on a live, named signal. Weight freed this way is redirected into the Cash bucket, which is why Cash may sit meaningfully above its own nominal weight — that is correct, not a cash drag to fix. Do NOT recommend restoring a reduced holding to its full strategic weight, adding a different/replacement hedge in its place, or reframing the reduction as something to correct — that is the overlay working as designed. If a resize signal's own confidence note flags it as thin evidence, you may mention that nuance, but do not treat it as license to override or second-guess the live signal.`;
     const frameworkConstraint = "FRAMEWORK CONSTRAINT: " + (
       portfolio.strategy_framework === "static" ? STATIC_TEXT
       : portfolio.strategy_framework === "tactical" ? TACTICAL_TEXT
-      : portfolio.strategy_framework === "regime_driven" ? REGIME_DRIVEN_TEXT
+      : portfolio.strategy_framework === "regime_driven" ? REGIME_DRIVEN_TEXT + (resizeNotes && resizeNotes.size > 0 ? REGIME_DRIVEN_RESIZE_ADDENDUM : "")
       : portfolio.strategy_framework === "resize_overlay" ? RESIZE_OVERLAY_TEXT
       : UNSET_TEXT
     );
@@ -326,7 +328,13 @@ async function analyzeOnePortfolio(
     const bandPct = portfolio.rebalance_band_pct ?? 5;
     let effectiveTargets = portfolio.target_allocations;
     let resizeNotes = new Map<string, string>();
-    if (portfolio.strategy_framework === "resize_overlay") {
+    // Same per-symbol resize overlay applies to regime_driven portfolios too
+    // (e.g. All Weather Alpha's VTI/GLD), matching app/portfolios/page.jsx's
+    // Portfolio Actions block, which applies exposureMultipliers/freed-weight
+    // unconditionally for both frameworks — without this, a regime_driven
+    // portfolio's analysis would grade bucket drift against the raw,
+    // un-adjusted target and call an intentionally-de-risked holding a "gap."
+    if (portfolio.strategy_framework === "resize_overlay" || portfolio.strategy_framework === "regime_driven") {
       const resizeCtx = await computeResizeContext(sb, holdings as HoldingValued[], portfolio.target_allocations);
       effectiveTargets = resizeCtx.effectiveTargets;
       resizeNotes = resizeCtx.resizeNotes;
