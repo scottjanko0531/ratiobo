@@ -85,6 +85,28 @@ function trendRuleStates(closes: number[], N: number): boolean[] {
   return states;
 }
 
+// Hysteresis variant of the trend/MA rule: enter reduced the same instant
+// the bare rule does (price < MA), but only EXIT reduced once price clears
+// MA by bandPct — the same asymmetric-threshold shape already used by
+// drawdownRuleStates (dCut/dRestore) and volRuleStates (triggerMult/
+// restoreMult) below. Added after a live whipsaw on VWO: its 100-day MA sat
+// essentially flat for a week while price ticked back and forth across it
+// by <0.1%, flipping the bare rule's boolean (and therefore the live
+// portfolio's target allocation) twice in 48 hours with zero real move.
+function trendRuleStatesBand(closes: number[], N: number, bandPct: number): boolean[] {
+  const n = closes.length;
+  const states = new Array(n).fill(false);
+  let reduced = false;
+  for (let t = 0; t < n; t++) {
+    const ma = sma(closes, t, N);
+    if (ma == null) { states[t] = reduced; continue; }
+    if (!reduced && closes[t] < ma) reduced = true;
+    else if (reduced && closes[t] > ma * (1 + bandPct)) reduced = false;
+    states[t] = reduced;
+  }
+  return states;
+}
+
 function drawdownRuleStates(closes: number[], dCut: number, dRestore: number): boolean[] {
   const n = closes.length;
   const states = new Array(n).fill(false);
@@ -217,6 +239,24 @@ Deno.serve(async (req: Request) => {
       }
     }
     rules.trendMA = trendResults;
+
+    // Rule 1b: trend/MA with an exit-side hysteresis band (see
+    // trendRuleStatesBand above). Swept only at the N values actually in
+    // production use (50/100/252 across BTC/FBTC/PDBC/VXUS/VWO/VTI) — this
+    // isn't re-deriving N from scratch, it's checking whether adding a
+    // buffer to the already-chosen lookback still holds its edge while
+    // cutting whipsaw transitions.
+    const trendBandResults: Record<string, unknown> = {};
+    for (const N of [50, 100, 252]) {
+      for (const bandPct of [0, 0.005, 0.01, 0.02, 0.03]) {
+        const states = trendRuleStatesBand(closes, N, bandPct);
+        for (const exp of reducedExposureLevels) {
+          const { portfolioReturns, transitions, pctTimeReduced } = simulate(closes, states, exp);
+          trendBandResults[`MA${N}_band${bandPct}_exp${exp}`] = computeStats(portfolioReturns, transitions, pctTimeReduced);
+        }
+      }
+    }
+    rules.trendMABand = trendBandResults;
 
     // Rule 2: trailing drawdown-from-peak threshold
     const ddResults: Record<string, unknown> = {};

@@ -67,11 +67,27 @@ function stdev(arr: number[]): number {
 // — production only needs "today's" state, unlike the backtest which needed
 // the full walk-forward array to score forward returns.
 
-function trendMaLatest(closes: number[], N: number): { reduced: boolean; indicatorValue: number | null } {
+// Exit-side hysteresis band, ported verbatim from equity-resize-backtest's
+// trendRuleStatesBand: enter reduced the instant price < MA (unchanged),
+// but only EXIT reduced once price clears MA by bandPct. Added after a live
+// whipsaw on VWO -- its 100-day MA sat essentially flat for a week while
+// price ticked back and forth across it by <0.1%, flipping "reduced" (and
+// therefore the live portfolio's target allocation) twice in 48 hours with
+// zero real move. Unlike trailingDrawdownLatest/volRegimeLatest below, this
+// now needs the full walk-forward loop (not just today's instantaneous
+// check) to know whether "reduced" was already true going into today.
+function trendMaLatest(closes: number[], N: number, bandPct: number): { reduced: boolean; indicatorValue: number | null } {
   const t = closes.length - 1;
   const ma = sma(closes, t, N);
   if (ma == null) return { reduced: false, indicatorValue: null };
-  return { reduced: closes[t] < ma, indicatorValue: Math.round(ma * 10000) / 10000 };
+  let reduced = false;
+  for (let i = 0; i <= t; i++) {
+    const iMa = sma(closes, i, N);
+    if (iMa == null) continue;
+    if (!reduced && closes[i] < iMa) reduced = true;
+    else if (reduced && closes[i] > iMa * (1 + bandPct)) reduced = false;
+  }
+  return { reduced, indicatorValue: Math.round(ma * 10000) / 10000 };
 }
 
 function trailingDrawdownLatest(closes: number[], dCut: number, dRestore: number): { reduced: boolean; indicatorValue: number } {
@@ -137,7 +153,7 @@ Deno.serve(async (req: Request) => {
       let reduced: boolean;
       let indicatorValue: number | null;
       if (cfg.rule_type === "trend_ma") {
-        ({ reduced, indicatorValue } = trendMaLatest(closes, Number(p.N)));
+        ({ reduced, indicatorValue } = trendMaLatest(closes, Number(p.N), Number(p.bandPct ?? 0)));
       } else if (cfg.rule_type === "trailing_drawdown") {
         ({ reduced, indicatorValue } = trailingDrawdownLatest(closes, Number(p.dCut), Number(p.dRestore)));
       } else if (cfg.rule_type === "vol_regime") {
