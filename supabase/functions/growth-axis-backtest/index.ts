@@ -109,6 +109,8 @@ interface EvalPoint {
   actualDirection: "up" | "down" | "flat"; // dead-band-recalibration spec's Measure 2: actual vs level-at-issue, classified with the SAME dead band as the crossover itself
   strictDirectionalHit: boolean | null; // Measure 2: state's Accelerating/Decelerating call vs actualDirection — null for Persistence (no directional claim)
   continuationHit: boolean | null; // Persistence periods only: did the actual print stay inside the dead band as predicted
+  gap: number; // raw fast-slow gap BEFORE dead-band thresholding — needed for the mixed-case "leaning" (nearSide) quadrant test, which uses which side of zero a Persistence axis's gap sits on even though it didn't clear the dead band
+  targetDate: string; // issue date + horizon — the calendar period `actual` belongs to, needed to key a CSV export by target month rather than issue month
 }
 
 function walkForward(
@@ -154,7 +156,7 @@ function walkForward(
       date: f.date, isSignal, state, naive, model, actual,
       naiveAbsErr, modelAbsErr,
       naiveSqErr: naiveAbsErr ** 2, modelSqErr: modelAbsErr ** 2,
-      directionHit, actualDirection, strictDirectionalHit, continuationHit,
+      directionHit, actualDirection, strictDirectionalHit, continuationHit, gap, targetDate,
     });
   }
   return points;
@@ -197,7 +199,9 @@ function summarizeStrict(points: EvalPoint[]) {
   const r2 = (x: number) => Math.round(x * 100) / 100;
   return {
     nCalls: callPoints.length,
+    nHits: hits,
     strictDirectionalHitRate: callPoints.length ? r2((hits / callPoints.length) * 100) : null,
+    strictDirectionalHitCI: callPoints.length ? wilsonCI(hits, callPoints.length) : null,
     nPersistence: persistPoints.length,
     continuationAccuracy: persistPoints.length ? r2((contHits / persistPoints.length) * 100) : null,
   };
@@ -271,6 +275,322 @@ function stateConditionalBias(points: EvalPoint[]) {
   };
 }
 
+function wilsonCI(hits: number, n: number): { low: number; high: number } | null {
+  if (n === 0) return null;
+  const z = 1.96;
+  const phat = hits / n;
+  const denom = 1 + (z * z) / n;
+  const center = phat + (z * z) / (2 * n);
+  const margin = z * Math.sqrt((phat * (1 - phat)) / n + (z * z) / (4 * n * n));
+  const r1 = (x: number) => Math.round(x * 1000) / 10; // fraction -> percentage, 1 decimal
+  return { low: r1((center - margin) / denom), high: r1((center + margin) / denom) };
+}
+
+// Momentum/reversal transition test (user question, not part of any shipped
+// spec): restricted to non-persistence (Accelerating/Decelerating) periods
+// only, walked chronologically and skipping over any Persistence periods in
+// between — they have no directional call of their own to condition on, so
+// "prior period" here means the prior CALL period, not the prior calendar
+// period. Question: given the prior call period's realized direction (dead-
+// band-classified Up/Down, the SAME actualDirection already used for
+// strictDirectionalHitRate), does that predict the NEXT call period's
+// direction better than (a) a coin flip, (b) the unconditional base rate of
+// Up vs Down among calls seen so far, or (c) the axis's own state call for
+// that period (already reported as strictDirectionalHitRate)? Walk-forward
+// throughout — the transition table and the base rate are both rebuilt from
+// ONLY prior observations at each step, same no-lookahead discipline as
+// biasCorrectionTest above. axisOwnCallHitRateSamePeriods re-scores the
+// existing axis call over the EXACT same restricted period set (same n) so
+// the comparison to what's already shipped is apples-to-apples.
+function momentumTransitionTest(points: EvalPoint[], minHistory = 6) {
+  const calls = points
+    .filter((p) => p.state !== "persistence" && (p.actualDirection === "up" || p.actualDirection === "down"))
+    .slice()
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  const transitionCounts = { up: { up: 0, down: 0 }, down: { up: 0, down: 0 } };
+  let seenUp = 0, seenDown = 0;
+  let nOOS = 0, momentumHits = 0, reversalHits = 0, transitionHits = 0, baseRateHits = 0, ownCallHits = 0;
+  const detail: { date: string; prevDir: string; actual: string; transitionPredicted: string; hit: boolean }[] = [];
+
+  for (let i = 1; i < calls.length; i++) {
+    const prev = calls[i - 1];
+    const cur = calls[i];
+    const prevDir = prev.actualDirection as "up" | "down";
+    const actual = cur.actualDirection as "up" | "down";
+    const seenTotal = seenUp + seenDown;
+
+    if (seenTotal >= minHistory) {
+      const c = transitionCounts[prevDir];
+      const transitionPredicted: "up" | "down" = c.up > c.down ? "up" : c.down > c.up ? "down" : prevDir;
+      const momentumPredicted: "up" | "down" = prevDir;
+      const reversalPredicted: "up" | "down" = prevDir === "up" ? "down" : "up";
+      const baseRatePredicted: "up" | "down" = seenUp >= seenDown ? "up" : "down";
+
+      if (transitionPredicted === actual) transitionHits++;
+      if (momentumPredicted === actual) momentumHits++;
+      if (reversalPredicted === actual) reversalHits++;
+      if (baseRatePredicted === actual) baseRateHits++;
+      if (cur.strictDirectionalHit === true) ownCallHits++;
+      nOOS++;
+      detail.push({ date: cur.date, prevDir, actual, transitionPredicted, hit: transitionPredicted === actual });
+    }
+
+    transitionCounts[prevDir][actual]++;
+    if (actual === "up") seenUp++; else seenDown++;
+  }
+
+  if (nOOS === 0) return null;
+  const r2 = (x: number) => Math.round(x * 100) / 100;
+  const rate = (hits: number) => r2((hits / nOOS) * 100);
+  return {
+    nOOS, minHistory,
+    finalTransitionCounts: transitionCounts,
+    transitionModelHitRate: rate(transitionHits), transitionModelCI: wilsonCI(transitionHits, nOOS),
+    pureMomentumHitRate: rate(momentumHits), pureMomentumCI: wilsonCI(momentumHits, nOOS),
+    pureReversalHitRate: rate(reversalHits), pureReversalCI: wilsonCI(reversalHits, nOOS),
+    unconditionalBaseRateHitRate: rate(baseRateHits),
+    axisOwnCallHitRateSamePeriods: rate(ownCallHits),
+    detail: detail.slice(-20),
+  };
+}
+
+// 3-state version of momentumTransitionTest above: up/flat/down instead of
+// up/down-only. This uses the FULL non-persistence call set (same nCalls as
+// summarizeStrict — 44 for CPI, 25 for GDP) rather than the binary version's
+// much smaller subset that silently dropped every call whose actual print
+// came in flat. That drop turned out to be the real story for CPI (27 of 44
+// calls resolved flat, not opposite-direction), so folding flat back in as
+// its own state is what actually answers "does knowing the prior period's
+// realized state predict the next one" on a real sample size, not a
+// temporally-clustered handful of points from one or two macro episodes.
+// Same walk-forward, no-lookahead discipline throughout.
+function momentumTransitionTest3State(points: EvalPoint[], minHistory = 6) {
+  type Dir3 = "up" | "flat" | "down";
+  const dirs: Dir3[] = ["up", "flat", "down"];
+  const calls = points
+    .filter((p) => p.state !== "persistence")
+    .slice()
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  const zeroRow = (): Record<Dir3, number> => ({ up: 0, flat: 0, down: 0 });
+  const transitionCounts: Record<Dir3, Record<Dir3, number>> = { up: zeroRow(), flat: zeroRow(), down: zeroRow() };
+  const seenCounts: Record<Dir3, number> = zeroRow();
+  let nOOS = 0, transitionHits = 0, repeatHits = 0, baseRateHits = 0, ownCallHits = 0;
+  const detail: { date: string; prevDir: Dir3; actual: Dir3; transitionPredicted: Dir3; hit: boolean }[] = [];
+
+  const argmax = (row: Record<Dir3, number>, fallback: Dir3): Dir3 => {
+    let best = fallback;
+    for (const d of dirs) if (row[d] > row[best]) best = d;
+    return best;
+  };
+
+  for (let i = 1; i < calls.length; i++) {
+    const prev = calls[i - 1];
+    const cur = calls[i];
+    const prevDir = prev.actualDirection as Dir3;
+    const actual = cur.actualDirection as Dir3;
+    const seenTotal = seenCounts.up + seenCounts.flat + seenCounts.down;
+
+    if (seenTotal >= minHistory) {
+      const transitionPredicted = argmax(transitionCounts[prevDir], prevDir); // "repeat prior state" is the tie-break/cold-start fallback
+      const repeatPredicted: Dir3 = prevDir; // pure "whatever just happened, happens again" hypothesis
+      const baseRatePredicted = argmax(seenCounts, "up");
+
+      if (transitionPredicted === actual) transitionHits++;
+      if (repeatPredicted === actual) repeatHits++;
+      if (baseRatePredicted === actual) baseRateHits++;
+      if (cur.strictDirectionalHit === true) ownCallHits++; // flat actual can never hit here — by design, matches strictDirectionalHitRate exactly over this same set
+      nOOS++;
+      detail.push({ date: cur.date, prevDir, actual, transitionPredicted, hit: transitionPredicted === actual });
+    }
+
+    transitionCounts[prevDir][actual]++;
+    seenCounts[actual]++;
+  }
+
+  if (nOOS === 0) return null;
+  const r2 = (x: number) => Math.round(x * 100) / 100;
+  const rate = (hits: number) => r2((hits / nOOS) * 100);
+  const finalTransitionProbs: Record<Dir3, Record<Dir3, number> | null> = { up: null, flat: null, down: null };
+  for (const d of dirs) {
+    const row = transitionCounts[d];
+    const total = row.up + row.flat + row.down;
+    finalTransitionProbs[d] = total > 0
+      ? { up: r2((row.up / total) * 100), flat: r2((row.flat / total) * 100), down: r2((row.down / total) * 100) }
+      : null;
+  }
+  return {
+    nOOS, minHistory,
+    finalTransitionCounts: transitionCounts,
+    finalTransitionProbsPct: finalTransitionProbs, // e.g. finalTransitionProbsPct.flat.flat = P(next is flat | prior was flat)
+    transitionModelHitRate: rate(transitionHits), transitionModelCI: wilsonCI(transitionHits, nOOS),
+    pureRepeatHitRate: rate(repeatHits), pureRepeatCI: wilsonCI(repeatHits, nOOS),
+    unconditionalBaseRateHitRate: rate(baseRateHits),
+    axisOwnCallHitRateSamePeriods: rate(ownCallHits),
+    detail: detail.slice(-20),
+  };
+}
+
+// Regime (quadrant) accuracy for current settings (user question): every
+// prior measure in this file scores growth and inflation SEPARATELY —
+// nothing has checked the actual product-facing claim, which is a joint
+// quadrant (Reflation/Stagflation/Disinflationary Boom/Deflationary Bust),
+// built from BOTH axes together. Matches gdpPoints (quarterly) against
+// cpiPoints (monthly, filtered to the same quarter-start dates) by date.
+// Two cleanly-defined cases, scored separately (never blended, same
+// discipline as summarizeStrict):
+//   - jointRealCall: both axes fired a real Accelerating/Decelerating call
+//     at issue time — the model is predicting a FRESH quadrant. Scored a
+//     hit only if BOTH axes' actual moves also cleared their own dead band
+//     in the predicted direction (either axis coming in "flat" means the
+//     predicted quadrant never fully materialized — scored a miss, not
+//     excluded, since "the regime didn't actually get there" is a real
+//     forecast failure, not an inapplicable case).
+//   - jointPersistence: both axes were in Persistence at issue time — the
+//     model's claim is "the current quadrant holds." Scored a hit if BOTH
+//     axes' actual moves also stayed inside their own dead band.
+//   - jointMixed: one axis real, one Persistence — the product's "leaning
+//     quadrant" case. The Persistent axis's predicted direction is its
+//     nearSide (which side of zero its own sub-threshold gap sits on —
+//     mirrors app/macro/page.jsx's leaningQuadrantKey display logic exactly,
+//     just computed from the backtest's own gap rather than live data).
+//     Scored with the SAME strict rule as jointRealCall: a hit requires
+//     BOTH axes' actual moves to clear their own dead band in the predicted
+//     direction — the Persistent axis's actual is held to the same bar as
+//     if it had made a real call, since that's what the leaning display is
+//     implicitly claiming.
+// overall: all three cases pooled by their natural frequency — the single
+// number "how accurate is a regime read under current settings," blending
+// however often each case actually occurs across the full history.
+function regimeQuadrant(g: "accelerating" | "decelerating", i: "accelerating" | "decelerating"): string {
+  if (g === "accelerating" && i === "accelerating") return "Reflation";
+  if (g === "accelerating" && i === "decelerating") return "Disinflationary Boom";
+  if (g === "decelerating" && i === "accelerating") return "Stagflation";
+  return "Deflationary Bust";
+}
+function regimeAccuracyTest(gdpPoints: EvalPoint[], cpiPoints: EvalPoint[]) {
+  const cpiByDate = new Map(cpiPoints.map((p) => [p.date, p]));
+  let nRealCalls = 0, nRealHits = 0, nPersist = 0, nPersistHits = 0, nMixed = 0, nMixedHits = 0;
+  const realDetail: { date: string; predicted: string; actual: string; hit: boolean }[] = [];
+  const mixedDetail: { date: string; predicted: string; actual: string; hit: boolean }[] = [];
+  const nearSide = (gap: number): "accelerating" | "decelerating" => (gap > 0 ? "accelerating" : "decelerating");
+  for (const g of gdpPoints) {
+    const c = cpiByDate.get(g.date);
+    if (!c) continue;
+    if (g.state !== "persistence" && c.state !== "persistence") {
+      const predicted = regimeQuadrant(g.state as "accelerating" | "decelerating", c.state as "accelerating" | "decelerating");
+      const bothCleared = g.actualDirection !== "flat" && c.actualDirection !== "flat";
+      const actual = bothCleared
+        ? regimeQuadrant(g.actualDirection === "up" ? "accelerating" : "decelerating", c.actualDirection === "up" ? "accelerating" : "decelerating")
+        : `ambiguous (${g.actualDirection === "flat" ? "growth" : "inflation"} stayed flat)`;
+      const hit = bothCleared && predicted === actual;
+      nRealCalls++; if (hit) nRealHits++;
+      realDetail.push({ date: g.date, predicted, actual, hit });
+    } else if (g.state === "persistence" && c.state === "persistence") {
+      nPersist++;
+      if (g.continuationHit === true && c.continuationHit === true) nPersistHits++;
+    } else {
+      // Exactly one axis real, one Persistence — leaning-quadrant case.
+      const gGrowth = g.state === "persistence" ? nearSide(g.gap) : (g.state as "accelerating" | "decelerating");
+      const gInfl = c.state === "persistence" ? nearSide(c.gap) : (c.state as "accelerating" | "decelerating");
+      const predicted = regimeQuadrant(gGrowth, gInfl);
+      const bothCleared = g.actualDirection !== "flat" && c.actualDirection !== "flat";
+      const actual = bothCleared
+        ? regimeQuadrant(g.actualDirection === "up" ? "accelerating" : "decelerating", c.actualDirection === "up" ? "accelerating" : "decelerating")
+        : `ambiguous (${g.actualDirection === "flat" ? "growth" : "inflation"} stayed flat)`;
+      const hit = bothCleared && predicted === actual;
+      nMixed++; if (hit) nMixedHits++;
+      mixedDetail.push({ date: g.date, predicted, actual, hit });
+    }
+  }
+  const r1 = (x: number) => Math.round(x * 1000) / 10; // fraction -> percentage, 1 decimal
+  const nTotal = nRealCalls + nPersist + nMixed;
+  const nTotalHits = nRealHits + nPersistHits + nMixedHits;
+  return {
+    jointRealCall: {
+      n: nRealCalls, nHits: nRealHits,
+      hitRatePct: nRealCalls ? r1(nRealHits / nRealCalls) : null,
+      hitRateCI: nRealCalls ? wilsonCI(nRealHits, nRealCalls) : null,
+      detail: realDetail,
+    },
+    jointPersistence: {
+      n: nPersist, nHits: nPersistHits,
+      hitRatePct: nPersist ? r1(nPersistHits / nPersist) : null,
+      hitRateCI: nPersist ? wilsonCI(nPersistHits, nPersist) : null,
+    },
+    jointMixed: {
+      n: nMixed, nHits: nMixedHits,
+      hitRatePct: nMixed ? r1(nMixedHits / nMixed) : null,
+      hitRateCI: nMixed ? wilsonCI(nMixedHits, nMixed) : null,
+      detail: mixedDetail,
+    },
+    overall: {
+      n: nTotal, nHits: nTotalHits,
+      hitRatePct: nTotal ? r1(nTotalHits / nTotal) : null,
+      hitRateCI: nTotal ? wilsonCI(nTotalHits, nTotal) : null,
+    },
+  };
+}
+
+// Level-vs-fixed-baseline test (user question, comparing our momentum/
+// crossover model against a level-anchored one like 42 Macro's GRID —
+// same fixed 2015-2019 window and z-score math as this repo's own
+// computeFixedWindowZScore in fetch-macro-data/index.ts, just walked
+// forward here). Genuinely different hypothesis from everything else in
+// this file: instead of "is the recent trend pulling away from its own
+// longer trend" (crossover/momentum), this asks "is the CURRENT reading
+// abnormally far from a fixed pre-COVID normal" (level/deviation-from-
+// anchor). The two can and do disagree.
+// Directional ambiguity is real and untested, so both readings of what an
+// elevated/subdued z-score implies are scored, exactly like the momentum-
+// vs-reversal treatment above:
+//   - momentum: elevated z predicts the actual keeps moving up; subdued
+//     predicts it keeps moving down (the level equivalent of "the
+//     hot/cold reading is itself the forecast").
+//   - reversion: elevated z predicts the actual mean-reverts down toward
+//     baseline; subdued predicts a reversion up.
+// Threshold swept in z-units since there's no existing calibration to
+// anchor to (same in-sample-optimization caveat as CPI_MIN_GAP's own
+// history in this repo — the best-threshold number is a ceiling estimate,
+// not a validated setting).
+function zScoreLevelTest(
+  points: EvalPoint[], rawYoyByDate: Map<string, number>, baselineMean: number, baselineStd: number, thresholds: number[]
+) {
+  const r1 = (x: number) => Math.round(x * 1000) / 10;
+  const sweep = thresholds.map((thresh) => {
+    let n = 0, momentumHits = 0, reversionHits = 0;
+    for (const p of points) {
+      const raw = rawYoyByDate.get(p.date);
+      if (raw == null) continue;
+      const z = (raw - baselineMean) / baselineStd;
+      const zState: "elevated" | "subdued" | "normal" = z > thresh ? "elevated" : z < -thresh ? "subdued" : "normal";
+      if (zState === "normal") continue;
+      if (p.actualDirection !== "up" && p.actualDirection !== "down") { n++; continue; } // flat actual: a miss for both hypotheses, still counted
+      const momentumPredicted = zState === "elevated" ? "up" : "down";
+      const reversionPredicted = zState === "elevated" ? "down" : "up";
+      if (p.actualDirection === momentumPredicted) momentumHits++;
+      if (p.actualDirection === reversionPredicted) reversionHits++;
+      n++;
+    }
+    return {
+      threshold: thresh, n,
+      momentumHitRatePct: n ? r1(momentumHits / n) : null, momentumCI: n ? wilsonCI(momentumHits, n) : null,
+      reversionHitRatePct: n ? r1(reversionHits / n) : null, reversionCI: n ? wilsonCI(reversionHits, n) : null,
+    };
+  });
+  const r2 = (x: number) => Math.round(x * 100) / 100;
+  return { baselineMean: r2(baselineMean), baselineStd: r2(baselineStd), sweep };
+}
+
+// Same fixed window as fetch-macro-data's computeFixedWindowZScore.
+function fixedWindowBaseline(yoyArr: Obs[]): { mean: number; std: number } {
+  const window = yoyArr.filter((o) => o.date >= "2015-01-01" && o.date <= "2019-12-31");
+  const mean = window.reduce((a, b) => a + b.value, 0) / window.length;
+  const variance = window.reduce((s, o) => s + (o.value - mean) ** 2, 0) / window.length;
+  return { mean, std: Math.sqrt(variance) || 1 };
+}
+
 // Historical gap series' own volatility — a sanity cross-check for threshold
 // calibration ("some multiple of its own historical standard deviation"),
 // independent of the walk-forward MAE/RMSE/hit-rate sweep.
@@ -312,13 +632,75 @@ Deno.serve(async (req: Request) => {
     const gdpPoints = walkForward(gdpYoy, gdpFast, gdpSlow, growthMinGap, horizonQ, "quarter");
     const cpiPoints = walkForward(cpiYoy, cpiFast, cpiSlow, cpiMinGap, horizonM, "month");
 
+    const gdpYoyByDate = new Map(gdpYoy.map((o) => [o.date, o.value]));
+    const cpiYoyByDate = new Map(cpiYoy.map((o) => [o.date, o.value]));
+    const gdpBaseline = fixedWindowBaseline(gdpYoy);
+    const cpiBaseline = fixedWindowBaseline(cpiYoy);
+    const zThresholds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+    // Pending tail rows for the CSV export: walkForward silently drops any
+    // issue date whose target hasn't resolved yet (by design, for every
+    // aggregate stat above — an unresolved forecast can't be scored). A
+    // spreadsheet asking for "the last few months" wants those rows anyway,
+    // labeled Pending rather than missing outright, so this walks the same
+    // fast/slow arrays independently of actual-availability.
+    function pendingTail(fast: Obs[], slow: Obs[], minGap: number, horizonN: number, unit: "month" | "quarter") {
+      const slowByDate = new Map(slow.map((o) => [o.date, o.value]));
+      const out: { issueDate: string; targetDate: string; state: string; gap: number; forecastValue: number }[] = [];
+      for (const f of fast) {
+        const s = slowByDate.get(f.date);
+        if (s == null) continue;
+        const targetDate = dateNPeriodsAhead(f.date, horizonN, unit);
+        const gap = f.value - s;
+        const isSignal = Math.abs(gap) > minGap;
+        const state = !isSignal ? "persistence" : gap > 0 ? "accelerating" : "decelerating";
+        out.push({ issueDate: f.date, targetDate, state, gap: Math.round(gap * 100) / 100, forecastValue: Math.round(f.value * 100) / 100 });
+      }
+      return out;
+    }
+
+    const includeDetail = url.searchParams.get("detail") === "1";
     const report = {
       params: { growthMinGap, cpiMinGap, horizonQ, horizonM },
+      regimeAccuracy: regimeAccuracyTest(gdpPoints, cpiPoints),
+      ...(includeDetail ? {
+        // Raw per-period rows for a CSV/spreadsheet export — everything a
+        // downstream table needs, none of the aggregate stats above.
+        gdpDetail: gdpPoints.map((p) => {
+          const raw = gdpYoyByDate.get(p.date) ?? null;
+          const z = raw != null ? Math.round(((raw - gdpBaseline.mean) / gdpBaseline.std) * 100) / 100 : null;
+          return {
+            issueDate: p.date, targetDate: p.targetDate, state: p.state, gap: Math.round(p.gap * 100) / 100,
+            forecastValue: Math.round(p.naive * 100) / 100, actual: p.actual != null ? Math.round(p.actual * 100) / 100 : null,
+            actualDirection: p.actualDirection, strictDirectionalHit: p.strictDirectionalHit, continuationHit: p.continuationHit,
+            rawYoyAtIssue: raw != null ? Math.round(raw * 100) / 100 : null, zScoreVsFixedBaseline: z,
+          };
+        }),
+        cpiDetail: cpiPoints.map((p) => {
+          const raw = cpiYoyByDate.get(p.date) ?? null;
+          const z = raw != null ? Math.round(((raw - cpiBaseline.mean) / cpiBaseline.std) * 100) / 100 : null;
+          return {
+            issueDate: p.date, targetDate: p.targetDate, state: p.state, gap: Math.round(p.gap * 100) / 100,
+            forecastValue: Math.round(p.naive * 100) / 100, actual: p.actual != null ? Math.round(p.actual * 100) / 100 : null,
+            actualDirection: p.actualDirection, strictDirectionalHit: p.strictDirectionalHit, continuationHit: p.continuationHit,
+            rawYoyAtIssue: raw != null ? Math.round(raw * 100) / 100 : null, zScoreVsFixedBaseline: z,
+          };
+        }),
+        gdpPendingTail: pendingTail(gdpFast, gdpSlow, growthMinGap, horizonQ, "quarter")
+          .filter((p) => !gdpPoints.some((r) => r.date === p.issueDate))
+          .slice(-6),
+        cpiPendingTail: pendingTail(cpiFast, cpiSlow, cpiMinGap, horizonM, "month")
+          .filter((p) => !cpiPoints.some((r) => r.date === p.issueDate))
+          .slice(-6),
+      } : {}),
       growth: {
         gapStats: gapStats(gdpFast, gdpSlow),
         ...windowedReport(gdpPoints, now),
         biasCorrection: biasCorrectionTest(gdpPoints),
         stateConditionalBias: stateConditionalBias(gdpPoints),
+        momentumTransition: momentumTransitionTest(gdpPoints),
+        momentumTransition3State: momentumTransitionTest3State(gdpPoints),
+        zScoreLevelTest: zScoreLevelTest(gdpPoints, gdpYoyByDate, gdpBaseline.mean, gdpBaseline.std, zThresholds),
       },
       inflation: {
         gapStats: gapStats(cpiFast, cpiSlow),
@@ -333,6 +715,9 @@ Deno.serve(async (req: Request) => {
         // 3-month windows) as the spec's requested de-correlation check.
         biasCorrectionNonOverlapping: biasCorrectionTest(cpiPoints.filter((_, i) => i % 3 === 0), 3),
         stateConditionalBias: stateConditionalBias(cpiPoints),
+        momentumTransition: momentumTransitionTest(cpiPoints),
+        momentumTransition3State: momentumTransitionTest3State(cpiPoints),
+        zScoreLevelTest: zScoreLevelTest(cpiPoints, cpiYoyByDate, cpiBaseline.mean, cpiBaseline.std, zThresholds),
       },
     };
 
