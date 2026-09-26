@@ -6,6 +6,7 @@ import {
 import Shell from "../../components/Shell";
 import { supabase } from "../../lib/supabase";
 import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META, ILLIQUID_KEYS, computeAllocationDeltas } from "../../lib/simulatorKeys";
+import { capexMultipliersBySymbol, mergeExposureMultipliers, CAPEX_REGIME_META } from "../../lib/capexOverlay";
 import HoldingDetailDrawer from "../../components/HoldingDetailDrawer";
 
 const usd = (v) => {
@@ -209,9 +210,27 @@ export default function PortfoliosPage() {
       setResizeSignals(latestBySymbol);
     }).catch(() => setResizeSignals({}));
   }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework]);
-  const exposureMultipliers = useMemo(
+  const resizeExposureMultipliers = useMemo(
     () => Object.fromEntries(Object.entries(resizeSignals).map(([sym, s]) => [sym, Number(s.exposure_multiplier)])),
     [resizeSignals]
+  );
+
+  // AI Capex Cycle overlay (see lib/capexOverlay.js, /ai-capex): a second, top-down
+  // multiplier per symbol from capex_overlay_symbol_multipliers, merged multiplicatively
+  // with the per-symbol resize overlay above. Downside-only (capped at 1) and only
+  // applied once capex_model_config.shadow_mode is turned off — until then Portfolio
+  // Actions just shows what it WOULD cut. Same framework gating as the resize overlay.
+  const [capexRows, setCapexRows] = useState([]);
+  useEffect(() => {
+    if (!viewingPortfolio || (viewingPortfolio.strategy_framework !== "resize_overlay" && viewingPortfolio.strategy_framework !== "regime_driven")) { setCapexRows([]); return; }
+    supabase.from("capex_overlay_symbol_multipliers")
+      .select("symbol, bucket, exposure_multiplier, regime_key, ccsi, shadow_mode, reading_date")
+      .then(({ data }) => setCapexRows(data ?? []), () => setCapexRows([]));
+  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework]);
+  const capexOverlay = useMemo(() => capexMultipliersBySymbol(capexRows), [capexRows]);
+  const exposureMultipliers = useMemo(
+    () => (capexOverlay.applied ? mergeExposureMultipliers(resizeExposureMultipliers, capexOverlay.bySymbol) : resizeExposureMultipliers),
+    [resizeExposureMultipliers, capexOverlay]
   );
 
   // Regime-driven equity-sector tilt (e.g. "All Weather With Equity
@@ -783,6 +802,22 @@ export default function PortfoliosPage() {
                   return (
                     <div className="px-5 py-4 border-b border-ink-line">
                       <p className="label mb-3">Portfolio Actions</p>
+                      {capexRows.length > 0 && (() => {
+                        const held = new Set(hs.map((h) => h.symbol));
+                        const cuts = capexRows.filter((r) => held.has(r.symbol) && Number(r.exposure_multiplier) < 0.995);
+                        const r0 = capexRows[0];
+                        const meta = CAPEX_REGIME_META[r0.regime_key] ?? CAPEX_REGIME_META.boom;
+                        return (
+                          <p className="text-[11px] text-paper-dim mb-3 leading-relaxed">
+                            <a href="/ai-capex" className="text-brass-soft hover:text-brass">AI Capex overlay</a>
+                            {" · "}<span className={meta.tone}>{meta.label}</span> (CCSI {Number(r0.ccsi).toFixed(2)})
+                            {" · "}{capexOverlay.applied ? "applied" : <span className="text-brass-soft">shadow — not applied</span>}
+                            {" · "}{cuts.length === 0
+                              ? "no cuts to this portfolio's holdings"
+                              : `${capexOverlay.applied ? "cutting" : "would cut"} ${cuts.map((c) => `${c.symbol} ×${Number(c.exposure_multiplier).toFixed(2)}`).join(", ")}`}
+                          </p>
+                        );
+                      })()}
                       <div className="border border-ink-line rounded-lg overflow-hidden text-[11px]">
                         <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-1.5 bg-ink-soft/50 border-b border-ink-line text-[10px] text-paper-dim">
                           <span>Holding</span>
