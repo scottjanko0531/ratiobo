@@ -69,20 +69,29 @@ Four robustness checks, all IN-SAMPLE except cross-market (see below):
    - **EFA** (2001-08-27+): 0.22 vs 0.23 vs 0.11 — overlay narrowly *loses*
      to the 200-day rule (though clearly beats buy-and-hold); overlay CAGR
      (5.81%) also trails the 200-day rule's (6.59%) here.
-   Overlay beats or ties the 200-day rule in 2 of 3 markets, and beats
-   buy-and-hold in all 3 — meets the stated "wins on at least 2 of 3 other
-   markets" bar, though EFA is a genuine (not resounding) exception worth
-   remembering before leaning on this signal for international exposure.
+   Against the 200-day rule specifically, this is **1 win (QQQ), 1 tie
+   (IWM), 1 narrow loss (EFA)** — not 2 wins; corrected here after an
+   initial miscount in the conversation's own report. Overlay beats
+   buy-and-hold in all 3 regardless. **Conclusion**: mc-1.3.0 clearly beats
+   buy-and-hold and the vol-matched static mix everywhere tested; its edge
+   over the 200-day rule specifically is concentrated in severe bears
+   (§1/§2 above) and is marginal-to-absent outside them — consistent with
+   EFA's result here and with the 2009+ sub-period Calmar gap (0.55 vs
+   0.54) being thin. Known weakness: the 2022 slow-grind bear, where the
+   200-day rule (and even the vol-matched static mix) beat the overlay on
+   drawdown (§2) — not a severe, fast bear, the exact regime this overlay
+   is weakest in.
    One data-quality note, not a Yahoo gap: all three symbols show a single
    flagged gap 2001-09-10→2001-09-17 (7 calendar days) — the post-9/11 NYSE
    closure, a real market closure, not missing vendor data.
 
 **Gating criteria from the request, evaluated**: beats vol-matched static on
-Calmar — yes. No cliff in sensitivity — yes, plateau confirmed. Wins on ≥2 of
-3 other markets — yes (QQQ, IWM; EFA is the partial exception). Per the
-original instruction, Phase 2 proceeds next with an explicit
-with/without-breadth comparison against mc-1.3.0, using absolute mappings
-for breadth indicators.
+Calmar — yes. No cliff in sensitivity — yes, plateau confirmed. Cross-market:
+1 win, 1 tie, 1 narrow loss vs the 200-day rule (beats buy-and-hold in all
+3) — the overlay's edge is real but concentrated in severe bears, not
+uniform. Per the original instruction, Phase 2 proceeds next with an
+explicit with/without-breadth comparison against mc-1.3.0, using absolute
+mappings for breadth indicators.
 
 **The forward `mc_signal_log` is the true out-of-sample record.** Every
 number in this entry and in mc-1.2.0/mc-1.3.0's own entries below is
