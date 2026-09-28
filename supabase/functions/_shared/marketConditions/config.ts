@@ -10,7 +10,15 @@
 // absence, not a Phase-1-specific branch.
 
 export const MC_CONFIG = {
-  version: "mc-1.0.0",
+  // mc-1.1.0: switched the Stress pillar's credit-spread input from
+  // BAMLH0A0HYM2 (HY OAS) to BAA10Y after discovering FRED now serves
+  // BAMLH0A0HYM2 as only a rolling ~3y window (see DECISIONS.md).
+  // veto.creditWideningBp dropped from 100 to 45 as an explicit PLACEHOLDER
+  // -- BAA10Y (an investment-grade spread) moves in materially smaller
+  // increments than HY OAS did, so the old 100bp threshold would almost
+  // never fire; 45bp has not been backtested/calibrated and is flagged for
+  // Phase 5.
+  version: "mc-1.1.0",
 
   normWindow: 2520, // ~10y trading days, rolling percentile cap
   minHistory: 756, // ~3y trading days, minimum before a percentile indicator counts
@@ -36,7 +44,7 @@ export const MC_CONFIG = {
 
   hysteresis: { upgradeMargin: 0.05, upgradeDays: 3, downgradeMargin: 0.02, downgradeDays: 2 },
 
-  veto: { termStructure: 1.05, termStructureDays: 2, creditWideningBp: 100, clearDays: 5 },
+  veto: { termStructure: 1.05, termStructureDays: 2, creditWideningBp: 45, clearDays: 5 }, // creditWideningBp: placeholder pending Phase 5 recalibration for BAA10Y
 
   entry: {
     dipRsi: 40, dipStretch: -1.5, dipOversoldPct: 20,

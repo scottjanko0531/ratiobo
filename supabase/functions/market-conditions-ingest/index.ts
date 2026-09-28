@@ -1,15 +1,20 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
-// Market Conditions Overlay, Phase 1 — data ingest (build spec Section 3/9.1).
+// Market Conditions Overlay — data ingest (build spec Section 3/9.1).
 // Fetches SPY (equity proxy, into the EXISTING asset_price_history table —
 // see docs/market-conditions/DECISIONS.md, no new price table) and
-// VIXCLS/^VIX3M/BAMLH0A0HYM2 (into the new mc_series_daily). Always
+// VIXCLS/^VIX3M/BAA10Y/BAMLH0A0HYM2 (into the new mc_series_daily). Always
 // refetches full available history on every run and upserts by primary
 // key — simplest idempotent design (spec Section 9.1) at this data volume
 // (a few thousand rows per series), same choice already made for this
 // session's other one-shot fetchers, avoiding a "first run vs incremental"
 // branch entirely.
+//
+// EVERY write in this file is an upsert (onConflict, never a delete) —
+// mc_series_daily and asset_price_history only ever grow or get corrected
+// in place here, confirmed by inspection since this was asked about
+// directly: grep this file for ".delete(" and there is none.
 //
 // pg_cron-scheduled (see 20260928_schedule_market_conditions.sql), same
 // net.http_post pattern as every other scheduled job in this repo.
@@ -122,10 +127,19 @@ Deno.serve(async (req: Request) => {
     const vix3m = await fetchYahooDaily("^VIX3M");
     await upsertSeries(supabase, "VIX3M", vix3m, "yahoo_finance", report, "vix3m");
 
-    // VIXCLS, BAMLH0A0HYM2 -> mc_series_daily (FRED).
+    // VIXCLS, BAA10Y -> mc_series_daily (FRED).
     const vix = await fetchFredCsv("VIXCLS", "1990-01-01");
     await upsertSeries(supabase, "VIXCLS", vix, "fred", report, "vixcls");
 
+    // BAA10Y (Moody's Baa corporate yield less 10y Treasury, daily from
+    // 1986) -- the Stress pillar's credit-spread input as of mc-1.1.0. See
+    // DECISIONS.md for why this replaced BAMLH0A0HYM2 for SCORING.
+    const baa10y = await fetchFredCsv("BAA10Y", "1980-01-01");
+    await upsertSeries(supabase, "BAA10Y", baa10y, "fred", report, "baa10y");
+
+    // BAMLH0A0HYM2 (HY OAS) -- still ingested for reference/comparison, no
+    // longer scored (FRED now serves it as only a rolling ~3y window; see
+    // DECISIONS.md).
     const hyOas = await fetchFredCsv("BAMLH0A0HYM2", "1990-01-01");
     await upsertSeries(supabase, "BAMLH0A0HYM2", hyOas, "fred", report, "hyOas");
 

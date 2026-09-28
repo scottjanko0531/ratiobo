@@ -35,7 +35,7 @@ export interface ComputeInputs {
   closes: number[]; // SPY close
   vix: (number | null)[]; // VIXCLS, aligned to `dates`
   vix3m: (number | null)[]; // ^VIX3M, aligned to `dates`
-  hyOas: (number | null)[]; // BAMLH0A0HYM2, aligned to `dates`
+  creditSpread: (number | null)[]; // BAA10Y (mc-1.1.0+; was BAMLH0A0HYM2), aligned to `dates`
 }
 
 const initialState = (): HysteresisState => ({
@@ -122,7 +122,7 @@ export function stepTierState(inp: TierStepInput, prior: HysteresisState, cfg = 
 export function computeMarketConditionsHistory(inp: ComputeInputs, cfg = MC_CONFIG): DayScoreRow[] {
   const n = inp.dates.length;
   const trendRaw = computeTrendRawSeries(inp.closes, inp.dates, cfg);
-  const stressRaw = computeStressRawSeries(inp.closes, inp.vix, inp.vix3m, inp.hyOas);
+  const stressRaw = computeStressRawSeries(inp.closes, inp.vix, inp.vix3m, inp.creditSpread);
 
   const rows: DayScoreRow[] = [];
   let state = initialState();

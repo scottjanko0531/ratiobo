@@ -1,5 +1,76 @@
 # Market Conditions Overlay — decisions log
 
+## Post-Phase-1 changes (2026-09-29, before Phase 2)
+
+Five changes requested by the user after reviewing Phase 1, all applied and
+verified live (real ingest + full recompute run, not just unit tests):
+
+1. **`mc_signal_log`** (new migration `20260929_mc_signal_log.sql`): append-only
+   record of the overlay's real-time output, one row per date. Enforced at
+   the DB level, not just application discipline — `UPDATE`/`DELETE` triggers
+   raise an exception for every role, confirmed by hand (both blocked with
+   `mc_signal_log is append-only`). `market-conditions-compute` writes to it
+   with `ON CONFLICT (date) DO NOTHING` alongside its normal
+   `market_conditions_scores` full-rebuild upsert — a date logged once is
+   never touched again by a later config change or bug-fix recompute, by
+   construction (the trigger would reject it even if the code tried).
+
+2. **Credit spread source swap, S2/S3 + the credit-widening veto: BAMLH0A0HYM2 -> BAA10Y.**
+   Confirmed via FRED directly: `BAA10Y` (Moody's Baa corporate yield less
+   10y Treasury) has clean daily history from **1986-01-02** — full depth
+   well before SPY's own 1993 start, unlike HY OAS's now-3-year window (see
+   the finding above). `BAMLH0A0HYM2` is still ingested (for reference/future
+   comparison) but no longer feeds S2/S3 or the veto. Bumped
+   `config.version` to **`mc-1.1.0`**. Set `veto.creditWideningBp` to **45**
+   as an explicit placeholder — BAA10Y is an investment-grade spread and
+   moves in much smaller increments than HY OAS did, so the old 100bp
+   threshold would almost never fire; 45bp is unbacktested and flagged for
+   Phase 5 recalibration, not a considered choice.
+
+3. **Forward-fill for daily series**: `alignWithForwardFill()`
+   (`_shared/marketConditions/normalize.ts`) carries the last published
+   value forward up to **3 trading-day positions** (not calendar days),
+   respecting `published_at` for causality — built generically now so Phase
+   4's weekly series (whose `published_at` genuinely lags their as-of date)
+   reuse the same mechanism rather than a second one later. Beyond 3 days,
+   the input is excluded and the day's `flags.stale_inputs` records which
+   series were forward-filled (and how many days) — observed live on the
+   first real run: BAA10Y was 2 trading days behind SPY's latest date
+   (ordinary FRED publish lag) and got forward-filled + flagged; VIXCLS was
+   4 days behind, exceeded the cap, and was correctly excluded rather than
+   filled. This is the fix for the staleness gap flagged in Phase 1's own
+   write-up above.
+
+4. **Ingest delete confirmation**: every write in `market-conditions-ingest`
+   is an upsert (`onConflict`, never `.delete(`) — confirmed by grep, not
+   just recollection, and documented in the file's own header comment now
+   so it stays true.
+
+5. Full recompute run after all of the above:
+   `config_version` now `mc-1.1.0` across all 8,283 rows;
+   `mc_signal_log` populated 1:1 with `market_conditions_scores` (8,283 rows,
+   1993-10-29 to today) and confirmed immutable by direct test.
+
+## Phase 2 constituent-source decision (resolves part of Decision #2)
+
+**Live breadth uses current S&P 500 constituents.** Backtest breadth must be
+labeled survivorship-biased until a historical point-in-time constituent
+source is chosen (still open, before Phase 5) — reinforced by a concrete
+finding: `asset_price_history` is fed **exclusively by Yahoo Finance's v8
+chart API** (confirmed by grep — every writer, `backfill-asset-price-history`,
+`sync-asset-price-history`, `compute-capex-cycle`, and now
+`market-conditions-ingest`, uses the same endpoint; no other provider
+touches this table), and that endpoint **does not serve delisted tickers** —
+confirmed directly, not assumed: both `ENE` (Enron, delisted 2001) and `BSC`
+(Bear Stearns, delisted 2008) return `"No data found, symbol may be
+delisted"`. A historical constituent backtest built on this same price
+source would silently drop every company that left the index, which is
+exactly the survivorship bias the spec's Decision #2 was warning about —
+concrete confirmation that a dedicated point-in-time constituent + price
+history source is required before Phase 5's breadth backtest, not just a
+theoretical concern.
+
+
 Records where the build spec's proposed design was mapped onto existing
 ratiobo infrastructure instead of building a parallel/duplicate path, per
 spec Section 0.1 ("reuse existing tables, clients, and conventions"), and

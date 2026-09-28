@@ -7,10 +7,14 @@
 // Inputs are pre-aligned by the caller (market-conditions-compute) to SPY's
 // trading-day calendar, each as a same-length array with `null` for any
 // date a given series doesn't (yet) have a value — VIX3M is null before
-// 2006-07-17 (see DECISIONS.md), HY OAS is null before whatever its FRED
-// window currently starts at (also DECISIONS.md — FRED now serves only a
-// rolling ~3y window for BAMLH0A0HYM2, a real data constraint discovered
-// while building this phase, not a bug in this alignment step).
+// 2006-07-17 (see DECISIONS.md).
+//
+// Credit spread series: BAA10Y (Moody's Baa corporate yield less the 10y
+// Treasury, daily from 1986), not BAMLH0A0HYM2 (ICE BofA HY OAS) — switched
+// in mc-1.1.0 after discovering FRED now serves BAMLH0A0HYM2 as only a
+// rolling ~3-year window (see DECISIONS.md). BAMLH0A0HYM2 is still ingested
+// for reference but no longer scored. Same percentage-point units and same
+// *100-to-bp conversion apply to BAA10Y as applied to HY OAS.
 
 import { SubIndicatorResult } from "../types.ts";
 import { percentileRank, percentileToScore, collectPriorNonNull, stdevPop } from "../normalize.ts";
@@ -18,14 +22,14 @@ import { MC_CONFIG } from "../config.ts";
 
 export interface StressRawSeries {
   s1raw: (number | null)[]; // VIX / VIX3M
-  s2raw: (number | null)[]; // HY OAS level (%)
-  s3raw: (number | null)[]; // HY OAS 20d change, in BASIS POINTS (not %) -- see conversion below
+  s2raw: (number | null)[]; // credit spread level (%) -- BAA10Y
+  s3raw: (number | null)[]; // credit spread 20d change, in BASIS POINTS (not %) -- see conversion below
   s4raw: (number | null)[]; // 20d annualized realized vol of SPX log returns
   s5raw: (number | null)[]; // VIX level
 }
 
 export function computeStressRawSeries(
-  closes: number[], vix: (number | null)[], vix3m: (number | null)[], hyOas: (number | null)[],
+  closes: number[], vix: (number | null)[], vix3m: (number | null)[], creditSpread: (number | null)[],
 ): StressRawSeries {
   const n = closes.length;
   const s1raw: (number | null)[] = new Array(n).fill(null);
@@ -41,12 +45,12 @@ export function computeStressRawSeries(
 
   for (let t = 0; t < n; t++) {
     if (vix[t] != null && vix3m[t] != null && vix3m[t] !== 0) s1raw[t] = vix[t]! / vix3m[t]!;
-    if (hyOas[t] != null) s2raw[t] = hyOas[t];
-    // HY OAS is stored in percentage points (FRED units: "Percent", e.g.
-    // 4.03 = 4.03%). A 20-day change of 0.01pp = 1bp, so *100 converts to
-    // bp -- matches config.veto.creditWideningBp's own bp units directly.
-    if (t - 20 >= 0 && hyOas[t] != null && hyOas[t - 20] != null) {
-      s3raw[t] = (hyOas[t]! - hyOas[t - 20]!) * 100;
+    if (creditSpread[t] != null) s2raw[t] = creditSpread[t];
+    // Stored in percentage points (FRED units: "Percent"). A 20-day change
+    // of 0.01pp = 1bp, so *100 converts to bp -- matches
+    // config.veto.creditWideningBp's own bp units directly.
+    if (t - 20 >= 0 && creditSpread[t] != null && creditSpread[t - 20] != null) {
+      s3raw[t] = (creditSpread[t]! - creditSpread[t - 20]!) * 100;
     }
     if (t - 19 >= 0) {
       const window: number[] = [];

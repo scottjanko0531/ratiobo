@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  clip, percentileRank, percentileToScore, collectPriorNonNull, sma, mean, stdevPop,
+  clip, percentileRank, percentileToScore, collectPriorNonNull, sma, mean, stdevPop, alignWithForwardFill,
 } from "../supabase/functions/_shared/marketConditions/normalize.ts";
 
 describe("clip", () => {
@@ -65,6 +65,47 @@ describe("sma", () => {
   });
   it("returns null when fewer than n points exist before t", () => {
     expect(sma([1, 2], 1, 5)).toBeNull();
+  });
+});
+
+describe("alignWithForwardFill", () => {
+  const dates = ["2020-01-01", "2020-01-02", "2020-01-03", "2020-01-04", "2020-01-05", "2020-01-06"];
+  const withPub = (rows: { date: string; value: number }[]) => rows.map((r) => ({ ...r, published_at: r.date }));
+
+  it("uses the exact-date value when present (carriedDays=0)", () => {
+    const rows = withPub([{ date: "2020-01-02", value: 10 }]);
+    const out = alignWithForwardFill(dates, rows, 3);
+    expect(out[1]).toEqual({ value: 10, carriedDays: 0 });
+  });
+
+  it("carries the last published value forward up to maxCarryDays trading-day positions", () => {
+    const rows = withPub([{ date: "2020-01-01", value: 5 }]);
+    const out = alignWithForwardFill(dates, rows, 3);
+    expect(out[0]).toEqual({ value: 5, carriedDays: 0 });
+    expect(out[1]).toEqual({ value: 5, carriedDays: 1 });
+    expect(out[2]).toEqual({ value: 5, carriedDays: 2 });
+    expect(out[3]).toEqual({ value: 5, carriedDays: 3 });
+    expect(out[4]).toEqual({ value: null, carriedDays: -1 }); // 4 trading days back, beyond the cap
+  });
+
+  it("prefers the most recent eligible value over an older one further back", () => {
+    const rows = withPub([{ date: "2020-01-01", value: 5 }, { date: "2020-01-03", value: 9 }]);
+    const out = alignWithForwardFill(dates, rows, 3);
+    expect(out[3]).toEqual({ value: 9, carriedDays: 1 }); // 01-04 fills from 01-03, not 01-01
+  });
+
+  it("never uses a row whose published_at is after the target date (no-lookahead, even within the carry window)", () => {
+    const rows = [{ date: "2020-01-01", value: 5, published_at: "2020-01-01" }, { date: "2020-01-02", value: 7, published_at: "2020-01-04" }]; // published late
+    const out = alignWithForwardFill(dates, rows, 3);
+    // 01-02 itself: the 01-02 row isn't eligible yet (published 01-04) -- falls back to 01-01's value.
+    expect(out[1]).toEqual({ value: 5, carriedDays: 1 });
+    // 01-04: now the 01-02 row IS eligible (published_at 01-04 <= target 01-04) and is more recent than 01-01.
+    expect(out[3]).toEqual({ value: 7, carriedDays: 2 });
+  });
+
+  it("returns excluded (-1) for a date with nothing in range", () => {
+    const out = alignWithForwardFill(dates, [], 3);
+    expect(out[0]).toEqual({ value: null, carriedDays: -1 });
   });
 });
 

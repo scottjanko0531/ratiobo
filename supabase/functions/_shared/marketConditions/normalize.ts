@@ -58,6 +58,39 @@ export function collectPriorNonNull(series: (number | null)[], t: number, maxWin
   return vals;
 }
 
+export interface SeriesRowWithPublish { date: string; value: number; published_at: string }
+export interface ForwardFillResult { value: number | null; carriedDays: number }
+
+// Aligns a raw series to `dates` (the target trading calendar), carrying
+// the last published value forward up to `maxCarryDays` TRADING-DAY
+// positions in `dates` (not calendar days) when a date has no exact match.
+// `carriedDays` is 0 for an exact match, 1..maxCarryDays for a forward-fill,
+// and the result is `{ value: null, carriedDays: -1 }` when nothing usable
+// exists within the cap.
+//
+// "Respecting published_at": a row is only eligible to fill date `t` if its
+// own published_at <= t -- the no-lookahead guarantee. For Phase 1's daily
+// series (VIXCLS/VIX3M/BAA10Y) published_at always equals the row's own
+// date, so this never changes behavior today, but it's the same mechanism
+// Phase 4's weekly series (whose published_at genuinely lags their as-of
+// date) will need, built once rather than twice.
+export function alignWithForwardFill(dates: string[], rows: SeriesRowWithPublish[], maxCarryDays: number): ForwardFillResult[] {
+  const byDate = new Map(rows.map((r) => [r.date, r]));
+  const out: ForwardFillResult[] = [];
+  for (let i = 0; i < dates.length; i++) {
+    const t = dates[i];
+    let found: ForwardFillResult | null = null;
+    for (let back = 0; back <= maxCarryDays; back++) {
+      const idx = i - back;
+      if (idx < 0) break;
+      const row = byDate.get(dates[idx]);
+      if (row && row.published_at <= t) { found = { value: row.value, carriedDays: back }; break; }
+    }
+    out.push(found ?? { value: null, carriedDays: -1 });
+  }
+  return out;
+}
+
 export function sma(values: number[], t: number, n: number): number | null {
   if (t - n + 1 < 0) return null;
   let s = 0;

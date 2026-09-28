@@ -155,7 +155,7 @@ describe("computeMarketConditionsHistory — integration", () => {
     const closes = Array.from({ length: n }, (_, i) => 100 + i * 0.3);
     const rows = computeMarketConditionsHistory({
       dates, closes,
-      vix: new Array(n).fill(null), vix3m: new Array(n).fill(null), hyOas: new Array(n).fill(null),
+      vix: new Array(n).fill(null), vix3m: new Array(n).fill(null), creditSpread: new Array(n).fill(null),
     }, MC_CONFIG);
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.length).toBeLessThan(n); // trend (T2) only becomes computable partway through
@@ -167,7 +167,7 @@ describe("computeMarketConditionsHistory — integration", () => {
     const n = 300;
     const dates = makeDates(n);
     const closes = Array.from({ length: n }, (_, i) => 100 + Math.sin(i / 7) * 3 + i * 0.1);
-    const inputs = { dates, closes, vix: new Array(n).fill(null), vix3m: new Array(n).fill(null), hyOas: new Array(n).fill(null) };
+    const inputs = { dates, closes, vix: new Array(n).fill(null), vix3m: new Array(n).fill(null), creditSpread: new Array(n).fill(null) };
     const rows1 = computeMarketConditionsHistory(inputs, MC_CONFIG);
     const rows2 = computeMarketConditionsHistory(inputs, MC_CONFIG);
     expect(rows1).toEqual(rows2);
