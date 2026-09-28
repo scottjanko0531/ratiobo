@@ -1,5 +1,101 @@
 # Market Conditions Overlay — decisions log
 
+## mc-1.2.0: recovery-lag diagnosis and fix (2026-09-29)
+
+**Diagnosis** (queried directly against the live mc-1.1.0 data before
+changing anything): for each of 6 RISK_OFF episodes (2002-10-09,
+2009-03-09, 2011-09-27, 2020-03-23/24, 2022-10-12 bottoms/starts), compared
+the date each gating condition stopped binding. Trend-cap lift and
+trend-state-leaving-DOWN are the same date by construction (the cap
+re-reads `trend_state` fresh every day, no independent hysteresis of its
+own) — confirmed empirically, not assumed. Veto was essentially never the
+bottleneck: cleared within 0-7 days in every episode, often same-day. The
+real bottleneck in 4 of 6 episodes was **trend-state stickiness**: SPX
+closed back above its 200d SMA 7-17 weeks before `trend_state` ever left
+DOWN.
+
+| Anchor | SPX > SMA200 | trend left DOWN | Gap |
+|---|---|---|---|
+| 2002-10-09 bottom | 2003-03-21 | 2003-05-09 | 7 weeks |
+| 2009-03-09 bottom | 2009-05-29 | 2009-08-12 | 11 weeks |
+| 2011-09-27 RISK_OFF start | 2011-10-27 | 2012-01-25 | 13 weeks |
+| 2020-03-23/24 bottom | 2020-05-26 | 2020-05-29 | 3 days |
+| 2022-10-12 bottom | 2022-11-30 | 2023-03-31 | 17 weeks |
+
+2020's V-shaped recovery barely showed the problem (3 days); the other four
+— all slower, choppier recoveries — got stuck for months. Root cause: the
+old rule required `aboveBand AND slopeUp` together to leave DOWN, and a
+choppy recovery spends weeks oscillating inside the ±2% dead band (neither
+`aboveBand` nor `belowBand`), which reads as raw MIXED — and the old
+stickiness rule held the PRIOR state (DOWN) through any MIXED reading,
+so the state sat frozen in DOWN through the entire chop even once SPX was
+solidly back above its 200d SMA.
+
+**Fix 1 — trend-state transitions** (`indicators/trend.ts`,
+`resolveTrendState`): DOWN now exits to MIXED after 3 consecutive days
+above the band, regardless of slope. The slope requirement is kept only
+for MIXED -> UP (DOWN can never jump straight to UP — always passes
+through MIXED first). UP's own exit (belowBand + slopeDown, same day) is
+unchanged. This is now an explicit stateful transition function (needs
+yesterday's state + a running above-band streak), replacing the old
+"compute raw state, apply generic stickiness" approach — the generic
+version couldn't express "hold DOWN, but only for up to 3 days" as
+distinct from "hold DOWN indefinitely."
+
+**Fix 2 — recovery fast-path** (`config.recovery`, `stepTierState`): when
+VIX/VIX3M < 0.90 AND BAA10Y's 20-day change < 0bp AND close > SMA50 all
+hold the same day, the hysteresis upgrade window drops to 1 day (from the
+normal 3) and the DOWN trend cap is suspended for that day. **Every value
+in `recovery` is an explicit placeholder** — none backtested, flagged for
+Phase 5 calibration alongside `veto.creditWideningBp`. Not gated on
+`trend_state` explicitly since the trend-cap suspension is a no-op unless
+`trend_state` is actually DOWN.
+
+**Fix 3 — S1 (VIX/VIX3M) scoring** (`indicators/stress.ts`): switched from
+percentile rank to an absolute linear mapping (ratio <= 0.85 -> +1, >= 1.05
+-> -1, linear between), with no `minHistory` gate — live from VIX3M's own
+2006-07-17 start instead of +756 trading days after that (previously S1
+wasn't live until 2009-07-16). Percentile-ranking a ratio that has a real
+fixed reference point (1.0 = flat term structure) answers "is this unusual
+for the ratio's own history," not "is the term structure actually inverted
+right now" — the wrong question for this specific indicator, unlike S2-S5
+where percentile rank is the right normalization.
+
+Config bumped to **`mc-1.2.0`**.
+
+**Post-fix result, and a new finding that limits how much it actually
+helped**: recomputed and re-ran the same recovery-lag diagnostic. The
+trend-state fix worked exactly as designed in isolation —
+`trend_state` now leaves DOWN 2.5-10 weeks earlier in 3 of 4 episodes
+(2002, 2009, 2022; 2020 barely changed, it wasn't broken to begin with).
+But the overlay's actual recovery-to-NORMAL date only improved
+meaningfully for **2020** (81 -> 51 trading days, the fast-path's
+conditions aligned early and stayed aligned). **2009** didn't move at all
+(111 trading days, identical) and **2022** moved only 4 days despite
+its trend-state label moving 9 weeks earlier. **2002** didn't move at all,
+and can't be helped by the recovery fast-path regardless of tuning — VIX3M
+doesn't exist until 2006, so `recoveryFastPathActive` is structurally
+`false` for the entire 2002-2003 episode.
+
+Diagnosed why: once the trend cap stops binding, the **composite score
+itself** — specifically `score_trend`'s T1/T3 components, which are
+percentile-ranked against 10 years of trailing history — becomes the
+dominant constraint, and that's slow by a different mechanism than
+stickiness. A price that's just barely crossed back above its 200d SMA
+ranks LOW in percentile terms even though the raw signal is technically
+positive, because a bare crossing is unremarkable relative to a full bull
+market's typical readings. Neither of this round's two fixes touches that
+— they fixed the trend-state LABEL and the CAP's binding condition, not
+the underlying score magnitude that (it turns out) was the real gate in 3
+of 4 cases. Also observed: the recovery fast-path is evaluated fresh every
+day, not "unlocked" once triggered — it activated early in 2009 and 2022
+(first active day well before the eventual recovery date in both) but
+wasn't simultaneously active on the specific day composite finally cleared
+its margin, so it didn't shorten the wait in either case. Flagging this as
+a real, unresolved gap for Phase 5 — not claiming this round's fix solved
+the acceptance-bar problem, only the specific stickiness mechanism it
+targeted.
+
 ## Post-Phase-1 changes (2026-09-29, before Phase 2)
 
 Five changes requested by the user after reviewing Phase 1, all applied and

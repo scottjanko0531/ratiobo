@@ -17,7 +17,7 @@
 // *100-to-bp conversion apply to BAA10Y as applied to HY OAS.
 
 import { SubIndicatorResult } from "../types.ts";
-import { percentileRank, percentileToScore, collectPriorNonNull, stdevPop } from "../normalize.ts";
+import { percentileRank, percentileToScore, collectPriorNonNull, stdevPop, clip } from "../normalize.ts";
 import { MC_CONFIG } from "../config.ts";
 
 export interface StressRawSeries {
@@ -76,8 +76,28 @@ function scoreOne(raw: (number | null)[], t: number, cfg = MC_CONFIG): SubIndica
   return { raw: raw[t], percentile: pct, score: percentileToScore(pct, true), excluded: false }; // all Stress sub-indicators inverted
 }
 
+// S1 (mc-1.2.0): absolute linear mapping instead of percentile rank. A
+// VIX/VIX3M ratio has a genuinely meaningful fixed reference point (1.0 =
+// flat term structure) -- ranking it against 10 years of its own history
+// (the percentile approach used for every other Stress sub-indicator)
+// answers "is this unusual for the ratio," not "is the term structure
+// actually inverted right now," which is the thing that matters. No
+// minHistory gate either: live from the moment VIX3M itself exists
+// (2006-07-17), not +756 trading days after that.
+const S1_LOW = 0.85; // ratio <= this -> +1 (normal/favorable term structure)
+const S1_HIGH = 1.05; // ratio >= this -> -1 (inverted/stressed), matches veto.termStructure
+function scoreS1(raw: (number | null)[], t: number): SubIndicatorResult {
+  if (raw[t] == null) return { raw: null, percentile: null, score: null, excluded: true, excludeReason: "input unavailable" };
+  const ratio = raw[t]!;
+  let score: number;
+  if (ratio <= S1_LOW) score = 1;
+  else if (ratio >= S1_HIGH) score = -1;
+  else score = 1 - (2 * (ratio - S1_LOW)) / (S1_HIGH - S1_LOW);
+  return { raw: ratio, percentile: null, score: clip(score), excluded: false };
+}
+
 export function scoreStressAtIndex(raw: StressRawSeries, t: number, cfg = MC_CONFIG): StressScoreAtT {
-  const S1 = scoreOne(raw.s1raw, t, cfg);
+  const S1 = scoreS1(raw.s1raw, t);
   const S2 = scoreOne(raw.s2raw, t, cfg);
   const S3 = scoreOne(raw.s3raw, t, cfg);
   const S4 = scoreOne(raw.s4raw, t, cfg);

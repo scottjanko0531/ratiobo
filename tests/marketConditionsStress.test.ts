@@ -98,6 +98,51 @@ describe("scoreStressAtIndex — inversion", () => {
   });
 });
 
+describe("scoreStressAtIndex — S1 absolute mapping (mc-1.2.0)", () => {
+  it("scores +1 at or below the low boundary (0.85), not a percentile", () => {
+    const closes = [100];
+    const vix = [17];
+    const vix3m = [20]; // ratio 0.85
+    const creditSpread = [null];
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const result = scoreStressAtIndex(raw, 0, MC_CONFIG);
+    expect(result.indicators.S1.percentile).toBeNull(); // absolute, not percentile-ranked
+    expect(result.indicators.S1.score).toBeCloseTo(1, 10);
+  });
+
+  it("scores -1 at or above the high boundary (1.05)", () => {
+    const closes = [100];
+    const vix = [21];
+    const vix3m = [20]; // ratio 1.05
+    const creditSpread = [null];
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const result = scoreStressAtIndex(raw, 0, MC_CONFIG);
+    expect(result.indicators.S1.score).toBeCloseTo(-1, 10);
+  });
+
+  it("interpolates linearly between the boundaries, 0 at the midpoint (0.95)", () => {
+    const closes = [100];
+    const vix = [19];
+    const vix3m = [20]; // ratio 0.95
+    const creditSpread = [null];
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const result = scoreStressAtIndex(raw, 0, MC_CONFIG);
+    expect(result.indicators.S1.score).toBeCloseTo(0, 10);
+  });
+
+  it("scores on day 1 with no minHistory buildup required (live immediately, unlike S2-S5)", () => {
+    // A single day of data -- would fail every other Stress indicator's
+    // minHistory=756 gate, but S1 has no such gate.
+    const closes = [100];
+    const vix = [17];
+    const vix3m = [20];
+    const creditSpread = [null];
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const result = scoreStressAtIndex(raw, 0, MC_CONFIG);
+    expect(result.indicators.S1.excluded).toBe(false);
+  });
+});
+
 describe("vetoConditionsAtIndex", () => {
   it("triggers term-structure condition when VIX/VIX3M exceeds the configured threshold", () => {
     const closes = [100];

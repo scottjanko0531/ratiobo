@@ -22,11 +22,20 @@
 // straight back to wherever the uncapped tier had drifted. This matches the
 // system's stated design goal (reduce drawdowns, avoid whipsaws) better
 // than the alternative.
+//
+// mc-1.2.0: trend-state transitions now go through indicators/trend.ts's
+// resolveTrendState (DOWN -> MIXED via a 3-day above-band streak,
+// regardless of slope — see that file's header for the diagnosis) instead
+// of the old raw-classification + generic stickiness. Also adds the
+// recovery fast-path (config.recovery, all placeholder values): when
+// VIX/VIX3M, BAA10Y's 20d change, and price-vs-SMA50 all turn favorable at
+// once, the upgrade hysteresis window shortens and the DOWN trend cap is
+// suspended for that day.
 
 import { PillarName, TrendState, HysteresisState, DayScoreRow, TierName } from "./types.ts";
 import { MC_CONFIG, TIER_ORDER, CAUTIOUS_IDX, DEFENSIVE_IDX, tierForComposite } from "./config.ts";
 import { clip } from "./normalize.ts";
-import { computeTrendRawSeries, scoreTrendAtIndex } from "./indicators/trend.ts";
+import { computeTrendRawSeries, scoreTrendAtIndex, resolveTrendState } from "./indicators/trend.ts";
 import { computeStressRawSeries, scoreStressAtIndex, vetoConditionsAtIndex } from "./indicators/stress.ts";
 import { evaluateEntrySignal } from "./entrySignal.ts";
 
@@ -42,14 +51,17 @@ const initialState = (): HysteresisState => ({
   tierIndex: TIER_ORDER.indexOf("NORMAL"), // neutral starting point before any real composite exists
   upStreak: 0, downStreak: 0,
   trendState: "MIXED",
+  aboveBandStreak: 0,
   vetoActive: false, vetoTermStructureStreak: 0, vetoClearStreak: 0,
 });
 
 export interface TierStepInput {
   composite: number;
-  trendState: TrendState; // already stickiness-resolved by the caller
+  trendState: TrendState; // already resolved (resolveTrendState) by the caller
+  aboveBandStreak: number; // already resolved by the caller -- threaded through into nextState
   termStructureTriggered: boolean;
   creditWideningTriggered: boolean;
+  recoveryFastPathActive: boolean; // mc-1.2.0 — see config.recovery
 }
 
 export interface TierStepResult {
@@ -71,10 +83,15 @@ export function stepTierState(inp: TierStepInput, prior: HysteresisState, cfg = 
   let downStreak = prior.downStreak;
   let upgraded = false, downgraded = false;
 
+  // mc-1.2.0: the recovery fast-path shortens the upgrade window from
+  // hysteresis.upgradeDays down to recovery.fastPathUpgradeDays (default 1
+  // -- i.e. same-day) when active.
+  const upgradeDaysNeeded = inp.recoveryFastPathActive ? cfg.recovery.fastPathUpgradeDays : cfg.hysteresis.upgradeDays;
+
   if (tierIndex > 0) {
     const nextUpMin = cfg.tiers[tierIndex - 1].min;
     upStreak = inp.composite > nextUpMin + cfg.hysteresis.upgradeMargin ? upStreak + 1 : 0;
-    if (upStreak >= cfg.hysteresis.upgradeDays) { tierIndex -= 1; upgraded = true; }
+    if (upStreak >= upgradeDaysNeeded) { tierIndex -= 1; upgraded = true; }
   } else {
     upStreak = 0;
   }
@@ -89,9 +106,11 @@ export function stepTierState(inp: TierStepInput, prior: HysteresisState, cfg = 
 
   if (upgraded || downgraded) { upStreak = 0; downStreak = 0; }
 
-  // Trend cap (spec 7.3 #3): DOWN trend caps tier at CAUTIOUS or worse.
+  // Trend cap (spec 7.3 #3): DOWN trend caps tier at CAUTIOUS or worse --
+  // suspended when the mc-1.2.0 recovery fast-path is active (a no-op
+  // unless trend_state is actually DOWN).
   let finalTierIndex = tierIndex;
-  if (inp.trendState === "DOWN") finalTierIndex = Math.max(finalTierIndex, CAUTIOUS_IDX);
+  if (inp.trendState === "DOWN" && !inp.recoveryFastPathActive) finalTierIndex = Math.max(finalTierIndex, CAUTIOUS_IDX);
 
   // Stress veto (spec 7.3 #4).
   const vetoTermStructureStreak = inp.termStructureTriggered ? prior.vetoTermStructureStreak + 1 : 0;
@@ -114,6 +133,7 @@ export function stepTierState(inp: TierStepInput, prior: HysteresisState, cfg = 
       tierIndex: finalTierIndex,
       upStreak, downStreak,
       trendState: inp.trendState,
+      aboveBandStreak: inp.aboveBandStreak,
       vetoActive, vetoTermStructureStreak, vetoClearStreak,
     },
   };
@@ -138,11 +158,10 @@ export function computeMarketConditionsHistory(inp: ComputeInputs, cfg = MC_CONF
     const available = pillars.filter((p) => p.score != null);
     if (available.length === 0) continue; // nothing computable yet -- no row, no state advance
 
-    // Trend state stickiness (spec 6.1): a MIXED reading holds the prior
-    // UP/DOWN state rather than resetting to neutral.
-    const trendStateFinal: TrendState = trendResult.trendStateRaw !== "MIXED"
-      ? trendResult.trendStateRaw
-      : (state.trendState === "UP" || state.trendState === "DOWN" ? state.trendState : "MIXED");
+    // mc-1.2.0 trend-state transition (see file header + trend.ts).
+    const { state: trendStateFinal, aboveBandStreak } = resolveTrendState(
+      trendRaw.t1raw[t], trendRaw.t2raw[t], state.trendState, state.aboveBandStreak, cfg.trend.trendBand,
+    );
 
     // Cross-pillar weight redistribution (spec Section 6): only pillars
     // with a score today count, renormalized to sum to 1.
@@ -152,8 +171,20 @@ export function computeMarketConditionsHistory(inp: ComputeInputs, cfg = MC_CONF
       .filter((p) => !available.some((a) => a.name === p));
 
     const vetoConds = vetoConditionsAtIndex(stressRaw, t, cfg);
+
+    // mc-1.2.0 recovery fast-path (config.recovery — all placeholders).
+    const closeAboveSma50 = trendRaw.sma50[t] != null && inp.closes[t] > trendRaw.sma50[t]!;
+    const recoveryFastPathActive = cfg.recovery.enabled
+      && stressRaw.s1raw[t] != null && stressRaw.s1raw[t]! < cfg.recovery.vixTermStructureMax
+      && stressRaw.s3raw[t] != null && stressRaw.s3raw[t]! < cfg.recovery.baa10yChangeMaxBp
+      && closeAboveSma50;
+
     const { rawTierIndex, finalTierIndex, nextState } = stepTierState(
-      { composite, trendState: trendStateFinal, termStructureTriggered: vetoConds.termStructureTriggered, creditWideningTriggered: vetoConds.creditWideningTriggered },
+      {
+        composite, trendState: trendStateFinal, aboveBandStreak,
+        termStructureTriggered: vetoConds.termStructureTriggered, creditWideningTriggered: vetoConds.creditWideningTriggered,
+        recoveryFastPathActive,
+      },
       state, cfg,
     );
     const vetoActive = nextState.vetoActive;
@@ -184,6 +215,7 @@ export function computeMarketConditionsHistory(inp: ComputeInputs, cfg = MC_CONF
           termStructureStreak: nextState.vetoTermStructureStreak,
           clearStreak: nextState.vetoClearStreak,
         },
+        recovery_fast_path_active: recoveryFastPathActive,
       },
       components: { trend: trendResult.indicators, stress: stressResult.indicators },
     };

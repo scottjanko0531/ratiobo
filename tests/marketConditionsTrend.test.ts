@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeTrendRawSeries, scoreTrendAtIndex } from "../supabase/functions/_shared/marketConditions/indicators/trend.ts";
+import { computeTrendRawSeries, scoreTrendAtIndex, resolveTrendState } from "../supabase/functions/_shared/marketConditions/indicators/trend.ts";
 import { MC_CONFIG } from "../supabase/functions/_shared/marketConditions/config.ts";
 
 // Weekday-only date sequence, matching a real trading calendar's month
@@ -25,7 +25,7 @@ describe("computeTrendRawSeries / scoreTrendAtIndex — T1/T2/T3", () => {
     const t = n - 1;
     const result = scoreTrendAtIndex(raw, t, closes, MC_CONFIG);
     expect(result.indicators.T2.score).toBe(1); // SMA200 slope positive
-    expect(result.trendStateRaw).toBe("UP");
+    expect(resolveTrendState(raw.t1raw[t], raw.t2raw[t], "MIXED", 0, MC_CONFIG.trend.trendBand).state).toBe("UP");
     expect(result.indicators.T3.raw).toBeGreaterThan(0); // 12-1 momentum positive
   });
 
@@ -37,7 +37,7 @@ describe("computeTrendRawSeries / scoreTrendAtIndex — T1/T2/T3", () => {
     const t = n - 1;
     const result = scoreTrendAtIndex(raw, t, closes, MC_CONFIG);
     expect(result.indicators.T2.score).toBe(-1);
-    expect(result.trendStateRaw).toBe("DOWN");
+    expect(resolveTrendState(raw.t1raw[t], raw.t2raw[t], "MIXED", 0, MC_CONFIG.trend.trendBand).state).toBe("DOWN");
     expect(result.indicators.T3.raw).toBeLessThan(0);
   });
 
@@ -49,7 +49,7 @@ describe("computeTrendRawSeries / scoreTrendAtIndex — T1/T2/T3", () => {
     const t = n - 1;
     const result = scoreTrendAtIndex(raw, t, closes, MC_CONFIG);
     expect(result.indicators.T1.raw).toBeCloseTo(0, 10);
-    expect(result.trendStateRaw).toBe("MIXED");
+    expect(resolveTrendState(raw.t1raw[t], raw.t2raw[t], "MIXED", 0, MC_CONFIG.trend.trendBand).state).toBe("MIXED");
   });
 
   it("excludes T1/T3 (percentile-based) before minHistory is met, without excluding T2 (binary)", () => {
@@ -113,6 +113,59 @@ describe("computeTrendRawSeries — T4 10-month rule", () => {
   });
 });
 
+describe("resolveTrendState — mc-1.2.0 DOWN-exit structural fix", () => {
+  const band = MC_CONFIG.trend.trendBand;
+
+  it("stays DOWN while the above-band streak is below 3, even with a positive slope", () => {
+    let state = "DOWN" as const, streak = 0;
+    // Day 1: above band, slope still down -- streak=1, stays DOWN.
+    ({ state, aboveBandStreak: streak } = resolveTrendState(band + 0.01, -1, state, streak, band));
+    expect(state).toBe("DOWN"); expect(streak).toBe(1);
+    // Day 2: above band, slope now up -- streak=2, STILL DOWN (slope doesn't matter for exiting DOWN).
+    ({ state, aboveBandStreak: streak } = resolveTrendState(band + 0.01, 1, state, streak, band));
+    expect(state).toBe("DOWN"); expect(streak).toBe(2);
+  });
+
+  it("exits DOWN to MIXED on the 3rd consecutive above-band day, regardless of slope", () => {
+    let state = "DOWN" as const, streak = 2; // two days already banked
+    ({ state, aboveBandStreak: streak } = resolveTrendState(band + 0.01, -1, state, streak, band)); // slope still DOWN
+    expect(state).toBe("MIXED");
+    expect(streak).toBe(3);
+  });
+
+  it("never jumps DOWN straight to UP, even if the 3rd day also has a positive slope", () => {
+    let state = "DOWN" as const, streak = 2;
+    ({ state, aboveBandStreak: streak } = resolveTrendState(band + 0.01, 1, state, streak, band)); // slope UP this time
+    expect(state).toBe("MIXED"); // not UP -- must pass through MIXED first
+  });
+
+  it("resets the above-band streak on any day the price isn't above the band", () => {
+    let state = "DOWN" as const, streak = 2;
+    ({ state, aboveBandStreak: streak } = resolveTrendState(-band - 0.01, -1, state, streak, band)); // below band again
+    expect(state).toBe("DOWN");
+    expect(streak).toBe(0);
+  });
+
+  it("MIXED -> UP requires both above-band AND positive slope the same day", () => {
+    const r1 = resolveTrendState(band + 0.01, 1, "MIXED", 0, band);
+    expect(r1.state).toBe("UP");
+    const r2 = resolveTrendState(band + 0.01, -1, "MIXED", 0, band); // above band but slope still down
+    expect(r2.state).toBe("MIXED");
+  });
+
+  it("MIXED -> DOWN requires both below-band AND negative slope the same day (unchanged)", () => {
+    const r = resolveTrendState(-band - 0.01, -1, "MIXED", 0, band);
+    expect(r.state).toBe("DOWN");
+  });
+
+  it("UP is sticky through a MIXED reading, but exits to DOWN on belowBand+slopeDown (unchanged)", () => {
+    const staysUp = resolveTrendState(0, 1, "UP", 0, band); // inside the dead zone
+    expect(staysUp.state).toBe("UP");
+    const flips = resolveTrendState(-band - 0.01, -1, "UP", 0, band);
+    expect(flips.state).toBe("DOWN");
+  });
+});
+
 describe("no-lookahead", () => {
   it("truncating the input series after t doesn't change t's own computed values", () => {
     const n = 400;
@@ -128,7 +181,9 @@ describe("no-lookahead", () => {
     const truncRaw = computeTrendRawSeries(truncatedCloses, truncatedDates, MC_CONFIG);
     const truncResult = scoreTrendAtIndex(truncRaw, t, truncatedCloses, MC_CONFIG);
 
-    expect(truncResult.trendStateRaw).toBe(fullResult.trendStateRaw);
+    const band = MC_CONFIG.trend.trendBand;
+    expect(resolveTrendState(truncRaw.t1raw[t], truncRaw.t2raw[t], "MIXED", 0, band).state)
+      .toBe(resolveTrendState(fullRaw.t1raw[t], fullRaw.t2raw[t], "MIXED", 0, band).state);
     expect(truncResult.pillarScore).toBeCloseTo(fullResult.pillarScore as number, 10);
     expect(truncResult.indicators.T1.raw).toBeCloseTo(fullResult.indicators.T1.raw as number, 10);
   });

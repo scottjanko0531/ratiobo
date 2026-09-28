@@ -4,10 +4,21 @@
 //      indicator value from `closes` alone (SMA-based, no percentile yet).
 //   2. scoreTrendAtIndex — percentile-normalizes T1/T3 against their own
 //      trailing window (T2/T4 are already +/-1 per the spec's own table,
-//      no percentile step) and returns that day's pillar result plus the
-//      RAW (pre-stickiness) trend state. Stickiness needs the PRIOR day's
-//      final state, which is sequential/carried-forward state that belongs
-//      to scoring.ts's walk, not to this pure per-indicator module.
+//      no percentile step) and returns that day's pillar result.
+//   3. resolveTrendState — the trend-state TRANSITION machine (mc-1.2.0),
+//      separate from scoreTrendAtIndex because it's inherently stateful
+//      (needs yesterday's state + a running streak), unlike the pure
+//      per-day indicator scoring above.
+//
+// mc-1.2.0 structural fix (diagnosed against 2002/2009/2011/2022: SPX
+// closed back above its 200d SMA 7-17 WEEKS before trend_state left DOWN
+// in every one of those episodes, entirely because of stickiness holding
+// DOWN through the choppy within-band chop that follows most recoveries):
+// DOWN now exits to MIXED once close > SMA200*(1+band) for 3 CONSECUTIVE
+// days, regardless of slope. The slope (T2) requirement is kept ONLY for
+// MIXED -> UP, so DOWN can never jump straight to UP in one step anymore —
+// it always passes through MIXED first. UP's own exit condition (belowBand
+// + slopeDown, single day) is unchanged.
 
 import { SubIndicatorResult, TrendState } from "../types.ts";
 import { sma, percentileRank, percentileToScore, collectPriorNonNull } from "../normalize.ts";
@@ -18,6 +29,7 @@ export interface TrendRawSeries {
   t2raw: (number | null)[]; // +1 / -1 / null
   t3raw: (number | null)[]; // 12-1 momentum
   t4raw: (number | null)[]; // +1 / -1 / null (10-month rule)
+  sma50: (number | null)[]; // plain SMA50 level -- not a scored indicator, used only by the recovery fast-path (mc-1.2.0, scoring.ts)
 }
 
 // Month-end index of each trading day's calendar month, i.e. the last
@@ -39,6 +51,7 @@ export function computeTrendRawSeries(
   const t2raw: (number | null)[] = new Array(n).fill(null);
   const t3raw: (number | null)[] = new Array(n).fill(null);
   const t4raw: (number | null)[] = new Array(n).fill(null);
+  const sma50: (number | null)[] = new Array(n).fill(null);
 
   const slope = cfg.trend.slopeLookback;
   const months = cfg.trend.tenMonthRuleMonths;
@@ -47,6 +60,7 @@ export function computeTrendRawSeries(
   for (let t = 0; t < n; t++) {
     const sma200 = sma(closes, t, 200);
     if (sma200 != null) t1raw[t] = closes[t] / sma200 - 1;
+    sma50[t] = sma(closes, t, 50);
 
     if (t - slope >= 0) {
       const sma200now = sma(closes, t, 200);
@@ -79,13 +93,12 @@ export function computeTrendRawSeries(
     }
   }
 
-  return { t1raw, t2raw, t3raw, t4raw };
+  return { t1raw, t2raw, t3raw, t4raw, sma50 };
 }
 
 export interface TrendScoreAtT {
   indicators: { T1: SubIndicatorResult; T2: SubIndicatorResult; T3: SubIndicatorResult; T4: SubIndicatorResult };
   pillarScore: number | null;
-  trendStateRaw: TrendState;
 }
 
 export function scoreTrendAtIndex(
@@ -130,14 +143,50 @@ export function scoreTrendAtIndex(
   const available = [T1, T2, T3, T4].filter((r) => !r.excluded && r.score != null);
   const pillarScore = available.length ? available.reduce((s, r) => s + (r.score as number), 0) / available.length : null;
 
-  // Raw trend state (pre-stickiness — see file header). Reuses T1's raw
-  // ratio directly: close > SMA200*(1+band) <=> T1raw > band.
-  const band = cfg.trend.trendBand;
-  let trendStateRaw: TrendState = "MIXED";
-  if (raw.t1raw[t] != null && raw.t2raw[t] != null) {
-    if (raw.t1raw[t]! > band && raw.t2raw[t] === 1) trendStateRaw = "UP";
-    else if (raw.t1raw[t]! < -band && raw.t2raw[t] === -1) trendStateRaw = "DOWN";
+  return { indicators: { T1, T2, T3, T4 }, pillarScore };
+}
+
+export interface TrendStateResult {
+  state: TrendState;
+  aboveBandStreak: number;
+}
+
+// Trend-state transition machine (mc-1.2.0 — see file header for the
+// diagnosis this fixes). Stateful by nature (needs yesterday's state + a
+// running streak), so it's separate from the stateless per-day
+// scoreTrendAtIndex above; scoring.ts's walk calls this once per day,
+// carrying `state`/`aboveBandStreak` forward via HysteresisState.
+//
+// Transitions:
+//   DOWN  -> MIXED  when close > SMA200*(1+band) for 3 CONSECUTIVE days,
+//            regardless of slope (T2). Never DOWN -> UP directly.
+//   MIXED -> UP     when close > SMA200*(1+band) AND slope (T2) > 0, same
+//            day (unchanged from before).
+//   MIXED -> DOWN   when close < SMA200*(1-band) AND slope (T2) < 0, same
+//            day (unchanged from before).
+//   UP    -> DOWN   when close < SMA200*(1-band) AND slope (T2) < 0, same
+//            day (unchanged from before); otherwise UP is sticky.
+export function resolveTrendState(
+  t1raw: number | null, t2raw: number | null, priorState: TrendState, priorAboveBandStreak: number, band: number,
+): TrendStateResult {
+  const aboveBand = t1raw != null && t1raw > band;
+  const belowBand = t1raw != null && t1raw < -band;
+  const slopeUp = t2raw === 1;
+  const slopeDown = t2raw === -1;
+
+  const aboveBandStreak = aboveBand ? priorAboveBandStreak + 1 : 0;
+
+  let state: TrendState = priorState;
+  if (priorState === "DOWN") {
+    state = aboveBandStreak >= 3 ? "MIXED" : "DOWN";
+  } else if (priorState === "UP") {
+    state = (belowBand && slopeDown) ? "DOWN" : "UP";
+  } else {
+    // MIXED, including the initial bootstrap state.
+    if (aboveBand && slopeUp) state = "UP";
+    else if (belowBand && slopeDown) state = "DOWN";
+    else state = "MIXED";
   }
 
-  return { indicators: { T1, T2, T3, T4 }, pillarScore, trendStateRaw };
+  return { state, aboveBandStreak };
 }

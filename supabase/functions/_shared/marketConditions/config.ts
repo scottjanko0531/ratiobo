@@ -18,7 +18,28 @@ export const MC_CONFIG = {
   // increments than HY OAS did, so the old 100bp threshold would almost
   // never fire; 45bp has not been backtested/calibrated and is flagged for
   // Phase 5.
-  version: "mc-1.1.0",
+  //
+  // mc-1.2.0: diagnosed a real recovery-lag bug (SPX closed back above its
+  // 200d SMA 7-17 weeks before trend_state left DOWN in 4 of 6 historical
+  // episodes checked -- see DECISIONS.md) and fixed it two ways:
+  //   1. trend.ts's resolveTrendState: DOWN now exits to MIXED after 3
+  //      consecutive days above the band, regardless of slope (previously
+  //      required aboveBand AND slopeUp together, which let a choppy
+  //      recovery get stuck oscillating in the dead band indefinitely).
+  //   2. `recovery` below: an explicit fast-path that shortens the
+  //      hysteresis upgrade window and lifts the DOWN trend cap when
+  //      term-structure/credit/price conditions all turn favorable at
+  //      once. Every value in `recovery` is a PLACEHOLDER -- none have
+  //      been backtested, flagged for Phase 5 calibration, not a
+  //      considered choice.
+  //   3. indicators/stress.ts's S1 (VIX/VIX3M): switched from percentile
+  //      normalization to an absolute linear mapping, live from VIX3M's
+  //      own 2006 start rather than gated by minHistory=756 on top of that
+  //      -- percentile ranking made "is the term structure inverted right
+  //      now" relative to 10 years of history instead of an absolute read,
+  //      which is backwards for a level that has a genuinely meaningful
+  //      fixed reference point (1.0).
+  version: "mc-1.2.0",
 
   normWindow: 2520, // ~10y trading days, rolling percentile cap
   minHistory: 756, // ~3y trading days, minimum before a percentile indicator counts
@@ -45,6 +66,19 @@ export const MC_CONFIG = {
   hysteresis: { upgradeMargin: 0.05, upgradeDays: 3, downgradeMargin: 0.02, downgradeDays: 2 },
 
   veto: { termStructure: 1.05, termStructureDays: 2, creditWideningBp: 45, clearDays: 5 }, // creditWideningBp: placeholder pending Phase 5 recalibration for BAA10Y
+
+  // mc-1.2.0. ALL PLACEHOLDER VALUES, none backtested -- see DECISIONS.md,
+  // Phase 5. When VIX/VIX3M < vixTermStructureMax AND the 20d BAA10Y change
+  // < baa10yChangeMaxBp AND close > SMA50 all hold on the same day: the
+  // hysteresis upgrade requirement drops to fastPathUpgradeDays (instead of
+  // hysteresis.upgradeDays), and the DOWN trend cap is not applied that day
+  // (a no-op unless trend_state is actually DOWN).
+  recovery: {
+    enabled: true,
+    vixTermStructureMax: 0.90,
+    baa10yChangeMaxBp: 0, // BAA10Y 20d change must be NEGATIVE (spread tightening) to count
+    fastPathUpgradeDays: 1,
+  },
 
   entry: {
     dipRsi: 40, dipStretch: -1.5, dipOversoldPct: 20,

@@ -5,12 +5,12 @@ import { HysteresisState } from "../supabase/functions/_shared/marketConditions/
 
 const neutral = (): HysteresisState => ({
   tierIndex: TIER_ORDER.indexOf("RISK_OFF"),
-  upStreak: 0, downStreak: 0, trendState: "MIXED",
+  upStreak: 0, downStreak: 0, trendState: "MIXED", aboveBandStreak: 0,
   vetoActive: false, vetoTermStructureStreak: 0, vetoClearStreak: 0,
 });
 
 function noVeto(composite: number, trendState: "UP" | "MIXED" | "DOWN" = "MIXED"): TierStepInput {
-  return { composite, trendState, termStructureTriggered: false, creditWideningTriggered: false };
+  return { composite, trendState, aboveBandStreak: 0, termStructureTriggered: false, creditWideningTriggered: false, recoveryFastPathActive: false };
 }
 
 describe("stepTierState — hysteresis", () => {
@@ -86,21 +86,53 @@ describe("stepTierState — trend cap", () => {
   });
 });
 
+describe("stepTierState — recovery fast-path (mc-1.2.0, placeholder config)", () => {
+  it("suspends the DOWN trend cap when the fast-path is active", () => {
+    let state = neutral();
+    state.tierIndex = TIER_ORDER.indexOf("FULL"); // composite has room to sit above FULL's threshold
+    const r = stepTierState(
+      { composite: 0.95, trendState: "DOWN", aboveBandStreak: 0, termStructureTriggered: false, creditWideningTriggered: false, recoveryFastPathActive: true },
+      state, MC_CONFIG,
+    );
+    expect(r.finalTierIndex).toBeLessThan(CAUTIOUS_IDX); // NOT capped, despite trendState DOWN
+  });
+
+  it("still applies the DOWN trend cap when the fast-path is inactive (control)", () => {
+    let state = neutral();
+    state.tierIndex = TIER_ORDER.indexOf("FULL");
+    const r = stepTierState(
+      { composite: 0.95, trendState: "DOWN", aboveBandStreak: 0, termStructureTriggered: false, creditWideningTriggered: false, recoveryFastPathActive: false },
+      state, MC_CONFIG,
+    );
+    expect(r.finalTierIndex).toBeGreaterThanOrEqual(CAUTIOUS_IDX);
+  });
+
+  it("upgrades same-day (fastPathUpgradeDays=1) instead of waiting for hysteresis.upgradeDays", () => {
+    let state = neutral();
+    state.tierIndex = TIER_ORDER.indexOf("RISK_OFF");
+    const r = stepTierState(
+      { composite: 0.9, trendState: "MIXED", aboveBandStreak: 0, termStructureTriggered: false, creditWideningTriggered: false, recoveryFastPathActive: true },
+      state, MC_CONFIG,
+    );
+    expect(r.finalTierIndex).toBe(TIER_ORDER.indexOf("DEFENSIVE")); // moved same day, not after 3
+  });
+});
+
 describe("stepTierState — stress veto", () => {
   it("activates after termStructureDays (2) consecutive triggered days, and caps at DEFENSIVE", () => {
     let state = neutral();
     state.tierIndex = TIER_ORDER.indexOf("FULL");
-    let r = stepTierState({ composite: 0.9, trendState: "MIXED", termStructureTriggered: true, creditWideningTriggered: false }, state, MC_CONFIG);
+    let r = stepTierState({ composite: 0.9, trendState: "MIXED", aboveBandStreak: 0, termStructureTriggered: true, creditWideningTriggered: false, recoveryFastPathActive: false }, state, MC_CONFIG);
     expect(r.nextState.vetoActive).toBe(false); // only 1 day so far
     state = r.nextState;
-    r = stepTierState({ composite: 0.9, trendState: "MIXED", termStructureTriggered: true, creditWideningTriggered: false }, state, MC_CONFIG);
+    r = stepTierState({ composite: 0.9, trendState: "MIXED", aboveBandStreak: 0, termStructureTriggered: true, creditWideningTriggered: false, recoveryFastPathActive: false }, state, MC_CONFIG);
     expect(r.nextState.vetoActive).toBe(true); // 2nd consecutive day
     expect(r.finalTierIndex).toBeGreaterThanOrEqual(DEFENSIVE_IDX);
   });
 
   it("activates immediately (single day) on credit widening, unlike the term-structure condition", () => {
     const state = neutral();
-    const r = stepTierState({ composite: 0.9, trendState: "MIXED", termStructureTriggered: false, creditWideningTriggered: true }, state, MC_CONFIG);
+    const r = stepTierState({ composite: 0.9, trendState: "MIXED", aboveBandStreak: 0, termStructureTriggered: false, creditWideningTriggered: true, recoveryFastPathActive: false }, state, MC_CONFIG);
     expect(r.nextState.vetoActive).toBe(true);
     expect(r.finalTierIndex).toBeGreaterThanOrEqual(DEFENSIVE_IDX);
   });
@@ -122,7 +154,7 @@ describe("stepTierState — stress veto", () => {
     state.vetoActive = true;
     for (let day = 0; day < 3; day++) state = stepTierState(noVeto(0.9), state, MC_CONFIG).nextState;
     // a fresh trigger on day 4 should reset the clear streak
-    state = stepTierState({ composite: 0.9, trendState: "MIXED", termStructureTriggered: true, creditWideningTriggered: false }, state, MC_CONFIG).nextState;
+    state = stepTierState({ composite: 0.9, trendState: "MIXED", aboveBandStreak: 0, termStructureTriggered: true, creditWideningTriggered: false, recoveryFastPathActive: false }, state, MC_CONFIG).nextState;
     expect(state.vetoClearStreak).toBe(0);
   });
 });
