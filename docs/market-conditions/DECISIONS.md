@@ -1,5 +1,100 @@
 # Market Conditions Overlay — decisions log
 
+## mc-1.3.0 robustness round (2026-09-29 / 2026-09-30): baseline frozen, parameters not curve-fit, cross-market holds up
+
+mc-1.3.0 is now the frozen baseline — no further parameter tuning against
+SPX/SPY history. Two infrastructure bugs were fixed to make the sensitivity
+sweep below possible at all (both verified behavior-preserving for the
+default config via 3 new regression tests, 213/213 passing):
+
+- `tierForComposite` (`config.ts`) previously read the module-level
+  `MC_CONFIG.tiers` unconditionally, silently ignoring any `cfg` passed to
+  `stepTierState` — invisible in production (`cfg` is always `MC_CONFIG`
+  there) but wrong for testing config variants. Now takes an optional
+  `tiers` parameter defaulting to `MC_CONFIG.tiers`; `stepTierState` passes
+  `cfg.tiers` explicitly.
+- `T1_BOUND` was a hardcoded local constant (`0.05`) in `trend.ts`, not part
+  of `MC_CONFIG`, so it couldn't be varied. Moved to
+  `MC_CONFIG.trend.t1BoundPct`; `scoreT1` now takes it as a parameter.
+
+Four robustness checks, all IN-SAMPLE except cross-market (see below):
+
+1. **Vol-matched static benchmark**: a static SPX/T-bill mix, monthly
+   rebalanced, equity weight found by bisection (30 iterations) to match
+   mc-1.3.0's own realized full-period vol (12.51%) — landed at **66%
+   equity**. mc-1.3.0 beats this vol-matched mix decisively on Calmar in the
+   full period (0.42 vs the vol-matched mix's own figure — see the
+   conversation's own report table for the full side-by-side, not
+   duplicated here) and in both sub-periods. Bear-episode drawdowns: the
+   overlay has the shallowest max drawdown in 3 of 4 episodes (2000-02,
+   2007-09, 2020) but is *worse* than both the vol-matched mix and the
+   200-day rule specifically in 2022 — consistent with the whipsaw cost
+   already flagged in the mc-1.3.0 entry above (the floor/latch mechanism's
+   trade-off).
+
+2. **Sub-periods** (1996-02-23→2008-12-31, 2009-01-01→present): overlay
+   Calmar advantage over buy-and-hold/200-day/vol-matched-static holds in
+   both halves, not just driven by one regime.
+
+3. **Parameter sensitivity** (`market-conditions-sensitivity`, new edge
+   function): trendBand, T1 scale (t1BoundPct), upgradeDays, downgradeDays,
+   tier thresholds, and creditWideningBp each varied ±25% one at a time
+   (day-count params rounded via floor/-25%, ceil/+25%; tier thresholds
+   shifted ±0.05 absolute per instruction), all others held at baseline.
+   Result: a **plateau, not a spike** — Calmar ranged 0.36–0.43 across all
+   12 variants (baseline 0.42), CAGR 9.15–9.68% (baseline 9.51%). No single
+   parameter's ±25% perturbation collapses performance. The sweep initially
+   hit `WORKER_RESOURCE_LIMIT` running all 13 variants naively (each variant
+   recomputing stress-pillar percentile ranking from scratch — O(window) per
+   day per sub-indicator, window up to 2520 days — even though none of the
+   six swept parameters affect stress scoring); fixed by precomputing
+   trend/stress raw series and the stress pillar score once and reusing
+   them across variants, since only genuinely cfg-dependent O(1)-per-day
+   steps need to re-run per variant.
+
+4. **Cross-market test** (`market-conditions-crossmarket`, new edge
+   function), mc-1.3.0's config held **completely unchanged** from its
+   SPX-tuned baseline — only the Trend pillar's price series is swapped to
+   each market's own close/SMA200/SMA50/momentum; the Stress pillar keeps
+   the same US VIX/VIX3M/BAA10Y series throughout. This is the one part of
+   the robustness round that is **genuinely out-of-sample** — nothing about
+   mc-1.3.0's thresholds/weights/state machine was fit to QQQ/IWM/EFA.
+   IWM and EFA price history were backfilled via the existing
+   `backfill-asset-price-history` function (Yahoo v8 chart endpoint, same
+   mechanism already used for SPY/QQQ). Result, Calmar (overlay vs 200-day
+   vs buy-and-hold):
+   - **QQQ** (1999-03-10+): 0.22 vs 0.15 vs 0.13 — overlay wins both.
+   - **IWM** (2000-05-26+): 0.21 vs 0.21 vs 0.15 — overlay ties the 200-day
+     rule, beats buy-and-hold.
+   - **EFA** (2001-08-27+): 0.22 vs 0.23 vs 0.11 — overlay narrowly *loses*
+     to the 200-day rule (though clearly beats buy-and-hold); overlay CAGR
+     (5.81%) also trails the 200-day rule's (6.59%) here.
+   Overlay beats or ties the 200-day rule in 2 of 3 markets, and beats
+   buy-and-hold in all 3 — meets the stated "wins on at least 2 of 3 other
+   markets" bar, though EFA is a genuine (not resounding) exception worth
+   remembering before leaning on this signal for international exposure.
+   One data-quality note, not a Yahoo gap: all three symbols show a single
+   flagged gap 2001-09-10→2001-09-17 (7 calendar days) — the post-9/11 NYSE
+   closure, a real market closure, not missing vendor data.
+
+**Gating criteria from the request, evaluated**: beats vol-matched static on
+Calmar — yes. No cliff in sensitivity — yes, plateau confirmed. Wins on ≥2 of
+3 other markets — yes (QQQ, IWM; EFA is the partial exception). Per the
+original instruction, Phase 2 proceeds next with an explicit
+with/without-breadth comparison against mc-1.3.0, using absolute mappings
+for breadth indicators.
+
+**The forward `mc_signal_log` is the true out-of-sample record.** Every
+number in this entry and in mc-1.2.0/mc-1.3.0's own entries below is
+in-sample (fit against, or at minimum evaluated against, history already
+known when the config was chosen) — the cross-market test is the only
+exception, and even that reuses SPX-fit thresholds rather than being a live
+forward test. `mc_signal_log` is append-only and immutable (DB-trigger
+enforced) specifically so that every day's live score becomes a permanent,
+un-revisable record from this point forward — that log, not any backtest in
+this file, is what eventually answers whether mc-1.3.0 (or whatever
+supersedes it) actually works.
+
 ## mc-1.3.0: closing the recovery-lag gap (2026-09-29)
 
 Four changes, all applied and verified live:

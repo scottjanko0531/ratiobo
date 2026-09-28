@@ -92,7 +92,7 @@ export interface TierStepResult {
 // needing 756+ days of realistic price/series data to drive it through
 // computeTrendRawSeries/computeStressRawSeries first.
 export function stepTierState(inp: TierStepInput, prior: HysteresisState, cfg = MC_CONFIG): TierStepResult {
-  const rawTierIndex = tierForComposite(inp.composite);
+  const rawTierIndex = tierForComposite(inp.composite, cfg.tiers);
 
   // mc-1.3.0: the fast-path is a LATCH — once triggered it stays active
   // (driving both the shortened upgrade window and the trend-cap

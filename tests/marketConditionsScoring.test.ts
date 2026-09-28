@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { stepTierState, computeMarketConditionsHistory, TierStepInput } from "../supabase/functions/_shared/marketConditions/scoring.ts";
-import { MC_CONFIG, TIER_ORDER, NORMAL_IDX, CAUTIOUS_IDX, DEFENSIVE_IDX } from "../supabase/functions/_shared/marketConditions/config.ts";
+import { MC_CONFIG, TIER_ORDER, NORMAL_IDX, CAUTIOUS_IDX, DEFENSIVE_IDX, tierForComposite } from "../supabase/functions/_shared/marketConditions/config.ts";
 import { HysteresisState } from "../supabase/functions/_shared/marketConditions/types.ts";
 
 const neutral = (): HysteresisState => ({
@@ -16,6 +16,30 @@ function noVeto(composite: number, trendState: "UP" | "MIXED" | "DOWN" = "MIXED"
     fastPathTriggerNow: false, fastPathInvalidated: false,
   };
 }
+
+describe("tierForComposite — cfg.tiers override (bug fix, found building the sensitivity harness)", () => {
+  it("defaults to MC_CONFIG.tiers, unchanged behavior", () => {
+    expect(tierForComposite(0.9)).toBe(0); // FULL
+    expect(tierForComposite(-0.9)).toBe(4); // RISK_OFF
+  });
+
+  it("actually uses a passed-in tiers array instead of silently ignoring it", () => {
+    const shifted = MC_CONFIG.tiers.map((t) => ({ ...t, min: t.min === -Infinity ? t.min : t.min + 0.5 }));
+    // With every threshold raised by 0.5, a composite of 0.6 (which clears
+    // the ORIGINAL FULL min of 0.35) no longer clears the shifted FULL min
+    // of 0.85, but does clear the shifted NORMAL min (0.05+0.5=0.55) -- it
+    // should land one tier lower than under the unshifted thresholds.
+    expect(tierForComposite(0.6)).toBe(0); // FULL under the real thresholds
+    expect(tierForComposite(0.6, shifted)).toBe(1); // NORMAL under the shifted thresholds
+  });
+
+  it("stepTierState threads cfg.tiers through to tierForComposite (previously it did not)", () => {
+    const variantCfg = { ...MC_CONFIG, tiers: MC_CONFIG.tiers.map((t) => ({ ...t, min: t.min === -Infinity ? t.min : t.min + 0.5 })) };
+    const state = neutral();
+    const r = stepTierState(noVeto(0.6), state, variantCfg);
+    expect(r.rawTierIndex).toBe(1); // would be 0 (FULL) if cfg were still being ignored
+  });
+});
 
 describe("stepTierState — hysteresis", () => {
   it("moves at most one tier per day even when composite justifies a bigger jump, and re-requires the full day-count for each subsequent step (upgradeDays=3)", () => {

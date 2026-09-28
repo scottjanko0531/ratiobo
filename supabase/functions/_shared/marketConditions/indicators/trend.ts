@@ -124,11 +124,10 @@ export interface TrendScoreAtT {
   pillarScore: number | null;
 }
 
-// T1 (mc-1.3.0): absolute linear mapping, +/-5% distance from SMA200.
-const T1_BOUND = 0.05;
-function scoreT1(raw: number | null): SubIndicatorResult {
+// T1 (mc-1.3.0): absolute linear mapping, +/- cfg.trend.t1BoundPct distance from SMA200.
+function scoreT1(raw: number | null, bound: number): SubIndicatorResult {
   if (raw == null) return { raw: null, percentile: null, score: null, excluded: true, excludeReason: "sma200 unavailable" };
-  return { raw, percentile: null, score: clip(raw / T1_BOUND), excluded: false };
+  return { raw, percentile: null, score: clip(raw / bound), excluded: false };
 }
 
 // T3 (mc-1.3.0): 12-1 momentum divided by its own 252-day annualized vol
@@ -146,7 +145,7 @@ function scoreT3(momentum: number | null, vol: number | null): SubIndicatorResul
 export function scoreTrendAtIndex(
   raw: TrendRawSeries, t: number, closes: number[], cfg = MC_CONFIG,
 ): TrendScoreAtT {
-  const T1 = scoreT1(raw.t1raw[t]);
+  const T1 = scoreT1(raw.t1raw[t], cfg.trend.t1BoundPct);
 
   // T2: already +/-1, no percentile step.
   const T2: SubIndicatorResult = raw.t2raw[t] != null

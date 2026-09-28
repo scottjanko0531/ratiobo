@@ -83,7 +83,13 @@ export const MC_CONFIG = {
 
   pillarWeights: { trend: 0.30, breadth: 0.25, stress: 0.25, sentiment: 0.10, macro: 0.10 },
 
-  trend: { trendBand: 0.02, slopeLookback: 20, tenMonthRuleMonths: 10 },
+  // t1BoundPct: T1's +/-X% linear mapping bound (mc-1.3.0). Was a hardcoded
+  // local constant in trend.ts until the mc-1.3.0 robustness round needed
+  // to vary it in a sensitivity sweep -- moved here for the same reason
+  // tierForComposite's cfg-ignoring bug got fixed then: not a tuning
+  // change, the default (0.05) is unchanged, just made overridable like
+  // every other threshold in this file.
+  trend: { trendBand: 0.02, slopeLookback: 20, tenMonthRuleMonths: 10, t1BoundPct: 0.05 },
 
   breadth: {
     divergenceHighPct: 0.02, divergenceBreadthMax: 60, divergencePenalty: 0.25,
@@ -140,12 +146,19 @@ export const NORMAL_IDX = TIER_ORDER.indexOf("NORMAL");
 export const CAUTIOUS_IDX = TIER_ORDER.indexOf("CAUTIOUS");
 export const DEFENSIVE_IDX = TIER_ORDER.indexOf("DEFENSIVE");
 
-export function tierForComposite(composite: number): number {
+// Bug fix (found while building the parameter-sensitivity harness, not a
+// tuning change): this previously read the module-level MC_CONFIG.tiers
+// unconditionally, silently ignoring any `cfg` a caller passed to
+// stepTierState — invisible in production (cfg is always MC_CONFIG there)
+// but wrong for testing config variants, which is the entire point of a
+// sensitivity sweep. Default param preserves every existing call site's
+// behavior exactly; stepTierState now passes cfg.tiers explicitly.
+export function tierForComposite(composite: number, tiers: readonly { name: string; min: number; mult: number }[] = MC_CONFIG.tiers): number {
   // tiers is ordered best-to-worst with descending `min`; first tier whose
   // min the composite clears (from the top) is the match. RISK_OFF's
   // min = -Infinity always matches as the fallback.
-  for (let i = 0; i < MC_CONFIG.tiers.length; i++) {
-    if (composite >= MC_CONFIG.tiers[i].min) return i;
+  for (let i = 0; i < tiers.length; i++) {
+    if (composite >= tiers[i].min) return i;
   }
-  return MC_CONFIG.tiers.length - 1;
+  return tiers.length - 1;
 }
