@@ -256,6 +256,35 @@ describe("stepTierState — stress veto", () => {
   });
 });
 
+describe("stepTierState — cfg.veto.disabled (mc-1.4.0 ablation hook)", () => {
+  it("default (false, MC_CONFIG's own value): completely unaffected, matches the existing suite above", () => {
+    const state = neutral();
+    const r = stepTierState({ ...noVeto(0.9), creditWideningTriggered: true }, state, MC_CONFIG);
+    expect(r.nextState.vetoActive).toBe(true);
+    expect(r.finalTierIndex).toBeGreaterThanOrEqual(DEFENSIVE_IDX);
+  });
+
+  it("true: vetoActive stays false and the tier cap never applies, even with both trigger conditions firing every day", () => {
+    const disabledCfg = { ...MC_CONFIG, veto: { ...MC_CONFIG.veto, disabled: true } };
+    let state = neutral();
+    for (let day = 0; day < 10; day++) {
+      const r = stepTierState({ ...noVeto(0.9), termStructureTriggered: true, creditWideningTriggered: true }, state, disabledCfg);
+      expect(r.nextState.vetoActive).toBe(false);
+      expect(r.nextState.vetoTermStructureStreak).toBe(0);
+      expect(r.nextState.vetoClearStreak).toBe(0);
+      state = r.nextState;
+    }
+  });
+
+  it("true: the floor's own !vetoActive gate still fires normally, since a disabled veto is never active to block it", () => {
+    const disabledCfg = { ...MC_CONFIG, veto: { ...MC_CONFIG.veto, disabled: true } };
+    const state: HysteresisState = { ...neutral(), tierIndex: TIER_ORDER.indexOf("DEFENSIVE") };
+    const r = stepTierState({ ...noVeto(-0.9, "MIXED", 3), creditWideningTriggered: true }, state, disabledCfg);
+    expect(r.floorActiveToday).toBe(true);
+    expect(r.finalTierIndex).toBeLessThanOrEqual(NORMAL_IDX);
+  });
+});
+
 describe("stepTierState — determinism (idempotency at the pure-function level)", () => {
   it("produces identical output for identical input, called twice", () => {
     const state = neutral();

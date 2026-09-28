@@ -9,7 +9,9 @@ export interface DateValue {
 
 export type TrendState = "UP" | "MIXED" | "DOWN";
 export type TierName = "FULL" | "NORMAL" | "CAUTIOUS" | "DEFENSIVE" | "RISK_OFF";
-export type EntrySignalName = "ADD" | "ADD_SMALL" | "NEUTRAL" | "WAIT" | "TRIM";
+// mc-1.4.0: ADD_SMALL/TRIM dropped along with E-CAPITULATION/E-TOP (both
+// depended on the rejected breadth pillar) -- see entrySignal.ts.
+export type EntrySignalName = "ADD" | "NEUTRAL" | "WAIT";
 export type PillarName = "trend" | "breadth" | "stress" | "sentiment" | "macro";
 
 // One normalized sub-indicator's full trail: raw value, percentile rank
@@ -41,21 +43,20 @@ export interface HysteresisState {
   vetoClearStreak: number; // consecutive days BOTH veto conditions false
 }
 
-// Optional fields present only from Phase 2+ (breadth/oscillators). Entry
-// rules that reference them are skipped entirely when undefined, per spec
-// Section 7.4: "Before Phase 2 (no breadth), rules referencing breadth
-// fields are skipped."
+// mc-1.4.0 entry-rule round: trimmed to what the surviving rules
+// (E-DIP/E-HOT/E-DOWN/E-DEFAULT) actually read. vetoActive is gone --
+// E-VETO itself was removed (failed its pre-registered validation
+// criterion in 4/4 markets, see DECISIONS.md); the tier-level stress veto
+// is unaffected and still tracked separately via DayScoreRow.vetoActive/
+// flags.veto, just no longer feeds entry-signal evaluation. breadthScore/
+// breadthDivergence/breadthThrustNew/pctOversold/vixTermStructure* are
+// gone with E-TOP/E-THRUST/E-CAPITULATION (all depended on the rejected
+// breadth pillar) -- not "deferred to Phase 2," permanently removed per
+// explicit instruction, no replacement rules.
 export interface EntrySignalInput {
   trendState: TrendState;
-  vetoActive: boolean;
-  breadthScore?: number;
-  breadthDivergence?: boolean;
-  breadthThrustNew?: boolean; // thrust triggered within its own hold window's first 10 days
-  rsi14?: number;
-  stretch50d?: number;
-  pctOversold?: number;
-  vixTermStructureRecentlyAbove1?: boolean; // was VIX/VIX3M > 1.0 within last N days
-  vixTermStructureNowBelow1?: boolean;
+  rsi14?: number; // O1, indicators/oscillators.ts
+  stretch50d?: number; // O2, indicators/oscillators.ts
 }
 
 export interface EntrySignalResult {

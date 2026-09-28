@@ -76,7 +76,33 @@ export const MC_CONFIG = {
   //      S3+S6 (the two "is it moving" indicators) total 50% of the
   //      pillar, S1+S2+S4+S5 (the four "where does it sit" indicators)
   //      share the other 50%.
-  version: "mc-1.3.0",
+  //
+  // Phase 2 breadth round (2026-09-30): built and validated a proxy
+  // breadth pillar (indicators/breadth.ts) -- REJECTED on its own
+  // pre-registered criteria (worse Calmar on every market tested, see
+  // DECISIONS.md). Config version was NOT bumped for that round --
+  // breadthScore stays an unused optional ComputeInputs field in
+  // production, `breadth` below is dead weight kept only as a reference
+  // for whoever revisits breadth later, not a live tuning surface.
+  //
+  // mc-1.4.0 entry-rule round (2026-09-30), following the entry-signal
+  // validation report: E-TOP/E-THRUST/E-CAPITULATION removed (depended on
+  // the rejected breadth pillar, never reachable anyway); E-VETO removed
+  // (failed its own pre-registered validation in all 4 markets tested --
+  // veto days showed ABOVE-average forward returns, the opposite of what
+  // a WAIT signal should mean); E-DIP rewired onto the newly-wired O1
+  // (RSI14, Wilder) / O2 (stretch-vs-SMA50 z-score) oscillators
+  // (indicators/oscillators.ts), dropping the breadthScore/pctOversold
+  // conditions it could never previously satisfy. `entry`'s
+  // dipOversoldPct/topRsi/capitulationOversoldPct/capitulationLookback
+  // are removed -- their only consumers (E-TOP/E-CAPITULATION, and
+  // E-DIP's now-dropped oversold condition) no longer exist. `veto.
+  // disabled` added (default false, zero production effect) -- a
+  // diagnostic-only hook for the tier-veto ablation test in this same
+  // round (see DECISIONS.md); tier logic itself is otherwise UNCHANGED
+  // this round unless the ablation's own pre-registered rule said
+  // otherwise.
+  version: "mc-1.4.0",
 
   normWindow: 2520, // ~10y trading days, rolling percentile cap
   minHistory: 756, // ~3y trading days, minimum before a percentile indicator counts
@@ -91,15 +117,14 @@ export const MC_CONFIG = {
   // every other threshold in this file.
   trend: { trendBand: 0.02, slopeLookback: 20, tenMonthRuleMonths: 10, t1BoundPct: 0.05 },
 
-  // mc-1.4.0 breadth round (2026-09-30): PB1-PB3 + divergence (proxy
-  // pillar, indicators/breadth.ts) are the only breadth sub-indicators
-  // ever scored into the composite -- see DECISIONS.md "scored vs
-  // display". divergenceCountMax/divergenceLookbackDays replace the old
-  // placeholder divergenceBreadthMax (a % breadth threshold that assumed a
-  // constituent-based pillar) with the proxy pillar's own count-based
-  // definition (PB1 < 5 of 9 sectors, lower than 60 trading days ago).
-  // pb3BoundPct: placeholder +/-3% (same as the earlier B5 proposal),
-  // pending the mean-since-2015 drift check in DECISIONS.md.
+  // Phase 2 breadth round (2026-09-30, config version NOT bumped for this
+  // -- see the top-of-file changelog): PB1-PB3 + divergence (proxy pillar,
+  // indicators/breadth.ts) were the only breadth sub-indicators ever
+  // scored into the composite -- REJECTED on pre-registered criteria, kept
+  // here only as reference for anyone revisiting breadth later.
+  // divergenceCountMax/divergenceLookbackDays/pb3BoundPct are this
+  // rejected pillar's own thresholds, dead weight, not a live tuning
+  // surface.
   breadth: {
     divergenceHighPct: 0.02, divergenceCountMax: 5, divergenceLookbackDays: 60, divergencePenalty: 0.25,
     pb3BoundPct: 0.03,
@@ -118,7 +143,14 @@ export const MC_CONFIG = {
 
   hysteresis: { upgradeMargin: 0.05, upgradeDays: 3, downgradeMargin: 0.02, downgradeDays: 2 },
 
-  veto: { termStructure: 1.05, termStructureDays: 2, creditWideningBp: 45, clearDays: 5 }, // creditWideningBp: placeholder pending Phase 5 recalibration for BAA10Y
+  // disabled: mc-1.4.0, diagnostic-only, default false (zero production
+  // effect at this value) -- lets market-conditions-veto-ablation force
+  // vetoActive to stay false for the entire history without touching
+  // stepTierState's real logic, to test whether the TIER veto (which caps
+  // exposure -- a separate mechanism from the entry-signal E-VETO rule
+  // removed this round) is itself pulling its weight. See DECISIONS.md for
+  // the ablation result and the pre-registered keep/remove rule.
+  veto: { termStructure: 1.05, termStructureDays: 2, creditWideningBp: 45, clearDays: 5, disabled: false }, // creditWideningBp: placeholder pending Phase 5 recalibration for BAA10Y
 
   // ALL PLACEHOLDER VALUES, none backtested -- see DECISIONS.md, Phase 5.
   // Trigger (mc-1.2.0): VIX/VIX3M < vixTermStructureMax AND the 20d BAA10Y
@@ -141,10 +173,14 @@ export const MC_CONFIG = {
     tierFloor: "NORMAL", // mc-1.3.0: 200d-above-band-3-days floor, see stepTierState
   },
 
+  // mc-1.4.0: dipOversoldPct/topRsi/capitulationOversoldPct/
+  // capitulationLookback removed -- their only consumers (E-TOP,
+  // E-CAPITULATION, and E-DIP's now-dropped pctOversold condition) no
+  // longer exist. dipRsi/dipStretch/hotRsi/hotStretch unchanged, now
+  // actually live (see entrySignal.ts, indicators/oscillators.ts).
   entry: {
-    dipRsi: 40, dipStretch: -1.5, dipOversoldPct: 20,
-    hotRsi: 75, hotStretch: 2.0, topRsi: 70,
-    capitulationOversoldPct: 40, capitulationLookback: 5,
+    dipRsi: 40, dipStretch: -1.5,
+    hotRsi: 75, hotStretch: 2.0,
   },
 } as const;
 

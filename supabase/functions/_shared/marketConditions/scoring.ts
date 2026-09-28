@@ -42,12 +42,21 @@
 //      (computeMarketConditionsHistory) from raw trend/stress data, since
 //      they need access to both trendRaw.sma50 and stressRaw's VIX/BAA10Y
 //      series — stepTierState only manages the persistent latch STATE.
+//
+// mc-1.4.0: the entry-signal call below now passes O1/O2 (RSI14/stretch,
+// indicators/oscillators.ts) instead of vetoActive -- E-VETO was removed
+// from entrySignal.ts (failed its own pre-registered validation, see
+// DECISIONS.md); the TIER veto below (finalTierIndex capped at DEFENSIVE
+// when vetoActive) is a separate mechanism, unaffected. cfg.veto.disabled
+// (default false) is a diagnostic-only ablation hook, not a real feature —
+// see stepTierState.
 
 import { PillarName, TrendState, HysteresisState, DayScoreRow, TierName } from "./types.ts";
 import { MC_CONFIG, TIER_ORDER, NORMAL_IDX, CAUTIOUS_IDX, DEFENSIVE_IDX, tierForComposite } from "./config.ts";
 import { clip } from "./normalize.ts";
 import { computeTrendRawSeries, scoreTrendAtIndex, resolveTrendState } from "./indicators/trend.ts";
 import { computeStressRawSeries, scoreStressAtIndex, vetoConditionsAtIndex } from "./indicators/stress.ts";
+import { computeOscillatorRawSeries } from "./indicators/oscillators.ts";
 import { evaluateEntrySignal } from "./entrySignal.ts";
 
 export interface ComputeInputs {
@@ -146,13 +155,23 @@ export function stepTierState(inp: TierStepInput, prior: HysteresisState, cfg = 
   // OWN condition requires knowing whether veto is active today, even
   // though the veto's tier-capping EFFECT is applied after the floor (per
   // explicit instruction: floor "after hysteresis, before the veto").
-  const vetoTermStructureStreak = inp.termStructureTriggered ? prior.vetoTermStructureStreak + 1 : 0;
-  const vetoClearStreak = (!inp.termStructureTriggered && !inp.creditWideningTriggered) ? prior.vetoClearStreak + 1 : 0;
-  let vetoActive = prior.vetoActive;
-  if (!vetoActive) {
-    if (vetoTermStructureStreak >= cfg.veto.termStructureDays || inp.creditWideningTriggered) vetoActive = true;
-  } else {
-    if (vetoClearStreak >= cfg.veto.clearDays) vetoActive = false;
+  //
+  // mc-1.4.0 ablation hook: cfg.veto.disabled (default false, so this
+  // branch is dead in every existing call site) forces the entire veto
+  // mechanism inert -- streaks pinned at 0, vetoActive always false --
+  // rather than just skipping its tier-cap effect below, so the floor's
+  // own `!vetoActive` gate and downstream state are equally unaffected,
+  // a clean "what if this mechanism never existed" ablation.
+  const vetoDisabled = cfg.veto.disabled === true;
+  const vetoTermStructureStreak = vetoDisabled ? 0 : (inp.termStructureTriggered ? prior.vetoTermStructureStreak + 1 : 0);
+  const vetoClearStreak = vetoDisabled ? 0 : ((!inp.termStructureTriggered && !inp.creditWideningTriggered) ? prior.vetoClearStreak + 1 : 0);
+  let vetoActive = vetoDisabled ? false : prior.vetoActive;
+  if (!vetoDisabled) {
+    if (!vetoActive) {
+      if (vetoTermStructureStreak >= cfg.veto.termStructureDays || inp.creditWideningTriggered) vetoActive = true;
+    } else {
+      if (vetoClearStreak >= cfg.veto.clearDays) vetoActive = false;
+    }
   }
 
   // mc-1.3.0 200-day floor: 3+ consecutive days above the band AND veto
@@ -195,6 +214,7 @@ export function computeMarketConditionsHistory(inp: ComputeInputs, cfg = MC_CONF
   const n = inp.dates.length;
   const trendRaw = computeTrendRawSeries(inp.closes, inp.dates, cfg);
   const stressRaw = computeStressRawSeries(inp.closes, inp.vix, inp.vix3m, inp.creditSpread);
+  const oscRaw = computeOscillatorRawSeries(inp.closes);
 
   const rows: DayScoreRow[] = [];
   let state = initialState();
@@ -255,7 +275,11 @@ export function computeMarketConditionsHistory(inp: ComputeInputs, cfg = MC_CONF
     );
     const vetoActive = nextState.vetoActive;
 
-    const entryResult = evaluateEntrySignal({ trendState: trendStateFinal, vetoActive });
+    const entryResult = evaluateEntrySignal({
+      trendState: trendStateFinal,
+      rsi14: oscRaw.rsi14[t] ?? undefined,
+      stretch50d: oscRaw.stretch50d[t] ?? undefined,
+    });
 
     const row: DayScoreRow = {
       date: inp.dates[t],

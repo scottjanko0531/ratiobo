@@ -1,5 +1,601 @@
 # Market Conditions Overlay — decisions log
 
+## mc-1.4.0 entry-rule round: E-VETO/E-TOP/E-THRUST/E-CAPITULATION removed, E-DIP/E-HOT rewired to oscillators, tier veto KEPT (2026-09-30)
+
+Bumped to **mc-1.4.0** (entry-rule changes; tier logic itself is unchanged
+-- the veto ablation below came back KEEP, not remove).
+
+### What changed and why
+
+The original entry-signal validation (full per-horizon tables in Appendix
+A below) tested all 8 spec-defined rules against SPY forward returns,
+1996-02-23-present. Finding: **5 of 8 rules had zero days** --
+E-DIP/E-HOT/E-TOP/E-THRUST/E-CAPITULATION all read fields
+(`breadthScore`/`breadthDivergence`/`breadthThrustNew`/`pctOversold`/
+`rsi14`/`stretch50d`/VIX-term-structure-recency flags) that
+`scoring.ts` never populated -- Phase 1 only ever called
+`evaluateEntrySignal({ trendState, vetoActive })`. Of the 3 rules that
+COULD fire (E-VETO/E-DOWN/E-DEFAULT), **E-VETO failed its own
+pre-registered criterion in all 4 markets tested** (SPY/QQQ/IWM/EFA): a
+WAIT signal is supposed to underperform its conditional baseline at 21d
+AND 63d, but veto days showed ABOVE-average forward returns everywhere --
+e.g. SPY 21d +1.85% vs +0.91% baseline, QQQ 21d +3.20% vs +0.85% (nearly
+4x), EFA/IWM the same direction. E-DOWN passed cleanly in SPY/QQQ/IWM.
+
+Changes made, in response:
+
+1. **O1 (RSI14, Wilder) and O2 (stretch50d, z-score vs SMA50)** wired into
+   the compute pipeline for the first time (`indicators/oscillators.ts`,
+   new). O2 is a documented interpretation call, not confirmed against a
+   spec doc (none exists in this repo): the entry-rule thresholds
+   (dipStretch=-1.5, hotStretch=2.0) only make sense as standard-deviation
+   units, not raw percentages -- flagged rather than guessed silently.
+2. **E-DIP rewired**: dropped the `breadthScore>=0` guard and the
+   `pctOversold` condition (breadth isn't scored, pctOversold was never
+   computed) -- now `trend=UP AND (RSI14 < 40 OR stretch50d <= -1.5)`.
+   E-HOT's logic is unchanged, but was structurally unreachable before this
+   round (same missing-inputs problem) and is now live.
+3. **E-TOP, E-THRUST, E-CAPITULATION removed outright, no replacements** --
+   all three depended on the breadth pillar, rejected earlier this same
+   round on its own pre-registered criteria (see the breadth-round entry
+   above). They were dead code in production regardless (never reachable),
+   so this removes unreachable branches, not live behavior.
+4. **E-VETO removed** -- failed its own validation in 4/4 markets (above).
+   The TIER-level stress veto (a separate mechanism -- caps exposure at
+   DEFENSIVE-or-worse in `stepTierState`) is UNCHANGED; only the
+   entry-signal LABEL is gone. Veto days now fall through to whichever of
+   E-DIP/E-HOT/E-DOWN/E-DEFAULT their trend_state matches.
+   `DayScoreRow.vetoActive`/`flags.veto` still report the tier veto's own
+   state for the UI, labeled as an INFORMATIONAL "high stress --
+   historically above-average but volatile forward returns" note rather
+   than a directional rule (median/%positive/p10-at-21d/63d reported per
+   market in Appendix B below, e.g. SPY 21d median +2.39% vs +1.42%
+   baseline, but p10 -6.79% vs -4.77% baseline -- above-average typical
+   return, meaningfully worse tail risk, hence "above-average but
+   volatile," not "safe to buy").
+5. `EntrySignalInput`/`EntrySignalName` trimmed to match (types.ts) --
+   `ADD_SMALL`/`TRIM` types removed (nothing can produce them anymore),
+   `vetoActive`/`breadthScore`/`breadthDivergence`/`breadthThrustNew`/
+   `pctOversold`/`vixTermStructureRecentlyAbove1`/
+   `vixTermStructureNowBelow1` fields removed from the input shape.
+   `config.entry`'s `dipOversoldPct`/`topRsi`/`capitulationOversoldPct`/
+   `capitulationLookback` removed (their only consumers are gone).
+
+### Re-validation with the new wiring (Appendix B, full tables below)
+
+| Rule | SPY | QQQ | IWM | EFA |
+|---|---|---|---|---|
+| E-DIP | pass | pass | pass | pass |
+| E-HOT | pass | pass | fail (63d only, 18 eps) | pass |
+| E-DOWN | fail* | fail* | fail* | fail* |
+| E-DEFAULT | — (no criterion) | — | — | — |
+
+**E-DIP passes cleanly in all 4 markets** with strong episode counts
+(122-187) -- the clearest win from this round's rewiring. **E-HOT passes
+in 3/4**, with a thin IWM exception (18 episodes, only the 63d leg fails).
+
+**E-DOWN's "fail" in all 4 markets is a methodological artifact, not a
+real signal degradation** -- flagging explicitly rather than letting it
+read as a regression. Removing E-VETO means nothing intercepts a DOWN-
+trend veto day anymore, so E-DOWN's own day-set is now EXACTLY the full
+population of DOWN-trend days -- identical, to the decimal, to its own
+"conditional baseline" (all days with trend_state DOWN), since the
+baseline is pooled from the same population E-DOWN itself fires on 100% of
+the time. Rule mean == baseline mean by construction in all 4 markets (see
+Appendix B); a strict "must underperform" test against your own exact
+population can only ever tie, never pass. This is informative about the
+TEST, not about E-DOWN's signal quality -- a future round wanting a real
+read on E-DOWN would need a baseline that excludes veto days (or some
+other genuinely narrower population), not a retest of this one.
+
+### Tier veto ablation (diagnostic, pre-registered rule, KEEP)
+
+Tested whether the TIER-level veto (separate from the removed E-VETO
+entry-signal rule) is pulling its weight, via `cfg.veto.disabled` (new,
+default false, zero effect on every other caller -- `market-conditions-
+veto-ablation`, new function).
+
+| Market | Calmar ON | Calmar OFF | Verdict |
+|---|---|---|---|
+| SPY (full) | 0.42 | 0.43 | improves (+0.01, marginal) |
+| QQQ | 0.22 | 0.20 | **worsens** |
+| IWM | 0.21 | 0.22 | improves |
+| EFA | 0.22 | 0.22 | ties |
+
+| Bear episode | SPY diff | QQQ diff | IWM diff | EFA diff |
+|---|---|---|---|---|
+| 2000-02 (dot-com) | -0.61 | -3.17 | 0.00 | 0.00 |
+| 2007-09 (GFC) | +0.63 | -1.49 | +0.16 | -0.52 |
+| 2020 (COVID) | **-2.98** | **-7.00** | -1.27 | -0.90 |
+| 2022 | 0.00 | 0.00 | 0.00 | 0.00 |
+
+(diff = OFF's max DD minus ON's; negative = OFF is worse.)
+
+Pre-registered rule: remove only if disabling improves SPY full-period
+Calmar AND 3+ of the other 3 markets' Calmar AND doesn't worsen any bear-
+episode max DD by more than 2 points. **Result: KEEP.** Only 1 of the
+other 3 markets (IWM) genuinely improves -- QQQ worsens, EFA ties -- short
+of the "3+" bar regardless of how generously ties are counted. More
+decisively, disabling the veto makes the **2020 COVID drawdown 7 points
+worse on QQQ and 3 points worse on SPY**, both blowing through the
+2-point tolerance by a wide margin. The marginal +0.01 Calmar improvement
+on SPY full-period is not close to worth that COVID-crash cost. Tier logic
+(`stepTierState`) is UNCHANGED this round; `cfg.veto.disabled` stays in
+the codebase as a diagnostic hook (default false), not wired to anything
+live.
+
+### Appendix A -- original validation (mc-1.3.0 wiring, before this round's rewiring)
+
+#### SPY (1996-02-23 → 2026-09-28, 7698 days)
+
+**E-CAPITULATION** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.23% | 58.4% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.94% | 65.1% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.79% | 70.5% |
+
+**E-DEFAULT** — signal: NEUTRAL, days: 6005, episodes: 31, trend_states observed: ['UP', 'MIXED']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 6000 | 0.27% | 0.4% | 59.9% | 6252 | 0.27% | 0.41% | 59.9% | 0.23% | 58.4% |
+| 21d | 5984 | 1.1% | 1.49% | 67.8% | 6236 | 1.14% | 1.51% | 67.7% | 0.94% | 65.1% |
+| 63d | 5942 | 3.3% | 4.05% | 74.9% | 6194 | 3.4% | 4.05% | 74.9% | 2.79% | 70.5% |
+
+**E-DIP** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.23% | 58.4% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.94% | 65.1% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.79% | 70.5% |
+
+**E-DOWN** — signal: WAIT, days: 1260, episodes: 18, trend_states observed: ['DOWN']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 1260 | -0.06% | 0.08% | 50.7% | 1441 | 0.05% | 0.17% | 51.8% | 0.23% | 58.4% |
+| 21d | 1260 | -0.16% | 0.39% | 52.1% | 1441 | 0.06% | 0.71% | 53.9% | 0.94% | 65.1% |
+| 63d | 1260 | -0.09% | 0.3% | 51% | 1441 | 0.19% | 0.77% | 52% | 2.79% | 70.5% |
+
+Pass/fail: 21d=pass, 63d=pass, overall=**pass**
+
+**E-HOT** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.23% | 58.4% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.94% | 65.1% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.79% | 70.5% |
+
+**E-THRUST** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.23% | 58.4% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.94% | 65.1% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.79% | 70.5% |
+
+**E-TOP** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.23% | 58.4% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.94% | 65.1% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.79% | 70.5% |
+
+**E-VETO** — signal: WAIT, days: 433, episodes: 32, trend_states observed: ['UP', 'DOWN']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 433 | 0.46% | 0.92% | 59.4% | 7535 | 0.22% | 0.38% | 58.4% | 0.23% | 58.4% |
+| 21d | 433 | 1.85% | 2.39% | 66.1% | 7519 | 0.91% | 1.42% | 65.1% | 0.94% | 65.1% |
+| 63d | 433 | 4.26% | 4.61% | 67.2% | 7477 | 2.72% | 3.72% | 70.2% | 2.79% | 70.5% |
+
+Pass/fail: 21d=fail, 63d=fail, overall=**fail**
+
+#### QQQ (1999-12-21 → 2026-09-22, 6728 days)
+
+**E-CAPITULATION** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.23% | 57.3% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.94% | 62.5% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.74% | 67.9% |
+
+**E-DEFAULT** — signal: NEUTRAL, days: 5084, episodes: 37, trend_states observed: ['MIXED', 'UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 5079 | 0.28% | 0.48% | 58.2% | 5339 | 0.29% | 0.49% | 58.4% | 0.23% | 57.3% |
+| 21d | 5063 | 1.16% | 1.59% | 64.3% | 5323 | 1.24% | 1.61% | 64.4% | 0.94% | 62.5% |
+| 63d | 5021 | 3.37% | 4.3% | 70.7% | 5281 | 3.59% | 4.42% | 71.1% | 2.74% | 67.9% |
+
+**E-DIP** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.23% | 57.3% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.94% | 62.5% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.74% | 67.9% |
+
+**E-DOWN** — signal: WAIT, days: 1235, episodes: 21, trend_states observed: ['DOWN']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 1235 | -0.14% | 0.34% | 52.2% | 1384 | -0.02% | 0.45% | 53.2% | 0.23% | 57.3% |
+| 21d | 1235 | -0.75% | 0.76% | 54.2% | 1384 | -0.24% | 1.28% | 55.4% | 0.94% | 62.5% |
+| 63d | 1235 | -1.5% | 2.4% | 55% | 1384 | -0.54% | 2.64% | 55.5% | 2.74% | 67.9% |
+
+Pass/fail: 21d=pass, 63d=pass, overall=**pass**
+
+**E-HOT** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.23% | 57.3% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.94% | 62.5% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.74% | 67.9% |
+
+**E-THRUST** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.23% | 57.3% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.94% | 62.5% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.74% | 67.9% |
+
+**E-TOP** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.23% | 57.3% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.94% | 62.5% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.74% | 67.9% |
+
+**E-VETO** — signal: WAIT, days: 409, episodes: 31, trend_states observed: ['UP', 'DOWN']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 409 | 0.67% | 1.06% | 61.1% | 6529 | 0.22% | 0.49% | 57.3% | 0.23% | 57.3% |
+| 21d | 409 | 3.2% | 3.54% | 65.3% | 6513 | 0.85% | 1.51% | 62.1% | 0.94% | 62.5% |
+| 63d | 409 | 7.75% | 7.27% | 72.4% | 6471 | 2.5% | 4.12% | 67.4% | 2.74% | 67.9% |
+
+Pass/fail: 21d=fail, 63d=fail, overall=**fail**
+
+#### IWM (2001-02-28 → 2026-09-28, 6433 days)
+
+**E-CAPITULATION** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.22% | 55.2% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.91% | 60.2% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.72% | 64.7% |
+
+**E-DEFAULT** — signal: NEUTRAL, days: 4619, episodes: 32, trend_states observed: ['MIXED', 'UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 4614 | 0.21% | 0.3% | 54.9% | 4788 | 0.2% | 0.31% | 55% | 0.22% | 55.2% |
+| 21d | 4598 | 0.78% | 1.24% | 59.6% | 4772 | 0.75% | 1.22% | 59.5% | 0.91% | 60.2% |
+| 63d | 4556 | 2.28% | 3.21% | 65.4% | 4730 | 2.31% | 3.2% | 65.2% | 2.72% | 64.7% |
+
+**E-DIP** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.22% | 55.2% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.91% | 60.2% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.72% | 64.7% |
+
+**E-DOWN** — signal: WAIT, days: 1410, episodes: 29, trend_states observed: ['DOWN']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 1410 | 0.15% | 0.42% | 55% | 1640 | 0.27% | 0.51% | 55.9% | 0.22% | 55.2% |
+| 21d | 1410 | 1.16% | 2.01% | 61.7% | 1640 | 1.39% | 2.28% | 62.3% | 0.91% | 60.2% |
+| 63d | 1410 | 3.73% | 4.04% | 64% | 1640 | 3.89% | 4.29% | 63.4% | 2.72% | 64.7% |
+
+Pass/fail: 21d=pass, 63d=pass, overall=**pass**
+
+**E-HOT** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.22% | 55.2% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.91% | 60.2% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.72% | 64.7% |
+
+**E-THRUST** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.22% | 55.2% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.91% | 60.2% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.72% | 64.7% |
+
+**E-TOP** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.22% | 55.2% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.91% | 60.2% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.72% | 64.7% |
+
+**E-VETO** — signal: WAIT, days: 404, episodes: 30, trend_states observed: ['DOWN', 'UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 404 | 0.47% | 1.15% | 59.7% | 6098 | 0.21% | 0.36% | 55.3% | 0.22% | 55.2% |
+| 21d | 404 | 1.53% | 2.45% | 61.9% | 6082 | 0.93% | 1.45% | 60.7% | 0.91% | 60.2% |
+| 63d | 404 | 4.14% | 3.9% | 58.9% | 6040 | 2.82% | 3.42% | 65.2% | 2.72% | 64.7% |
+
+Pass/fail: 21d=fail, 63d=fail, overall=**fail**
+
+#### EFA (2002-05-31 → 2026-09-28, 6121 days)
+
+**E-CAPITULATION** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.17% | 56.3% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.71% | 61.4% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.21% | 66.5% |
+
+**E-DEFAULT** — signal: NEUTRAL, days: 4391, episodes: 28, trend_states observed: ['MIXED', 'UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 4386 | 0.18% | 0.3% | 56.6% | 4558 | 0.16% | 0.3% | 56.7% | 0.17% | 56.3% |
+| 21d | 4370 | 0.69% | 1.17% | 62.6% | 4542 | 0.71% | 1.19% | 62.4% | 0.71% | 61.4% |
+| 63d | 4328 | 2.15% | 3.1% | 67.8% | 4500 | 2.22% | 3.19% | 68.1% | 2.21% | 66.5% |
+
+**E-DIP** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.17% | 56.3% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.71% | 61.4% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.21% | 66.5% |
+
+**E-DOWN** — signal: WAIT, days: 1347, episodes: 24, trend_states observed: ['DOWN']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 1347 | 0.12% | 0.31% | 54.6% | 1558 | 0.19% | 0.36% | 55.3% | 0.17% | 56.3% |
+| 21d | 1347 | 0.72% | 1.33% | 58.4% | 1558 | 0.73% | 1.49% | 58.7% | 0.71% | 61.4% |
+| 63d | 1347 | 2.27% | 3.16% | 63.2% | 1558 | 2.16% | 2.92% | 61.9% | 2.21% | 66.5% |
+
+Pass/fail: 21d=pass, 63d=fail, overall=**fail**
+
+**E-HOT** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.17% | 56.3% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.71% | 61.4% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.21% | 66.5% |
+
+**E-THRUST** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.17% | 56.3% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.71% | 61.4% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.21% | 66.5% |
+
+**E-TOP** — signal: n/a, days: 0, episodes: 0 (inconclusive, <10 episodes), trend_states observed: none
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.17% | 56.3% |
+| 21d | 0 | —% | —% | —% | 0 | —% | —% | —% | 0.71% | 61.4% |
+| 63d | 0 | —% | —% | —% | 0 | —% | —% | —% | 2.21% | 66.5% |
+
+**E-VETO** — signal: WAIT, days: 383, episodes: 29, trend_states observed: ['DOWN', 'UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 383 | 0.26% | 0.81% | 59.3% | 5711 | 0.18% | 0.32% | 56.6% | 0.17% | 56.3% |
+| 21d | 383 | 0.91% | 2.2% | 59.5% | 5695 | 0.76% | 1.31% | 62.2% | 0.71% | 61.4% |
+| 63d | 383 | 2.67% | 3.98% | 63.2% | 5653 | 2.38% | 3.34% | 67.6% | 2.21% | 66.5% |
+
+Pass/fail: 21d=fail, 63d=fail, overall=**fail**
+
+### Appendix B -- re-validation (mc-1.4.0 wiring, after this round's rewiring)
+
+#### SPY (1996-02-23 → 2026-09-28, 7698 days)
+
+**E-DEFAULT** — signal: NEUTRAL, days: 5589, episodes: 230, trend_states observed: ['UP', 'MIXED']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 5584 | 0.21% | 0.37% | 59.3% | 6252 | 0.27% | 0.41% | 59.9% | 0.23% | 58.4% |
+| 21d | 5568 | 1% | 1.44% | 67% | 6236 | 1.14% | 1.51% | 67.7% | 0.94% | 65.1% |
+| 63d | 5527 | 3.13% | 3.9% | 74.3% | 6194 | 3.4% | 4.05% | 74.9% | 2.79% | 70.5% |
+
+**E-DIP** — signal: ADD, days: 587, episodes: 187, trend_states observed: ['UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 587 | 0.8% | 0.91% | 65.9% | 6094 | 0.26% | 0.4% | 59.9% | 0.23% | 58.4% |
+| 21d | 587 | 2.64% | 3.06% | 75.5% | 6078 | 1.12% | 1.49% | 67.7% | 0.94% | 65.1% |
+| 63d | 586 | 6.13% | 6.43% | 80.5% | 6036 | 3.33% | 4% | 74.6% | 2.79% | 70.5% |
+
+Pass/fail: 21d=pass, 63d=pass, overall=**pass**
+
+**E-DOWN** — signal: WAIT, days: 1441, episodes: 10, trend_states observed: ['DOWN']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 1441 | 0.05% | 0.17% | 51.8% | 1441 | 0.05% | 0.17% | 51.8% | 0.23% | 58.4% |
+| 21d | 1441 | 0.06% | 0.71% | 53.9% | 1441 | 0.06% | 0.71% | 53.9% | 0.94% | 65.1% |
+| 63d | 1441 | 0.19% | 0.77% | 52% | 1441 | 0.19% | 0.77% | 52% | 2.79% | 70.5% |
+
+Pass/fail: 21d=fail, 63d=fail, overall=**fail**
+
+**E-HOT** — signal: WAIT, days: 81, episodes: 38, trend_states observed: ['UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 81 | 0.1% | 0.27% | 56.8% | 6094 | 0.26% | 0.4% | 59.9% | 0.23% | 58.4% |
+| 21d | 81 | -0.12% | 0.49% | 56.8% | 6078 | 1.12% | 1.49% | 67.7% | 0.94% | 65.1% |
+| 63d | 81 | 2.01% | 2.88% | 74.1% | 6036 | 3.33% | 4% | 74.6% | 2.79% | 70.5% |
+
+Pass/fail: 21d=pass, 63d=pass, overall=**pass**
+
+**Veto-day (informational, tier veto)** — days: 433, trend_states observed: ['UP', 'DOWN']
+
+| Horizon | Veto-day n | Veto median | Veto %pos | Veto p10 | Baseline n | Baseline median | Baseline %pos | Baseline p10 |
+|---|---|---|---|---|---|---|---|---|
+| 21d | 433 | 2.39% | 66.1% | -6.79% | 7519 | 1.42% | 65.1% | -4.77% |
+| 63d | 433 | 4.61% | 67.2% | -12.81% | 7477 | 3.72% | 70.2% | -7.06% |
+
+#### QQQ (1999-12-21 → 2026-09-22, 6728 days)
+
+**E-DEFAULT** — signal: NEUTRAL, days: 4682, episodes: 221, trend_states observed: ['MIXED', 'UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 4677 | 0.24% | 0.49% | 58.3% | 5339 | 0.29% | 0.49% | 58.4% | 0.23% | 57.3% |
+| 21d | 4661 | 1.12% | 1.59% | 64.5% | 5323 | 1.24% | 1.61% | 64.4% | 0.94% | 62.5% |
+| 63d | 4627 | 3.34% | 4.28% | 70.7% | 5281 | 3.59% | 4.42% | 71.1% | 2.74% | 67.9% |
+
+**E-DIP** — signal: ADD, days: 555, episodes: 174, trend_states observed: ['UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 555 | 0.83% | 0.71% | 61.3% | 5145 | 0.29% | 0.49% | 58.4% | 0.23% | 57.3% |
+| 21d | 555 | 2.26% | 2.23% | 62.9% | 5129 | 1.15% | 1.56% | 63.9% | 0.94% | 62.5% |
+| 63d | 547 | 6.4% | 7.06% | 76.4% | 5087 | 3.32% | 4.26% | 70.7% | 2.74% | 67.9% |
+
+Pass/fail: 21d=pass, 63d=pass, overall=**pass**
+
+**E-DOWN** — signal: WAIT, days: 1384, episodes: 14, trend_states observed: ['DOWN']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 1384 | -0.02% | 0.45% | 53.2% | 1384 | -0.02% | 0.45% | 53.2% | 0.23% | 57.3% |
+| 21d | 1384 | -0.24% | 1.28% | 55.4% | 1384 | -0.24% | 1.28% | 55.4% | 0.94% | 62.5% |
+| 63d | 1384 | -0.54% | 2.64% | 55.5% | 1384 | -0.54% | 2.64% | 55.5% | 2.74% | 67.9% |
+
+Pass/fail: 21d=fail, 63d=fail, overall=**fail**
+
+**E-HOT** — signal: WAIT, days: 107, episodes: 41, trend_states observed: ['UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 107 | -0.32% | -0.04% | 47.7% | 5145 | 0.29% | 0.49% | 58.4% | 0.23% | 57.3% |
+| 21d | 107 | 1.06% | 1.27% | 64.5% | 5129 | 1.15% | 1.56% | 63.9% | 0.94% | 62.5% |
+| 63d | 107 | 0.28% | 1.25% | 61.7% | 5087 | 3.32% | 4.26% | 70.7% | 2.74% | 67.9% |
+
+Pass/fail: 21d=pass, 63d=pass, overall=**pass**
+
+**Veto-day (informational, tier veto)** — days: 409, trend_states observed: ['UP', 'DOWN']
+
+| Horizon | Veto-day n | Veto median | Veto %pos | Veto p10 | Baseline n | Baseline median | Baseline %pos | Baseline p10 |
+|---|---|---|---|---|---|---|---|---|
+| 21d | 409 | 3.54% | 65.3% | -8.59% | 6513 | 1.51% | 62.1% | -7.21% |
+| 63d | 409 | 7.27% | 72.4% | -11.52% | 6471 | 4.12% | 67.4% | -11.57% |
+
+#### IWM (2001-02-28 → 2026-09-28, 6433 days)
+
+**E-DEFAULT** — signal: NEUTRAL, days: 4208, episodes: 174, trend_states observed: ['MIXED', 'UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 4207 | 0.22% | 0.32% | 55.3% | 4788 | 0.2% | 0.31% | 55% | 0.22% | 55.2% |
+| 21d | 4201 | 0.73% | 1.15% | 59.2% | 4772 | 0.75% | 1.22% | 59.5% | 0.91% | 60.2% |
+| 63d | 4159 | 2.16% | 3.11% | 65.1% | 4730 | 2.31% | 3.2% | 65.2% | 2.72% | 64.7% |
+
+**E-DIP** — signal: ADD, days: 543, episodes: 148, trend_states observed: ['UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 539 | 0.07% | 0.31% | 54.2% | 4458 | 0.19% | 0.31% | 55.1% | 0.22% | 55.2% |
+| 21d | 529 | 0.94% | 1.95% | 62% | 4442 | 0.76% | 1.27% | 60.1% | 0.91% | 60.2% |
+| 63d | 529 | 3.49% | 4.01% | 65.4% | 4400 | 2.43% | 3.22% | 65.9% | 2.72% | 64.7% |
+
+Pass/fail: 21d=pass, 63d=pass, overall=**pass**
+
+**E-DOWN** — signal: WAIT, days: 1640, episodes: 17, trend_states observed: ['DOWN']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 1640 | 0.27% | 0.51% | 55.9% | 1640 | 0.27% | 0.51% | 55.9% | 0.22% | 55.2% |
+| 21d | 1640 | 1.39% | 2.28% | 62.3% | 1640 | 1.39% | 2.28% | 62.3% | 0.91% | 60.2% |
+| 63d | 1640 | 3.89% | 4.29% | 63.4% | 1640 | 3.89% | 4.29% | 63.4% | 2.72% | 64.7% |
+
+Pass/fail: 21d=fail, 63d=fail, overall=**fail**
+
+**E-HOT** — signal: WAIT, days: 42, episodes: 18, trend_states observed: ['UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 42 | -0.56% | -0.43% | 33.3% | 4458 | 0.19% | 0.31% | 55.1% | 0.22% | 55.2% |
+| 21d | 42 | 0.42% | 0.45% | 54.8% | 4442 | 0.76% | 1.27% | 60.1% | 0.91% | 60.2% |
+| 63d | 42 | 2.66% | 3.11% | 69% | 4400 | 2.43% | 3.22% | 65.9% | 2.72% | 64.7% |
+
+Pass/fail: 21d=pass, 63d=fail, overall=**fail**
+
+**Veto-day (informational, tier veto)** — days: 404, trend_states observed: ['DOWN', 'UP']
+
+| Horizon | Veto-day n | Veto median | Veto %pos | Veto p10 | Baseline n | Baseline median | Baseline %pos | Baseline p10 |
+|---|---|---|---|---|---|---|---|---|
+| 21d | 404 | 2.45% | 61.9% | -10.43% | 6082 | 1.45% | 60.7% | -6.33% |
+| 63d | 404 | 3.9% | 58.9% | -14.04% | 6040 | 3.42% | 65.2% | -9.9% |
+
+#### EFA (2002-05-31 → 2026-09-28, 6121 days)
+
+**E-DEFAULT** — signal: NEUTRAL, days: 4062, episodes: 149, trend_states observed: ['MIXED', 'UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 4057 | 0.15% | 0.28% | 56.4% | 4558 | 0.16% | 0.3% | 56.7% | 0.17% | 56.3% |
+| 21d | 4042 | 0.65% | 1.15% | 62.4% | 4542 | 0.71% | 1.19% | 62.4% | 0.71% | 61.4% |
+| 63d | 4000 | 2.09% | 3.1% | 67.8% | 4500 | 2.22% | 3.19% | 68.1% | 2.21% | 66.5% |
+
+**E-DIP** — signal: ADD, days: 456, episodes: 122, trend_states observed: ['UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 456 | 0.3% | 0.57% | 59.9% | 4153 | 0.17% | 0.32% | 57% | 0.17% | 56.3% |
+| 21d | 455 | 1.44% | 1.88% | 64.8% | 4137 | 0.77% | 1.27% | 63.5% | 0.71% | 61.4% |
+| 63d | 455 | 3.47% | 3.83% | 71.9% | 4095 | 2.46% | 3.41% | 69.8% | 2.21% | 66.5% |
+
+Pass/fail: 21d=pass, 63d=pass, overall=**pass**
+
+**E-DOWN** — signal: WAIT, days: 1558, episodes: 14, trend_states observed: ['DOWN']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 1558 | 0.19% | 0.36% | 55.3% | 1558 | 0.19% | 0.36% | 55.3% | 0.17% | 56.3% |
+| 21d | 1558 | 0.73% | 1.49% | 58.7% | 1558 | 0.73% | 1.49% | 58.7% | 0.71% | 61.4% |
+| 63d | 1558 | 2.16% | 2.92% | 61.9% | 1558 | 2.16% | 2.92% | 61.9% | 2.21% | 66.5% |
+
+Pass/fail: 21d=fail, 63d=fail, overall=**fail**
+
+**E-HOT** — signal: WAIT, days: 45, episodes: 18, trend_states observed: ['UP']
+
+| Horizon | Rule n | Rule mean | Rule median | Rule %pos | Cond. baseline n | Cond. mean | Cond. median | Cond. %pos | Uncond. mean | Uncond. %pos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5d | 45 | -0.12% | 0.02% | 51.1% | 4153 | 0.17% | 0.32% | 57% | 0.17% | 56.3% |
+| 21d | 45 | -1.6% | -1.39% | 37.8% | 4137 | 0.77% | 1.27% | 63.5% | 0.71% | 61.4% |
+| 63d | 45 | 1.3% | 2.93% | 57.8% | 4095 | 2.46% | 3.41% | 69.8% | 2.21% | 66.5% |
+
+Pass/fail: 21d=pass, 63d=pass, overall=**pass**
+
+**Veto-day (informational, tier veto)** — days: 383, trend_states observed: ['DOWN', 'UP']
+
+| Horizon | Veto-day n | Veto median | Veto %pos | Veto p10 | Baseline n | Baseline median | Baseline %pos | Baseline p10 |
+|---|---|---|---|---|---|---|---|---|
+| 21d | 383 | 2.2% | 59.5% | -9.87% | 5695 | 1.31% | 62.2% | -5.07% |
+| 63d | 383 | 3.98% | 63.2% | -14.46% | 5653 | 3.34% | 67.6% | -8.35% |
+
 ## Phase 2 breadth round: proxy pillar built and tested, DROPPED from scoring (2026-09-30)
 
 **Decision, made in advance of building anything (2026-09-30)**: the ONLY
