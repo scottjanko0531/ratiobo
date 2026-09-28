@@ -39,7 +39,44 @@ export const MC_CONFIG = {
   //      now" relative to 10 years of history instead of an absolute read,
   //      which is backwards for a level that has a genuinely meaningful
   //      fixed reference point (1.0).
-  version: "mc-1.2.0",
+  //
+  // mc-1.3.0: mc-1.2.0's fix worked on the mechanism it targeted (trend
+  // state label) but barely moved the ACTUAL recovery date for 3 of 4
+  // episodes, because the composite itself -- specifically T1/T3's
+  // percentile ranking against 10 years of history -- turned out to be the
+  // real bottleneck once the trend cap stopped binding (a bare SMA200
+  // cross ranks low percentile-wise even though technically bullish). Four
+  // more changes, diagnosed from that finding:
+  //   1. `recovery.tierFloor` (stepTierState): once close has closed above
+  //      the band for 3 consecutive days AND veto is inactive, tier cannot
+  //      be worse than NORMAL -- independent of hysteresis's day-count,
+  //      applied after hysteresis and before the veto's own cap.
+  //   2. T1 and T3 (indicators/trend.ts) switch from percentile rank to
+  //      absolute mappings -- T1 linear over +/-5% distance from SMA200,
+  //      T3 a vol-adjusted momentum ratio clipped to [-1,1]. Both also drop
+  //      the minHistory=756 gate entirely: an absolute formula doesn't
+  //      need a trailing population to rank against, so the gate was
+  //      vestigial once percentile ranking was gone -- T1/T3 are now live
+  //      as soon as their own lookback (SMA200, or momentum+252d vol) is
+  //      satisfied, same as T2/T4 always were.
+  //   3. The recovery fast-path becomes a LATCH (config.recovery,
+  //      stepTierState): once triggered it stays active across days even
+  //      if the original trigger conditions stop holding, until tier
+  //      reaches NORMAL or it's invalidated (close < SMA50, or
+  //      VIX/VIX3M > vixTermStructureInvalidate). Previously it was
+  //      re-evaluated fresh every day, which (diagnosed against mc-1.2.0's
+  //      own results) meant it activated early in 2009/2022 but wasn't
+  //      simultaneously active on the specific day composite finally
+  //      cleared its margin, so it never actually helped either case.
+  //      Pre-2006 (no VIX3M) fallback trigger: VIXCLS below its own 50-day
+  //      average AND falling over 20 days -- lets the fast-path apply to
+  //      2002 for the first time, which was structurally impossible before.
+  //   4. Stress pillar adds S6 (VIXCLS 20-day change, inverted percentile)
+  //      and moves from equal-weight to an explicit change-vs-level split:
+  //      S3+S6 (the two "is it moving" indicators) total 50% of the
+  //      pillar, S1+S2+S4+S5 (the four "where does it sit" indicators)
+  //      share the other 50%.
+  version: "mc-1.3.0",
 
   normWindow: 2520, // ~10y trading days, rolling percentile cap
   minHistory: 756, // ~3y trading days, minimum before a percentile indicator counts
@@ -67,17 +104,25 @@ export const MC_CONFIG = {
 
   veto: { termStructure: 1.05, termStructureDays: 2, creditWideningBp: 45, clearDays: 5 }, // creditWideningBp: placeholder pending Phase 5 recalibration for BAA10Y
 
-  // mc-1.2.0. ALL PLACEHOLDER VALUES, none backtested -- see DECISIONS.md,
-  // Phase 5. When VIX/VIX3M < vixTermStructureMax AND the 20d BAA10Y change
-  // < baa10yChangeMaxBp AND close > SMA50 all hold on the same day: the
-  // hysteresis upgrade requirement drops to fastPathUpgradeDays (instead of
-  // hysteresis.upgradeDays), and the DOWN trend cap is not applied that day
-  // (a no-op unless trend_state is actually DOWN).
+  // ALL PLACEHOLDER VALUES, none backtested -- see DECISIONS.md, Phase 5.
+  // Trigger (mc-1.2.0): VIX/VIX3M < vixTermStructureMax AND the 20d BAA10Y
+  // change < baa10yChangeMaxBp AND close > SMA50, all the same day (or,
+  // pre-2006 with no VIX3M, VIXCLS < its own 50d average AND falling over
+  // 20 days, in place of the VIX/VIX3M leg). Once triggered (mc-1.3.0),
+  // LATCHES active across days -- hysteresis upgrade requirement drops to
+  // fastPathUpgradeDays and the DOWN trend cap is suspended -- until tier
+  // reaches NORMAL, or invalidated by close < SMA50 or
+  // VIX/VIX3M > vixTermStructureInvalidate (only evaluable post-2006;
+  // pre-2006 latches can only invalidate via the SMA50 break -- no
+  // invalidation-side fallback was specified for the VIX3M-less case, so
+  // none is invented here).
   recovery: {
     enabled: true,
     vixTermStructureMax: 0.90,
+    vixTermStructureInvalidate: 1.0,
     baa10yChangeMaxBp: 0, // BAA10Y 20d change must be NEGATIVE (spread tightening) to count
     fastPathUpgradeDays: 1,
+    tierFloor: "NORMAL", // mc-1.3.0: 200d-above-band-3-days floor, see stepTierState
   },
 
   entry: {
@@ -91,6 +136,7 @@ export const MC_CONFIG = {
 // hysteresis/cap/veto operation in scoring.ts works on this index, not the
 // name, so "cap at DEFENSIVE" is just "index = max(index, DEFENSIVE_IDX)".
 export const TIER_ORDER = MC_CONFIG.tiers.map((t) => t.name);
+export const NORMAL_IDX = TIER_ORDER.indexOf("NORMAL");
 export const CAUTIOUS_IDX = TIER_ORDER.indexOf("CAUTIOUS");
 export const DEFENSIVE_IDX = TIER_ORDER.indexOf("DEFENSIVE");
 

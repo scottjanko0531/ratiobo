@@ -15,6 +15,14 @@
 // rolling ~3-year window (see DECISIONS.md). BAMLH0A0HYM2 is still ingested
 // for reference but no longer scored. Same percentage-point units and same
 // *100-to-bp conversion apply to BAA10Y as applied to HY OAS.
+//
+// mc-1.3.0: added S6 (VIXCLS 20-day change) and a change-vs-level weight
+// split (see STRESS_WEIGHTS below) instead of equal weighting. Also added
+// `vixSma50` (VIXCLS's own 50-day SMA) — not a scored indicator, used only
+// by scoring.ts's pre-2006 recovery fast-path fallback trigger (no VIX3M
+// before 2006-07-17, so the fast-path's term-structure leg substitutes
+// "VIXCLS below its own 50d average and falling" — s6raw < 0 covers the
+// "falling" half, vixSma50 covers the "below its average" half).
 
 import { SubIndicatorResult } from "../types.ts";
 import { percentileRank, percentileToScore, collectPriorNonNull, stdevPop, clip } from "../normalize.ts";
@@ -26,6 +34,8 @@ export interface StressRawSeries {
   s3raw: (number | null)[]; // credit spread 20d change, in BASIS POINTS (not %) -- see conversion below
   s4raw: (number | null)[]; // 20d annualized realized vol of SPX log returns
   s5raw: (number | null)[]; // VIX level
+  s6raw: (number | null)[]; // VIXCLS 20d change, in VIX points (mc-1.3.0)
+  vixSma50: (number | null)[]; // VIXCLS's own 50d SMA -- not scored, recovery fast-path fallback only
 }
 
 export function computeStressRawSeries(
@@ -37,10 +47,25 @@ export function computeStressRawSeries(
   const s3raw: (number | null)[] = new Array(n).fill(null);
   const s4raw: (number | null)[] = new Array(n).fill(null);
   const s5raw: (number | null)[] = new Array(n).fill(null);
+  const s6raw: (number | null)[] = new Array(n).fill(null);
+  const vixSma50: (number | null)[] = new Array(n).fill(null);
 
   const logRet: (number | null)[] = new Array(n).fill(null);
   for (let i = 1; i < n; i++) {
     if (closes[i] > 0 && closes[i - 1] > 0) logRet[i] = Math.log(closes[i] / closes[i - 1]);
+  }
+
+  // vix is a plain array here (not "with nulls filtered"), so sma()'s
+  // index-arithmetic needs a null-tolerant read -- vix may contain nulls
+  // (pre-ingest gaps beyond the forward-fill cap), and sma() sums raw
+  // array slots directly, so compute vixSma50 by hand with null-skipping
+  // rather than reusing sma() verbatim.
+  for (let t = 0; t < n; t++) {
+    if (t - 49 >= 0) {
+      let sum = 0, count = 0;
+      for (let i = t - 49; i <= t; i++) { if (vix[i] != null) { sum += vix[i]!; count++; } }
+      if (count === 50) vixSma50[t] = sum / 50;
+    }
   }
 
   for (let t = 0; t < n; t++) {
@@ -58,15 +83,24 @@ export function computeStressRawSeries(
       if (window.length === 20) s4raw[t] = stdevPop(window) * Math.sqrt(252);
     }
     if (vix[t] != null) s5raw[t] = vix[t];
+    if (t - 20 >= 0 && vix[t] != null && vix[t - 20] != null) s6raw[t] = vix[t]! - vix[t - 20]!;
   }
 
-  return { s1raw, s2raw, s3raw, s4raw, s5raw };
+  return { s1raw, s2raw, s3raw, s4raw, s5raw, s6raw, vixSma50 };
 }
 
 export interface StressScoreAtT {
-  indicators: { S1: SubIndicatorResult; S2: SubIndicatorResult; S3: SubIndicatorResult; S4: SubIndicatorResult; S5: SubIndicatorResult };
+  indicators: { S1: SubIndicatorResult; S2: SubIndicatorResult; S3: SubIndicatorResult; S4: SubIndicatorResult; S5: SubIndicatorResult; S6: SubIndicatorResult };
   pillarScore: number | null;
 }
+
+// mc-1.3.0: explicit change-vs-level weighting, not equal weight. S3/S6
+// ("is it moving") total 50% of the pillar; S1/S2/S4/S5 ("where does it
+// sit") share the other 50%. When some sub-indicators are excluded, the
+// remaining available ones are renormalized proportionally to these
+// nominal weights (same redistribution mechanic as the cross-pillar
+// weighting in scoring.ts, not a special case).
+const STRESS_WEIGHTS: Record<string, number> = { S1: 0.125, S2: 0.125, S3: 0.25, S4: 0.125, S5: 0.125, S6: 0.25 };
 
 function scoreOne(raw: (number | null)[], t: number, cfg = MC_CONFIG): SubIndicatorResult {
   if (raw[t] == null) return { raw: null, percentile: null, score: null, excluded: true, excludeReason: "input unavailable" };
@@ -102,11 +136,17 @@ export function scoreStressAtIndex(raw: StressRawSeries, t: number, cfg = MC_CON
   const S3 = scoreOne(raw.s3raw, t, cfg);
   const S4 = scoreOne(raw.s4raw, t, cfg);
   const S5 = scoreOne(raw.s5raw, t, cfg);
+  const S6 = scoreOne(raw.s6raw, t, cfg); // inverted percentile, same as S3
 
-  const available = [S1, S2, S3, S4, S5].filter((r) => !r.excluded && r.score != null);
-  const pillarScore = available.length ? available.reduce((s, r) => s + (r.score as number), 0) / available.length : null;
+  const entries: [string, SubIndicatorResult][] = [["S1", S1], ["S2", S2], ["S3", S3], ["S4", S4], ["S5", S5], ["S6", S6]];
+  const available = entries.filter(([, r]) => !r.excluded && r.score != null);
+  let pillarScore: number | null = null;
+  if (available.length) {
+    const totalWeight = available.reduce((s, [k]) => s + STRESS_WEIGHTS[k], 0);
+    pillarScore = available.reduce((s, [k, r]) => s + (STRESS_WEIGHTS[k] / totalWeight) * (r.score as number), 0);
+  }
 
-  return { indicators: { S1, S2, S3, S4, S5 }, pillarScore };
+  return { indicators: { S1, S2, S3, S4, S5, S6 }, pillarScore };
 }
 
 // Raw veto trigger conditions (build spec Section 7.3) — evaluated from

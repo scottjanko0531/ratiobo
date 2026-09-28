@@ -143,6 +143,12 @@ Deno.serve(async (req: Request) => {
     const hyOas = await fetchFredCsv("BAMLH0A0HYM2", "1990-01-01");
     await upsertSeries(supabase, "BAMLH0A0HYM2", hyOas, "fred", report, "hyOas");
 
+    // DTB3 (3-month T-bill secondary market rate) -- not scored, used only
+    // by the preliminary backtest (scripts-equivalent, see DECISIONS.md)
+    // for the cash-residual yield.
+    const dtb3 = await fetchFredCsv("DTB3", "1990-01-01");
+    await upsertSeries(supabase, "DTB3", dtb3, "fred", report, "dtb3");
+
     if (runId != null) {
       await supabase.from("mc_job_runs").update({ finished_at: new Date().toISOString(), status: "ok", detail: report }).eq("id", runId);
     }

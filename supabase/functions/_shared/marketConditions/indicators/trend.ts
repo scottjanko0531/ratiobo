@@ -1,10 +1,9 @@
 // Market Conditions Overlay — Trend pillar (build spec Section 6.1).
 // Pure, Deno-API-free. Two-pass design, same shape as stress.ts:
 //   1. computeTrendRawSeries — one O(n) pass producing every day's raw
-//      indicator value from `closes` alone (SMA-based, no percentile yet).
-//   2. scoreTrendAtIndex — percentile-normalizes T1/T3 against their own
-//      trailing window (T2/T4 are already +/-1 per the spec's own table,
-//      no percentile step) and returns that day's pillar result.
+//      indicator value from `closes` alone (SMA-based).
+//   2. scoreTrendAtIndex — normalizes each indicator into [-1,1] and
+//      returns that day's pillar result.
 //   3. resolveTrendState — the trend-state TRANSITION machine (mc-1.2.0),
 //      separate from scoreTrendAtIndex because it's inherently stateful
 //      (needs yesterday's state + a running streak), unlike the pure
@@ -19,17 +18,26 @@
 // MIXED -> UP, so DOWN can never jump straight to UP in one step anymore —
 // it always passes through MIXED first. UP's own exit condition (belowBand
 // + slopeDown, single day) is unchanged.
+//
+// mc-1.3.0: T1 and T3 switched from percentile rank to absolute mappings
+// (see scoreTrendAtIndex) after diagnosing that percentile-ranked trend
+// scores were the actual bottleneck behind mc-1.2.0's still-slow recovery
+// dates -- a bare SMA200 cross ranks low percentile-wise (unremarkable vs.
+// a full bull market's typical readings) even though it's technically
+// bullish. Both drop the minHistory gate entirely: an absolute formula
+// doesn't need a trailing population to rank against.
 
 import { SubIndicatorResult, TrendState } from "../types.ts";
-import { sma, percentileRank, percentileToScore, collectPriorNonNull } from "../normalize.ts";
+import { sma, clip, stdevPop } from "../normalize.ts";
 import { MC_CONFIG } from "../config.ts";
 
 export interface TrendRawSeries {
   t1raw: (number | null)[]; // close/SMA200 - 1
   t2raw: (number | null)[]; // +1 / -1 / null
-  t3raw: (number | null)[]; // 12-1 momentum
+  t3raw: (number | null)[]; // 12-1 momentum (simple return, t-252 to t-21)
+  t3vol: (number | null)[]; // 252-day annualized vol of daily log returns -- mc-1.3.0, T3's risk-adjustment denominator
   t4raw: (number | null)[]; // +1 / -1 / null (10-month rule)
-  sma50: (number | null)[]; // plain SMA50 level -- not a scored indicator, used only by the recovery fast-path (mc-1.2.0, scoring.ts)
+  sma50: (number | null)[]; // plain SMA50 level -- not a scored indicator, used only by the recovery fast-path (scoring.ts)
 }
 
 // Month-end index of each trading day's calendar month, i.e. the last
@@ -50,12 +58,18 @@ export function computeTrendRawSeries(
   const t1raw: (number | null)[] = new Array(n).fill(null);
   const t2raw: (number | null)[] = new Array(n).fill(null);
   const t3raw: (number | null)[] = new Array(n).fill(null);
+  const t3vol: (number | null)[] = new Array(n).fill(null);
   const t4raw: (number | null)[] = new Array(n).fill(null);
   const sma50: (number | null)[] = new Array(n).fill(null);
 
   const slope = cfg.trend.slopeLookback;
   const months = cfg.trend.tenMonthRuleMonths;
   const monthEnd = monthEndIndices(dates);
+
+  const logRet: (number | null)[] = new Array(n).fill(null);
+  for (let i = 1; i < n; i++) {
+    if (closes[i] > 0 && closes[i - 1] > 0) logRet[i] = Math.log(closes[i] / closes[i - 1]);
+  }
 
   for (let t = 0; t < n; t++) {
     const sma200 = sma(closes, t, 200);
@@ -77,6 +91,15 @@ export function computeTrendRawSeries(
       t3raw[t] = closes[t - 21] / closes[t - 252] - 1;
     }
 
+    // 252-day annualized vol of daily log returns -- T3's risk-adjustment
+    // denominator (mc-1.3.0). Needs 252 log-return values ending at t, i.e.
+    // closes[t-252..t].
+    if (t - 252 >= 0) {
+      const window: number[] = [];
+      for (let i = t - 251; i <= t; i++) { const r = logRet[i]; if (r != null) window.push(r); }
+      if (window.length === 252) t3vol[t] = stdevPop(window) * Math.sqrt(252);
+    }
+
     // 10-month rule: last completed month-end close vs the trailing
     // N-month SMA of month-end closes (including that month-end itself) —
     // held constant through the following month, same "monthly signal,
@@ -93,7 +116,7 @@ export function computeTrendRawSeries(
     }
   }
 
-  return { t1raw, t2raw, t3raw, t4raw, sma50 };
+  return { t1raw, t2raw, t3raw, t3vol, t4raw, sma50 };
 }
 
 export interface TrendScoreAtT {
@@ -101,39 +124,36 @@ export interface TrendScoreAtT {
   pillarScore: number | null;
 }
 
+// T1 (mc-1.3.0): absolute linear mapping, +/-5% distance from SMA200.
+const T1_BOUND = 0.05;
+function scoreT1(raw: number | null): SubIndicatorResult {
+  if (raw == null) return { raw: null, percentile: null, score: null, excluded: true, excludeReason: "sma200 unavailable" };
+  return { raw, percentile: null, score: clip(raw / T1_BOUND), excluded: false };
+}
+
+// T3 (mc-1.3.0): 12-1 momentum divided by its own 252-day annualized vol
+// (a risk-adjusted momentum ratio), clipped to [-1,1] directly -- no
+// percentile step, no minHistory gate. `raw` stays the plain momentum
+// value (unchanged meaning across scoring-method changes, same convention
+// as T1's raw staying the plain SMA200 distance); the vol-adjustment is an
+// internal step within scoring, not a separately exposed field.
+function scoreT3(momentum: number | null, vol: number | null): SubIndicatorResult {
+  if (momentum == null || vol == null) return { raw: momentum, percentile: null, score: null, excluded: true, excludeReason: "12-1 window or 252d vol unavailable" };
+  if (vol === 0) return { raw: momentum, percentile: null, score: momentum > 0 ? 1 : momentum < 0 ? -1 : 0, excluded: false };
+  return { raw: momentum, percentile: null, score: clip(momentum / vol), excluded: false };
+}
+
 export function scoreTrendAtIndex(
   raw: TrendRawSeries, t: number, closes: number[], cfg = MC_CONFIG,
 ): TrendScoreAtT {
-  const { normWindow, minHistory } = cfg;
-
-  // T1: percentile of close/SMA200-1 within its own trailing history.
-  let T1: SubIndicatorResult = { raw: raw.t1raw[t], percentile: null, score: null, excluded: true, excludeReason: "sma200 unavailable" };
-  if (raw.t1raw[t] != null) {
-    const hist = collectPriorNonNull(raw.t1raw, t, normWindow, minHistory);
-    if (hist) {
-      const pct = percentileRank(hist, raw.t1raw[t]!);
-      T1 = { raw: raw.t1raw[t], percentile: pct, score: percentileToScore(pct, false), excluded: false };
-    } else {
-      T1 = { raw: raw.t1raw[t], percentile: null, score: null, excluded: true, excludeReason: "insufficient history (<minHistory)" };
-    }
-  }
+  const T1 = scoreT1(raw.t1raw[t]);
 
   // T2: already +/-1, no percentile step.
   const T2: SubIndicatorResult = raw.t2raw[t] != null
     ? { raw: raw.t2raw[t], percentile: null, score: raw.t2raw[t], excluded: false }
     : { raw: null, percentile: null, score: null, excluded: true, excludeReason: "sma200 slope unavailable" };
 
-  // T3: percentile of 12-1 momentum.
-  let T3: SubIndicatorResult = { raw: raw.t3raw[t], percentile: null, score: null, excluded: true, excludeReason: "12-1 window unavailable" };
-  if (raw.t3raw[t] != null) {
-    const hist = collectPriorNonNull(raw.t3raw, t, normWindow, minHistory);
-    if (hist) {
-      const pct = percentileRank(hist, raw.t3raw[t]!);
-      T3 = { raw: raw.t3raw[t], percentile: pct, score: percentileToScore(pct, false), excluded: false };
-    } else {
-      T3 = { raw: raw.t3raw[t], percentile: null, score: null, excluded: true, excludeReason: "insufficient history (<minHistory)" };
-    }
-  }
+  const T3 = scoreT3(raw.t3raw[t], raw.t3vol[t]);
 
   // T4: already +/-1, no percentile step.
   const T4: SubIndicatorResult = raw.t4raw[t] != null

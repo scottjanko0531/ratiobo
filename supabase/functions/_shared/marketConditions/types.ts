@@ -35,6 +35,7 @@ export interface HysteresisState {
   downStreak: number;
   trendState: TrendState;
   aboveBandStreak: number; // consecutive days close > SMA200*(1+band) -- mc-1.2.0's DOWN-exit condition (indicators/trend.ts's resolveTrendState)
+  fastPathLatched: boolean; // mc-1.3.0: recovery fast-path latch state (scoring.ts's stepTierState)
   vetoActive: boolean;
   vetoTermStructureStreak: number; // consecutive days VIX/VIX3M > threshold
   vetoClearStreak: number; // consecutive days BOTH veto conditions false

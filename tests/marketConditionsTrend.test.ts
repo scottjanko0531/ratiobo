@@ -52,17 +52,86 @@ describe("computeTrendRawSeries / scoreTrendAtIndex — T1/T2/T3", () => {
     expect(resolveTrendState(raw.t1raw[t], raw.t2raw[t], "MIXED", 0, MC_CONFIG.trend.trendBand).state).toBe("MIXED");
   });
 
-  it("excludes T1/T3 (percentile-based) before minHistory is met, without excluding T2 (binary)", () => {
-    const n = 250; // enough for SMA200+slope (T2), not enough for minHistory=756 (T1/T3)
+  it("mc-1.3.0: T1 is live at n=250 (no minHistory gate anymore, only needs SMA200)", () => {
+    const n = 250; // enough for SMA200 (T1) and slope (T2); NOT enough for the old minHistory=756 gate
     const dates = makeDates(n);
     const closes = Array.from({ length: n }, (_, i) => 100 + i * 0.5);
     const raw = computeTrendRawSeries(closes, dates, MC_CONFIG);
     const t = n - 1;
     const result = scoreTrendAtIndex(raw, t, closes, MC_CONFIG);
-    expect(result.indicators.T1.excluded).toBe(true);
-    expect(result.indicators.T1.excludeReason).toMatch(/insufficient history/);
+    expect(result.indicators.T1.excluded).toBe(false);
+    expect(result.indicators.T1.percentile).toBeNull(); // absolute mapping, not percentile
     expect(result.indicators.T2.excluded).toBe(false);
-    expect(result.pillarScore).not.toBeNull(); // T2 alone still produces a pillar score
+    expect(result.pillarScore).not.toBeNull();
+  });
+});
+
+describe("scoreTrendAtIndex — T1 absolute mapping (mc-1.3.0)", () => {
+  it("scores +1 at or above +5% distance from SMA200", () => {
+    const n = 250;
+    const dates = makeDates(n);
+    // Engineer a close exactly 5% above a flat-ish SMA200 by holding price
+    // flat for the SMA window then jumping.
+    const closes = Array.from({ length: n - 1 }, () => 100).concat([105]);
+    const raw = computeTrendRawSeries(closes, dates, MC_CONFIG);
+    const t = n - 1;
+    const result = scoreTrendAtIndex(raw, t, closes, MC_CONFIG);
+    expect(result.indicators.T1.raw).toBeGreaterThan(0.04); // close to +5% (SMA200 is slightly below 100 due to the jump itself)
+    expect(result.indicators.T1.score).toBeCloseTo(1, 1);
+  });
+
+  it("scores -1 at or below -5% distance from SMA200", () => {
+    const n = 250;
+    const dates = makeDates(n);
+    const closes = Array.from({ length: n - 1 }, () => 100).concat([94]);
+    const raw = computeTrendRawSeries(closes, dates, MC_CONFIG);
+    const t = n - 1;
+    const result = scoreTrendAtIndex(raw, t, closes, MC_CONFIG);
+    expect(result.indicators.T1.score).toBeCloseTo(-1, 1);
+  });
+
+  it("interpolates linearly, 0 at exactly the SMA200", () => {
+    const n = 250;
+    const dates = makeDates(n);
+    const closes = new Array(n).fill(100);
+    const raw = computeTrendRawSeries(closes, dates, MC_CONFIG);
+    const t = n - 1;
+    const result = scoreTrendAtIndex(raw, t, closes, MC_CONFIG);
+    expect(result.indicators.T1.score).toBeCloseTo(0, 10);
+  });
+});
+
+describe("scoreTrendAtIndex — T3 vol-adjusted momentum (mc-1.3.0)", () => {
+  it("is excluded before 252 days of both momentum and vol are available", () => {
+    const n = 260;
+    const dates = makeDates(n);
+    const closes = Array.from({ length: n }, (_, i) => 100 + i * 0.1);
+    const raw = computeTrendRawSeries(closes, dates, MC_CONFIG);
+    const result = scoreTrendAtIndex(raw, 251, closes, MC_CONFIG); // t=251 -> t-252 < 0
+    expect(result.indicators.T3.excluded).toBe(true);
+  });
+
+  it("scores positive momentum with near-zero vol at (clipped to) +1", () => {
+    const n = 260;
+    const dates = makeDates(n);
+    // Smooth, strictly increasing (low realized vol) -> a large momentum/vol ratio, clipped to 1.
+    const closes = Array.from({ length: n }, (_, i) => 100 * Math.pow(1.002, i));
+    const raw = computeTrendRawSeries(closes, dates, MC_CONFIG);
+    const t = n - 1;
+    const result = scoreTrendAtIndex(raw, t, closes, MC_CONFIG);
+    expect(result.indicators.T3.raw).toBeGreaterThan(0); // momentum itself still exposed, unchanged meaning
+    expect(result.indicators.T3.percentile).toBeNull(); // absolute, not percentile
+    expect(result.indicators.T3.score).toBeCloseTo(1, 5);
+  });
+
+  it("scores negative momentum with near-zero vol at (clipped to) -1", () => {
+    const n = 260;
+    const dates = makeDates(n);
+    const closes = Array.from({ length: n }, (_, i) => 100 * Math.pow(0.998, i));
+    const raw = computeTrendRawSeries(closes, dates, MC_CONFIG);
+    const t = n - 1;
+    const result = scoreTrendAtIndex(raw, t, closes, MC_CONFIG);
+    expect(result.indicators.T3.score).toBeCloseTo(-1, 5);
   });
 });
 

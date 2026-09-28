@@ -1,5 +1,114 @@
 # Market Conditions Overlay — decisions log
 
+## mc-1.3.0: closing the recovery-lag gap (2026-09-29)
+
+Four changes, all applied and verified live:
+
+1. **200-day floor** (`stepTierState`): once close has closed above the band
+   for 3 consecutive days AND veto is inactive, tier cannot be worse than
+   NORMAL (`config.recovery.tierFloor`), independent of hysteresis's own
+   day-count. Applied after hysteresis + trend cap, before the veto's cap —
+   veto's own activation state has to be computed earlier than its
+   tier-capping EFFECT to let the floor check `!vetoActive`, but the
+   ordering of effects on `finalTierIndex` matches the instruction exactly.
+
+2. **Absolute T1/T3 scoring** (`indicators/trend.ts`): T1 now a linear
+   +/-5%-from-SMA200 mapping; T3 now `momentum / 252d-annualized-vol`
+   clipped to [-1,1] (a risk-adjusted momentum ratio, not a percentile
+   rank). Both drop `minHistory` entirely — **not explicitly requested**,
+   but the logical consequence of dropping percentile ranking (an absolute
+   formula has no trailing population to need a minimum size for); flagging
+   this interpretation rather than silently making it. Live dates moved
+   from 1996-11-06 (T1) / 1997-01-23 (T3) to ~1994 (as soon as SMA200 /
+   momentum+252d-vol exist) — meaningfully more early-history usable.
+
+3. **Recovery fast-path latch** (`config.recovery`, `stepTierState`): once
+   triggered, stays active — shortened upgrade window + suspended trend cap
+   — until tier reaches NORMAL (checked same-day, not one day late) or
+   invalidated (`close < SMA50` or `VIX/VIX3M > vixTermStructureInvalidate`,
+   a new 1.0 threshold distinct from the 0.90 trigger). Pre-2006 fallback
+   trigger (no VIX3M): VIXCLS below its own 50d average AND falling over 20
+   days. **No invalidation-side fallback was specified for the pre-2006
+   case** — a pre-2006 latch can only be invalidated via the SMA50 break,
+   not a VIX3M-based one, since none exists to fall back to. Not invented
+   here; flagged as a gap if it matters in practice.
+
+4. **Stress pillar S6 + reweighting** (`indicators/stress.ts`): added S6
+   (VIXCLS 20-day change, inverted percentile) and moved from equal weight
+   to an explicit split — S3+S6 ("is it moving") total 50%, S1+S2+S4+S5
+   ("where does it sit") share the other 50%, renormalized proportionally
+   when any are excluded (same redistribution mechanic as the cross-pillar
+   weighting, not a special case).
+
+**Result** (recomputed and re-diagnosed against the same anchors): the
+recovery-lag gap closed substantially. All 4 bottoms improved vs mc-1.2.0
+(2002: 148->133 trading days; 2009: 111->60; 2020: 81->47; 2022: 127->35),
+and mc-1.3.0 now lands within 1-3 trading days of the plain 200-day rule
+for 2009/2020/2022 — only 2002 still lags meaningfully (133 vs 112 days),
+structurally limited by the fast-path being unavailable pre-2006. Full
+comparison table, whipsaw analysis, and a preliminary backtest are in the
+2026-09-29 report below this entry (not duplicated here — see the
+conversation's own report for the numbers; this file records decisions and
+findings, not full report output).
+
+**Real cost, not free**: whipsaws (upgrade to NORMAL+ reverting to
+CAUTIOUS- within 30 trading days) increased under mc-1.3.0 relative to
+mc-1.1.0/1.2.0 in the 2000-02/2008/2022 windows checked (5 vs 2), and
+turnover rose accordingly (1.8-1.9/yr under mc-1.1.0/1.2.0 to 2.2/yr under
+mc-1.3.0 in the preliminary backtest). The faster 2022-12-01 "recovery"
+specifically reverted within 4 trading days. This is the direct trade-off
+of the floor/latch mechanisms: they make the system more willing to commit
+early, which by construction increases false starts. The preliminary,
+in-sample backtest (1996-02-23-present) still shows mc-1.3.0 with the best
+Calmar ratio (0.42) and shallowest max drawdown (-22.65%) of every
+portfolio tested including buy-and-hold and the 200-day rule, so the
+trade-off nets out favorably in this sample — but "in this sample" is
+doing real work in that sentence; this has not been validated
+out-of-sample per spec Section 10's own walk-forward requirement.
+
+**Infrastructure note**: `market_conditions_scores` is a full-rebuild
+table, so before this recompute a one-off snapshot
+(`mc_scores_snapshot_mc120`, plain `CREATE TABLE AS SELECT`, not a tracked
+migration) was taken to preserve mc-1.2.0's per-day series for the
+side-by-side report — mc-1.1.0 was already safe in `mc_signal_log`. A new
+standalone edge function, `market-conditions-backtest-preliminary`, was
+built for the backtest itself (same curl-invoked, not-wired-into-production
+pattern as this repo's other `*-backtest` functions) since it needed a new
+data source (DTB3, now also ingested by `market-conditions-ingest`) and
+return-series mechanics not needed anywhere else in the module.
+
+## Phase 2 proposal: absolute mappings for breadth indicators with a natural fixed reference point (item 6)
+
+The mc-1.2.0->mc-1.3.0 arc's central lesson: percentile ranking is the
+right tool for an indicator whose only meaningful question is "is this
+unusual relative to its own history" (credit spread level, realized vol),
+but the wrong tool for one that has a genuine fixed reference point where
+the RAW level itself is directly interpretable (VIX term structure ratio
+vs. 1.0; price vs. its own moving average). Several of the spec's Phase 2
+breadth indicators (Section 6.2) are the latter, not the former, and should
+be built as absolute mappings from the start rather than repeating this
+same diagnose-and-fix cycle a third time:
+
+- **B1 (% above 200-day) / B2 (% above 50-day)**: both are already a
+  percentage with a genuine fixed reference point — 50% is the natural
+  neutral level (half the index above its average, half below), not
+  "unusual relative to trailing history." Proposed: linear mapping
+  centered at 50%, e.g. `score = clip((pct - 50) / 30, -1, 1)` (20%
+  breadth -> -1, 50% -> 0, 80% -> +1) — bounds are placeholders, same
+  spirit as `recovery`'s placeholders, flagged for Phase 5 calibration.
+- **B3 (net new highs)**: `(NH52-NL52)/n` is already a bounded ratio in
+  [-1,1] by construction (net highs/lows as a fraction of the universe) —
+  propose using it AS the score directly, no normalization step needed at
+  all, percentile or otherwise.
+- **B4 (McClellan Summation) / B5 (equal-vs-cap-weight ratio change)**:
+  genuinely don't have an obvious fixed reference point (a Summation Index
+  reading's "meaning" really is relative to its own historical range) —
+  propose keeping percentile rank for these two, unlike B1-B3.
+
+This is a proposal for Phase 2 to accept, adjust, or reject before that
+phase's breadth pillar is built — not committed to yet, since Phase 2
+hasn't started.
+
 ## mc-1.2.0: recovery-lag diagnosis and fix (2026-09-29)
 
 **Diagnosis** (queried directly against the live mc-1.1.0 data before

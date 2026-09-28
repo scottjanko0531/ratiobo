@@ -64,6 +64,29 @@ describe("computeStressRawSeries — raw values", () => {
     const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
     expect(raw.s5raw[1]).toBe(22);
   });
+
+  it("S6 (mc-1.3.0) = VIXCLS 20-day change, in VIX points", () => {
+    const n = 25;
+    const closes = new Array(n).fill(100);
+    const vix3m = new Array(n).fill(null);
+    const creditSpread = new Array(n).fill(null);
+    const vix = new Array(n).fill(18);
+    vix[24] = 25; // +7 points over 20 days
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    expect(raw.s6raw[24]).toBeCloseTo(7, 10);
+  });
+
+  it("vixSma50 is VIXCLS's own 50-day average, null-tolerant of gaps", () => {
+    const n = 55;
+    const closes = new Array(n).fill(100);
+    const vix3m = new Array(n).fill(null);
+    const creditSpread = new Array(n).fill(null);
+    const vix = new Array(n).fill(20);
+    vix[10] = null; // a gap -- should be skipped, not treated as 0
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    // 50 points ending at t=54, one of which (index 10) is null -> only 49 non-null -> not enough for a full 50-count window.
+    expect(raw.vixSma50[54]).toBeNull();
+  });
 });
 
 describe("scoreStressAtIndex — inversion", () => {
@@ -94,7 +117,41 @@ describe("scoreStressAtIndex — inversion", () => {
     expect(result.indicators.S2.excluded).toBe(true); // no credit spread
     expect(result.indicators.S3.excluded).toBe(true);
     expect(result.indicators.S5.excluded).toBe(false); // VIX alone still scores
+    expect(result.indicators.S6.excluded).toBe(false); // VIX alone still scores (S6 = its own 20d change)
     expect(result.pillarScore).not.toBeNull();
+  });
+});
+
+describe("scoreStressAtIndex — change-vs-level weighting (mc-1.3.0)", () => {
+  it("weights the aggregate as 0.125/0.125/0.25/0.125/0.125/0.25 (S1,S2,S4,S5 vs S3,S6) when all six are available", () => {
+    const n = 800;
+    const closes = Array.from({ length: n }, (_, i) => 100 + Math.sin(i / 13) * 5); // wiggly, so S4/realized-vol is nonzero
+    const vix = Array.from({ length: n }, (_, i) => 18 + (i % 7));
+    const vix3m = Array.from({ length: n }, () => 19);
+    const creditSpread = Array.from({ length: n }, (_, i) => 2 + Math.sin(i / 30) * 0.3);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const result = scoreStressAtIndex(raw, n - 1, MC_CONFIG);
+    const { S1, S2, S3, S4, S5, S6 } = result.indicators;
+    for (const r of [S1, S2, S3, S4, S5, S6]) expect(r.excluded).toBe(false); // sanity: all six actually contributing
+    const expected = 0.125 * (S1.score! + S2.score! + S4.score! + S5.score!) + 0.25 * (S3.score! + S6.score!);
+    expect(result.pillarScore).toBeCloseTo(expected, 10);
+  });
+
+  it("redistributes S1's weight (0.125) across the remaining five when S1 alone is excluded (pre-2006, no VIX3M)", () => {
+    const n = 800;
+    const closes = Array.from({ length: n }, (_, i) => 100 + Math.sin(i / 13) * 5);
+    const vix = Array.from({ length: n }, (_, i) => 18 + (i % 7));
+    const vix3m = new Array(n).fill(null); // S1 excluded, everything else unaffected
+    const creditSpread = Array.from({ length: n }, (_, i) => 2 + Math.sin(i / 30) * 0.3);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const result = scoreStressAtIndex(raw, n - 1, MC_CONFIG);
+    const { S1, S2, S3, S4, S5, S6 } = result.indicators;
+    expect(S1.excluded).toBe(true);
+    for (const r of [S2, S3, S4, S5, S6]) expect(r.excluded).toBe(false);
+    // Nominal weights sum to 0.875 without S1; renormalized so they sum to 1.
+    const totalW = 0.125 + 0.25 + 0.125 + 0.125 + 0.25; // S2+S3+S4+S5+S6
+    const expected = (0.125 * S2.score! + 0.25 * S3.score! + 0.125 * S4.score! + 0.125 * S5.score! + 0.25 * S6.score!) / totalW;
+    expect(result.pillarScore).toBeCloseTo(expected, 10);
   });
 });
 
