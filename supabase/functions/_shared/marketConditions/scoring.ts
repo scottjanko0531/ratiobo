@@ -56,6 +56,16 @@ export interface ComputeInputs {
   vix: (number | null)[]; // VIXCLS, aligned to `dates`
   vix3m: (number | null)[]; // ^VIX3M, aligned to `dates`
   creditSpread: (number | null)[]; // BAA10Y (mc-1.1.0+; was BAMLH0A0HYM2), aligned to `dates`
+  // mc-1.4.0 breadth round: OPTIONAL, aligned to `dates`. Omitted by
+  // market-conditions-compute (the live/production caller) -- production
+  // scoring stays trend+stress only, unaffected by this round, per
+  // DECISIONS.md's "scored vs display" decision (breadth isn't validated
+  // on unbiased history yet). Only backtest-only callers (the with/
+  // without-breadth comparison) pass this, using indicators/breadth.ts's
+  // proxy pillar. When present, "breadth" becomes a third pillar in the
+  // redistribution below exactly like trend/stress -- no special-casing
+  // needed since the redistribution already only counts non-null scores.
+  breadthScore?: (number | null)[];
 }
 
 const initialState = (): HysteresisState => ({
@@ -196,6 +206,7 @@ export function computeMarketConditionsHistory(inp: ComputeInputs, cfg = MC_CONF
     const pillars: { name: PillarName; score: number | null }[] = [
       { name: "trend", score: trendResult.pillarScore },
       { name: "stress", score: stressResult.pillarScore },
+      { name: "breadth", score: inp.breadthScore ? (inp.breadthScore[t] ?? null) : null },
     ];
     const available = pillars.filter((p) => p.score != null);
     if (available.length === 0) continue; // nothing computable yet -- no row, no state advance

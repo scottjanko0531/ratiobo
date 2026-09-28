@@ -300,4 +300,35 @@ describe("computeMarketConditionsHistory — integration", () => {
     const rows2 = computeMarketConditionsHistory(inputs, MC_CONFIG);
     expect(rows1).toEqual(rows2);
   });
+
+  describe("breadthScore (Phase 2 breadth round, mc-1.3.0 config unchanged) — optional input, production-inert when omitted", () => {
+    const n = 300;
+    const dates = makeDates(n);
+    const closes = Array.from({ length: n }, (_, i) => 100 + Math.sin(i / 7) * 3 + i * 0.1);
+    const baseInputs = { dates, closes, vix: new Array(n).fill(null), vix3m: new Array(n).fill(null), creditSpread: new Array(n).fill(null) };
+
+    it("omitted (market-conditions-compute's own call shape): identical output to a run that never had the field at all", () => {
+      const withUndefinedField = computeMarketConditionsHistory({ ...baseInputs, breadthScore: undefined }, MC_CONFIG);
+      const withoutFieldAtAll = computeMarketConditionsHistory(baseInputs, MC_CONFIG);
+      expect(withUndefinedField).toEqual(withoutFieldAtAll);
+      expect(withoutFieldAtAll[0].flags.missing_pillars).toContain("breadth");
+    });
+
+    it("populated: breadth stops being a missing pillar and participates in the composite (dropped from scoring per DECISIONS.md, but the wiring itself must work for market-conditions-breadth-backtest)", () => {
+      // Flat-ish synthetic closes (no `+ i * 0.1` drift) so trend's own
+      // score sits well inside [-1,1] rather than already clipped at the
+      // ceiling -- otherwise a maximally-bullish breadth input couldn't
+      // move the composite at all and this test would prove nothing.
+      const flatCloses = Array.from({ length: n }, (_, i) => 100 + Math.sin(i / 7) * 3);
+      const flatInputs = { ...baseInputs, closes: flatCloses };
+      const breadthScore = new Array(n).fill(1); // maximally bullish breadth every day
+      const withBreadth = computeMarketConditionsHistory({ ...flatInputs, breadthScore }, MC_CONFIG);
+      const withoutBreadth = computeMarketConditionsHistory(flatInputs, MC_CONFIG);
+      expect(withBreadth[0].flags.missing_pillars).not.toContain("breadth");
+      // A maximally bullish breadth input pulls the composite up relative to
+      // the same day without it -- confirms the pillar's weight actually
+      // participates in the redistribution, not just a no-op flag flip.
+      expect(withBreadth[withBreadth.length - 1].composite).toBeGreaterThan(withoutBreadth[withoutBreadth.length - 1].composite);
+    });
+  });
 });

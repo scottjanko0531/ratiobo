@@ -1,5 +1,100 @@
 # Market Conditions Overlay — decisions log
 
+## Phase 2 breadth round: proxy pillar built and tested, DROPPED from scoring (2026-09-30)
+
+**Decision, made in advance of building anything (2026-09-30)**: the ONLY
+breadth pillar ever scored into the composite — live or backtest — is the
+PROXY pillar (PB1/PB2/PB3 + divergence, built from the 9 original sector
+SPDRs and RSP/SPY, all long-lived enough to backtest without survivorship
+bias). Constituent-based B1-B5/thrust/%RSI-oversold (current S&P 500
+membership) were approved as LIVE DIAGNOSTICS only — displayed, and
+%oversold feeding entry signals — never wired into `breadthScore`, because
+they can't be validated on unbiased history (current membership projected
+backward is survivorship-biased by construction). This was decided before
+the keep-or-drop test below ran, not chosen after seeing an inconvenient
+result.
+
+**Proxy pillar build** (`indicators/breadth.ts`, new):
+- PB1 = count of the 9 sector SPDRs with close > own SMA200 → `score =
+  (count - 4.5) / 4.5`. PB2 = same with SMA50. Both use the exact
+  user-specified formula, no configurable bound (4.5 is fixed by the
+  9-sector universe size, not a tunable placeholder).
+- PB3 = 50-day % change of RSP/SPY → `score = clip(raw / pb3BoundPct, -1,
+  1)`, `pb3BoundPct` placeholder ±3% (`config.breadth.pb3BoundPct`).
+- Divergence: SPY within 2% of its own 252-day high AND PB1's count < 5 of
+  9 AND lower than it was 60 trading days ago → subtracts
+  `divergencePenalty` (0.25) from the pillar score.
+  `config.breadth.divergenceCountMax`/`divergenceLookbackDays` replace the
+  old placeholder `divergenceBreadthMax` (a % threshold that assumed a
+  constituent-based pillar, never actually used).
+- `scoring.ts`'s `ComputeInputs` gained an OPTIONAL `breadthScore` field.
+  `market-conditions-compute` (the live/production caller) never populates
+  it — production stays trend+stress only, provably unaffected (verified:
+  full test suite 213/213 passing, and the new "breadth" pillar entry is
+  `null` whenever `breadthScore` is omitted, identical to breadth simply
+  not existing in the pillars array as it did pre-round). Only the new
+  `market-conditions-breadth-backtest` edge function passes it.
+
+**PB3 drift check (requested before finalizing)**: mean PB3 score since
+2015-01-01 is **-0.117** (mean raw 50-day RSP/SPY change: -0.48%,
+reflecting the mega-cap-led market structure of that period) — above the
+-0.2 threshold that would have triggered de-meaning or a halved weight, so
+no adjustment made. Full-history (2003-07-14+) mean is ~0.006, essentially
+unbiased — the 2015+ tilt is a real, known regime effect (large-cap
+leadership), not a construction bug.
+
+**Keep-or-drop test result: FAILS on every criterion, on every market.**
+mc-1.3.0's config held unchanged except `breadthScore` populated
+(`pillarWeights.breadth` was already 0.25 in `MC_CONFIG`, so this is a pure
+on/off toggle, cross-pillar redistribution handles the renormalization
+automatically):
+
+| Market | Calmar without | Calmar with | 2022 maxDD without | 2022 maxDD with | Whipsaws without | Whipsaws with |
+|---|---|---|---|---|---|---|
+| SPY (full period) | 0.42 | 0.33 | -19.11% | -19.74% | 20 | 23 |
+| SPY (1996-2008) | 0.35 | 0.27 | — | — | — | — |
+| SPY (2009+) | 0.55 | 0.53 | — | — | — | — |
+| QQQ | 0.22 | 0.17 | — | — | 24 | 29 |
+| IWM | 0.21 | 0.20 | — | — | 23 | 41 |
+| EFA | 0.22 | 0.20 | — | — | 25 | 36 |
+
+Against the stated rule: (a) full-period SPY Calmar — **worse** (0.42→0.33);
+(b) both sub-periods — **both worse**; (c) 2022 max DD — **worse**
+(-19.11%→-19.74%); (d) other 3 markets — **worse on all 3, not just failing
+to improve on 2+**. Every criterion fails, and not marginally — full-period
+SPY Calmar drops ~21% relatively, and whipsaw counts rise sharply on IWM
+(23→41) and EFA (25→36) in particular. The proxy pillar (SPY breadth read)
+appears to inject noise into markets whose OWN internal breadth genuinely
+differs from the US mega-cap sector rotation the SPDR/RSP proxy is built
+from — most visible on IWM/EFA where the whipsaw increase is largest.
+
+**Outcome**: breadth is **NOT scored**. `market-conditions-compute` is
+unaffected (never called with `breadthScore`) — no config version bump,
+stays `mc-1.3.0`. The proxy pillar code (`indicators/breadth.ts`) and the
+backtest harness (`market-conditions-breadth-backtest`) are kept in the
+repo as-is — reusable if a different breadth construction is tried later
+(e.g. reweighting PB1/PB2/PB3, dropping PB3, or trying the constituent-
+based pillar once unbiased history exists), but nothing here should be
+wired into production scoring without a fresh keep-or-drop pass.
+
+**Constituent-source finding, relevant to any future constituent-based
+breadth work**: iShares' IVV holdings CSV endpoint (the source approved for
+this round) is not currently fetchable headlessly — every attempt (direct,
+with cookies, with a referer, after visiting the product page first)
+returned the exact same 2,251,704-byte HTML product page under a
+`content-type: text/csv` header and `content-disposition: attachment`,
+regardless of session state; response headers showed `x-upstream-cache:
+HIT` alongside `content-length: 1`, suggesting a live CDN/cache
+misconfiguration on iShares' end, not a bot-detection wall worth working
+around. Not otherwise needed for this round (the proxy pillar doesn't touch
+constituents), so left unresolved — whoever builds the live constituent
+diagnostics (B1-B5/thrust/%oversold, approved as display-only in the
+decision above) will need either a retry, or the fallback already
+confirmed working: `raw.githubusercontent.com/datasets/s-and-p-500-
+companies/main/data/constituents.csv` (503 rows when checked, within the
+490-510 sanity band; same `.`-for-dual-class notation as IVV, e.g. `BRK.B`,
+`BF.B`, confirmed present).
+
 ## mc-1.3.0 robustness round (2026-09-29 / 2026-09-30): baseline frozen, parameters not curve-fit, cross-market holds up
 
 mc-1.3.0 is now the frozen baseline — no further parameter tuning against

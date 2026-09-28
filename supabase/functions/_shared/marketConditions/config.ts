@@ -91,8 +91,18 @@ export const MC_CONFIG = {
   // every other threshold in this file.
   trend: { trendBand: 0.02, slopeLookback: 20, tenMonthRuleMonths: 10, t1BoundPct: 0.05 },
 
+  // mc-1.4.0 breadth round (2026-09-30): PB1-PB3 + divergence (proxy
+  // pillar, indicators/breadth.ts) are the only breadth sub-indicators
+  // ever scored into the composite -- see DECISIONS.md "scored vs
+  // display". divergenceCountMax/divergenceLookbackDays replace the old
+  // placeholder divergenceBreadthMax (a % breadth threshold that assumed a
+  // constituent-based pillar) with the proxy pillar's own count-based
+  // definition (PB1 < 5 of 9 sectors, lower than 60 trading days ago).
+  // pb3BoundPct: placeholder +/-3% (same as the earlier B5 proposal),
+  // pending the mean-since-2015 drift check in DECISIONS.md.
   breadth: {
-    divergenceHighPct: 0.02, divergenceBreadthMax: 60, divergencePenalty: 0.25,
+    divergenceHighPct: 0.02, divergenceCountMax: 5, divergenceLookbackDays: 60, divergencePenalty: 0.25,
+    pb3BoundPct: 0.03,
     thrustLow: 0.40, thrustHigh: 0.615, thrustWindow: 10, thrustBonus: 0.30, thrustHoldDays: 60,
   },
 
