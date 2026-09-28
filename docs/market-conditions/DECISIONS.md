@@ -1,5 +1,56 @@
 # Market Conditions Overlay — decisions log
 
+## Phase 3 prerequisites: E-DOWN unconditional re-test, mc_signal_log_live view (2026-09-30)
+
+**E-DOWN re-test against the UNCONDITIONAL (all-days) baseline**, same
+horizons/markets as the rest of this round, report only, no rule changed:
+
+| Market | Episodes | 21d rule mean | 21d uncond. baseline | 63d rule mean | 63d uncond. baseline | Result |
+|---|---|---|---|---|---|---|
+| SPY | 10 | 0.06% | 0.94% | 0.19% | 2.79% | **pass** |
+| QQQ | 14 | -0.24% | 0.94% | -0.54% | 2.74% | **pass** |
+| IWM | 17 | 1.39% | 0.91% | 3.89% | 2.72% | **fail** |
+| EFA | 14 | 0.73% | 0.71% | 2.16% | 2.21% | **fail** (21d ties/fails narrowly, 63d passes narrowly, net fail since both horizons must pass) |
+
+Mixed: passes on SPY (primary market) and QQQ, fails on IWM and EFA (both
+out-of-sample-only markets). Not a clean pass. **Decision, since the
+request required a single UI label**: treated as **failing to generalize**
+-- both out-of-sample checks fail, and the instruction's own framing ("if
+it fails, show as NEUTRAL") reads most naturally as requiring a clean
+pass across the validation set, not a bare majority on markets that
+include the market being fit against. E-DOWN displays as NEUTRAL with
+"Downtrend" context only in the UI (see `lib/marketConditionsMeta.js`'s
+`ENTRY_SIGNAL_TEXT`), not as a validated WAIT recommendation. The full
+mixed picture is recorded here rather than silently collapsed to a single
+pass/fail bit.
+
+**mc_signal_log_live** (new view, `20260930_mc_signal_log_live.sql`):
+`mc_signal_log` was populated by a single backfill-equivalent run covering
+the full 1993-10-29-present history in one shot (market-conditions-
+compute doubles as both "nightly" and "backfill" by design -- see its own
+header comment), so every historical row shares essentially the same
+`computed_at` regardless of how far in the past its own `date` is. The
+view keeps only rows where `computed_at::date <= date + 4` -- written
+within 4 days of their own signal date -- which excludes the backfill and
+keeps genuine near-real-time nightly writes. Does not alter or delete any
+`mc_signal_log` row (that table's append-only/immutable trigger is
+untouched).
+
+**The live out-of-sample record starts at the first genuine nightly cron
+run**, not at this migration's own date. Checked directly: right now
+(2026-09-30), the view happens to contain 3 rows (2026-09-24, 09-25,
+09-28) purely because those dates fall within 4 days of the backfill's own
+`computed_at` timestamp -- a coincidental artifact of the backfill having
+run recently, NOT independent nightly writes. `market-conditions-compute-
+daily` is scheduled weekdays at 22:40 UTC
+(`20260928_schedule_market_conditions.sql`); the first row written by that
+schedule (not by a manual/backfill invocation) is the true start of the
+live record. **All performance tracking (the dashboard's "Live track
+record" panel, and any future out-of-sample performance claim) uses
+`mc_signal_log_live`, never `mc_signal_log` directly** -- `mc_signal_log`
+itself mixes backfill and live rows and must not be used for performance
+claims.
+
 ## mc-1.4.0 entry-rule round: E-VETO/E-TOP/E-THRUST/E-CAPITULATION removed, E-DIP/E-HOT rewired to oscillators, tier veto KEPT (2026-09-30)
 
 Bumped to **mc-1.4.0** (entry-rule changes; tier logic itself is unchanged
