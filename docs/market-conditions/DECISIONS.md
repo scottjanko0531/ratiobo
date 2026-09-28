@@ -68,14 +68,28 @@ appears to inject noise into markets whose OWN internal breadth genuinely
 differs from the US mega-cap sector rotation the SPDR/RSP proxy is built
 from — most visible on IWM/EFA where the whipsaw increase is largest.
 
-**Outcome**: breadth is **NOT scored**. `market-conditions-compute` is
-unaffected (never called with `breadthScore`) — no config version bump,
-stays `mc-1.3.0`. The proxy pillar code (`indicators/breadth.ts`) and the
-backtest harness (`market-conditions-breadth-backtest`) are kept in the
-repo as-is — reusable if a different breadth construction is tried later
-(e.g. reweighting PB1/PB2/PB3, dropping PB3, or trying the constituent-
-based pillar once unbiased history exists), but nothing here should be
-wired into production scoring without a fresh keep-or-drop pass.
+**Outcome, final**: the continuous breadth proxy pillar is **REJECTED** on
+its own pre-registered criteria (2026-09-30) — not "deferred," not
+"needs retuning." `market-conditions-compute` is unaffected (never called
+with `breadthScore`) — no config version bump, stays `mc-1.3.0`. **No
+further tuning of breadth against this same history** — reweighting
+PB1/PB2/PB3, dropping PB3, or otherwise iterating on the proxy pillar until
+it happens to pass would be the exact curve-fitting-on-the-test-set failure
+mode the pre-registered keep-or-drop rule existed to prevent. The proxy
+pillar code (`indicators/breadth.ts`) and the backtest harness
+(`market-conditions-breadth-backtest`) stay in the repo as reference, not
+as a live candidate.
+
+One possible future direction, explicitly NOT started now: divergence and
+thrust as discrete EVENT FLAGS (feeding entry-signal rules only, e.g.
+E-CAPITULATION/E-TOP) rather than a continuous scored pillar — a
+fundamentally different hypothesis (rare-event risk markers, not a
+day-to-day exposure input) that would need its own single pre-registered
+test against fresh criteria, not a retry of this one. Constituent-based
+breadth diagnostics (B1-B5/thrust/%oversold, live display-only) are
+deprioritized given the scored version's rejection — the GitHub constituent
+list fallback noted below remains the source to use whenever that work
+picks back up.
 
 **Constituent-source finding, relevant to any future constituent-based
 breadth work**: iShares' IVV holdings CSV endpoint (the source approved for
