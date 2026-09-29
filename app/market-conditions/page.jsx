@@ -17,6 +17,30 @@ import {
 
 const GRID = "#2A3240", DIM = "#A8ADB8", PAPER = "#F6F4EE", BRASS = "#C9A227", GAIN = "#3FB984", LOSS = "#E0635C";
 
+// PostgREST caps a single response at 1000 rows -- market_conditions_scores
+// (~8.3k rows) and asset_price_history's SPY series (~8.5k rows) both blow
+// past that, so an unpaginated .select() silently truncates to the first
+// 1000 rows in ascending date order (SPY: 1993 through ~1997) rather than
+// erroring, which is why the chart looked frozen in the late 90s instead of
+// reaching today. Same page-through-in-1000s pattern already used by the
+// edge functions (e.g. market-conditions-crossmarket's fetchAllPrices).
+async function fetchAllRows(table, columns, applyFilters = (q) => q, orderCol = "date") {
+  let rows = [];
+  let from = 0;
+  const pageSize = 1000;
+  while (true) {
+    const { data, error } = await applyFilters(supabase.from(table).select(columns))
+      .order(orderCol, { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    rows = rows.concat(data);
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return rows;
+}
+
 const TIER_FILL = {
   FULL: GAIN, NORMAL: "transparent", CAUTIOUS: BRASS, DEFENSIVE: "#8a6a1a", RISK_OFF: LOSS,
 };
@@ -129,23 +153,22 @@ export default function MarketConditionsPage() {
 
   useEffect(() => {
     async function load() {
-      const [{ data: lat }, { data: hist }, { data: spy }, { data: live }] = await Promise.all([
-        supabase.from("market_conditions_scores")
-          .select("date, config_version, trend_state, tier, exposure_multiplier, entry_signal, entry_reason, veto_active, composite, score_trend, score_breadth, score_stress, flags, components")
-          .order("date", { ascending: false }).limit(1),
-        supabase.from("market_conditions_scores")
-          .select("date, tier, entry_signal, entry_reason")
-          .order("date", { ascending: true }),
-        supabase.from("asset_price_history")
-          .select("date, close").eq("symbol", "SPY").order("date", { ascending: true }),
-        supabase.from("mc_signal_log_live")
-          .select("date, tier, entry_signal, exposure_multiplier, computed_at")
-          .order("date", { ascending: true }),
-      ]);
-      setLatest(lat?.[0] ?? null);
-      setHistory(hist ?? []);
-      setSpyPrices(spy ?? []);
-      setLiveLog(live ?? []);
+      try {
+        const [{ data: lat }, hist, spy, live] = await Promise.all([
+          supabase.from("market_conditions_scores")
+            .select("date, config_version, trend_state, tier, exposure_multiplier, entry_signal, entry_reason, veto_active, composite, score_trend, score_breadth, score_stress, flags, components")
+            .order("date", { ascending: false }).limit(1),
+          fetchAllRows("market_conditions_scores", "date, tier, entry_signal, entry_reason"),
+          fetchAllRows("asset_price_history", "date, close", (q) => q.eq("symbol", "SPY")),
+          fetchAllRows("mc_signal_log_live", "date, tier, entry_signal, exposure_multiplier, computed_at"),
+        ]);
+        setLatest(lat?.[0] ?? null);
+        setHistory(hist);
+        setSpyPrices(spy);
+        setLiveLog(live);
+      } catch (e) {
+        console.error("market-conditions load failed:", e);
+      }
       setBusy(false);
     }
     load();
