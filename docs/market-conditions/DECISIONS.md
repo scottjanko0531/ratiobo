@@ -1,5 +1,40 @@
 # Market Conditions Overlay — decisions log
 
+## Phase 3 + Phase 6 merged to main (2026-09-29)
+
+Both branches merged to `main` as clean fast-forwards (no conflicts, per
+the merge-order confirmation below): `market-conditions-phase3-preview`
+then `market-conditions-phase6-portfolio-overlay`. Production redeployed
+(`dpl_AMQLTNMP2ngTCx3muFJjNdC7uxqv`), zero runtime errors on the new
+deployment, `/`, `/market-conditions`, and `/portfolios` all serve 200
+with no error content. Full authenticated visual confirmation of the
+rendered cards isn't possible from here (no login credential available,
+per this whole project's standing constraint) — the JSX was already
+verified against real data pre-merge via the temporary dev-preview
+technique (see the Phase 6 build/review entries below); production is
+running the identical, already-verified code.
+
+**tmp-fred-series-check**: a throwaway diagnostic Edge Function (ad-hoc
+FRED series/metadata lookup, created during the mc-1.1.0 BAA10Y-vs-HY-OAS
+investigation) with no committed source file and no references anywhere
+in the repo — genuinely dead weight, safe to remove. **Not removed**: no
+available tool in this session can delete an Edge Function (the Supabase
+MCP server has no delete-function operation, and the `supabase` CLI isn't
+authenticated in this environment — `supabase functions delete` and
+`functions deploy` both 401). Needs manual removal via the Supabase
+dashboard, or a future session with `supabase login` completed first.
+
+**Tonight's scheduled runs (2026-09-29, 22:30/22:40 UTC ingest/compute)**:
+baseline recorded before they fire — `mc_job_runs`'s latest `ok` rows are
+both dated 2026-09-28 (started_at 22:30:01/22:40:02 UTC), and
+`mc_signal_log_live`'s latest row is `date = 2026-09-28`. Tomorrow's check
+should confirm: two new `mc_job_runs` rows for `market-conditions-ingest`/
+`market-conditions-compute`, `status = 'ok'`, `started_at` in the
+2026-09-29 22:30-22:41 UTC window; and a new `mc_signal_log_live` row for
+`date = 2026-09-29` whose `computed_at` sits in that same window (not
+hours/days later, which would indicate the row came from a manual
+backfill rather than the cron run itself).
+
 ## Phase 6 review, before merge (2026-09-29)
 
 Four items raised in review of the Phase 6 build below.
