@@ -876,8 +876,15 @@ export default function PortfoliosPage() {
                             </div>
                             {rows.map((r) => {
                               const absD = Math.abs(r.tradeVal);
+                              // isNoop still dims the styling for immaterial moves
+                              // (<0.5% of the portfolio), but the label always shows
+                              // the real direction + dollar amount rather than a bare
+                              // "Hold" -- a small amount below the materiality bar
+                              // (e.g. cash absorbing a few hundred dollars from a
+                              // resize cut elsewhere) should still be visible, not
+                              // read as "nothing is happening here."
                               const isNoop = absD < s.totalValue * 0.005;
-                              const tradeLabel = isNoop
+                              const tradeLabel = absD < 1
                                 ? "Hold"
                                 : `${r.tradeVal > 0 ? "Add" : "Sell"} $${absD < 1000 ? absD.toFixed(0) : (absD / 1000).toFixed(1) + "k"}`;
                               const tradeClass = isNoop ? "text-paper-dim" : r.tradeVal > 0 ? "text-gain" : "text-loss";
