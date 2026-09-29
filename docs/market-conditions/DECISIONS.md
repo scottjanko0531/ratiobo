@@ -1,5 +1,72 @@
 # Market Conditions Overlay — decisions log
 
+## Bug: Market Conditions Overlay card ignored the existing resize overlay entirely (2026-09-29)
+
+**Symptom**: KISS's overlay card recommended selling 100% of USFR (cash) and
+adding a small amount to VT.
+
+**Wrong first fix (reverted)**: initially diagnosed this as KISS's
+`target_allocations` missing an explicit `cash` entry, and added
+`cash: 30` (rescaling eq/gld/alt_crypto to 42/21/7 to fit). **This was
+wrong** — per `kiss-portfolio-backtest`'s own validated design, cash has
+no fixed floor at all; `runRebalanced`'s monthly target starts at
+`tUsfr = 0` and is set *purely* by whatever's currently displaced by an
+active resize signal (`tUsfr = (0.6-tVt) + (0.3-tGldm) + (0.1-tBtc)`),
+draining back toward 0% once every leg's signal clears. Baking in a
+permanent 30% floor would have silently redefined KISS's strategy from
+"fully invested with a transient cash sink" to "always 30% cash" — a
+different, never-backtested allocation. `target_allocations` reverted to
+its original `{eq: 60, gld: 30, alt_crypto: 10}`.
+
+**Real root cause**: GLDM's live resize signal is `reduced = true,
+exposure_multiplier = 0` (`vol_regime` rule) — correctly explaining why
+it's held at $0 and why USFR is sitting at ~30% (GLDM's displaced weight,
+exactly as designed). The Market Conditions Overlay card's own
+"without overlay" baseline, though, was computed straight from
+`pf.target_allocations` with **no exposureMultipliers at all** — it never
+looked at the resize overlay's live per-symbol signals (`asset_resize_signals`,
+already correctly feeding the pre-existing "Portfolio Actions" block
+elsewhere on the same page). So the card's baseline saw `gld: 30%` as
+GLDM's unreduced target and `cash` as an implicit 0%, and recommended
+liquidating USFR to reach that. With the market tier at FULL (multiplier
+1, itself a no-op) and GLDM's cut completely un-modeled, the card treated
+a portfolio that's already correctly positioned as one that badly needed
+$60k moved out of cash.
+
+**Fix**: `lib/marketOverlayPortfolio.js`
+- `applyOverlayToTargets` no longer restricts freed-weight accounting to
+  `EQUITY_KEYS` — a resize/capex cut on ANY bucket (gld, alt_crypto, etc.)
+  must free weight into cash, not just an equity cut. This was the direct
+  bug: KISS's freed weight came entirely from a non-equity (gld) cut, which
+  the equity-only version silently ignored.
+- New `combineAllOverlays(resizeMultipliers, capexMultipliers,
+  marketMultipliers, capexApplied)`: resize always multiplies on top
+  (orthogonal, symbol-specific technical rules — same independent-signal
+  relationship resize already has with capex via `mergeExposureMultipliers`
+  in `lib/capexOverlay.js`), while capex and market still combine via MIN
+  where both apply to the same equity symbol (the Phase 6 review decision,
+  unchanged), and a capex-only cut on a non-equity symbol still applies on
+  its own.
+- `app/portfolios/page.jsx`'s card: "without overlay" now uses the SAME
+  `exposureMultipliers` (resize × capex product) the existing Portfolio
+  Actions block already uses — i.e. today's actual live state — instead of
+  raw, unscaled `target_allocations`. "With overlay" layers the market
+  overlay on top via `combineAllOverlays`. This is the structurally correct
+  fix: the card now shows what the MARKET overlay specifically changes,
+  not a comparison against a fictional zero-signal portfolio.
+
+**Verified**: new regression tests in `tests/marketOverlayPortfolio.test.ts`
+reconstruct KISS's exact live shape (GLDM reduced, VT/FBTC not reduced,
+market tier FULL) and assert USFR comes out to a hold (~30% target vs.
+~29.9% actual, delta under 5% of its value) rather than a sell-to-zero.
+250/250 tests passing, `next build` clean.
+
+**Lesson for next time**: when diagnosing an allocation-recommendation bug
+on a resize-overlay portfolio, check the live `asset_resize_signals` state
+for every held symbol BEFORE concluding the target config is wrong — a
+"missing" cash target can be entirely correct if a non-equity leg's live
+signal is expected to be supplying it.
+
 ## Phase 3 + Phase 6 merged to main (2026-09-29)
 
 Both branches merged to `main` as clean fast-forwards (no conflicts, per

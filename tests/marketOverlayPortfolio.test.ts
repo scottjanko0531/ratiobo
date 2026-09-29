@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   marketOverlayMultipliersBySymbol,
   combineWithCapexOverlay,
+  combineAllOverlays,
   applyOverlayToTargets,
   shouldProposeRebalance,
 } from "../lib/marketOverlayPortfolio";
@@ -73,11 +74,49 @@ describe("combineWithCapexOverlay", () => {
   });
 });
 
+// ── combineAllOverlays (resize x [market MIN capex]) ───────────────────────
+// Regression coverage for the KISS bug: a live resize cut on a NON-equity
+// symbol (GLDM, vol_regime) must still show up in the combined multiplier
+// map even when the market overlay and capex are both no-ops, so the
+// freed-weight-to-cash computation downstream doesn't forget about it.
+describe("combineAllOverlays", () => {
+  it("carries a non-equity resize cut through even with market/capex both inert", () => {
+    const resize = { VT: 1, GLDM: 0, FBTC: 1 }; // GLDM fully reduced, matches KISS's live vol-regime signal
+    const market = { VT: 1 }; // FULL tier, market overlay is a no-op right now
+    const { multipliers } = combineAllOverlays(resize, {}, market, false);
+    expect(multipliers.GLDM).toBe(0);
+    expect(multipliers.VT).toBe(1);
+    expect(multipliers.FBTC).toBe(1);
+  });
+
+  it("multiplies resize on top of the market x capex MIN for an equity symbol", () => {
+    const resize = { VTI: 0.5 }; // e.g. VTI's own trend rule already cutting it in half
+    const capex = { VTI: 0.8 };
+    const market = { VTI: 0.6 }; // tighter than capex -> MIN picks market (0.6)
+    const { multipliers, binding } = combineAllOverlays(resize, capex, market, true);
+    expect(binding.VTI).toBe("market");
+    expect(multipliers.VTI).toBeCloseTo(0.5 * 0.6); // resize x MIN(market, capex)
+  });
+
+  it("capex-only cut on a non-equity symbol still applies when capexApplied is true", () => {
+    const resize = {};
+    const capex = { GLD: 0.7 }; // capex cuts gold, but gold isn't market-classified equity
+    const market = { VTI: 0.9 };
+    const { multipliers } = combineAllOverlays(resize, capex, market, true);
+    expect(multipliers.GLD).toBeCloseTo(0.7);
+  });
+
+  it("no active signals anywhere: every symbol defaults to 1", () => {
+    const { multipliers } = combineAllOverlays({}, {}, {}, false);
+    expect(multipliers).toEqual({});
+  });
+});
+
 // ── applyOverlayToTargets ───────────────────────────────────────────────────
 describe("applyOverlayToTargets", () => {
   it("adds the freed equity weight to cash and leaves other buckets untouched", () => {
     const multipliers = marketOverlayMultipliersBySymbol(HOLDINGS, 0.7, EQUITY_KEYS);
-    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, HOLDINGS, multipliers, EQUITY_KEYS);
+    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, HOLDINGS, multipliers);
     expect(freedPct).toBeCloseTo(60 * 0.3); // 18
     expect(effectiveTargets.eq).toBe(60);   // bucket target itself unchanged
     expect(effectiveTargets.nb).toBe(30);
@@ -86,7 +125,7 @@ describe("applyOverlayToTargets", () => {
 
   it("is a no-op when the multiplier is 1 (flag-off equivalent)", () => {
     const multipliers = marketOverlayMultipliersBySymbol(HOLDINGS, 1, EQUITY_KEYS);
-    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, HOLDINGS, multipliers, EQUITY_KEYS);
+    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, HOLDINGS, multipliers);
     expect(freedPct).toBe(0);
     expect(effectiveTargets).toBe(RAW_TARGETS);
   });
@@ -100,10 +139,32 @@ describe("applyOverlayToTargets", () => {
     // Market cuts both to 0.8; capex cuts only VTI further, to 0.5.
     const market = marketOverlayMultipliersBySymbol(holdings, 0.8, EQUITY_KEYS);
     const { multipliers } = combineWithCapexOverlay(market, { VTI: 0.5 });
-    const { freedPct } = applyOverlayToTargets(targets, holdings, multipliers, EQUITY_KEYS);
+    const { freedPct } = applyOverlayToTargets(targets, holdings, multipliers);
     // Value-weighted avg multiplier for "eq" bucket: (8000*0.5 + 2000*0.8) / 10000 = 0.56
     const expectedAvgMult = (8000 * 0.5 + 2000 * 0.8) / 10000;
     expect(freedPct).toBeCloseTo(50 * (1 - expectedAvgMult));
+  });
+
+  // Regression test for the KISS bug: a resize/capex cut on a NON-equity
+  // bucket (gld) must still free weight into cash. Previously this function
+  // only scanned equity buckets, so a portfolio with no equity cut active
+  // (market tier FULL) but an active non-equity resize cut showed cash's
+  // target as its raw (often absent -> 0) value instead of crediting the
+  // freed gold weight -- recommending selling cash that was correctly
+  // parked there.
+  it("frees weight from a non-equity bucket under an active resize cut (KISS/GLDM shape)", () => {
+    const holdings = [
+      { symbol: "VT",   asset_type: "etf", simulator_key: null,  current_value: 120000 },
+      { symbol: "GLDM", asset_type: "etf", simulator_key: "gld", current_value: 0 },
+      { symbol: "FBTC", asset_type: "etf", simulator_key: "alt_crypto", current_value: 20000 },
+      { symbol: "USFR", asset_type: "etf", simulator_key: "cash", current_value: 60000 },
+    ];
+    const targets = { eq: 60, gld: 30, alt_crypto: 10 }; // KISS's real config -- no explicit cash entry
+    const resizeMultipliers = { VT: 1, GLDM: 0, FBTC: 1 }; // GLDM fully reduced (vol_regime), rest untouched
+    const { effectiveTargets, freedPct } = applyOverlayToTargets(targets, holdings, resizeMultipliers);
+    expect(freedPct).toBeCloseTo(30); // all of gld's 30% target, since GLDM's multiplier is 0
+    expect(effectiveTargets.cash).toBeCloseTo(30); // absent (0) baseline + the freed 30
+    expect(effectiveTargets.eq).toBe(60); // untouched -- VT's own multiplier is 1
   });
 });
 
@@ -112,7 +173,7 @@ describe("overlay scaling through computeAllocationDeltas", () => {
   it("weights sum to 100% and cash absorbs exactly the cut", () => {
     const multiplier = 0.7;
     const exposureMultipliers = marketOverlayMultipliersBySymbol(HOLDINGS, multiplier, EQUITY_KEYS);
-    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, HOLDINGS, exposureMultipliers, EQUITY_KEYS);
+    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, HOLDINGS, exposureMultipliers);
 
     const { actionRows, buyRows } = computeAllocationDeltas(HOLDINGS, effectiveTargets, {
       exposureMultipliers,
@@ -144,7 +205,7 @@ describe("overlay scaling through computeAllocationDeltas", () => {
     const targets = { eq: 50, cash: 10, nb: 40 };
     const market = marketOverlayMultipliersBySymbol(holdings, 0.9, EQUITY_KEYS); // both VTI/VXUS -> 0.9
     const { multipliers } = combineWithCapexOverlay(market, { VTI: 0.6 }); // capex binds only for VTI
-    const { effectiveTargets } = applyOverlayToTargets(targets, holdings, multipliers, EQUITY_KEYS);
+    const { effectiveTargets } = applyOverlayToTargets(targets, holdings, multipliers);
 
     const { actionRows, buyRows } = computeAllocationDeltas(holdings, effectiveTargets, {
       exposureMultipliers: multipliers,
@@ -159,7 +220,7 @@ describe("overlay scaling through computeAllocationDeltas", () => {
     const noCashHoldings = [{ symbol: "VTI", asset_type: "etf", current_value: 6000 }];
     const multiplier = 0.7;
     const exposureMultipliers = marketOverlayMultipliersBySymbol(noCashHoldings, multiplier, EQUITY_KEYS);
-    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, noCashHoldings, exposureMultipliers, EQUITY_KEYS);
+    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, noCashHoldings, exposureMultipliers);
 
     const { buyRows } = computeAllocationDeltas(noCashHoldings, effectiveTargets, {
       exposureMultipliers,
@@ -168,6 +229,34 @@ describe("overlay scaling through computeAllocationDeltas", () => {
 
     const cashRow = buyRows.find((r) => r.key === "cash");
     expect(cashRow?.targetPct).toBeCloseTo(RAW_TARGETS.cash + freedPct);
+  });
+
+  // End-to-end regression for the KISS bug, matching real live data: VT not
+  // reduced, GLDM fully reduced (vol_regime), FBTC not reduced, market tier
+  // FULL (no-op). USFR (cash) should come out to a HOLD, not "sell all".
+  it("KISS shape end-to-end: GLDM reduced, market at FULL (no-op) -- cash holds, not sold to zero", () => {
+    const holdings = [
+      { symbol: "VT",   asset_type: "etf", simulator_key: null,  current_value: 118981.44 },
+      { symbol: "GLDM", asset_type: "etf", simulator_key: "gld", current_value: 0 },
+      { symbol: "FBTC", asset_type: "etf", simulator_key: "alt_crypto", current_value: 21760.50 },
+      { symbol: "USFR", asset_type: "etf", simulator_key: "cash", current_value: 59908.95 },
+    ];
+    const targets = { eq: 60, gld: 30, alt_crypto: 10 };
+    const resizeMultipliers = { VT: 1, GLDM: 0, FBTC: 1 };
+    const marketMultipliers = marketOverlayMultipliersBySymbol(holdings, 1, EQUITY_KEYS); // FULL tier, mult 1
+
+    const { multipliers: combined } = combineAllOverlays(resizeMultipliers, {}, marketMultipliers, false);
+    const { effectiveTargets } = applyOverlayToTargets(targets, holdings, combined);
+    const { actionRows } = computeAllocationDeltas(holdings, effectiveTargets, {
+      exposureMultipliers: combined,
+      includeZeroValueHoldings: true,
+    });
+
+    const usfrRow = actionRows.find((r) => r.symbol === "USFR");
+    // Target should be ~30% (GLDM's freed weight), essentially matching
+    // USFR's actual current ~29.9% -- a hold, nowhere near a sell-to-zero.
+    expect(usfrRow?.newPct).toBeCloseTo(30, 0);
+    expect(Math.abs(usfrRow.deltaVal)).toBeLessThan(usfrRow.currentVal * 0.05);
   });
 
   it("flag off (no market-overlay multipliers merged in) matches the current non-overlay output exactly", () => {

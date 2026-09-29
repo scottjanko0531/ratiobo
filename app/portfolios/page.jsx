@@ -7,7 +7,7 @@ import Shell from "../../components/Shell";
 import { supabase } from "../../lib/supabase";
 import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META, ILLIQUID_KEYS, EQUITY_KEYS, computeAllocationDeltas } from "../../lib/simulatorKeys";
 import { capexMultipliersBySymbol, mergeExposureMultipliers, CAPEX_REGIME_META } from "../../lib/capexOverlay";
-import { marketOverlayMultipliersBySymbol, combineWithCapexOverlay, applyOverlayToTargets, shouldProposeRebalance } from "../../lib/marketOverlayPortfolio";
+import { marketOverlayMultipliersBySymbol, combineAllOverlays, applyOverlayToTargets, shouldProposeRebalance } from "../../lib/marketOverlayPortfolio";
 import { TIER_META } from "../../lib/marketConditionsMeta";
 import HoldingDetailDrawer from "../../components/HoldingDetailDrawer";
 
@@ -763,23 +763,39 @@ export default function PortfoliosPage() {
                   const mult = Number(latestMarketScore.exposure_multiplier);
                   const rebalanceDue = pf.use_market_overlay && shouldProposeRebalance(tier, pf.last_rebalanced_tier);
 
-                  // Stack with the AI Capex Cycle overlay (when actually applied,
-                  // not shadow-mode) via MIN, not the product used for resize x
-                  // capex elsewhere — see combineWithCapexOverlay's own comment:
-                  // these are two independent reads of overlapping broad-drawdown
-                  // risk, so the worse (lower) one should govern, not compound.
+                  // Stack with the EXISTING resize overlay (per-symbol technical
+                  // rules, e.g. GLDM's live vol-regime cut) and the AI Capex
+                  // Cycle overlay (when actually applied, not shadow-mode).
+                  // Resize is orthogonal to the other two -- always multiplies
+                  // on top (same independent-signal relationship it already has
+                  // with capex, mergeExposureMultipliers). Capex and market
+                  // overlap (both broad-drawdown reads), so MIN governs there
+                  // instead of multiplying -- see combineAllOverlays's own
+                  // comment. Both "without" and "with" below include the live
+                  // resize/capex state; "without" is what the portfolio already
+                  // looks like today without the market-conditions overlay
+                  // specifically, not a hypothetical zero-signal baseline --
+                  // that distinction is what a portfolio with an ACTIVE
+                  // resize cut on a non-equity bucket (KISS's GLDM) needs to
+                  // avoid the market overlay looking like it wants the freed
+                  // cash sold back into equity.
                   const capexApplied = capexOverlay.applied && Object.keys(capexOverlay.bySymbol).length > 0;
                   let rows = [];
                   if (pf.use_market_overlay) {
                     const rawTargets = pf.target_allocations || {};
                     const marketMultipliers = marketOverlayMultipliersBySymbol(hs, mult, EQUITY_KEYS);
-                    const { multipliers: combinedMultipliers, binding } = capexApplied
-                      ? combineWithCapexOverlay(marketMultipliers, capexOverlay.bySymbol)
-                      : { multipliers: marketMultipliers, binding: {} };
-                    const { effectiveTargets } = applyOverlayToTargets(rawTargets, hs, combinedMultipliers, EQUITY_KEYS);
+                    const { multipliers: combinedMultipliers, binding } = combineAllOverlays(
+                      resizeExposureMultipliers, capexOverlay.bySymbol, marketMultipliers, capexApplied
+                    );
+                    // "without" = resize x capex only (exactly today's existing
+                    // Portfolio Actions state, the outer-scope exposureMultipliers
+                    // used there too) -- not a bare resize-only baseline, so capex
+                    // (when actually applied) is credited on both sides equally.
+                    const { effectiveTargets: withoutTargets } = applyOverlayToTargets(rawTargets, hs, exposureMultipliers);
+                    const { effectiveTargets: withTargets } = applyOverlayToTargets(rawTargets, hs, combinedMultipliers);
 
-                    const without = computeAllocationDeltas(hs, rawTargets, { illiquidKeys: ILLIQUID_KEYS, includeZeroValueHoldings: true });
-                    const withOv  = computeAllocationDeltas(hs, effectiveTargets, { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers: combinedMultipliers, includeZeroValueHoldings: true });
+                    const without = computeAllocationDeltas(hs, withoutTargets, { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers, includeZeroValueHoldings: true });
+                    const withOv  = computeAllocationDeltas(hs, withTargets, { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers: combinedMultipliers, includeZeroValueHoldings: true });
                     const withoutBySymbol = Object.fromEntries(without.actionRows.map((r) => [r.symbol, r]));
                     const holdingBySymbol = Object.fromEntries(hs.map((h) => [h.symbol, h]));
 
