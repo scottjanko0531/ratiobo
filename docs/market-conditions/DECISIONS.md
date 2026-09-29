@@ -1,5 +1,81 @@
 # Market Conditions Overlay — decisions log
 
+## Phase 6 build: per-portfolio risk-parity integration (2026-09-29)
+
+Implements the kickoff decision below. Read-before-building turned up an
+almost-complete precedent already shipped for the resize/capex overlays
+(`app/portfolios/page.jsx`'s "Portfolio Actions" block): the freed-weight
+math and the two-stage "bucket target × per-symbol multiplier" allocation
+design already exist in `computeAllocationDeltas` (`lib/simulatorKeys.js`).
+Phase 6 reuses that machinery rather than adding new allocation math.
+
+**EQUITY_KEYS proposal (no prior equity classification existed in the
+repo)**: `EQUITY_KEYS = new Set(["eq", "intl", "em"])` in
+`lib/simulatorKeys.js`, same shape/precedent as the existing `ILLIQUID_KEYS`.
+Bonds, TIPS, commodities, gold, cash, and the illiquid alts are all left
+untouched by the overlay — it only dials the three public-equity buckets,
+matching the disclaimer that it's validated on broad equity indexes only.
+
+**`use_market_overlay` is an independent boolean**, not a new
+`strategy_framework` value. The existing resize/capex overlay gating
+already applies to both `resize_overlay` and `regime_driven` identically
+despite UI copy implying mutual exclusivity, so there's no real precedent
+for framework-exclusivity here, and the CHECK-constrained enum would need
+a migration either way. New columns (`20260930_market_overlay_portfolio_fields.sql`):
+`portfolios.use_market_overlay boolean not null default false`,
+`portfolios.last_rebalanced_tier text` (nullable, checked against the same
+5 tier values as `market_conditions_scores.tier`).
+
+**New pure-function module** `lib/marketOverlayPortfolio.js`:
+- `marketOverlayMultipliersBySymbol(holdings, exposureMultiplier, equityKeys)` — symbol→multiplier map, the overlay's single global multiplier applied to every equity-classified holding only.
+- `applyMarketOverlayToTargets(rawTargets, exposureMultiplier, equityKeys)` — adds the freed equity weight to the cash bucket target; equity bucket targets themselves are left unscaled since `computeAllocationDeltas` applies the per-symbol multiplier itself when turning bucket targets into holding targets. Proven (and unit-tested) that total weight is exactly preserved once run through `computeAllocationDeltas` — cash absorbs exactly the cut.
+- `shouldProposeRebalance(currentTier, lastRebalancedTier)` — the tier-change gate; fires on any tier difference including the first-ever check (`lastRebalancedTier` null).
+
+**"Create a cash sleeve if none exists"** is satisfied by
+`computeAllocationDeltas`'s existing `buyRows` mechanism (a bucket with a
+target but no linked holding) rather than an actual database insert —
+consistent with "recommendation, never an order." Unit-tested explicitly.
+
+**UI** (`app/portfolios/page.jsx`): a new "Market Conditions Overlay" card,
+deliberately kept separate from the existing resize/capex "Portfolio
+Actions" block rather than merged into it, shown for every portfolio
+(regardless of `strategy_framework`) once a `market_conditions_scores` row
+exists. Shows tier/multiplier/on-off always; when the flag is on, shows a
+current / no-overlay-target / with-overlay-target / estimated-trade /
+estimated-realized-gain-loss table, restricted to rows where the bucket is
+actually touched by the overlay (equity + cash) rather than duplicating
+the full holdings list. Estimated realized gain/loss uses the average-cost
+`holdings_valued` view's `cost_basis`/`net_gain`, applied pro-rata to the
+sold fraction. "Mark rebalanced to <tier>" is the only write this feature
+makes — an explicit acknowledgment, shown only when the current tier
+differs from `last_rebalanced_tier`, that resets the gate for the next
+proposal. Settings toggle added next to Strategy Framework with copy
+clarifying it's independent of that field.
+
+**Verified**: `tests/marketOverlayPortfolio.test.ts` (scaling math sums to
+100% and cash absorbs exactly the cut, flag-off byte-matches the
+non-overlay `computeAllocationDeltas` output, cash-buyRow-creation case,
+rebalance fires only on tier change) — full suite 236/236 passing.
+`next build` clean. UI verified visually via a temporary, uncommitted
+dev-preview route fed by All Weather Alpha's real holdings (pulled via the
+Supabase MCP service-role client) — caught and fixed a real contrast bug
+where the "With overlay" column's default text color was nearly
+unreadable against the card background; recolored to match the existing
+Trade-direction color convention (green/red/dim) instead of plain
+uncolored text.
+
+## Phase 6 kickoff: freed-weight destination resolved (2026-09-29)
+
+**Decision #1 (open since the Phase 2 proposal entry) is resolved: freed
+weight goes to the portfolio's cash sleeve.** When `use_market_overlay` is
+on and `exposure_multiplier < 1`, the risk-parity solver runs unchanged
+first, then every holding classified as equity is multiplied by the
+latest `exposure_multiplier`; the total dollar cut across all equity
+holdings is added to cash. Non-equity holdings (bonds, gold, etc.) are
+untouched by the overlay — this is a pure equity-sleeve risk dial, not a
+portfolio-wide reallocation. SPEC.md §10-11 updated accordingly. See the
+Phase 6 entry below for the full integration design.
+
 ## Phase 3 prerequisites: E-DOWN unconditional re-test, mc_signal_log_live view (2026-09-30)
 
 **E-DOWN re-test against the UNCONDITIONAL (all-days) baseline**, same

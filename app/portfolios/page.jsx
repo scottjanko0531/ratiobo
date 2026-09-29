@@ -5,8 +5,10 @@ import {
 } from "recharts";
 import Shell from "../../components/Shell";
 import { supabase } from "../../lib/supabase";
-import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META, ILLIQUID_KEYS, computeAllocationDeltas } from "../../lib/simulatorKeys";
+import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META, ILLIQUID_KEYS, EQUITY_KEYS, computeAllocationDeltas } from "../../lib/simulatorKeys";
 import { capexMultipliersBySymbol, mergeExposureMultipliers, CAPEX_REGIME_META } from "../../lib/capexOverlay";
+import { marketOverlayMultipliersBySymbol, applyMarketOverlayToTargets, shouldProposeRebalance } from "../../lib/marketOverlayPortfolio";
+import { TIER_META } from "../../lib/marketConditionsMeta";
 import HoldingDetailDrawer from "../../components/HoldingDetailDrawer";
 
 const usd = (v) => {
@@ -67,7 +69,7 @@ export default function PortfoliosPage() {
   const [viewingPortfolio, setViewingPortfolio] = useState(null);
   const [expandedBuckets, setExpandedBuckets]   = useState(new Set()); // empty = all collapsed
   const [editingPortfolio, setEditingPortfolio] = useState(null); // "new" | portfolio obj
-  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "" });
+  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "", use_market_overlay: false });
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -256,6 +258,30 @@ export default function PortfoliosPage() {
       .catch(() => setSectorTargets({}));
   }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework, viewingPortfolio?.current_regime_key]);
 
+  // Market Conditions overlay (Phase 6) — latest daily tier/exposure_multiplier
+  // row, independent of strategy_framework. Fetched whenever a portfolio is
+  // open (not gated on use_market_overlay) so the tier/multiplier can be shown
+  // even while the flag is off, letting the user decide whether to turn it on.
+  const [latestMarketScore, setLatestMarketScore] = useState(null);
+  useEffect(() => {
+    if (!viewingPortfolio) { setLatestMarketScore(null); return; }
+    supabase
+      .from("market_conditions_scores")
+      .select("date, tier, exposure_multiplier")
+      .order("date", { ascending: false })
+      .limit(1)
+      .then(({ data }) => setLatestMarketScore(data?.[0] ?? null), () => setLatestMarketScore(null));
+  }, [viewingPortfolio?.id]);
+
+  // Overlay only proposes a rebalance on a tier change, so acknowledging it
+  // is an explicit write (button click), not something that happens automatically.
+  async function markOverlayRebalanced(portfolioId, tier) {
+    const { error } = await supabase.from("portfolios").update({ last_rebalanced_tier: tier }).eq("id", portfolioId);
+    if (error) return;
+    setPortfolios((prev) => prev.map((p) => (p.id === portfolioId ? { ...p, last_rebalanced_tier: tier } : p)));
+    setViewingPortfolio((prev) => (prev && prev.id === portfolioId ? { ...prev, last_rebalanced_tier: tier } : prev));
+  }
+
   // Full per-holding snapshot history for the open portfolio, fetched on demand
   // (not part of the page's initial load, which only pulls today's row) — feeds
   // the monthly gain/loss chart below. cost_basis is pulled alongside market_value
@@ -366,7 +392,7 @@ export default function PortfoliosPage() {
 
   // ── CRUD ─────────────────────────────────────────────────────────────────────
   function openNew() {
-    setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "" });
+    setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "", use_market_overlay: false });
     setFormError("");
     setEditingPortfolio("new");
   }
@@ -379,6 +405,7 @@ export default function PortfoliosPage() {
       target_allocations: pf.target_allocations ?? {},
       rebalance_band_pct: pf.rebalance_band_pct ?? 5,
       strategy_framework: pf.strategy_framework ?? "",
+      use_market_overlay: pf.use_market_overlay ?? false,
     });
     setFormError("");
     setEditingPortfolio(pf);
@@ -397,6 +424,7 @@ export default function PortfoliosPage() {
       target_allocations: form.target_allocations,
       rebalance_band_pct: form.rebalance_band_pct === "" || form.rebalance_band_pct == null ? 5 : Number(form.rebalance_band_pct),
       strategy_framework: form.strategy_framework || null,
+      use_market_overlay: Boolean(form.use_market_overlay),
       updated_at:         new Date().toISOString(),
       // Turning regime-driven off releases manual control of target_allocations again;
       // turning it on (or switching regimes) resets tracking so the next daily cron
@@ -718,6 +746,127 @@ export default function PortfoliosPage() {
                     );
                   })()}
                 </div>
+
+                {/* Market Conditions overlay (Phase 6) — per-portfolio opt-in
+                   equity-exposure dial driven by market_conditions_scores'
+                   daily tier/exposure_multiplier. Deliberately kept separate
+                   from the resize/capex overlay below: an independent boolean
+                   (use_market_overlay), its own freed-weight-to-cash math
+                   scoped to EQUITY_KEYS only (lib/marketOverlayPortfolio.js),
+                   shown regardless of strategy_framework. A recommendation
+                   only — the only write on this page is "Mark rebalanced",
+                   an explicit acknowledgment that gates the next proposal to
+                   the NEXT tier change rather than every daily score move. */}
+                {latestMarketScore && (() => {
+                  const tier = latestMarketScore.tier;
+                  const meta = TIER_META[tier] ?? TIER_META.NORMAL;
+                  const mult = Number(latestMarketScore.exposure_multiplier);
+                  const rebalanceDue = pf.use_market_overlay && shouldProposeRebalance(tier, pf.last_rebalanced_tier);
+
+                  let rows = [];
+                  if (pf.use_market_overlay) {
+                    const rawTargets = pf.target_allocations || {};
+                    const overlayMultipliers = marketOverlayMultipliersBySymbol(hs, mult, EQUITY_KEYS);
+                    const { effectiveTargets } = applyMarketOverlayToTargets(rawTargets, mult, EQUITY_KEYS);
+
+                    const without = computeAllocationDeltas(hs, rawTargets, { illiquidKeys: ILLIQUID_KEYS, includeZeroValueHoldings: true });
+                    const withOv  = computeAllocationDeltas(hs, effectiveTargets, { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers: overlayMultipliers, includeZeroValueHoldings: true });
+                    const withoutBySymbol = Object.fromEntries(without.actionRows.map((r) => [r.symbol, r]));
+                    const holdingBySymbol = Object.fromEntries(hs.map((h) => [h.symbol, h]));
+
+                    rows = withOv.actionRows
+                      .filter((r) => EQUITY_KEYS.has(r.key) || r.key === "cash")
+                      .map((r) => {
+                        const wo = withoutBySymbol[r.symbol];
+                        const h = holdingBySymbol[r.symbol];
+                        const costBasis = Number(h?.cost_basis ?? 0);
+                        const netGain = Number(h?.net_gain ?? 0);
+                        const estGain = r.deltaVal < 0 && r.currentVal > 0 && costBasis > 0
+                          ? (-r.deltaVal) * (netGain / r.currentVal)
+                          : null;
+                        return { symbol: r.symbol, currentPct: r.currentPct, withoutPct: wo?.newPct ?? r.currentPct, withPct: r.newPct, tradeVal: r.deltaVal, estGain };
+                      });
+
+                    // No current cash holding — Portfolio Actions' existing pattern
+                    // for "create a sleeve": surfaced as a recommendation, not a write.
+                    const cashBuyWith = withOv.buyRows.find((b) => b.key === "cash");
+                    if (cashBuyWith) {
+                      const cashBuyWithout = without.buyRows.find((b) => b.key === "cash");
+                      rows.push({
+                        symbol: "Cash (new)",
+                        currentPct: 0,
+                        withoutPct: cashBuyWithout?.targetPct ?? (rawTargets.cash ?? 0),
+                        withPct: cashBuyWith.targetPct,
+                        tradeVal: cashBuyWith.targetVal,
+                        estGain: null,
+                      });
+                    }
+                  }
+
+                  return (
+                    <div className="px-5 py-4 border-b border-ink-line">
+                      <div className="flex items-center justify-between mb-3 gap-3">
+                        <div>
+                          <p className="label text-[10px]">Market Conditions Overlay</p>
+                          <p className="text-[10px] text-paper-dim/60 mt-0.5">
+                            <a href="/market-conditions" className="hover:text-brass-soft">Tier</a>
+                            {" "}<span className={meta.tone}>{meta.label}</span>
+                            {" · "}exposure ×{isFinite(mult) ? mult.toFixed(2) : "—"}
+                            {" · "}<span className={pf.use_market_overlay ? "text-gain" : "text-paper-dim"}>{pf.use_market_overlay ? "overlay on" : "overlay off"}</span>
+                          </p>
+                        </div>
+                        {rebalanceDue && (
+                          <button
+                            onClick={() => markOverlayRebalanced(pf.id, tier)}
+                            className="px-3 py-1.5 rounded-lg text-xs border border-brass/40 text-brass-soft hover:bg-brass/10 transition-colors shrink-0"
+                          >
+                            Mark rebalanced to {meta.label}
+                          </button>
+                        )}
+                      </div>
+
+                      {!pf.use_market_overlay ? (
+                        <p className="text-xs text-paper-dim italic">Off — enable in portfolio settings to scale equity exposure with this tier.</p>
+                      ) : rows.length === 0 ? (
+                        <p className="text-xs text-paper-dim italic">No change at the current multiplier.</p>
+                      ) : (
+                        <>
+                          <div className="border border-ink-line rounded-lg overflow-hidden text-[11px]">
+                            <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-3 px-3 py-1.5 bg-ink-soft/50 border-b border-ink-line text-[10px] text-paper-dim">
+                              <span>Holding</span>
+                              <span className="text-right">Current</span>
+                              <span className="text-right">No overlay</span>
+                              <span className="text-right">With overlay</span>
+                              <span>Trade</span>
+                              <span className="text-right">Est. gain/loss</span>
+                            </div>
+                            {rows.map((r) => {
+                              const absD = Math.abs(r.tradeVal);
+                              const isNoop = absD < s.totalValue * 0.005;
+                              const tradeLabel = isNoop
+                                ? "Hold"
+                                : `${r.tradeVal > 0 ? "Add" : "Sell"} $${absD < 1000 ? absD.toFixed(0) : (absD / 1000).toFixed(1) + "k"}`;
+                              const tradeClass = isNoop ? "text-paper-dim" : r.tradeVal > 0 ? "text-gain" : "text-loss";
+                              return (
+                                <div key={r.symbol} className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-3 px-3 py-2 border-b border-ink-line/50 last:border-0 items-center">
+                                  <span className="font-medium text-paper truncate">{r.symbol}</span>
+                                  <span className="num text-paper-dim text-right">{r.currentPct.toFixed(1)}%</span>
+                                  <span className="num text-paper-dim text-right">{r.withoutPct.toFixed(1)}%</span>
+                                  <span className={`num text-right font-medium ${isNoop ? "text-paper" : tradeClass}`}>{r.withPct.toFixed(1)}%</span>
+                                  <span className={`${tradeClass} font-medium`}>{tradeLabel}</span>
+                                  <span className="num text-right text-paper-dim">{r.estGain != null ? usd(r.estGain) : "—"}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <p className="text-[10px] text-paper-dim/60 mt-2 leading-relaxed">
+                            Recommendation only — not an order. Overlay validated on broad U.S. and developed-market indexes; untested on concentrated sleeves.
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* Portfolio Actions — resize_overlay and regime_driven
                    portfolios. Same computeAllocationDeltas call + row/badge
@@ -1159,6 +1308,24 @@ export default function PortfoliosPage() {
                     : form.strategy_framework === "resize_overlay"
                     ? "Target Allocations below are set manually (same as Static/Tactical — not auto-managed). Once saved, a Portfolio Actions section appears below showing each holding's target scaled down by its own calibrated risk-state signal (asset_resize_rule_config) when one exists for that symbol — e.g. a holding currently flagged \"Reduced\" gets a smaller effective target than the raw bucket %. Mutually exclusive with Regime-driven under the current single-framework field — a portfolio can't be both at once yet."
                     : "Determines how Daily Analysis reasons about rebalancing vs. tactical tilts. Leave on auto-detect unless you want it locked explicitly."}
+                </p>
+              </div>
+
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.use_market_overlay}
+                    onChange={(e) => setForm((f) => ({ ...f, use_market_overlay: e.target.checked }))}
+                  />
+                  <span className="label">Market Conditions overlay</span>
+                </label>
+                <p className="text-[10px] text-paper-dim/60 mt-1">
+                  Independent of Strategy Framework — works alongside any of the above. When on, the risk-parity
+                  solver runs unchanged first, then every holding classified as equity (US, international, EM) is
+                  multiplied by the latest daily exposure multiplier from the Market Conditions dashboard, and the
+                  freed weight is added to cash. A recommendation only — never an order. Overlay validated on broad
+                  U.S. and developed-market indexes; untested on concentrated sleeves.
                 </p>
               </div>
 

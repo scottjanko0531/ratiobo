@@ -226,10 +226,10 @@ Cross-market (out-of-sample) vs 200-day rule, Calmar: QQQ win (0.22 vs 0.15), IW
 | 3 | Dashboard | Built; on preview branch pending review |
 | 4 | Sentiment + macro (reuse regime-engine output for macro) | Not started; gated experiment |
 | 5 | Backtest + robustness | Largely done during Phases 1–2; walk-forward not possible (history already seen) |
-| 6 | Risk-parity solver integration (`use_market_overlay`, opt-in) | Not started; open decision on where freed weight goes |
+| 6 | Risk-parity solver integration (`use_market_overlay`, opt-in) | Built; on preview branch pending review |
 
 ## 11. Open decisions
-1. Where freed weight goes when `exposure_multiplier < 1`: T-bills, bond sleeve, or pro-rata to non-equity sleeves (Phase 6).
+1. ~~Where freed weight goes when `exposure_multiplier < 1`~~ — **Resolved 2026-09-29: the portfolio's cash sleeve.** Solver runs unchanged, then (if `use_market_overlay` is on) every equity holding is multiplied by `exposure_multiplier` and the total cut is added to cash; non-equity weights are untouched.
 2. Point-in-time constituent data source, only if breadth is ever revisited.
 3. Macro pillar: reuse regime-engine output vs compute independently (Phase 4).
 
