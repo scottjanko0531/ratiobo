@@ -16,6 +16,7 @@ const links = [
   { href: "/china-watch", label: "China Watch" },
   { href: "/big-cycle", label: "Big Cycle" },
   { href: "/ai-capex", label: "AI Capex" },
+  { href: "/market-conditions", label: "Market Conditions" },
   { href: "/simulator", label: "Simulator" },
   { href: "/backtesting", label: "Backtesting" },
   { href: "/planning", label: "Planning" },

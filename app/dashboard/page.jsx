@@ -8,6 +8,7 @@ import { supabase } from "../../lib/supabase";
 import Shell from "../../components/Shell";
 import NotificationBanner from "../../components/NotificationBanner";
 import PeriodChangeDrawer from "../../components/PeriodChangeDrawer";
+import MarketConditionsCard from "../../components/MarketConditionsCard";
 
 const usd = (n) =>
   n == null
@@ -282,6 +283,11 @@ export default function Dashboard() {
 
       {/* Notification banner */}
       <NotificationBanner />
+
+      {/* Market Conditions Overlay */}
+      <div className="mb-8">
+        <MarketConditionsCard />
+      </div>
 
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
