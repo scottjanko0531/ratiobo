@@ -39,6 +39,10 @@ const MARKETS: { symbol: string; startDate: string }[] = [
   { symbol: "QQQ", startDate: "1999-03-10" },
   { symbol: "IWM", startDate: "2000-05-26" },
   { symbol: "EFA", startDate: "2001-08-27" },
+  // Phase 6 review: is the equity overlay's edge real for EM (the "em"
+  // bucket in EQUITY_KEYS), or is EM specifically where it should be
+  // excluded? EEM's own inception, no earlier proxy substituted.
+  { symbol: "EEM", startDate: "2003-04-14" },
 ];
 
 type PriceRow = { date: string; close: number };

@@ -1,5 +1,92 @@
 # Market Conditions Overlay — decisions log
 
+## Phase 6 review, before merge (2026-09-29)
+
+Four items raised in review of the Phase 6 build below.
+
+**1. Overlay stacking with AI Capex Cycle — MIN, not product.** When a
+portfolio has both `use_market_overlay` and the capex overlay active
+(applied, not shadow-mode), the effective per-symbol multiplier is
+`min(market_multiplier, capex_multiplier[symbol])`, not their product (the
+convention used elsewhere for resize x capex, `mergeExposureMultipliers`
+in `lib/capexOverlay.js`). Reasoning: resize x capex are genuinely
+independent signals (a symbol-specific trend/vol rule x a top-down
+capex-cycle read) where multiplying is the right combination; market
+conditions and capex are instead two different reads of overlapping
+broad-drawdown risk, so multiplying would double-count the same risk
+twice. MIN says the worse of the two reads governs. New
+`combineWithCapexOverlay` in `lib/marketOverlayPortfolio.js` returns both
+the combined multiplier map and a `binding` map (`"market"`/`"capex"`/
+`"tie"` per symbol), surfaced in the portfolio-page UI as a small note
+under any holding where capex is the binding (tighter) constraint, plus a
+header line noting the two overlays are stacked. This also exposed a real
+gap in the original freed-weight math: `applyMarketOverlayToTargets` used
+a single flat multiplier per equity bucket, which is only correct when
+every holding in a bucket shares the same multiplier -- true for the
+market overlay alone, false once capex can bind for only SOME holdings in
+a bucket. Replaced with `applyOverlayToTargets`, which value-weights the
+actual per-symbol multiplier map (same convention as the existing
+resize-overlay `avgMultFor` in `app/portfolios/page.jsx`), so cash still
+absorbs exactly the true cut regardless of how many multipliers are
+stacked. New tests in `tests/marketOverlayPortfolio.test.ts` cover both on
+(market binds), both on (capex binds), capex off, and a mixed-bucket
+value-weighting check end-to-end through `computeAllocationDeltas`.
+
+**2. Equity classification, confirmed.** Every `SIMULATOR_KEYS` bucket,
+with its Phase 6 classification:
+
+| Key | Label | Classification |
+|---|---|---|
+| `eq` | US Equities | **Equity** |
+| `intl` | International | **Equity** |
+| `em` | EM Equities | **Equity** |
+| `nb` | Nominal Bonds | non-equity |
+| `tip` | TIPS | non-equity |
+| `com` | Commodities | non-equity |
+| `gld` | Gold | non-equity |
+| `cash` | Cash | non-equity |
+| `alt_crypto` | Crypto | non-equity (excluded — different risk profile, overlay never validated against it) |
+| `alt_re` | Real Estate | non-equity (excluded — illiquid/private, overlay explicitly untested on concentrated sleeves) |
+| `alt_loan` | Notes / Loans | non-equity (debt-like) |
+| `alt_pp` | Private Placements | non-equity (excluded — illiquid/private) |
+| `alt_other` | Other | non-equity (excluded — unknown composition) |
+
+`EQUITY_KEYS = {eq, intl, em}` unchanged from the original Phase 6
+proposal — nothing equity-like escapes it, and nothing non-equity is
+caught by it.
+
+**EEM out-of-sample check (em bucket specifically), mc config unchanged,
+2003-04-14 to 2026-09-29** — same methodology as the QQQ/IWM/EFA
+cross-market test (`supabase/functions/market-conditions-crossmarket`,
+now also covers EEM; backfilled via `backfill-asset-price-history`):
+
+| Market | Overlay Calmar | 200-day rule Calmar | Buy & hold Calmar |
+|---|---|---|---|
+| EEM | **0.19** | 0.15 | 0.15 |
+
+Overlay beats both alternatives on EEM (CAGR 6.5% / maxDD -34.4% vs.
+buy-and-hold's 10.0% / -66.4% — a large drawdown cut for a moderate CAGR
+give-up, same shape as QQQ/IWM/EFA). **No exclusion proposed** — `em`
+stays in `EQUITY_KEYS`. Recorded in `lib/marketConditionsMeta.js`'s
+`VALIDATION_SUMMARY.crossMarket`, report only, not a gating criterion.
+
+**3. Rebalance gate, confirmed + tested.** `shouldProposeRebalance` is a
+pure state comparison (`currentTier !== lastRebalancedTier`), not "did the
+tier change today" — it has no notion of "today" at all, so it keeps
+firing on every subsequent day the two remain different, including days
+after a missed tier change, until the portfolio is actually marked
+rebalanced. New test in `tests/marketOverlayPortfolio.test.ts` simulates a
+tier change followed by two skipped days, confirming the gate still fires
+on each, and stops only once `last_rebalanced_tier` is actually written.
+
+**4. Merge order, confirmed.** `market-conditions-phase6-portfolio-overlay`
+branches from `market-conditions-phase3-preview` (`a50c6d5` is a
+confirmed ancestor), which is itself not yet merged to `main`. `origin/main`
+is still exactly at the phase3/phase6 common ancestor (`9064c70`), so
+merging phase3 then phase6 are both clean fast-forwards — no conflicts
+expected. **Merge order: phase3 first, then phase6.** Awaiting approval
+before merging.
+
 ## Phase 6 build: per-portfolio risk-parity integration (2026-09-29)
 
 Implements the kickoff decision below. Read-before-building turned up an

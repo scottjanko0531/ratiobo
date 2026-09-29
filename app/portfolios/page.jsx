@@ -7,7 +7,7 @@ import Shell from "../../components/Shell";
 import { supabase } from "../../lib/supabase";
 import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META, ILLIQUID_KEYS, EQUITY_KEYS, computeAllocationDeltas } from "../../lib/simulatorKeys";
 import { capexMultipliersBySymbol, mergeExposureMultipliers, CAPEX_REGIME_META } from "../../lib/capexOverlay";
-import { marketOverlayMultipliersBySymbol, applyMarketOverlayToTargets, shouldProposeRebalance } from "../../lib/marketOverlayPortfolio";
+import { marketOverlayMultipliersBySymbol, combineWithCapexOverlay, applyOverlayToTargets, shouldProposeRebalance } from "../../lib/marketOverlayPortfolio";
 import { TIER_META } from "../../lib/marketConditionsMeta";
 import HoldingDetailDrawer from "../../components/HoldingDetailDrawer";
 
@@ -763,14 +763,23 @@ export default function PortfoliosPage() {
                   const mult = Number(latestMarketScore.exposure_multiplier);
                   const rebalanceDue = pf.use_market_overlay && shouldProposeRebalance(tier, pf.last_rebalanced_tier);
 
+                  // Stack with the AI Capex Cycle overlay (when actually applied,
+                  // not shadow-mode) via MIN, not the product used for resize x
+                  // capex elsewhere — see combineWithCapexOverlay's own comment:
+                  // these are two independent reads of overlapping broad-drawdown
+                  // risk, so the worse (lower) one should govern, not compound.
+                  const capexApplied = capexOverlay.applied && Object.keys(capexOverlay.bySymbol).length > 0;
                   let rows = [];
                   if (pf.use_market_overlay) {
                     const rawTargets = pf.target_allocations || {};
-                    const overlayMultipliers = marketOverlayMultipliersBySymbol(hs, mult, EQUITY_KEYS);
-                    const { effectiveTargets } = applyMarketOverlayToTargets(rawTargets, mult, EQUITY_KEYS);
+                    const marketMultipliers = marketOverlayMultipliersBySymbol(hs, mult, EQUITY_KEYS);
+                    const { multipliers: combinedMultipliers, binding } = capexApplied
+                      ? combineWithCapexOverlay(marketMultipliers, capexOverlay.bySymbol)
+                      : { multipliers: marketMultipliers, binding: {} };
+                    const { effectiveTargets } = applyOverlayToTargets(rawTargets, hs, combinedMultipliers, EQUITY_KEYS);
 
                     const without = computeAllocationDeltas(hs, rawTargets, { illiquidKeys: ILLIQUID_KEYS, includeZeroValueHoldings: true });
-                    const withOv  = computeAllocationDeltas(hs, effectiveTargets, { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers: overlayMultipliers, includeZeroValueHoldings: true });
+                    const withOv  = computeAllocationDeltas(hs, effectiveTargets, { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers: combinedMultipliers, includeZeroValueHoldings: true });
                     const withoutBySymbol = Object.fromEntries(without.actionRows.map((r) => [r.symbol, r]));
                     const holdingBySymbol = Object.fromEntries(hs.map((h) => [h.symbol, h]));
 
@@ -784,7 +793,12 @@ export default function PortfoliosPage() {
                         const estGain = r.deltaVal < 0 && r.currentVal > 0 && costBasis > 0
                           ? (-r.deltaVal) * (netGain / r.currentVal)
                           : null;
-                        return { symbol: r.symbol, currentPct: r.currentPct, withoutPct: wo?.newPct ?? r.currentPct, withPct: r.newPct, tradeVal: r.deltaVal, estGain };
+                        return {
+                          symbol: r.symbol, currentPct: r.currentPct,
+                          withoutPct: wo?.newPct ?? r.currentPct, withPct: r.newPct,
+                          tradeVal: r.deltaVal, estGain,
+                          binding: binding[r.symbol] ?? null,
+                        };
                       });
 
                     // No current cash holding — Portfolio Actions' existing pattern
@@ -799,6 +813,7 @@ export default function PortfoliosPage() {
                         withPct: cashBuyWith.targetPct,
                         tradeVal: cashBuyWith.targetVal,
                         estGain: null,
+                        binding: null,
                       });
                     }
                   }
@@ -813,6 +828,9 @@ export default function PortfoliosPage() {
                             {" "}<span className={meta.tone}>{meta.label}</span>
                             {" · "}exposure ×{isFinite(mult) ? mult.toFixed(2) : "—"}
                             {" · "}<span className={pf.use_market_overlay ? "text-gain" : "text-paper-dim"}>{pf.use_market_overlay ? "overlay on" : "overlay off"}</span>
+                            {pf.use_market_overlay && capexApplied && (
+                              <>{" · "}stacked with <a href="/ai-capex" className="hover:text-brass-soft">AI Capex overlay</a> (min of the two, per holding)</>
+                            )}
                           </p>
                         </div>
                         {rebalanceDue && (
@@ -849,7 +867,12 @@ export default function PortfoliosPage() {
                               const tradeClass = isNoop ? "text-paper-dim" : r.tradeVal > 0 ? "text-gain" : "text-loss";
                               return (
                                 <div key={r.symbol} className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-3 px-3 py-2 border-b border-ink-line/50 last:border-0 items-center">
-                                  <span className="font-medium text-paper truncate">{r.symbol}</span>
+                                  <span className="min-w-0">
+                                    <span className="font-medium text-paper truncate block">{r.symbol}</span>
+                                    {r.binding === "capex" && (
+                                      <span className="text-[9px] text-brass-soft/80 block truncate">AI Capex overlay binding — tighter than the market-conditions cut</span>
+                                    )}
+                                  </span>
                                   <span className="num text-paper-dim text-right">{r.currentPct.toFixed(1)}%</span>
                                   <span className="num text-paper-dim text-right">{r.withoutPct.toFixed(1)}%</span>
                                   <span className={`num text-right font-medium ${isNoop ? "text-paper" : tradeClass}`}>{r.withPct.toFixed(1)}%</span>

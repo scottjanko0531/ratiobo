@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   marketOverlayMultipliersBySymbol,
-  applyMarketOverlayToTargets,
+  combineWithCapexOverlay,
+  applyOverlayToTargets,
   shouldProposeRebalance,
 } from "../lib/marketOverlayPortfolio";
 import { computeAllocationDeltas, EQUITY_KEYS } from "../lib/simulatorKeys";
@@ -28,20 +29,81 @@ describe("marketOverlayMultipliersBySymbol", () => {
   });
 });
 
-// ── applyMarketOverlayToTargets ────────────────────────────────────────────
-describe("applyMarketOverlayToTargets", () => {
+// ── combineWithCapexOverlay (market x capex stacking = MIN, not product) ──
+describe("combineWithCapexOverlay", () => {
+  it("both on, market binds: market's cut is tighter than capex's", () => {
+    const market = { VTI: 0.6, VXUS: 0.6 };
+    const capex = { VTI: 0.85 }; // capex cuts less than market for VTI
+    const { multipliers, binding } = combineWithCapexOverlay(market, capex);
+    expect(multipliers.VTI).toBe(0.6);
+    expect(binding.VTI).toBe("market");
+    // VXUS has no capex row at all — market alone applies.
+    expect(multipliers.VXUS).toBe(0.6);
+    expect(binding.VXUS).toBe("market");
+  });
+
+  it("both on, capex binds: capex's cut is tighter than market's", () => {
+    const market = { VTI: 0.9 };
+    const capex = { VTI: 0.7 }; // capex cuts more than market for VTI
+    const { multipliers, binding } = combineWithCapexOverlay(market, capex);
+    expect(multipliers.VTI).toBe(0.7);
+    expect(binding.VTI).toBe("capex");
+  });
+
+  it("capex off (no rows / not applied): behaves exactly like market alone", () => {
+    const market = { VTI: 0.6, VXUS: 0.8 };
+    const { multipliers, binding } = combineWithCapexOverlay(market, {});
+    expect(multipliers).toEqual(market);
+    expect(binding.VTI).toBe("market");
+    expect(binding.VXUS).toBe("market");
+  });
+
+  it("does not touch symbols outside the market overlay's scope (non-equity, capex-only)", () => {
+    const market = { VTI: 0.6 };
+    const capex = { VTI: 0.9, GLD: 0.8 }; // GLD is capex-cut but not market-classified equity
+    const { multipliers, binding } = combineWithCapexOverlay(market, capex);
+    expect(multipliers).toEqual({ VTI: 0.6 });
+    expect(binding.GLD).toBeUndefined();
+  });
+
+  it("ties: equal cuts report a tie and use the shared value", () => {
+    const { multipliers, binding } = combineWithCapexOverlay({ VTI: 0.75 }, { VTI: 0.75 });
+    expect(multipliers.VTI).toBe(0.75);
+    expect(binding.VTI).toBe("tie");
+  });
+});
+
+// ── applyOverlayToTargets ───────────────────────────────────────────────────
+describe("applyOverlayToTargets", () => {
   it("adds the freed equity weight to cash and leaves other buckets untouched", () => {
-    const { effectiveTargets, freedPct } = applyMarketOverlayToTargets(RAW_TARGETS, 0.7, EQUITY_KEYS);
+    const multipliers = marketOverlayMultipliersBySymbol(HOLDINGS, 0.7, EQUITY_KEYS);
+    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, HOLDINGS, multipliers, EQUITY_KEYS);
     expect(freedPct).toBeCloseTo(60 * 0.3); // 18
     expect(effectiveTargets.eq).toBe(60);   // bucket target itself unchanged
     expect(effectiveTargets.nb).toBe(30);
     expect(effectiveTargets.cash).toBeCloseTo(10 + 18);
   });
 
-  it("is a no-op when exposureMultiplier is 1 (flag-off equivalent)", () => {
-    const { effectiveTargets, freedPct } = applyMarketOverlayToTargets(RAW_TARGETS, 1, EQUITY_KEYS);
+  it("is a no-op when the multiplier is 1 (flag-off equivalent)", () => {
+    const multipliers = marketOverlayMultipliersBySymbol(HOLDINGS, 1, EQUITY_KEYS);
+    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, HOLDINGS, multipliers, EQUITY_KEYS);
     expect(freedPct).toBe(0);
     expect(effectiveTargets).toBe(RAW_TARGETS);
+  });
+
+  it("value-weights correctly when capex binds for only one of two holdings in the same bucket", () => {
+    const holdings = [
+      { symbol: "VTI", asset_type: "etf", current_value: 8000 },
+      { symbol: "VXUS", asset_type: "etf", current_value: 2000 },
+    ];
+    const targets = { eq: 50, intl: 0, cash: 50 }; // VTI/VXUS both resolve to "eq" via asset_type default
+    // Market cuts both to 0.8; capex cuts only VTI further, to 0.5.
+    const market = marketOverlayMultipliersBySymbol(holdings, 0.8, EQUITY_KEYS);
+    const { multipliers } = combineWithCapexOverlay(market, { VTI: 0.5 });
+    const { freedPct } = applyOverlayToTargets(targets, holdings, multipliers, EQUITY_KEYS);
+    // Value-weighted avg multiplier for "eq" bucket: (8000*0.5 + 2000*0.8) / 10000 = 0.56
+    const expectedAvgMult = (8000 * 0.5 + 2000 * 0.8) / 10000;
+    expect(freedPct).toBeCloseTo(50 * (1 - expectedAvgMult));
   });
 });
 
@@ -50,7 +112,7 @@ describe("overlay scaling through computeAllocationDeltas", () => {
   it("weights sum to 100% and cash absorbs exactly the cut", () => {
     const multiplier = 0.7;
     const exposureMultipliers = marketOverlayMultipliersBySymbol(HOLDINGS, multiplier, EQUITY_KEYS);
-    const { effectiveTargets, freedPct } = applyMarketOverlayToTargets(RAW_TARGETS, multiplier, EQUITY_KEYS);
+    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, HOLDINGS, exposureMultipliers, EQUITY_KEYS);
 
     const { actionRows, buyRows } = computeAllocationDeltas(HOLDINGS, effectiveTargets, {
       exposureMultipliers,
@@ -73,11 +135,31 @@ describe("overlay scaling through computeAllocationDeltas", () => {
     expect(vtiRow?.newPct).toBeCloseTo(RAW_TARGETS.eq * multiplier);
   });
 
+  it("weights still sum to 100% when capex binds tighter than market for one equity holding", () => {
+    const holdings = [
+      { symbol: "VTI", asset_type: "etf", current_value: 8000 },
+      { symbol: "VXUS", asset_type: "etf", current_value: 2000 },
+      { symbol: "SPAXX", asset_type: "money_market", current_value: 1000 },
+    ];
+    const targets = { eq: 50, cash: 10, nb: 40 };
+    const market = marketOverlayMultipliersBySymbol(holdings, 0.9, EQUITY_KEYS); // both VTI/VXUS -> 0.9
+    const { multipliers } = combineWithCapexOverlay(market, { VTI: 0.6 }); // capex binds only for VTI
+    const { effectiveTargets } = applyOverlayToTargets(targets, holdings, multipliers, EQUITY_KEYS);
+
+    const { actionRows, buyRows } = computeAllocationDeltas(holdings, effectiveTargets, {
+      exposureMultipliers: multipliers,
+      includeZeroValueHoldings: true,
+    });
+    const totalNewPct = actionRows.reduce((s, r) => s + r.newPct, 0)
+      + buyRows.reduce((s, r) => s + r.targetPct, 0);
+    expect(totalNewPct).toBeCloseTo(100);
+  });
+
   it("surfaces cash as a buyRow (portfolio-actions-level 'create a cash sleeve') when the portfolio holds none", () => {
     const noCashHoldings = [{ symbol: "VTI", asset_type: "etf", current_value: 6000 }];
     const multiplier = 0.7;
     const exposureMultipliers = marketOverlayMultipliersBySymbol(noCashHoldings, multiplier, EQUITY_KEYS);
-    const { effectiveTargets, freedPct } = applyMarketOverlayToTargets(RAW_TARGETS, multiplier, EQUITY_KEYS);
+    const { effectiveTargets, freedPct } = applyOverlayToTargets(RAW_TARGETS, noCashHoldings, exposureMultipliers, EQUITY_KEYS);
 
     const { buyRows } = computeAllocationDeltas(noCashHoldings, effectiveTargets, {
       exposureMultipliers,
@@ -117,5 +199,20 @@ describe("shouldProposeRebalance", () => {
 
   it("does not fire with no current tier available", () => {
     expect(shouldProposeRebalance(null, "NORMAL")).toBe(false);
+  });
+
+  it("keeps firing on a day the tier didn't change, after a missed tier-change day", () => {
+    // Day 1: tier flips NORMAL -> DEFENSIVE, portfolio not yet rebalanced.
+    expect(shouldProposeRebalance("DEFENSIVE", "NORMAL")).toBe(true);
+    // Day 2 (skipped — user didn't act): tier holds at DEFENSIVE (no NEW
+    // change today), last_rebalanced_tier is still the stale "NORMAL" since
+    // nothing wrote to it. The gate is a pure state comparison, not
+    // "did the tier change today", so it must still fire.
+    expect(shouldProposeRebalance("DEFENSIVE", "NORMAL")).toBe(true);
+    // Day 3, still skipped, tier unchanged again — still fires.
+    expect(shouldProposeRebalance("DEFENSIVE", "NORMAL")).toBe(true);
+    // Only once the user acts (last_rebalanced_tier is written to DEFENSIVE)
+    // does it stop.
+    expect(shouldProposeRebalance("DEFENSIVE", "DEFENSIVE")).toBe(false);
   });
 });
