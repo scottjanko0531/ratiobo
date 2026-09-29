@@ -959,12 +959,30 @@ export default function PortfoliosPage() {
                 {(pf.strategy_framework === "resize_overlay" || pf.strategy_framework === "regime_driven") && (() => {
                   const rawTargets = pf.target_allocations || {};
 
+                  // Portfolio Actions is the single actionable recommendation for
+                  // this portfolio — when the Market Conditions overlay is on for
+                  // it, its equity-only cut has to be folded in here too (via the
+                  // same combineAllOverlays used by the Market Conditions Overlay
+                  // card above), not just resize x capex. Otherwise this table
+                  // silently disagrees with what that card says the portfolio
+                  // should look like, and — critically — turning the flag OFF
+                  // doesn't change this table at all, so it has to be correct on
+                  // its own regardless of the flag.
+                  const capexAppliedHere = capexOverlay.applied && Object.keys(capexOverlay.bySymbol).length > 0;
+                  const portfolioActionsMultipliers = pf.use_market_overlay && latestMarketScore
+                    ? combineAllOverlays(
+                        resizeExposureMultipliers, capexOverlay.bySymbol,
+                        marketOverlayMultipliersBySymbol(hs, Number(latestMarketScore.exposure_multiplier), EQUITY_KEYS),
+                        capexAppliedHere
+                      ).multipliers
+                    : exposureMultipliers;
+
                   const byKeyTotals = {};
                   for (const h of hs) {
                     const key = resolveSimulatorKey(h);
                     if (!key) continue;
                     const val = Number(h.current_value ?? 0);
-                    const mult = exposureMultipliers[h.symbol] ?? 1;
+                    const mult = portfolioActionsMultipliers[h.symbol] ?? 1;
                     if (!byKeyTotals[key]) byKeyTotals[key] = { total: 0, weightedMultSum: 0, count: 0, multSum: 0 };
                     byKeyTotals[key].total += val;
                     byKeyTotals[key].weightedMultSum += val * mult;
@@ -985,7 +1003,7 @@ export default function PortfoliosPage() {
 
                   const { actionRows, buyRows: rawBuyRows } = computeAllocationDeltas(
                     hs, effectiveTargets,
-                    { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers, sectorTargets, includeZeroValueHoldings: true }
+                    { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers: portfolioActionsMultipliers, sectorTargets, includeZeroValueHoldings: true }
                   );
                   // No per-row exposure-multiplier scaling needed here anymore:
                   // with includeZeroValueHoldings, buyRows only contains
@@ -997,6 +1015,16 @@ export default function PortfoliosPage() {
                   return (
                     <div className="px-5 py-4 border-b border-ink-line">
                       <p className="label mb-3">Portfolio Actions</p>
+                      {pf.use_market_overlay && latestMarketScore && (() => {
+                        const meta = TIER_META[latestMarketScore.tier] ?? TIER_META.NORMAL;
+                        return (
+                          <p className="text-[11px] text-paper-dim mb-3 leading-relaxed">
+                            <a href="/market-conditions" className="text-brass-soft hover:text-brass">Market Conditions overlay</a>
+                            {" · "}<span className={meta.tone}>{meta.label}</span> (×{Number(latestMarketScore.exposure_multiplier).toFixed(2)})
+                            {" · included below"}
+                          </p>
+                        );
+                      })()}
                       {capexRows.length > 0 && (() => {
                         const held = new Set(hs.map((h) => h.symbol));
                         const cuts = capexRows.filter((r) => held.has(r.symbol) && Number(r.exposure_multiplier) < 0.995);
@@ -1024,20 +1052,25 @@ export default function PortfoliosPage() {
                         {actionRows.map((r) => {
                           const delta = r.deltaVal;
                           const absD = Math.abs(delta);
+                          // isNoop still dims the styling for immaterial moves
+                          // (<0.5% of the portfolio); the label itself always
+                          // shows the real direction + dollar amount down to $1
+                          // rather than a bare "Hold" that hides where a small
+                          // freed/displaced amount actually landed.
                           const isNoop = absD < s.totalValue * 0.005;
                           let actionLabel, actionClass;
                           if (r.isIlliquid && delta < 0) {
                             actionLabel = "Illiquid — hold";
                             actionClass = "text-paper-dim italic";
-                          } else if (isNoop) {
+                          } else if (absD < 1) {
                             actionLabel = "Hold";
                             actionClass = "text-paper-dim";
                           } else if (delta > 0) {
                             actionLabel = `Add $${absD < 1000 ? absD.toFixed(0) : (absD / 1000).toFixed(1) + "k"}`;
-                            actionClass = "text-gain";
+                            actionClass = isNoop ? "text-paper-dim" : "text-gain";
                           } else {
                             actionLabel = `Sell $${absD < 1000 ? absD.toFixed(0) : (absD / 1000).toFixed(1) + "k"}`;
-                            actionClass = "text-loss";
+                            actionClass = isNoop ? "text-paper-dim" : "text-loss";
                           }
                           const resize = resizeSignals[r.symbol];
                           const isResized = resize && resize.reduced;

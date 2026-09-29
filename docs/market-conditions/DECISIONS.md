@@ -1,5 +1,38 @@
 # Market Conditions Overlay — decisions log
 
+## Bug: Portfolio Actions never reflected the Market Conditions overlay, and hid small deltas behind "Hold" (2026-09-29)
+
+Follow-up report, KISS with `use_market_overlay` turned OFF: the pre-existing
+"Portfolio Actions" block (the actual, single actionable recommendation table
+on the portfolio page — separate from the new Market Conditions Overlay card
+above it) had two problems:
+
+1. **Never incorporated the market-conditions overlay at all**, regardless of
+   the `use_market_overlay` flag. Its `exposureMultipliers` was always the
+   outer-scope resize x capex product, computed before Phase 6 existed. Turning
+   the flag on changed the *separate* Market Conditions Overlay card, but
+   Portfolio Actions — what a user actually acts on — never changed. Fixed:
+   when `pf.use_market_overlay` is on and a market score has loaded, Portfolio
+   Actions now folds the market overlay in via the same `combineAllOverlays`
+   used by the Market Conditions Overlay card, so both surfaces are consistent
+   whenever the flag is on. Also added a status line ("Market Conditions
+   overlay · <tier> (×mult) · included below"), mirroring the existing AI
+   Capex status line, so it's visible that the table already accounts for it.
+
+2. **Same "Hold hides the real amount" issue** just fixed on the Market
+   Conditions Overlay card, unfixed here — a delta under 0.5% of the
+   portfolio (e.g. cash absorbing $199 freed by a non-equity resize cut)
+   displayed as a bare "Hold" instead of the actual direction + dollar
+   figure. Same fix applied: the label always shows the real amount down to
+   $1; the 0.5% threshold now only dims the row's styling.
+
+**Verified**: new tests replicate Portfolio Actions' own inline freed-weight
+loop (byKeyTotals/avgMultFor, not the lib's `applyOverlayToTargets`) against
+KISS's real numbers for both flag states — flag off matches the existing
+GLDM-driven cash math unchanged; flag on with a DEFENSIVE-tier market cut
+correctly compounds the market cut on top of VT's own resize state and
+routes the larger freed amount into cash. 250/250 tests passing, build clean.
+
 ## Bug: Market Conditions Overlay card ignored the existing resize overlay entirely (2026-09-29)
 
 **Symptom**: KISS's overlay card recommended selling 100% of USFR (cash) and
