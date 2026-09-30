@@ -69,7 +69,7 @@ export default function PortfoliosPage() {
   const [viewingPortfolio, setViewingPortfolio] = useState(null);
   const [expandedBuckets, setExpandedBuckets]   = useState(new Set()); // empty = all collapsed
   const [editingPortfolio, setEditingPortfolio] = useState(null); // "new" | portfolio obj
-  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "", use_market_overlay: false });
+  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "", use_market_overlay: false, use_capex_overlay: false });
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -219,20 +219,31 @@ export default function PortfoliosPage() {
 
   // AI Capex Cycle overlay (see lib/capexOverlay.js, /ai-capex): a second, top-down
   // multiplier per symbol from capex_overlay_symbol_multipliers, merged multiplicatively
-  // with the per-symbol resize overlay above. Downside-only (capped at 1) and only
-  // applied once capex_model_config.shadow_mode is turned off — until then Portfolio
-  // Actions just shows what it WOULD cut. Same framework gating as the resize overlay.
+  // with the per-symbol resize overlay above. Downside-only (capped at 1). Fetched
+  // whenever the portfolio's own framework already surfaces Portfolio Actions, OR it
+  // has explicitly opted in via use_capex_overlay (a portfolio outside those two
+  // frameworks that turns the flag on still gets the data fetched, even though there's
+  // currently no Portfolio Actions block for it to feed).
   const [capexRows, setCapexRows] = useState([]);
   useEffect(() => {
-    if (!viewingPortfolio || (viewingPortfolio.strategy_framework !== "resize_overlay" && viewingPortfolio.strategy_framework !== "regime_driven")) { setCapexRows([]); return; }
+    const framework = viewingPortfolio?.strategy_framework;
+    const relevant = viewingPortfolio && (framework === "resize_overlay" || framework === "regime_driven" || viewingPortfolio.use_capex_overlay);
+    if (!relevant) { setCapexRows([]); return; }
     supabase.from("capex_overlay_symbol_multipliers")
       .select("symbol, bucket, exposure_multiplier, regime_key, ccsi, shadow_mode, reading_date")
       .then(({ data }) => setCapexRows(data ?? []), () => setCapexRows([]));
-  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework]);
+  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework, viewingPortfolio?.use_capex_overlay]);
   const capexOverlay = useMemo(() => capexMultipliersBySymbol(capexRows), [capexRows]);
+  // Whether capex ACTUALLY affects this portfolio's own numbers: gated on this
+  // portfolio's own use_capex_overlay toggle, not the global capex_model_config
+  // shadow-mode kill switch — a portfolio that opts in gets capex applied to its
+  // own Portfolio Actions / Market Conditions Overlay math regardless of the
+  // system-wide setting, same independent-per-portfolio-control precedent as
+  // use_market_overlay.
+  const capexOverlayApplied = Boolean(viewingPortfolio?.use_capex_overlay) && Object.keys(capexOverlay.bySymbol).length > 0;
   const exposureMultipliers = useMemo(
-    () => (capexOverlay.applied ? mergeExposureMultipliers(resizeExposureMultipliers, capexOverlay.bySymbol) : resizeExposureMultipliers),
-    [resizeExposureMultipliers, capexOverlay]
+    () => (capexOverlayApplied ? mergeExposureMultipliers(resizeExposureMultipliers, capexOverlay.bySymbol) : resizeExposureMultipliers),
+    [resizeExposureMultipliers, capexOverlay, capexOverlayApplied]
   );
 
   // Regime-driven equity-sector tilt (e.g. "All Weather With Equity
@@ -392,7 +403,7 @@ export default function PortfoliosPage() {
 
   // ── CRUD ─────────────────────────────────────────────────────────────────────
   function openNew() {
-    setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "", use_market_overlay: false });
+    setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "", use_market_overlay: false, use_capex_overlay: false });
     setFormError("");
     setEditingPortfolio("new");
   }
@@ -406,6 +417,7 @@ export default function PortfoliosPage() {
       rebalance_band_pct: pf.rebalance_band_pct ?? 5,
       strategy_framework: pf.strategy_framework ?? "",
       use_market_overlay: pf.use_market_overlay ?? false,
+      use_capex_overlay:  pf.use_capex_overlay ?? false,
     });
     setFormError("");
     setEditingPortfolio(pf);
@@ -425,6 +437,7 @@ export default function PortfoliosPage() {
       rebalance_band_pct: form.rebalance_band_pct === "" || form.rebalance_band_pct == null ? 5 : Number(form.rebalance_band_pct),
       strategy_framework: form.strategy_framework || null,
       use_market_overlay: Boolean(form.use_market_overlay),
+      use_capex_overlay:  Boolean(form.use_capex_overlay),
       updated_at:         new Date().toISOString(),
       // Turning regime-driven off releases manual control of target_allocations again;
       // turning it on (or switching regimes) resets tracking so the next daily cron
@@ -779,7 +792,7 @@ export default function PortfoliosPage() {
                   // resize cut on a non-equity bucket (KISS's GLDM) needs to
                   // avoid the market overlay looking like it wants the freed
                   // cash sold back into equity.
-                  const capexApplied = capexOverlay.applied && Object.keys(capexOverlay.bySymbol).length > 0;
+                  const capexApplied = capexOverlayApplied;
                   let rows = [];
                   if (pf.use_market_overlay) {
                     const rawTargets = pf.target_allocations || {};
@@ -968,7 +981,7 @@ export default function PortfoliosPage() {
                   // should look like, and — critically — turning the flag OFF
                   // doesn't change this table at all, so it has to be correct on
                   // its own regardless of the flag.
-                  const capexAppliedHere = capexOverlay.applied && Object.keys(capexOverlay.bySymbol).length > 0;
+                  const capexAppliedHere = capexOverlayApplied;
                   const portfolioActionsMultipliers = pf.use_market_overlay && latestMarketScore
                     ? combineAllOverlays(
                         resizeExposureMultipliers, capexOverlay.bySymbol,
@@ -1034,10 +1047,10 @@ export default function PortfoliosPage() {
                           <p className="text-[11px] text-paper-dim mb-3 leading-relaxed">
                             <a href="/ai-capex" className="text-brass-soft hover:text-brass">AI Capex overlay</a>
                             {" · "}<span className={meta.tone}>{meta.label}</span> (CCSI {Number(r0.ccsi).toFixed(2)})
-                            {" · "}{capexOverlay.applied ? "applied" : <span className="text-brass-soft">shadow — not applied</span>}
+                            {" · "}{capexOverlayApplied ? "applied" : <span className="text-brass-soft">off for this portfolio</span>}
                             {" · "}{cuts.length === 0
                               ? "no cuts to this portfolio's holdings"
-                              : `${capexOverlay.applied ? "cutting" : "would cut"} ${cuts.map((c) => `${c.symbol} ×${Number(c.exposure_multiplier).toFixed(2)}`).join(", ")}`}
+                              : `${capexOverlayApplied ? "cutting" : "would cut"} ${cuts.map((c) => `${c.symbol} ×${Number(c.exposure_multiplier).toFixed(2)}`).join(", ")}`}
                           </p>
                         );
                       })()}
@@ -1405,6 +1418,25 @@ export default function PortfoliosPage() {
                   multiplied by the latest daily exposure multiplier from the Market Conditions dashboard, and the
                   freed weight is added to cash. A recommendation only — never an order. Overlay validated on broad
                   U.S. and developed-market indexes; untested on concentrated sleeves.
+                </p>
+              </div>
+
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.use_capex_overlay}
+                    onChange={(e) => setForm((f) => ({ ...f, use_capex_overlay: e.target.checked }))}
+                  />
+                  <span className="label">AI Capex Cycle overlay</span>
+                </label>
+                <p className="text-[10px] text-paper-dim/60 mt-1">
+                  Per-portfolio, independent of the site-wide shadow-mode setting on{" "}
+                  <a href="/ai-capex" className="text-brass-soft hover:text-brass">/ai-capex</a> — turning this on
+                  applies that overlay's per-symbol cuts to THIS portfolio's own Portfolio Actions and Market
+                  Conditions Overlay math regardless of whether it's globally applied yet. Downside-only (never
+                  raises a target above its base) and combines multiplicatively with the resize overlay, same as
+                  everywhere else it's used.
                 </p>
               </div>
 

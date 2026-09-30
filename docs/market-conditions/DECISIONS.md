@@ -1,5 +1,38 @@
 # Market Conditions Overlay — decisions log
 
+## Per-portfolio AI Capex Cycle overlay toggle (2026-09-30)
+
+New `portfolios.use_capex_overlay` boolean (default false), mirroring
+`use_market_overlay`'s precedent exactly. Previously, whether capex applied
+to ANY portfolio's math was governed entirely by the global
+`capex_model_config.shadow_mode` kill switch — a single system-wide setting,
+not something a user could control per portfolio. That flag now becomes the
+per-portfolio decision: `capexOverlayApplied = pf.use_capex_overlay &&
+capex has readings`, independent of the global shadow-mode value. A
+portfolio that opts in gets capex's per-symbol cuts applied to its own
+Portfolio Actions and Market Conditions Overlay math right away, without
+waiting on (or needing) the system-wide switch to flip.
+
+Also widened the `capex_overlay_symbol_multipliers` fetch condition: it now
+fires whenever `use_capex_overlay` is on, not just for `resize_overlay`/
+`regime_driven` framework portfolios (though Portfolio Actions itself still
+only renders for those two frameworks — a portfolio outside them that
+opts in gets the data fetched but currently has nowhere to display it,
+matching the existing framework-gating on that block, not something this
+change tries to fix).
+
+Settings UI: new checkbox next to the Market Conditions overlay one, same
+independent-of-Strategy-Framework framing. Status line on Portfolio Actions
+now reads "applied"/"off for this portfolio" per this flag, not the old
+"applied"/"shadow — not applied" global framing.
+
+Not a math change -- `combineAllOverlays`/`mergeExposureMultipliers`
+themselves are untouched; this only changes what gates them. 250/250 tests
+still passing (no new test needed — the gating logic is a boolean AND with
+no new arithmetic), `next build` clean. Verified against the live
+`portfolios` table: the new column defaults to `false`, KISS is
+unaffected until it opts in.
+
 ## Scheduled-run verification, 2026-09-29 (2026-09-30)
 
 Follow-up to the Phase 3+6 production-merge check — confirming the first
