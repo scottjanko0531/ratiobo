@@ -1,5 +1,28 @@
 # Market Conditions Overlay — decisions log
 
+## Scheduled-run verification, 2026-09-29 (2026-09-30)
+
+Follow-up to the Phase 3+6 production-merge check — confirming the first
+full nightly cycle after both merges landed. Baseline before this check:
+`mc_job_runs`' latest `ok` rows were dated 2026-09-28 (started_at
+~22:30:01/22:40:02 UTC); `mc_signal_log_live`'s latest row was
+`date=2026-09-28`.
+
+**mc_job_runs**, `started_at` in the 2026-09-29 22:25–22:45 UTC window:
+
+| job_name | status | started_at | finished_at |
+|---|---|---|---|
+| market-conditions-ingest | **ok** | 22:30:02.357 | 22:30:11.189 |
+| market-conditions-compute | **ok** | 22:40:01.882 | 22:40:11.427 |
+
+**mc_signal_log_live**, `date = '2026-09-29'`: row exists — tier `FULL`,
+`exposure_multiplier 1`, `computed_at = 2026-09-29 22:40:04.165 UTC` —
+squarely inside the ingest/compute window, i.e. written by tonight's cron
+run itself, not a later backfill.
+
+**Both checks PASS.** The pipeline is running cleanly end-to-end on its own
+schedule following the Phase 3+6 merge and the two KISS overlay fixes.
+
 ## Bug: Portfolio Actions never reflected the Market Conditions overlay, and hid small deltas behind "Hold" (2026-09-29)
 
 Follow-up report, KISS with `use_market_overlay` turned OFF: the pre-existing
