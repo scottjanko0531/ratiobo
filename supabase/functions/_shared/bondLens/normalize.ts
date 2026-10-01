@@ -50,27 +50,40 @@ export function rollingZScoreAt(
   return { z: clip((x - mean(window)) / sd, -cfg.clipZ, cfg.clipZ), excluded: false };
 }
 
-// Carries the last available value in `rows` forward onto `dates`, up to
-// `maxCarryDays` TRADING-DAY positions in `dates` (not calendar days) when
-// a date has no exact match. Simpler than Market Conditions'
-// alignWithForwardFill: bond_raw_series has no published_at column (every
-// FRED/NY Fed series here publishes same-day, r-star excepted -- see
-// lagDaysThenAlign below), so there's no separate no-lookahead check to
-// apply beyond the carry-forward cap itself.
+// Carries the last available value in `rows` forward onto `dates`, as of
+// each target date, capped at `maxCarryDays` CALENDAR days of staleness.
+//
+// Earlier version matched by looking up `dates[i - back]` in a Map keyed
+// by the source rows' own dates -- works for same-day series (every
+// FRED/NY Fed daily series here) where the source date is guaranteed to
+// appear verbatim in the target trading calendar, but silently breaks for
+// MONTHLY series (PCEPILFE, EXPINF1YR) and r-star's quarter-start dates:
+// those are frequently weekends/holidays (e.g. 2026-08-01 is a Saturday)
+// that never appear in a trading-day calendar at ANY position, so no
+// `back` value could ever find them -- confirmed as the actual cause of
+// inflTrend/quadrant/breakeven_gap_bp going excluded on live dates despite
+// a generous cap. Binary search for the latest source row with
+// `date <= target`, then gate on the CALENDAR-day gap between that row's
+// own date and the target -- correct regardless of whether either date is
+// a trading day.
 export function alignForwardFill(dates: string[], rows: { date: string; value: number }[], maxCarryDays: number): (number | null)[] {
-  const byDate = new Map(rows.map((r) => [r.date, r.value]));
+  const sorted = [...rows].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const out: (number | null)[] = [];
-  for (let i = 0; i < dates.length; i++) {
-    let found: number | null = null;
-    for (let back = 0; back <= maxCarryDays; back++) {
-      const idx = i - back;
-      if (idx < 0) break;
-      const v = byDate.get(dates[idx]);
-      if (v != null) { found = v; break; }
+  for (const target of dates) {
+    let lo = 0, hi = sorted.length - 1, ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid].date <= target) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
     }
-    out.push(found);
+    if (ans < 0) { out.push(null); continue; }
+    const row = sorted[ans];
+    out.push(calendarDaysBetween(row.date, target) <= maxCarryDays ? row.value : null);
   }
   return out;
+}
+
+function calendarDaysBetween(a: string, b: string): number {
+  return Math.round((new Date(b + "T00:00:00Z").getTime() - new Date(a + "T00:00:00Z").getTime()) / 86400000);
 }
 
 // §3.2's one-quarter publication lag for HLW r-star: a row's calendar

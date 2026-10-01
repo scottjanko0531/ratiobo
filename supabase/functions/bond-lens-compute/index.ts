@@ -52,18 +52,20 @@ async function fetchAllRaw(supabase: ReturnType<typeof createClient>, seriesId: 
   return rows;
 }
 
-const DAILY_CAP = 5; // forward-fill cap for same-day FRED series around weekends/holidays
-// PCEPILFE/EXPINF1YR -- monthly, bridge the gap on a daily calendar. 35
-// (one month of trading days) was too tight: PCE's own real-world release
-// lag (~4 weeks after month-end) plus the gap until the NEXT month's
-// release can exceed 40 trading days right before a new print lands --
-// confirmed empirically (PCEPILFE's latest obs sat 41 trading days behind
-// DGS10's, spuriously excluding inflTrend/quadrant on the most recent
-// date). 50 gives a safety margin without being so loose it masks a
-// genuinely broken feed.
-const MONTHLY_CAP = 50;
-const GDPNOW_CAP = 10; // irregular intra-quarter updates
-const ACM_STALE_CAP = 10; // bond-lens-decisions.md's explicit "more than 10 business days old" threshold
+// alignForwardFill's `maxCarryDays` is now CALENDAR days (normalize.ts
+// was rewritten after the original trading-day-position version silently
+// broke on monthly/quarterly series whose dates don't land on actual
+// trading days -- e.g. PCEPILFE's "2026-08-01" is a Saturday, never
+// present in DGS10's calendar at any position, so it could never be
+// found regardless of cap size -- the real cause of inflTrend/quadrant/
+// breakeven_gap_bp going excluded on live dates despite a generous cap).
+const DAILY_CAP = 7; // same-day FRED series, a bit over a week to bridge any holiday cluster
+const MONTHLY_CAP = 60; // PCEPILFE/EXPINF1YR: ~4-week release lag + up to a month until the next print
+const GDPNOW_CAP = 14; // irregular intra-quarter updates, rarely more than ~2 weeks apart
+// bond-lens-decisions.md's explicit "more than 10 BUSINESS days old" ACM
+// threshold, converted to calendar days (10 business days spans 2
+// weekends) since this cap is now calendar-day based.
+const ACM_STALE_CAP = 14;
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: CORS });

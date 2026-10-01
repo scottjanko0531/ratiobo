@@ -71,7 +71,10 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
   const n = dates.length;
 
   const carryHistory = computeCarryHistory(inputs as unknown as CarryHistoryInputs, cfg);
-  const rstarLagged = lagDaysThenAlign(dates, inputs.rstar, cfg.rstarLagDays, 95);
+  // 100 calendar days bridges one full quarter (~91-92 days) between
+  // r-star releases with margin -- normalize.ts's alignForwardFill cap is
+  // now calendar days, not trading-day positions (see its own comment).
+  const rstarLagged = lagDaysThenAlign(dates, inputs.rstar, cfg.rstarLagDays, 100);
   const spyReturns = dailyReturns(inputs.spy);
   const iefReturns = dailyReturns(inputs.ief);
   const weekEnds = weekEndIndices(dates);
