@@ -4,16 +4,23 @@ import { rollingZScoreAt, ZScoreResult } from "./normalize.ts";
 import { ModuleResult } from "./types.ts";
 import { BOND_LENS_CONFIG } from "./config.ts";
 
+// Builds the DFII10-minus-rstar gap series once -- callers walking a full
+// history must compute this ONCE outside their per-day loop and pass the
+// result to realYieldGapScore below, not rebuild it every call (an O(n)
+// rebuild inside an O(n)-day walk was an O(n^2) bug over a ~16k-row
+// history, caught before this ever ran against real data).
+export function dfii10MinusRstarGap(dfii10: (number | null)[], rstarLagged: (number | null)[]): (number | null)[] {
+  return dfii10.map((y, i) => (y != null && rstarLagged[i] != null ? y - (rstarLagged[i] as number) : null));
+}
+
 // Real yield gap: average of z-score(DFII10 - rstar_lagged) and
 // z-score(DFII10 against its own rolling history) -- spec §4.3: "Real
 // yield gap: DFII10 - rstar_HLW (lagged), plus DFII10 vs. its rolling
-// 10-year mean. The score is the average of the two z-scores." rstar is
-// expected to already be lag-aligned by the caller (normalize.ts's
-// lagDaysThenAlign) before this function sees it.
+// 10-year mean. The score is the average of the two z-scores." `gapSeries`
+// is dfii10MinusRstarGap's output, computed once by the caller.
 export function realYieldGapScore(
-  dfii10: (number | null)[], rstarLagged: (number | null)[], t: number, cfg = BOND_LENS_CONFIG,
+  dfii10: (number | null)[], gapSeries: (number | null)[], t: number, cfg = BOND_LENS_CONFIG,
 ): ModuleResult<{ gap: number | null; dfii10: number | null }> {
-  const gapSeries = dfii10.map((y, i) => (y != null && rstarLagged[i] != null ? y - (rstarLagged[i] as number) : null));
   const gapZ = rollingZScoreAt(gapSeries, t, cfg);
   const levelZ = rollingZScoreAt(dfii10, t, cfg);
   if (gapZ.excluded || levelZ.excluded) {
@@ -30,6 +37,13 @@ export interface TermPremiumResult {
   degraded: boolean; // true when ACM was stale and THREEFYTP10 was substituted
 }
 
+// Splices ACM with its fallback once -- same O(n^2)-avoidance reason as
+// dfii10MinusRstarGap above; callers walking a full history compute this
+// ONCE outside their per-day loop.
+export function spliceAcmWithFallback(acmFF: (number | null)[], fallbackFF: (number | null)[]): (number | null)[] {
+  return acmFF.map((v, i) => v ?? fallbackFF[i]);
+}
+
 // `acmFF`/`fallbackFF` must already be forward-filled onto the shared
 // trading calendar by the caller, with `acmFF` capped at exactly the
 // staleness threshold (10 business days -- bond-lens-decisions.md's ACM
@@ -38,19 +52,18 @@ export interface TermPremiumResult {
 // degraded flag"). Forward-filling is itself how "more than N days old"
 // becomes a null at index t (see normalize.ts's alignForwardFill), so
 // that threshold is enforced by the CALLER's forward-fill cap, not
-// re-checked here.
+// re-checked here. `spliced` is spliceAcmWithFallback's output.
 //
 // "z-scored on its own history" (the spliced series, not ACM alone) is
 // exactly what z-scoring `spliced` below gives: every point before the
 // first substitution still reads as ACM's own z-score (spliced == acmFF
 // there), and once substitution starts, the rolling window naturally
 // blends in THREEFYTP10 history too.
-export function termPremiumScore(acmFF: (number | null)[], fallbackFF: (number | null)[], t: number, cfg = BOND_LENS_CONFIG): TermPremiumResult {
-  const spliced: (number | null)[] = acmFF.map((v, i) => v ?? fallbackFF[i]);
+export function termPremiumScore(acmFF: (number | null)[], spliced: (number | null)[], t: number, cfg = BOND_LENS_CONFIG): TermPremiumResult {
   const z = rollingZScoreAt(spliced, t, cfg);
   const value = spliced[t];
   const source: TermPremiumResult["source"] = value == null ? null : acmFF[t] != null ? "acm" : "threefytp10";
-  return { value, source, score: z.z, excluded: z.excluded, degraded: acmFF[t] == null && fallbackFF[t] != null };
+  return { value, source, score: z.z, excluded: z.excluded, degraded: acmFF[t] == null && spliced[t] != null };
 }
 
 // Breakeven gap (basis points): inflation_view - T5YIFR, where
@@ -77,12 +90,12 @@ export interface ValuationScoreResult {
 }
 
 export function valuationScore(
-  dfii10: (number | null)[], rstarLagged: (number | null)[], acmFF: (number | null)[], fallbackFF: (number | null)[],
+  dfii10: (number | null)[], gapSeries: (number | null)[], acmFF: (number | null)[], splicedTermPremium: (number | null)[],
   corePce12mo: number | null, expInf1yr: number | null, t5yifr: number | null,
   t: number, cfg = BOND_LENS_CONFIG,
 ): ValuationScoreResult {
-  const ryg = realYieldGapScore(dfii10, rstarLagged, t, cfg);
-  const tp = termPremiumScore(acmFF, fallbackFF, t, cfg);
+  const ryg = realYieldGapScore(dfii10, gapSeries, t, cfg);
+  const tp = termPremiumScore(acmFF, splicedTermPremium, t, cfg);
   const be = breakevenGapBp(corePce12mo, expInf1yr, t5yifr);
   const excluded = ryg.excluded || tp.excluded;
   return {

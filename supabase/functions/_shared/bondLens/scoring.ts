@@ -7,7 +7,7 @@ import { BOND_LENS_CONFIG } from "./config.ts";
 import { lagDaysThenAlign, indexDaysAgo } from "./normalize.ts";
 import { computeCarryHistory, CarryHistoryInputs } from "./carry.ts";
 import { pricedHikes, inflTrend, growthMom, growthMomFallback, pathScore, GrowthMomResult } from "./path.ts";
-import { valuationScore } from "./valuation.ts";
+import { valuationScore, dfii10MinusRstarGap, spliceAcmWithFallback } from "./valuation.ts";
 import { inflationAxis, classifyQuadrant, dailyReturns, hedgeCorrelation, stepHedgeReliable, HedgeState } from "./quadrant.ts";
 import { timeSeriesMomentum, priceVsSma, trendFilter } from "./trend.ts";
 import { curveRegimeRaw, classifyCurveCandidate, stepCurveRegime, CurveRegimeState } from "./curveRegime.ts";
@@ -76,6 +76,12 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
   const iefReturns = dailyReturns(inputs.ief);
   const weekEnds = weekEndIndices(dates);
 
+  // Precomputed ONCE for the whole history -- see valuation.ts's own
+  // comment on why rebuilding either of these inside the per-day loop
+  // (an O(n) rebuild called n times) would be an O(n^2) bug.
+  const realYieldGapSeries = dfii10MinusRstarGap(inputs.dfii10, rstarLagged);
+  const splicedTermPremium = spliceAcmWithFallback(inputs.acm, inputs.threefytp10);
+
   let hedgeState: HedgeState = { hedgeReliable: true, streak: 0 };
   let curveState: CurveRegimeState = { confirmed: null, candidate: null, candidateStreak: 0, regimeSince: null };
 
@@ -98,7 +104,7 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
 
     // §4.3
     const val = valuationScore(
-      inputs.dfii10, rstarLagged, inputs.acm, inputs.threefytp10,
+      inputs.dfii10, realYieldGapSeries, inputs.acm, splicedTermPremium,
       infl.excluded ? null : (infl.raw as { rate12mo: number | null }).rate12mo,
       inputs.expInf1yr[t], inputs.t5yifr[t], t, cfg,
     );
