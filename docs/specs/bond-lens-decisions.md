@@ -130,3 +130,24 @@ day-to-day for a specific use — options noted for that revisit: a
 lighter data source (NY Fed may expose a smaller feed; not yet checked)
 or moving just this parse to a higher-memory runtime (e.g. a Vercel API
 route called by pg_cron) rather than the edge function.
+
+## Phase A follow-up: GDPNow sourced from the Atlanta Fed directly (2026-10-01)
+
+FRED's `GDPNOW` series is quarterly-snapshot only (~61 rows), insufficient
+for spec §4.2's "8-week change in GDPNOW" formula, which needs the
+intraquarter nowcast revision history. The Atlanta Fed's own model-data
+spreadsheet (`GDPTrackingModelDataAndForecasts.xlsx`, found via
+atlantafed.org's own GDPNow data page, not FRED) has it: `TrackingArchives`
+(2014:Q2 onward) and `TrackingDeepArchives` (2011:Q3-2014:Q1), both with a
+"Forecast Date"/"GDP Nowcast" column pair giving one row per nowcast
+revision.
+
+Built as a fourth `bond-lens-ingest?source=gdpnow` path, series_id
+`GDPNOW_ATL_NOWCAST`. Despite the file being ~11MB (50+ sheets total),
+`sheets: [...]`-restricted parsing works here — confirmed only ~23MB to
+decode the two needed sheets — unlike ACM's legacy `.xls`, because this
+is modern OOXML (zip of per-sheet XML parts, so unneeded sheets are
+never decompressed at all). Tested standalone: 2,116 rows, 2011-08-25 to
+2026-07-28, zero gaps. Scheduled daily at 23:20 UTC weekdays
+(`20261001_schedule_bond_lens_gdpnow.sql`), after FRED/r-star in the same
+offset-from-Market-Conditions window.

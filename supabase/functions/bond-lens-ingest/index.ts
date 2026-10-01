@@ -179,6 +179,59 @@ async function fetchHlwRstar(): Promise<{ rows: RawRow[]; error?: string }> {
   return { rows };
 }
 
+// FRED's GDPNOW series is quarterly-snapshot only (~61 rows) -- the
+// Atlanta Fed's own file carries the full intraquarter nowcast revision
+// history spec 4.2 needs ("8-week change in GDPNOW"). Unlike ACM's
+// legacy .xls, this is modern OOXML (.xlsx) -- zip of per-sheet XML --
+// so `sheets` genuinely limits what gets decoded (confirmed locally:
+// ~23MB for both sheets below vs. ~363MB decoding ACM's single .xls
+// sheet), keeping this well inside the edge function's budget despite
+// the file being ~11MB on disk (50+ sheets total; only two are read).
+// TrackingDeepArchives covers 2011:Q3-2014:Q1 (pre-live-model), handed
+// off to TrackingArchives for 2014:Q2 onward -- both have a "Forecast
+// Date"/"GDP Nowcast" column pair at the same position, looked up by
+// header name (not hardcoded index) since this file is Atlanta Fed's
+// own working model export, not a stable published interface.
+async function fetchAtlFedGdpNow(): Promise<{ rows: RawRow[]; error?: string }> {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), 30000);
+  let res: Response;
+  try {
+    res = await fetch(
+      "https://www.atlantafed.org/-/media/Project/Atlanta/FRBA/Documents/research-and-data/data/gdpnow/GDPTrackingModelDataAndForecasts.xlsx",
+      { headers: { "User-Agent": "Mozilla/5.0 (compatible; ratiobo-bond-lens/1.0)" }, signal: ctrl.signal },
+    );
+  } catch (e) {
+    return { rows: [], error: `Atlanta Fed GDPNow: fetch error -- ${e instanceof Error ? e.message : String(e)}` };
+  } finally {
+    clearTimeout(tid);
+  }
+  if (!res.ok) return { rows: [], error: `Atlanta Fed GDPNow: HTTP ${res.status}` };
+  const buf = await res.arrayBuffer();
+  const sheetNames = ["TrackingDeepArchives", "TrackingArchives"];
+  const wb = XLSX.read(new Uint8Array(buf), { type: "array", sheets: sheetNames, dense: true });
+  const rows: RawRow[] = [];
+  for (const sheetName of sheetNames) {
+    const ws = wb.Sheets[sheetName];
+    if (!ws) return { rows: [], error: `Atlanta Fed GDPNow: "${sheetName}" sheet not found (sheets: ${wb.SheetNames.join(", ")})` };
+    const data = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: null });
+    const header = data[0] as string[];
+    const dateIdx = header.indexOf("Forecast Date");
+    const valIdx = header.indexOf("GDP Nowcast");
+    if (dateIdx < 0 || valIdx < 0) {
+      return { rows: [], error: `Atlanta Fed GDPNow: expected columns "Forecast Date"/"GDP Nowcast" not found in ${sheetName} (got: ${header.join(", ")})` };
+    }
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i] as unknown[];
+      const rawDate = row[dateIdx];
+      const rawVal = row[valIdx];
+      if (typeof rawDate !== "number" || typeof rawVal !== "number") continue;
+      rows.push({ series_id: "GDPNOW_ATL_NOWCAST", obs_date: excelSerialToDate(rawDate), value: rawVal, source: "atlantafed_gdpnow" });
+    }
+  }
+  return { rows };
+}
+
 // Running all three source types (20 FRED series in parallel + a ~10MB
 // ACM XLS parse + an HLW XLSX parse) in one invocation hit
 // WORKER_RESOURCE_LIMIT -- same class of issue as market-conditions-
@@ -193,8 +246,8 @@ Deno.serve(async (req: Request) => {
   const startedAt = new Date().toISOString();
   const url = new URL(req.url);
   const source = url.searchParams.get("source") ?? "all";
-  if (!["fred", "acm", "rstar", "all"].includes(source)) {
-    return new Response(JSON.stringify({ error: `unknown source ${source}, expected fred|acm|rstar|all` }), { status: 400, headers: CORS });
+  if (!["fred", "acm", "rstar", "gdpnow", "all"].includes(source)) {
+    return new Response(JSON.stringify({ error: `unknown source ${source}, expected fred|acm|rstar|gdpnow|all` }), { status: 400, headers: CORS });
   }
 
   const results: Record<string, unknown> = {};
@@ -237,6 +290,16 @@ Deno.serve(async (req: Request) => {
         results["RSTAR_HLW_US"] = { ok: true, rowCount: rstar.rows.length, from: rstar.rows[0]?.obs_date, to: rstar.rows[rstar.rows.length - 1]?.obs_date };
         totalRows += rstar.rows.length;
         await upsertRows(supabase, rstar.rows);
+      }
+    }
+
+    if (source === "gdpnow" || source === "all") {
+      const gdpnow = await fetchAtlFedGdpNow();
+      if (gdpnow.error) { gaps.push(gdpnow.error); results["GDPNOW_ATL_NOWCAST"] = { ok: false, error: gdpnow.error }; }
+      else {
+        results["GDPNOW_ATL_NOWCAST"] = { ok: true, rowCount: gdpnow.rows.length, from: gdpnow.rows[0]?.obs_date, to: gdpnow.rows[gdpnow.rows.length - 1]?.obs_date };
+        totalRows += gdpnow.rows.length;
+        await upsertRows(supabase, gdpnow.rows);
       }
     }
 
