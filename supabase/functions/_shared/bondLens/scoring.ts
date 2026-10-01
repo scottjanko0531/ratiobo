@@ -81,6 +81,8 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
   // (an O(n) rebuild called n times) would be an O(n^2) bug.
   const realYieldGapSeries = dfii10MinusRstarGap(inputs.dfii10, rstarLagged);
   const splicedTermPremium = spliceAcmWithFallback(inputs.acm, inputs.threefytp10);
+  // Pre-2011 growth_mom fallback's own input (§4.2) -- same once-only reasoning.
+  const slope10y2y = inputs.dgs10.map((y, i) => (y != null && inputs.dgs2[i] != null ? y - (inputs.dgs2[i] as number) : null));
 
   let hedgeState: HedgeState = { hedgeReliable: true, streak: 0 };
   let curveState: CurveRegimeState = { confirmed: null, candidate: null, candidateStreak: 0, regimeSince: null };
@@ -94,7 +96,6 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
     const inflSign = infl.score == null ? null : infl.score > 0 ? 1 : infl.score < 0 ? -1 : 0;
     let gm: GrowthMomResult;
     if (dates[t] < "2011-01-01") {
-      const slope10y2y = inputs.dgs10.map((y, i) => (y != null && inputs.dgs2[i] != null ? y - (inputs.dgs2[i] as number) : null));
       gm = growthMomFallback(dates, inputs.t5yie, slope10y2y, dates, t);
     } else {
       gm = growthMom(dates, inputs.gdpnow, inputs.gdpnowQuarter, t, cfg.path.lookbackDays);
