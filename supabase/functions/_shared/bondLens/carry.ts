@@ -67,45 +67,49 @@ export interface CarryHistoryInputs {
 }
 
 export interface CarryDayResult {
-  byMaturity: Record<2 | 5 | 7 | 10, CarryRolldownResult>;
   carryScore: ZScoreResult;
 }
 
+// Builds every tenor's knots for one day -- factored out so
+// computeCarryHistory (only needs n=10, for carry_score) and a future
+// "per-maturity table for the latest day" API (spec §4.1's "Output: a
+// per-maturity table", n=2/5/7/10, not wired into bond_signals -- that
+// table has nowhere to land in its schema, only carry_score does) can
+// share it without computeCarryHistory paying for maturities it
+// never uses.
+export function curveKnotsAt(inputs: CarryHistoryInputs, t: number): CurveKnot[] {
+  const toDecimal = (pct: number | null) => (pct == null ? null : pct / 100);
+  return [
+    [0.25, toDecimal(inputs.dgs3mo[t])],
+    [1, toDecimal(inputs.dgs1[t])],
+    [2, toDecimal(inputs.dgs2[t])],
+    [3, toDecimal(inputs.dgs3[t])],
+    [5, toDecimal(inputs.dgs5[t])],
+    [7, toDecimal(inputs.dgs7[t])],
+    [10, toDecimal(inputs.dgs10[t])],
+    [30, toDecimal(inputs.dgs30[t])],
+  ];
+}
+
 // All yields in `inputs` are PERCENT (FRED convention, e.g. 4.5 for 4.5%),
-// converted to decimal here since modifiedDuration's formula needs
-// y/2 etc. in decimal terms.
+// converted to decimal via curveKnotsAt since modifiedDuration's formula
+// needs y/2 etc. in decimal terms. Only computes the n=10 leg -- the only
+// one carry_score (the sole §4.1 output bond_signals actually stores)
+// needs; computing and retaining 2/5/7 too for every one of ~16k days,
+// never consumed downstream, was real GC pressure worth cutting.
 export function computeCarryHistory(inputs: CarryHistoryInputs, cfg = BOND_LENS_CONFIG): CarryDayResult[] {
   const n = inputs.dates.length;
   const toDecimal = (pct: number | null) => (pct == null ? null : pct / 100);
-
-  const perDay: { byMaturity: Record<2 | 5 | 7 | 10, CarryRolldownResult> }[] = [];
   const cr10MinusBill: (number | null)[] = new Array(n).fill(null);
 
   for (let t = 0; t < n; t++) {
-    const knots: CurveKnot[] = [
-      [0.25, toDecimal(inputs.dgs3mo[t])],
-      [1, toDecimal(inputs.dgs1[t])],
-      [2, toDecimal(inputs.dgs2[t])],
-      [3, toDecimal(inputs.dgs3[t])],
-      [5, toDecimal(inputs.dgs5[t])],
-      [7, toDecimal(inputs.dgs7[t])],
-      [10, toDecimal(inputs.dgs10[t])],
-      [30, toDecimal(inputs.dgs30[t])],
-    ];
-    const byMaturity = {
-      2: carryAndRolldown(knots, 2),
-      5: carryAndRolldown(knots, 5),
-      7: carryAndRolldown(knots, 7),
-      10: carryAndRolldown(knots, 10),
-    } as Record<2 | 5 | 7 | 10, CarryRolldownResult>;
-    perDay.push({ byMaturity });
-
+    const knots = curveKnotsAt(inputs, t);
+    const cr10 = carryAndRolldown(knots, 10);
     const bill = toDecimal(inputs.dgs3mo[t]);
-    if (byMaturity[10].CR != null && bill != null) cr10MinusBill[t] = byMaturity[10].CR - bill;
+    if (cr10.CR != null && bill != null) cr10MinusBill[t] = cr10.CR - bill;
   }
 
-  return perDay.map((d, t) => ({
-    byMaturity: d.byMaturity,
-    carryScore: rollingZScoreAt(cr10MinusBill, t, cfg),
-  }));
+  const out: CarryDayResult[] = new Array(n);
+  for (let t = 0; t < n; t++) out[t] = { carryScore: rollingZScoreAt(cr10MinusBill, t, cfg) };
+  return out;
 }

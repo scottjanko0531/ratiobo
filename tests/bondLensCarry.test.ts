@@ -66,6 +66,6 @@ describe("computeCarryHistory", () => {
     const history = computeCarryHistory(inputs);
     expect(history[500].carryScore.excluded).toBe(true);
     expect(history[799].carryScore.excluded).toBe(false);
-    expect(history[799].byMaturity[10].CR).not.toBeNull();
+    expect(history[799].carryScore.z).not.toBeNull();
   });
 });
