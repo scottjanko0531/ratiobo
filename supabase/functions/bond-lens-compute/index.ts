@@ -82,7 +82,7 @@ Deno.serve(async (req: Request) => {
       "ACMTP10", "THREEFYTP10", "RSTAR_HLW_US", "PCEPILFE", "EXPINF1YR", "GDPNOW_ATL_NOWCAST",
     ];
     const rawResults: Record<string, { date: string; value: number; target_quarter?: string | null }[]> = {};
-    const BATCH = 5;
+    const BATCH = 3; // reduced from 5 -- WORKER_RESOURCE_LIMIT kept firing even after the algorithmic fixes above
     for (let i = 0; i < rawSeriesIds.length; i += BATCH) {
       const batch = rawSeriesIds.slice(i, i + BATCH);
       const batchData = await Promise.all(batch.map((id) => fetchAllRaw(supabase, id)));
@@ -145,7 +145,13 @@ Deno.serve(async (req: Request) => {
     };
 
     const rows = computeBondLensHistory(inputs, BOND_LENS_CONFIG);
-    const dbRows = rows.map((r) => ({ ...r, flags: r.flags, computed_at: new Date().toISOString() }));
+    // Mutate in place rather than rows.map(...) -- cloning all ~16k row
+    // objects into a second parallel array just to add computed_at was
+    // real, avoidable peak memory on top of an already resource-
+    // constrained run.
+    const computedAt = new Date().toISOString();
+    for (const r of rows) (r as unknown as { computed_at: string }).computed_at = computedAt;
+    const dbRows = rows;
 
     const chunkSize = 500;
     for (let i = 0; i < dbRows.length; i += chunkSize) {
