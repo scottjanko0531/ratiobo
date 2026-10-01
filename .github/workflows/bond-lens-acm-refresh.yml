@@ -1,0 +1,29 @@
+name: Bond Lens — ACM term premium refresh
+
+# bond-lens-ingest's ?source=acm hits WORKER_RESOURCE_LIMIT on every run
+# (the .xls decode alone costs ~363MB of heap, confirmed empirically --
+# see docs/specs/bond-lens-decisions.md's 2026-10-01 follow-up). Moved
+# here where pandas/xlrd have a full runner's memory to work with.
+#
+# Scheduled to land before the Friday weekly composite (Phase C) picks
+# up ACM for the valuation module (spec §4.3) -- 21:00 UTC Friday, ahead
+# of Bond Lens's own daily ingest jobs (22:50/23:10/23:20 UTC) and the
+# composite itself. Revisit this time once the composite's own schedule
+# is set in Phase C.
+on:
+  schedule:
+    - cron: "0 21 * * 5"
+  workflow_dispatch: {}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r scripts/requirements-bond-lens-acm.txt
+      - run: python scripts/bond_lens_acm_refresh.py
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
