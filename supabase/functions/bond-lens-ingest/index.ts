@@ -54,7 +54,32 @@ const FRED_SERIES: { id: string; label: string }[] = [
   { id: "EXPINF1YR", label: "Cleveland Fed 1-year expected inflation" },
 ];
 
-type RawRow = { series_id: string; obs_date: string; value: number; source: string };
+type RawRow = { series_id: string; obs_date: string; value: number; source: string; target_quarter?: string };
+
+// GDPNow's CurrentQtrEvolution rows interleave across column-blocks in
+// push order (see fetchAtlFedGdpNow), so the array's first/last element
+// isn't reliably the earliest/latest obs_date -- compute it properly
+// for the job-run summary rather than trust insertion order.
+function dateRange(rows: RawRow[]): { from?: string; to?: string } {
+  if (rows.length === 0) return {};
+  let from = rows[0].obs_date, to = rows[0].obs_date;
+  for (const r of rows) {
+    if (r.obs_date < from) from = r.obs_date;
+    if (r.obs_date > to) to = r.obs_date;
+  }
+  return { from, to };
+}
+
+// Excel serial date -> "YYYYQN", using the date's month to pick the
+// calendar quarter (Jan/Apr/Jul/Oct starts). Used for GDPNow's
+// "Quarter being forecasted" column, which is always the 1st of a
+// quarter, so this is exact, not an approximation.
+function serialToQuarter(serial: number): string {
+  const d = new Date(Math.round((serial - 25569) * 86400 * 1000));
+  const y = d.getUTCFullYear();
+  const q = Math.floor(d.getUTCMonth() / 3) + 1;
+  return `${y}Q${q}`;
+}
 
 async function fetchFredSeries(seriesId: string): Promise<{ rows: RawRow[]; error?: string }> {
   // 100000 is FRED's documented max per-request limit -- every series
@@ -208,16 +233,18 @@ async function fetchAtlFedGdpNow(): Promise<{ rows: RawRow[]; error?: string }> 
   }
   if (!res.ok) return { rows: [], error: `Atlanta Fed GDPNow: HTTP ${res.status}` };
   const buf = await res.arrayBuffer();
-  const sheetNames = ["TrackingDeepArchives", "TrackingArchives"];
-  const wb = XLSX.read(new Uint8Array(buf), { type: "array", sheets: sheetNames, dense: true });
+  const archiveSheets = ["TrackingDeepArchives", "TrackingArchives"];
+  const wb = XLSX.read(new Uint8Array(buf), { type: "array", sheets: [...archiveSheets, "CurrentQtrEvolution"], dense: true });
   const rows: RawRow[] = [];
-  for (const sheetName of sheetNames) {
+
+  for (const sheetName of archiveSheets) {
     const ws = wb.Sheets[sheetName];
     if (!ws) return { rows: [], error: `Atlanta Fed GDPNow: "${sheetName}" sheet not found (sheets: ${wb.SheetNames.join(", ")})` };
     const data = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: null });
     const header = data[0] as string[];
     const dateIdx = header.indexOf("Forecast Date");
     const valIdx = header.indexOf("GDP Nowcast");
+    const qtrIdx = header.indexOf("Quarter being forecasted");
     if (dateIdx < 0 || valIdx < 0) {
       return { rows: [], error: `Atlanta Fed GDPNow: expected columns "Forecast Date"/"GDP Nowcast" not found in ${sheetName} (got: ${header.join(", ")})` };
     }
@@ -226,7 +253,65 @@ async function fetchAtlFedGdpNow(): Promise<{ rows: RawRow[]; error?: string }> 
       const rawDate = row[dateIdx];
       const rawVal = row[valIdx];
       if (typeof rawDate !== "number" || typeof rawVal !== "number") continue;
-      rows.push({ series_id: "GDPNOW_ATL_NOWCAST", obs_date: excelSerialToDate(rawDate), value: rawVal, source: "atlantafed_gdpnow" });
+      const rawQtr = qtrIdx >= 0 ? row[qtrIdx] : null;
+      rows.push({
+        series_id: "GDPNOW_ATL_NOWCAST",
+        obs_date: excelSerialToDate(rawDate),
+        value: rawVal,
+        source: "atlantafed_gdpnow",
+        target_quarter: typeof rawQtr === "number" ? serialToQuarter(rawQtr) : undefined,
+      });
+    }
+  }
+
+  // CurrentQtrEvolution tracks the live, still-open quarter -- the one
+  // TrackingArchives doesn't have yet (it only gets a quarter's block
+  // once that quarter's BEA advance estimate ships and the sequence is
+  // closed out). Laid out as repeating (Date, Major Releases, GDP*)
+  // column triples that WRAP into a new triple every ~12-13 rows rather
+  // than growing one column indefinitely -- confirmed by hand against
+  // the live file 2026-10-01 (block 1: Jul 30-Aug 25, block 2: Aug 26-
+  // Sep 25, block 3: Sep 30-Oct 1, all one continuous Q3 2026 sequence).
+  // Detect however many triples exist generically rather than assuming 3.
+  const curWs = wb.Sheets["CurrentQtrEvolution"];
+  if (!curWs) return { rows: [], error: `Atlanta Fed GDPNow: "CurrentQtrEvolution" sheet not found (sheets: ${wb.SheetNames.join(", ")})` };
+  const curData = XLSX.utils.sheet_to_json<unknown[]>(curWs, { header: 1, defval: null });
+  const curHeader = (curData[0] ?? []) as unknown[];
+  const blockCols: number[] = [];
+  for (let c = 0; c < curHeader.length; c += 3) {
+    if (curHeader[c] === "Date" && curHeader[c + 2] === "GDP*") blockCols.push(c);
+  }
+  if (blockCols.length === 0) {
+    return { rows: [], error: `Atlanta Fed GDPNow: no (Date, Major Releases, GDP*) triples found in CurrentQtrEvolution header` };
+  }
+  // The live quarter's own label ("Initial GDPNow 26:Q3 forecast") only
+  // appears once, on the first row of block 1 -- every row in every
+  // block of this sheet is that same quarter, so find it once and apply
+  // to all. Null (not inferred) if the label text ever changes shape --
+  // Phase B treats a missing target_quarter as "can't do a within-
+  // quarter comparison," not as a wrong guess.
+  let currentTargetQuarter: string | undefined;
+  for (const row of curData) {
+    for (const col of blockCols) {
+      const label = (row as unknown[])[col + 1];
+      const m = typeof label === "string" ? /Initial GDPNow (\d{2}):Q(\d)/.exec(label) : null;
+      if (m) { currentTargetQuarter = `20${m[1]}Q${m[2]}`; break; }
+    }
+    if (currentTargetQuarter) break;
+  }
+  for (let i = 1; i < curData.length; i++) {
+    const row = curData[i] as unknown[];
+    for (const col of blockCols) {
+      const rawDate = row[col];
+      const rawVal = row[col + 2];
+      if (typeof rawDate !== "number" || typeof rawVal !== "number") continue;
+      rows.push({
+        series_id: "GDPNOW_ATL_NOWCAST",
+        obs_date: excelSerialToDate(rawDate),
+        value: rawVal,
+        source: "atlantafed_gdpnow",
+        target_quarter: currentTargetQuarter,
+      });
     }
   }
   return { rows };
@@ -266,7 +351,7 @@ Deno.serve(async (req: Request) => {
           const s = batch[j];
           const { rows, error } = batchResults[j];
           if (error) { gaps.push(error); results[s.id] = { ok: false, error }; continue; }
-          results[s.id] = { ok: true, rowCount: rows.length, from: rows[0]?.obs_date, to: rows[rows.length - 1]?.obs_date };
+          results[s.id] = { ok: true, rowCount: rows.length, ...dateRange(rows) };
           totalRows += rows.length;
           await upsertRows(supabase, rows);
         }
@@ -277,7 +362,7 @@ Deno.serve(async (req: Request) => {
       const acm = await fetchAcmTermPremium();
       if (acm.error) { gaps.push(acm.error); results["ACMTP10"] = { ok: false, error: acm.error }; }
       else {
-        results["ACMTP10"] = { ok: true, rowCount: acm.rows.length, from: acm.rows[0]?.obs_date, to: acm.rows[acm.rows.length - 1]?.obs_date };
+        results["ACMTP10"] = { ok: true, rowCount: acm.rows.length, ...dateRange(acm.rows) };
         totalRows += acm.rows.length;
         await upsertRows(supabase, acm.rows);
       }
@@ -287,7 +372,7 @@ Deno.serve(async (req: Request) => {
       const rstar = await fetchHlwRstar();
       if (rstar.error) { gaps.push(rstar.error); results["RSTAR_HLW_US"] = { ok: false, error: rstar.error }; }
       else {
-        results["RSTAR_HLW_US"] = { ok: true, rowCount: rstar.rows.length, from: rstar.rows[0]?.obs_date, to: rstar.rows[rstar.rows.length - 1]?.obs_date };
+        results["RSTAR_HLW_US"] = { ok: true, rowCount: rstar.rows.length, ...dateRange(rstar.rows) };
         totalRows += rstar.rows.length;
         await upsertRows(supabase, rstar.rows);
       }
@@ -297,7 +382,7 @@ Deno.serve(async (req: Request) => {
       const gdpnow = await fetchAtlFedGdpNow();
       if (gdpnow.error) { gaps.push(gdpnow.error); results["GDPNOW_ATL_NOWCAST"] = { ok: false, error: gdpnow.error }; }
       else {
-        results["GDPNOW_ATL_NOWCAST"] = { ok: true, rowCount: gdpnow.rows.length, from: gdpnow.rows[0]?.obs_date, to: gdpnow.rows[gdpnow.rows.length - 1]?.obs_date };
+        results["GDPNOW_ATL_NOWCAST"] = { ok: true, rowCount: gdpnow.rows.length, ...dateRange(gdpnow.rows) };
         totalRows += gdpnow.rows.length;
         await upsertRows(supabase, gdpnow.rows);
       }

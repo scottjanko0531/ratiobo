@@ -131,6 +131,50 @@ lighter data source (NY Fed may expose a smaller feed; not yet checked)
 or moving just this parse to a higher-memory runtime (e.g. a Vercel API
 route called by pg_cron) rather than the edge function.
 
+## Phase B follow-up: GDPNow current-quarter coverage (2026-10-02)
+
+GDPNow's Phase A ingestion stopped at 2026-07-28 because `TrackingArchives`
+only gets a quarter's block once that quarter's BEA advance estimate
+ships and the sequence is "closed out" -- the live, still-open quarter
+lives in a different sheet in the same workbook, `CurrentQtrEvolution`,
+laid out as repeating (Date, Major Releases, GDP*) column triples that
+*wrap into a new triple* every ~12-13 rows rather than growing one
+column indefinitely (confirmed by hand against the live file
+2026-10-01: block 1 Jul 30-Aug 25, block 2 Aug 26-Sep 25, block 3 Sep
+30-Oct 1, all one continuous Q3 2026 sequence). `bond-lens-ingest`
+now parses this generically (however many triples exist, not hardcoded
+to 3) and tags every row with `target_quarter` (new `bond_raw_series`
+column) -- from `CurrentQtrEvolution`'s own "Initial GDPNow 26:Q3
+forecast" label for the live quarter, from the archive sheets' own
+"Quarter being forecasted" column for closed ones. Re-run confirmed:
+2,143 rows total, 2011-08-25 to 2026-10-01, zero gaps; `2026Q3` alone
+has 27 rows from 2026-07-30 (initial nowcast) through today.
+
+`growth_mom` (spec §4.2) will use `target_quarter` to detect the
+boundary case: Scott's call is the **scaled version** -- in the first
+weeks of a new quarter, use the change in that quarter's own nowcast
+since its first release, scaled to an 8-week-equivalent rate, rather
+than carrying the prior quarter's value forward. Implemented in Phase
+B's §4.2 module, not here.
+
+## Phase B follow-up: in-scope ETF durations entered (2026-10-02)
+
+The 10 in-scope `bond_instrument_meta` rows (§0.3) were left with null
+`effective_duration` at the end of Phase A deliberately — entering a
+number from memory for data that feeds a real valuation score risked
+silently wrong duration-weighted math. Sourced from each fund's own
+current factsheet instead:
+
+| Symbol | Effective/avg duration | As of |
+|---|---|---|
+| SHY | 1.84 yrs | 2026-08-31 (iShares) |
+| TLT | 14.63 yrs | 2026-09-30 (iShares) |
+| SCHP | 6.4 yrs | 2026-08-31 (Schwab) |
+| VTIP | 2.4 yrs | 2026-08-31 (Vanguard, reported as "average duration") |
+
+Staleness warning (§0.3, 90 days) is a Phase B/UI concern reading
+`duration_as_of`, not re-litigated here.
+
 ## Phase A follow-up: GDPNow sourced from the Atlanta Fed directly (2026-10-01)
 
 FRED's `GDPNOW` series is quarterly-snapshot only (~61 rows), insufficient
