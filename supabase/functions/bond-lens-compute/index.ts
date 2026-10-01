@@ -105,21 +105,29 @@ Deno.serve(async (req: Request) => {
     const align = (rows: { date: string; value: number }[], cap: number) => alignForwardFill(dates, toValues(rows), cap);
 
     const acm = align(acmRaw, ACM_STALE_CAP);
-    const gdpnowQuarterByDate = new Map(gdpnowRaw.map((r) => [r.date, r.target_quarter ?? null]));
     const gdpnow = align(gdpnowRaw, GDPNOW_CAP);
-    // target_quarter has to ride along the SAME forward-fill as the value
-    // it describes -- re-deriving it from the nearest non-null gdpnow
-    // date rather than a second independent alignForwardFill call (which
-    // would have no way to carry a string field).
-    const gdpnowQuarter: (string | null)[] = dates.map((d, i) => {
-      if (gdpnow[i] == null) return null;
-      for (let back = 0; back <= GDPNOW_CAP; back++) {
-        const dt = dates[i - back];
-        if (dt == null) break;
-        const q = gdpnowQuarterByDate.get(dt);
-        if (q !== undefined) return q;
+    // target_quarter has to ride along the SAME as-of lookup as the value
+    // it describes -- sorted-rows binary search + calendar-day cap,
+    // mirroring alignForwardFill exactly (that function only returns
+    // numbers, not an arbitrary string field, so this is a parallel
+    // implementation rather than a shared call). The old version walked
+    // back through `dates[i - back]` by INDEX POSITION, the same bug
+    // alignForwardFill itself had -- GDPNow's release dates are usually
+    // actual business days so it rarely surfaced, but it's the same class
+    // of bug and worth fixing alongside it rather than leaving it live.
+    // gdpnowRaw already arrives sorted ascending (fetchAllRaw's own
+    // "order by obs_date asc") -- no re-sort needed, same reasoning as
+    // alignForwardFill's precondition.
+    const gdpnowQuarter: (string | null)[] = dates.map((target) => {
+      let lo = 0, hi = gdpnowRaw.length - 1, ans = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (gdpnowRaw[mid].date <= target) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
       }
-      return null;
+      if (ans < 0) return null;
+      const row = gdpnowRaw[ans];
+      const gapDays = Math.round((new Date(target + "T00:00:00Z").getTime() - new Date(row.date + "T00:00:00Z").getTime()) / 86400000);
+      return gapDays <= GDPNOW_CAP ? (row.target_quarter ?? null) : null;
     });
 
     const inputs: BondLensHistoryInputs = {

@@ -66,17 +66,22 @@ export function rollingZScoreAt(
 // `date <= target`, then gate on the CALENDAR-day gap between that row's
 // own date and the target -- correct regardless of whether either date is
 // a trading day.
+//
+// Precondition: `rows` must already be sorted ascending by date -- every
+// real caller already queries with `order by obs_date asc`, so this
+// doesn't defensively re-sort (a clone + sort of every series was real,
+// avoidable overhead on top of an already resource-constrained edge
+// function run).
 export function alignForwardFill(dates: string[], rows: { date: string; value: number }[], maxCarryDays: number): (number | null)[] {
-  const sorted = [...rows].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const out: (number | null)[] = [];
   for (const target of dates) {
-    let lo = 0, hi = sorted.length - 1, ans = -1;
+    let lo = 0, hi = rows.length - 1, ans = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (sorted[mid].date <= target) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+      if (rows[mid].date <= target) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
     }
     if (ans < 0) { out.push(null); continue; }
-    const row = sorted[ans];
+    const row = rows[ans];
     out.push(calendarDaysBetween(row.date, target) <= maxCarryDays ? row.value : null);
   }
   return out;
