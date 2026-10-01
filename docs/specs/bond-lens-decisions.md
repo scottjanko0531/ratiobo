@@ -105,3 +105,28 @@ here too — any unpaginated read of an ETF's history past ~4 years will
 silently truncate); `pg_cron` + edge functions, not Vercel cron. The
 weekly composite job runs after Friday close, deliberately offset from
 Market Conditions' 22:30/22:40 UTC jobs rather than colliding with them.
+
+## Phase A follow-up: ACM term premium daily refresh deferred (2026-10-01)
+
+`bond-lens-ingest?source=acm` reliably hits `WORKER_RESOURCE_LIMIT` in
+the edge function, even in isolation. Root cause confirmed by parsing
+the live ~10MB NY Fed `ACMTermPremium.xls` locally with the same `xlsx`
+library version: the BIFF8 decode alone costs **~363MB of heap**,
+regardless of which sheet is selected (`sheets: ["ACM Daily"]`), dense
+vs. object cell storage (`dense: true`), or any row-range filter
+(`sheetRows`/`range` — verified empirically that neither actually limits
+the decode for this binary format; the library fully parses the sheet
+before any row filtering is applied, so "just parse the last N days"
+is not achievable this way no matter how small N is).
+
+Decision: **defer the daily refresh, backfill-only for now.** The
+one-time historical backfill (local parse → direct SQL insert) already
+populates `bond_raw_series` with full ACM history through the backfill
+date. `bond-lens-ingest-acm-daily`'s cron job is unscheduled
+(`20261001_unschedule_bond_lens_acm_daily.sql`); FRED and HLW r-star keep
+their daily jobs (r-star's file is ~180KB and parses fine standalone,
+confirmed). Revisit only if ACM term premium needs to be current
+day-to-day for a specific use — options noted for that revisit: a
+lighter data source (NY Fed may expose a smaller feed; not yet checked)
+or moving just this parse to a higher-memory runtime (e.g. a Vercel API
+route called by pg_cron) rather than the edge function.
