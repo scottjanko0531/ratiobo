@@ -6,7 +6,7 @@
 import { BOND_LENS_CONFIG } from "./config.ts";
 import { lagDaysThenAlign, indexDaysAgo } from "./normalize.ts";
 import { computeCarryHistory, CarryHistoryInputs } from "./carry.ts";
-import { pricedHikes, inflTrend, growthMom, growthMomFallback, pathScore, GrowthMomResult } from "./path.ts";
+import { inflTrend, growthMom, growthMomFallback, pathScore, GrowthMomResult } from "./path.ts";
 import { valuationScore, dfii10MinusRstarGap, spliceAcmWithFallback } from "./valuation.ts";
 import { inflationAxis, classifyQuadrant, dailyReturns, hedgeCorrelation, stepHedgeReliable, HedgeState } from "./quadrant.ts";
 import { timeSeriesMomentum, priceVsSma, trendFilter } from "./trend.ts";
