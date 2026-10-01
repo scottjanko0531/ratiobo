@@ -175,6 +175,35 @@ current factsheet instead:
 Staleness warning (§0.3, 90 days) is a Phase B/UI concern reading
 `duration_as_of`, not re-litigated here.
 
+## Phase B follow-up: ACM refresh moved to GitHub Actions (2026-10-02)
+
+The backfill-only decision above was a stopgap -- ACM is the primary
+term premium input for §4.3's valuation score, so a stale ACM means a
+stale valuation score every week. Real fix: move the refresh out of the
+edge function entirely. `scripts/bond_lens_acm_refresh.py` (pandas +
+xlrd, which handle the same ~10MB `.xls` fine on a GitHub Actions
+runner's far larger memory budget) upserts into `bond_raw_series` via
+the Supabase REST API, authenticated with the service-role key as a
+GitHub secret (`SUPABASE_SERVICE_ROLE_KEY` -- **Scott needs to add this
+secret himself** in the repo's Settings → Secrets and variables →
+Actions; the key is not something this session has access to or should
+handle). Tested locally against the live file: 16,289 rows, 1961-06-14
+to 2026-09-30, exact match to the earlier JS-parsed backfill.
+
+Scheduled weekly, `.github/workflows/bond-lens-acm-refresh.yml`, 21:00
+UTC Friday -- ahead of Bond Lens's own daily cron (22:50/23:10/23:20
+UTC) and where the Phase C composite will eventually run. Revisit the
+exact time once the composite's own schedule is set.
+
+**Staleness fallback is a compute-time concern, not refresh-time**: "if
+ACM's last observation is >10 business days old when the composite
+runs, fall back to `THREEFYTP10` (Kim-Wright), z-scored on its own
+history, set the valuation module's `degraded` flag, show the
+staleness in the market view" is §4.3's own job when it reads
+`bond_raw_series` -- implemented there (Phase B), not duplicated into
+this refresh script, so there's one place that owns "is ACM usable
+right now."
+
 ## Phase A follow-up: GDPNow sourced from the Atlanta Fed directly (2026-10-01)
 
 FRED's `GDPNOW` series is quarterly-snapshot only (~61 rows), insufficient
