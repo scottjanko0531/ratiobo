@@ -8,8 +8,10 @@ import { supabase } from "../../lib/supabase";
 import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META, ILLIQUID_KEYS, EQUITY_KEYS, computeAllocationDeltas } from "../../lib/simulatorKeys";
 import { capexMultipliersBySymbol, mergeExposureMultipliers, CAPEX_REGIME_META } from "../../lib/capexOverlay";
 import { marketOverlayMultipliersBySymbol, combineAllOverlays, applyOverlayToTargets, shouldProposeRebalance } from "../../lib/marketOverlayPortfolio";
+import { computeBondLensSectorTargets } from "../../lib/bondLensPortfolio";
 import { TIER_META } from "../../lib/marketConditionsMeta";
 import HoldingDetailDrawer from "../../components/HoldingDetailDrawer";
+import StageInfoIcon from "../../components/StageInfoIcon";
 
 const usd = (v) => {
   if (v == null || isNaN(Number(v))) return "—";
@@ -49,6 +51,131 @@ function MonthlyGainTooltip({ active, payload }) {
   );
 }
 
+// Bond Lens (Phase D, lib/bondLensPortfolio.js) sleeve-stats/excluded-holdings/
+// gap-notes rendering, shared between the always-on Bond Lens card and the
+// preview-before-enable confirmation modal (§6.6) -- both show the exact same
+// computeBondLensSectorTargets output, just computed against a different source
+// for `use_bond_lens_overlay` (the portfolio's saved flag vs. the pending form
+// value), so the rendering itself has one definition instead of two.
+function BondLensSleeveDetail({ result, signalRow }) {
+  return (
+    <>
+      {result.sleeveBefore.weight <= 0 ? (
+        <p className="text-xs text-paper-dim italic mb-3">
+          {result.excluded.length > 0
+            ? "No in-scope bond holdings — all bond-like holdings in this portfolio are excluded (see below)."
+            : "No bond holdings in scope for this portfolio."}
+        </p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11px] mb-3">
+            <div>
+              <p className="text-[10px] text-paper-dim">Instrument pref <span className="text-paper-dim/50">(display-only)</span></p>
+              <p className="text-paper font-medium">{signalRow?.instrument_pref ?? "—"}</p>
+            </div>
+            <div>
+              <p className="text-[10px] text-paper-dim">Maturity pref <span className="text-paper-dim/50">(display-only)</span></p>
+              <p className="text-paper font-medium">{signalRow?.maturity_pref ?? "—"}</p>
+            </div>
+            <div>
+              <p className="text-[10px] text-paper-dim">Hedge reliable</p>
+              <p className={signalRow?.hedge_reliable === true ? "text-gain font-medium" : signalRow?.hedge_reliable === false ? "text-loss font-medium" : "text-paper-dim font-medium"}>
+                {signalRow?.hedge_reliable === true ? "Yes" : signalRow?.hedge_reliable === false ? "No" : "Unknown"}
+              </p>
+            </div>
+            <div>
+              <p className="text-[10px] text-paper-dim">Curve regime</p>
+              <p className="text-paper font-medium">{signalRow?.curve_regime ?? "—"}</p>
+            </div>
+          </div>
+
+          <div className="border border-ink-line rounded-lg overflow-hidden text-[11px] mb-3">
+            <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-3 py-1.5 bg-ink-soft/50 border-b border-ink-line text-[10px] text-paper-dim">
+              <span>Sleeve</span>
+              <span className="text-right">Before</span>
+              <span className="text-right">After</span>
+            </div>
+            {[
+              { label: "Weight", before: usd(result.sleeveBefore.weight), after: usd(result.sleeveAfter.weight) },
+              {
+                label: "Weighted duration",
+                before: result.sleeveBefore.weightedDuration != null ? `${result.sleeveBefore.weightedDuration.toFixed(2)}y` : "—",
+                after: result.sleeveAfter.weightedDuration != null ? `${result.sleeveAfter.weightedDuration.toFixed(2)}y` : "—",
+              },
+              ...["nominal", "tips", "bills", "credit"].map((m) => ({
+                label: `Mix — ${m}`,
+                before: result.sleeveBefore.weight > 0 ? `${((result.sleeveBefore.mix[m] / result.sleeveBefore.weight) * 100).toFixed(0)}%` : "—",
+                after: result.sleeveAfter.weight > 0 ? `${((result.sleeveAfter.mix[m] / result.sleeveAfter.weight) * 100).toFixed(0)}%` : "—",
+              })),
+            ].map((row) => (
+              <div key={row.label} className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-3 py-1.5 border-b border-ink-line/50 last:border-0">
+                <span className="text-paper-dim">{row.label}</span>
+                <span className="num text-right text-paper-dim">{row.before}</span>
+                <span className="num text-right text-paper font-medium">{row.after}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {(result.proposedNewHoldings ?? []).length > 0 && (
+        <div className="mb-3">
+          <p className="text-[10px] text-paper-dim mb-1">Proposed substitute instruments</p>
+          <ul className="space-y-1">
+            {result.proposedNewHoldings.map((p) => (
+              <li
+                key={p.symbol}
+                className="flex items-center justify-between gap-2 text-[11px] border border-dashed border-brass/40 rounded-lg px-2 py-1.5"
+              >
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-paper font-medium italic">{p.symbol}</span>
+                  <span className="text-[9px] uppercase tracking-wide text-brass-soft border border-brass/40 rounded px-1 py-0.5 shrink-0">
+                    Proposed — not held
+                  </span>
+                </span>
+                <span className="text-paper-dim shrink-0">{p.key}</span>
+                <span className="num text-paper-dim shrink-0">{usd(p.targetVal)}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[10px] text-paper-dim/60 mt-1 leading-relaxed">
+            Not held — proposed only. Bond Lens recommends target weights but never creates a holding or places a
+            trade; reaching this target would require adding the instrument above manually.
+          </p>
+        </div>
+      )}
+
+      {result.excluded.length > 0 && (
+        <div className="mb-3">
+          <p className="text-[10px] text-paper-dim mb-1">Excluded holdings</p>
+          <ul className="space-y-0.5">
+            {result.excluded.map((e) => (
+              <li key={e.holding.id} className="text-[11px] text-paper-dim">
+                <span className="text-paper">{e.holding.symbol}</span> — {e.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {!result.targetReachable && result.gapNotes.length > 0 && (
+        <div className="mb-3">
+          <p className="text-[10px] text-brass-soft mb-1">Target not fully reachable</p>
+          <ul className="space-y-0.5">
+            {result.gapNotes.map((note, i) => (
+              <li key={i} className="text-[11px] text-brass-soft/90">{note}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {signalRow?.explanation?.text && (
+        <p className="text-[10px] text-paper-dim/60 leading-relaxed">{signalRow.explanation.text}</p>
+      )}
+    </>
+  );
+}
+
 export default function PortfoliosPage() {
   const [portfolios, setPortfolios]           = useState([]);
   const [phMap, setPhMap]                     = useState({}); // portfolio_id -> [holding_id]
@@ -63,13 +190,19 @@ export default function PortfoliosPage() {
   const [busy, setBusy]                       = useState(true);
   const [analysisMap, setAnalysisMap]         = useState({}); // portfolio_id -> latest analysis row
   const [analysisRunningId, setAnalysisRunningId] = useState(null);
+  const [bondInstrumentMetaByHoldingId, setBondInstrumentMetaByHoldingId] = useState({}); // holding_id -> bond_instrument_meta row
+  const [bondInstrumentMetaBySymbol, setBondInstrumentMetaBySymbol]       = useState({}); // symbol -> bond_instrument_meta row (held + reference-only substitutes, §6.3)
+  const [latestBondLensSignal, setLatestBondLensSignal]                   = useState(null); // global, computed once (bond_lens_signal)
+  const [latestBondSignalFlags, setLatestBondSignalFlags]                 = useState(null); // global, computed once (bond_signals.flags)
+  const [bondLensPreview, setBondLensPreview]                             = useState(null); // computeBondLensSectorTargets result awaiting Confirm/Cancel (§6.6)
+  const [bondLensInfoOpen, setBondLensInfoOpen]                           = useState(false); // honest-framing tooltip toggle
 
   const [detailHolding, setDetailHolding]     = useState(null);
 
   const [viewingPortfolio, setViewingPortfolio] = useState(null);
   const [expandedBuckets, setExpandedBuckets]   = useState(new Set()); // empty = all collapsed
   const [editingPortfolio, setEditingPortfolio] = useState(null); // "new" | portfolio obj
-  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "", use_market_overlay: false, use_capex_overlay: false });
+  const [form, setForm]     = useState({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "", use_market_overlay: false, use_capex_overlay: false, use_bond_lens_overlay: false });
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -97,6 +230,9 @@ export default function PortfoliosPage() {
       { data: yr },
       { data: atData },
       { data: ttData },
+      { data: bimData },
+      { data: blsData },
+      { data: bsData },
     ] = await Promise.all([
       supabase.from("portfolios").select("*").order("portfolio_name"),
       supabase.from("portfolio_holdings").select("portfolio_id, holding_id"),
@@ -109,6 +245,20 @@ export default function PortfoliosPage() {
       supabase.rpc("snapshot_at", { snap_date: yearSnap }),
       supabase.from("asset_types").select("code, label").eq("is_active", true).order("sort_order"),
       supabase.from("transaction_types").select("code, label, affects_quantity").eq("is_active", true).order("sort_order"),
+      // Bond Lens (Phase D, lib/bondLensPortfolio.js): bond_instrument_meta is a small
+      // (31-row) global reference table, fetched once here same as asset_types/
+      // transaction_types above rather than per-portfolio. bond_lens_signal's latest
+      // row is likewise global and "computed once" (spec §1) -- fetched here instead
+      // of per-viewingPortfolio-open (unlike latestMarketScore below) so it's a single
+      // shared query across every portfolio view in this session.
+      supabase.from("bond_instrument_meta").select("*"),
+      supabase.from("bond_lens_signal").select("*").order("as_of_date", { ascending: false }).limit(1),
+      // bond_signals.flags.term_premium_degraded is already computed server-side
+      // whenever ACM term premium was more than 10 BUSINESS days old at compute
+      // time (falls back to THREEFYTP10) -- the ACM-specific staleness check, on
+      // top of (not a replacement for) the generic >10-CALENDAR-day signal-stale
+      // check against bond_lens_signal.as_of_date above.
+      supabase.from("bond_signals").select("as_of_date, flags").order("as_of_date", { ascending: false }).limit(1),
     ]);
 
     setPortfolios(pfData ?? []);
@@ -137,6 +287,31 @@ export default function PortfoliosPage() {
     setAllTransactions(txns ?? []);
     setAssetTypes(atData ?? []);
     setTxnTypes(ttData ?? []);
+
+    const bim = {};
+    for (const r of bimData ?? []) bim[r.holding_id] = r;
+    setBondInstrumentMetaByHoldingId(bim);
+
+    // bondInstrumentMetaBySymbol (§6.3 eligible-instrument substitutes, lib/bondLensPortfolio.js):
+    // the same bond_instrument_meta rows already fetched above as `bimData`, re-keyed by SYMBOL
+    // instead of holding_id -- no second query needed since bimData is already a `select("*")`
+    // over the whole (small, 31+-row) table. Held rows (holding_id set) resolve their symbol via
+    // holdings_valued (hvData, already fetched above); reference-only substitute rows (holding_id
+    // null, e.g. BIL/IEF) carry their own `symbol` column directly -- equivalent to the suggested
+    // `coalesce(holdings.symbol, bond_instrument_meta.symbol)` join, done client-side against data
+    // already in hand rather than as a separate query.
+    const holdingSymbolById = {};
+    for (const h of hvData ?? []) holdingSymbolById[h.id] = h.symbol;
+    const bimBySymbol = {};
+    for (const r of bimData ?? []) {
+      const symbol = r.holding_id != null ? holdingSymbolById[r.holding_id] : r.symbol;
+      if (symbol) bimBySymbol[symbol] = r;
+    }
+    setBondInstrumentMetaBySymbol(bimBySymbol);
+
+    setLatestBondLensSignal(blsData?.[0] ?? null);
+    setLatestBondSignalFlags(bsData?.[0]?.flags ?? null);
+
     setBusy(false);
     loadAnalyses();
   }
@@ -284,6 +459,23 @@ export default function PortfoliosPage() {
       .then(({ data }) => setLatestMarketScore(data?.[0] ?? null), () => setLatestMarketScore(null));
   }, [viewingPortfolio?.id]);
 
+  // Bond Lens per-portfolio settings (Phase D, lib/bondLensPortfolio.js) --
+  // bond_lens_portfolio_settings has no rows yet for any portfolio, so a missing
+  // row (maybeSingle returns null, not an error) falls back to the column
+  // defaults inside bondLensSettings below rather than being treated as a fetch
+  // failure. Fetched per-viewingPortfolio since, unlike the signal row above,
+  // this table IS keyed by portfolio_id.
+  const [bondLensSettings, setBondLensSettings] = useState(null);
+  useEffect(() => {
+    if (!viewingPortfolio) { setBondLensSettings(null); return; }
+    supabase
+      .from("bond_lens_portfolio_settings")
+      .select("*")
+      .eq("portfolio_id", viewingPortfolio.id)
+      .maybeSingle()
+      .then(({ data }) => setBondLensSettings(data ?? null), () => setBondLensSettings(null));
+  }, [viewingPortfolio?.id]);
+
   // Overlay only proposes a rebalance on a tier change, so acknowledging it
   // is an explicit write (button click), not something that happens automatically.
   async function markOverlayRebalanced(portfolioId, tier) {
@@ -365,6 +557,53 @@ export default function PortfoliosPage() {
     return holdings.filter((h) => ids.has(h.id));
   }, [phMap, holdings]);
 
+  // Bond Lens overlay (Phase D, lib/bondLensPortfolio.js) -- per-portfolio bond-sleeve
+  // duration tilt driven by the global bond_lens_signal row fetched once in load()
+  // above. computeBondLensSectorTargets is only ever CALLED when this portfolio's own
+  // use_bond_lens_overlay flag is true -- when it's false, bondLensResult is simply
+  // `null`, never "a no-op call that happens to return {}" -- so an off portfolio's
+  // computeAllocationDeltas call site further below passes the exact same
+  // `sectorTargets` object it always did, preserving the required "off == identical
+  // to a build without Bond Lens" property (docs/specs/bond-lens.md §6.7 acceptance).
+  const bondLensStale = useMemo(() => {
+    const asOf = latestBondLensSignal?.as_of_date;
+    if (!asOf) return false;
+    const days = (Date.now() - new Date(asOf).getTime()) / 86400000;
+    return days > 10;
+  }, [latestBondLensSignal]);
+  // ACM-specific staleness (on top of the generic >10-calendar-day check above):
+  // bond_signals.flags.term_premium_degraded is already computed server-side
+  // whenever ACM term premium was more than 10 BUSINESS days old at compute time
+  // (falls back to THREEFYTP10) -- surfaced as its own warning, doesn't gate
+  // bondLensApplied since the signal itself already degraded gracefully server-side.
+  const bondLensTermPremiumDegraded = Boolean(latestBondSignalFlags?.term_premium_degraded);
+  // Settings object construction factored out so the preview-before-enable flow
+  // (savePortfolio, §6.6) can call computeBondLensSectorTargets the exact same way
+  // the card below does, against the PENDING form value, without duplicating this.
+  const bondLensSettingsForCompute = useMemo(() => ({
+    benchmark_duration: bondLensSettings?.benchmark_duration ?? null,
+    include_credit: bondLensSettings?.include_credit ?? false,
+    min_trade_threshold: bondLensSettings?.min_trade_threshold ?? 0.005,
+  }), [bondLensSettings]);
+  const bondLensResult = useMemo(() => {
+    if (!viewingPortfolio?.use_bond_lens_overlay) return null;
+    const hs = holdingsFor(viewingPortfolio.id);
+    return computeBondLensSectorTargets(hs, bondInstrumentMetaByHoldingId, latestBondLensSignal, bondLensSettingsForCompute, bondInstrumentMetaBySymbol);
+  }, [viewingPortfolio?.id, viewingPortfolio?.use_bond_lens_overlay, holdingsFor, bondInstrumentMetaByHoldingId, latestBondLensSignal, bondLensSettingsForCompute, bondInstrumentMetaBySymbol]);
+  // Stale signal (§6.7): hold the last targets and show a warning instead of applying a
+  // possibly-stale tilt -- treated as "off" for the sectorTargets merge below, but the
+  // card still renders (with the warning) rather than disappearing.
+  const bondLensApplied = Boolean(viewingPortfolio?.use_bond_lens_overlay) && !bondLensStale;
+
+  // Bond Lens preview-before-enable (§6.6): closing the preview without confirming
+  // discards the WHOLE pending edit's bond-lens intent, not just this field -- the
+  // user re-opens Edit and tries again rather than ending up in a partially-applied
+  // state. Doesn't touch editingPortfolio/formBusy -- the edit form itself stays open.
+  function cancelBondLensPreview() {
+    setBondLensPreview(null);
+    setForm((f) => ({ ...f, use_bond_lens_overlay: false }));
+  }
+
   function summary(pfId) {
     const hs = holdingsFor(pfId);
     if (hs.length === 0) return { totalValue: 0, costBasis: 0, totalGain: 0, returnPct: null, dayChg: null, monthChg: null, qtrChg: null, ytdChg: null, count: 0 };
@@ -403,7 +642,7 @@ export default function PortfoliosPage() {
 
   // ── CRUD ─────────────────────────────────────────────────────────────────────
   function openNew() {
-    setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "", use_market_overlay: false, use_capex_overlay: false });
+    setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "", use_market_overlay: false, use_capex_overlay: false, use_bond_lens_overlay: false });
     setFormError("");
     setEditingPortfolio("new");
   }
@@ -418,13 +657,35 @@ export default function PortfoliosPage() {
       strategy_framework: pf.strategy_framework ?? "",
       use_market_overlay: pf.use_market_overlay ?? false,
       use_capex_overlay:  pf.use_capex_overlay ?? false,
+      use_bond_lens_overlay: pf.use_bond_lens_overlay ?? false,
     });
     setFormError("");
     setEditingPortfolio(pf);
   }
 
-  async function savePortfolio() {
+  async function savePortfolio(opts) {
+    // `opts` is the click event when called directly from the Save button's
+    // onClick -- destructuring a non-matching object just falls through to the
+    // default, so this stays safe called either way.
+    const { bondLensConfirmed = false } = opts ?? {};
     if (!form.portfolio_name.trim()) { setFormError("Name is required."); return; }
+
+    // Bond Lens preview-before-enable (§6.6): turning the flag ON (specifically
+    // false -> true on an EXISTING portfolio -- a brand-new portfolio has no
+    // holdings yet to preview, so it saves immediately like every other field)
+    // blocks the save and shows a confirmation preview of the computed per-holding
+    // changes instead of writing anything. Turning off, leaving it unchanged, or
+    // having already confirmed this exact save (bondLensConfirmed) proceed as normal.
+    const bondLensTurningOn = editingPortfolio !== "new"
+      && !Boolean(editingPortfolio.use_bond_lens_overlay)
+      && Boolean(form.use_bond_lens_overlay);
+    if (bondLensTurningOn && !bondLensConfirmed) {
+      const hs = holdingsFor(editingPortfolio.id);
+      const preview = computeBondLensSectorTargets(hs, bondInstrumentMetaByHoldingId, latestBondLensSignal, bondLensSettingsForCompute, bondInstrumentMetaBySymbol);
+      setBondLensPreview(preview);
+      return;
+    }
+
     setFormBusy(true); setFormError("");
     const { data: { user } } = await supabase.auth.getUser();
     const wasRegimeDriven = editingPortfolio !== "new" && editingPortfolio.strategy_framework === "regime_driven";
@@ -438,6 +699,7 @@ export default function PortfoliosPage() {
       strategy_framework: form.strategy_framework || null,
       use_market_overlay: Boolean(form.use_market_overlay),
       use_capex_overlay:  Boolean(form.use_capex_overlay),
+      use_bond_lens_overlay: Boolean(form.use_bond_lens_overlay),
       updated_at:         new Date().toISOString(),
       // Turning regime-driven off releases manual control of target_allocations again;
       // turning it on (or switching regimes) resets tracking so the next daily cron
@@ -452,9 +714,26 @@ export default function PortfoliosPage() {
       if (!error && viewingPortfolio?.id === editingPortfolio.id) {
         setViewingPortfolio((p) => ({ ...p, ...payload }));
       }
+      // Bond Lens toggle log (§6.6) -- only on an actual flip of the flag, compared
+      // against the pre-edit portfolio object (not the just-written payload). Fire-
+      // and-forget: never blocks or fails the main portfolio save, same as every
+      // other read in this file that just swallows a failure (.catch(() => {})).
+      if (!error) {
+        const oldValue = Boolean(editingPortfolio.use_bond_lens_overlay);
+        const newValue = Boolean(form.use_bond_lens_overlay);
+        if (oldValue !== newValue) {
+          supabase.from("bond_lens_toggle_log").insert({
+            portfolio_id: editingPortfolio.id,
+            action: newValue ? "enabled" : "disabled",
+            old_value: { use_bond_lens_overlay: oldValue },
+            new_value: { use_bond_lens_overlay: newValue },
+          }).then(() => {}, () => {});
+        }
+      }
     }
     setFormBusy(false);
     if (error) { setFormError(error.message); return; }
+    setBondLensPreview(null);
     setEditingPortfolio(null);
     await load();
   }
@@ -927,6 +1206,67 @@ export default function PortfoliosPage() {
                   );
                 })()}
 
+                {/* Bond Lens overlay (Phase D, lib/bondLensPortfolio.js) — per-portfolio
+                   bond-sleeve duration tilt driven by the global weekly bond_lens_signal
+                   row. v3 scope (docs/specs/bond-lens.md §0b): duration-multiplier only —
+                   instrument_pref/maturity_pref are display-only here, never applied to a
+                   holding. bondLensResult/bondLensApplied/bondLensStale are computed once
+                   above (near holdingsFor) and shared with the Portfolio Actions
+                   sectorTargets merge further below. */}
+                <div className="px-5 py-4 border-b border-ink-line">
+                  <div className="flex items-center justify-between mb-3 gap-3">
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <p className="label text-[10px]">Bond Lens Overlay</p>
+                        <StageInfoIcon
+                          active={bondLensInfoOpen}
+                          onClick={() => setBondLensInfoOpen((v) => !v)}
+                          label="About this signal's evidence"
+                        />
+                      </div>
+                      {latestBondLensSignal && (
+                        <p className="text-[10px] text-paper-dim/60 mt-0.5">
+                          Stance <span className="text-paper font-medium">{latestBondLensSignal.duration_stance ?? "—"}</span>
+                          {" · "}duration ×{isFinite(Number(latestBondLensSignal.duration_multiplier)) ? Number(latestBondLensSignal.duration_multiplier).toFixed(2) : "—"}
+                          {" · "}<span className={pf.use_bond_lens_overlay ? "text-gain" : "text-paper-dim"}>{pf.use_bond_lens_overlay ? "overlay on" : "overlay off"}</span>
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Honest-framing tooltip (click-to-reveal, same StageInfoIcon pattern as
+                     app/big-cycle/page.jsx's stage definitions) -- Phase E's own verdict on
+                     the duration-score edge, verbatim. */}
+                  {bondLensInfoOpen && (
+                    <div className="mb-3 p-3 rounded-lg border border-ink-line bg-ink text-[11px] leading-relaxed text-paper-dim">
+                      No variant beats constant duration by more than about 0.1 Sharpe; differences are within
+                      noise. Valuation-only is adopted as a modest, economically grounded tilt, not a proven edge.
+                    </div>
+                  )}
+
+                  {!pf.use_bond_lens_overlay ? (
+                    <p className="text-xs text-paper-dim italic">Off — enable in portfolio settings to tilt bond-sleeve duration with this signal.</p>
+                  ) : !latestBondLensSignal ? (
+                    <p className="text-xs text-paper-dim italic">No Bond Lens signal available yet.</p>
+                  ) : !bondLensResult ? null : (
+                    <>
+                      {bondLensStale && (
+                        <p className="text-xs text-brass-soft mb-3 leading-relaxed">
+                          Signal stale — as of {latestBondLensSignal.as_of_date}, more than 10 days old. Holding last targets; duration tilt not applied.
+                        </p>
+                      )}
+                      {bondLensTermPremiumDegraded && (
+                        <p className="text-xs text-brass-soft mb-3 leading-relaxed">
+                          ACM term premium is stale (&gt;10 business days) — valuation is now the sole driver of
+                          duration_score, so a stale ACM reading means a stale stance. Falling back to THREEFYTP10.
+                        </p>
+                      )}
+
+                      <BondLensSleeveDetail result={bondLensResult} signalRow={latestBondLensSignal} />
+                    </>
+                  )}
+                </div>
+
                 {/* Portfolio Actions — resize_overlay and regime_driven
                    portfolios. Same computeAllocationDeltas call + row/badge
                    rendering already shipped on /macro's QuadrantCard, scoped
@@ -1014,9 +1354,18 @@ export default function PortfoliosPage() {
                   }
                   const effectiveTargets = freedPct > 0 ? { ...rawTargets, cash: (rawTargets.cash ?? 0) + freedPct } : rawTargets;
 
+                  // Bond Lens (Phase D) — only merged in when ON and not stale
+                  // (bondLensApplied, computed above near holdingsFor); otherwise this is
+                  // the exact same `sectorTargets` object/reference as before, so an
+                  // off (or stale) portfolio's action rows are byte-identical to a build
+                  // without Bond Lens (docs/specs/bond-lens.md §6.7 acceptance test).
+                  const sectorTargetsWithBondLens = bondLensApplied && bondLensResult
+                    ? { ...sectorTargets, ...bondLensResult.sectorTargets }
+                    : sectorTargets;
+
                   const { actionRows, buyRows: rawBuyRows } = computeAllocationDeltas(
                     hs, effectiveTargets,
-                    { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers: portfolioActionsMultipliers, sectorTargets, includeZeroValueHoldings: true }
+                    { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers: portfolioActionsMultipliers, sectorTargets: sectorTargetsWithBondLens, includeZeroValueHoldings: true }
                   );
                   // No per-row exposure-multiplier scaling needed here anymore:
                   // with includeZeroValueHoldings, buyRows only contains
@@ -1441,6 +1790,21 @@ export default function PortfoliosPage() {
               </div>
 
               <div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.use_bond_lens_overlay}
+                    onChange={(e) => setForm((f) => ({ ...f, use_bond_lens_overlay: e.target.checked }))}
+                  />
+                  <span className="label">Bond Lens overlay</span>
+                </label>
+                <p className="text-[10px] text-paper-dim/60 mt-1">
+                  Tilts bond-sleeve duration based on valuation; display-only instrument/maturity signals — see{" "}
+                  docs/specs/bond-lens.md.
+                </p>
+              </div>
+
+              <div>
                 <label className="label block mb-2">Target Allocations</label>
                 {form.strategy_framework === "regime_driven" ? (
                   <div className="space-y-1 opacity-50 pointer-events-none">
@@ -1507,7 +1871,7 @@ export default function PortfoliosPage() {
 
               {formError && <p className="text-loss text-sm">{formError}</p>}
 
-              <button className="btn w-full" onClick={savePortfolio} disabled={formBusy}>
+              <button className="btn w-full" onClick={savePortfolio} disabled={formBusy || !!bondLensPreview}>
                 {formBusy ? "Saving…" : editingPortfolio === "new" ? "Create portfolio" : "Save changes"}
               </button>
 
@@ -1523,6 +1887,49 @@ export default function PortfoliosPage() {
           )}
         </div>
       </div>
+
+      {/* Bond Lens preview-before-enable (§6.6) -- blocks the save of an edit that's
+         turning use_bond_lens_overlay on until the user explicitly confirms the
+         computed per-holding changes. Reuses BondLensSleeveDetail, the exact same
+         rendering the always-on card below uses, just fed bondLensPreview (computed
+         against the PENDING form state) instead of bondLensResult (computed against
+         the portfolio's already-saved flag). Sits above the Create/Edit drawer
+         (z-40) at z-50 since it's a confirmation step on top of that drawer, not a
+         replacement for it -- Cancel returns to the still-open edit form. */}
+      {bondLensPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-ink/80" onClick={cancelBondLensPreview} />
+          <div className="relative bg-ink-soft border border-ink-line rounded-xl max-w-lg w-full max-h-[85vh] overflow-y-auto p-5 space-y-3">
+            <div>
+              <p className="font-medium">Enable Bond Lens overlay?</p>
+              <p className="text-[11px] text-paper-dim mt-1 leading-relaxed">
+                Preview of the duration tilt this will apply to{" "}
+                {editingPortfolio !== "new" ? editingPortfolio.portfolio_name : "this portfolio"}'s bond sleeve,
+                computed against the latest signal. Nothing is saved until you confirm.
+              </p>
+            </div>
+
+            <BondLensSleeveDetail result={bondLensPreview} signalRow={latestBondLensSignal} />
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                className="btn flex-1"
+                onClick={() => savePortfolio({ bondLensConfirmed: true })}
+                disabled={formBusy}
+              >
+                {formBusy ? "Saving…" : "Confirm & enable"}
+              </button>
+              <button
+                className="w-full flex-1 px-3 py-2 text-sm rounded-lg text-paper-dim hover:text-paper border border-ink-line transition-colors"
+                onClick={cancelBondLensPreview}
+                disabled={formBusy}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <HoldingDetailDrawer
         holding={detailHolding}

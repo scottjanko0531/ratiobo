@@ -34,8 +34,7 @@ describe("carryAndRolldown", () => {
     const r = carryAndRolldown(flat, 10);
     expect(r.Dmod_n).toBeCloseTo(7.79, 2);
     expect(r.CR).toBeCloseTo(0.05, 6);
-    expect(r.BE).toBeCloseTo(0.0064147, 6);
-    expect(r.EFF).toBe(r.BE); // spec defines EFF_n with the same formula as BE_n
+    expect(r.BE).toBeCloseTo(0.0064147, 6); // breakeven yield rise -- CR_n / D_mod(n)
   });
 
   it("upward-sloping curve gives positive rolldown (CR > y_n)", () => {

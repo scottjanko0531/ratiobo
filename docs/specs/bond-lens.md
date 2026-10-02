@@ -1,6 +1,6 @@
 # RatioBo — Bond Lens Overlay: Build Spec
 
-**Status:** v2.1 (Oct 2026), approved after Step 0 reconnaissance. v2 made Bond Lens a per-portfolio, toggleable overlay that acts on that portfolio's bond holdings; v2.1 resolves the reconnaissance conflicts and locks the decisions below before Phase A.
+**Status:** v3.1 (Oct 2026), Phase D in progress. v2 made Bond Lens a per-portfolio, toggleable overlay that acts on that portfolio's bond holdings; v2.1 resolved the reconnaissance conflicts and locked the decisions before Phase A; v3 locked Phase E's own decisions before Phase D; v3.1 adds §6.3's eligible_instruments substitute solver (Phase D's own Step 1, checkpointed before Steps 2-4 — see `bond-lens-decisions.md`).
 **Owner:** Scott
 **Builder:** Claude Code
 **Suggested location in repo:** `docs/specs/bond-lens.md`
@@ -81,6 +81,50 @@ Reconnaissance findings and Scott's decisions on each, in full in
    way); `pg_cron` + edge functions, not Vercel cron. The weekly composite
    runs after Friday close, offset from Market Conditions' 22:30/22:40
    UTC jobs.
+
+---
+
+## 0b. Changes from Phase E (v2.1 → v3)
+
+Full backtest results and methodology: `docs/specs/bond-lens-phase-e-report.md`.
+Decision log: `bond-lens-decisions.md`. Summary, in spec-section order:
+
+1. **Duration score (§5.1).** `duration_score = valuation_score` alone —
+   no trend gate, no other module. The original 5-module weighted
+   composite didn't beat a constant-1.0x-duration baseline on Sharpe in
+   2015-2026, and lost to simpler variants in one or both halves.
+   Valuation-only is the simplest variant that beats the baseline in both
+   halves and outperforms every other variant tested, confirmed robust
+   under sensitivity analysis — but the edge is small (well under 0.1
+   Sharpe over the baseline) and is adopted as a modest tilt, not a
+   proven one. Fixed stance thresholds (-0.75/0.5), exactly as backtested
+   — not the percentile-based alternative also tested.
+2. **Stance mapping (§5.2).** "Max extend" (1.6x) dropped — its trend=up
+   condition no longer exists, and the evidence doesn't support a band
+   above Extend regardless. v1 caps at Extend (1.3x).
+3. **Instrument/maturity preference (§5.3/5.4, §6.2).** Both are
+   **display-only in v1** — never backtested (Phase E only tested the
+   duration decision). Phase D applies only `duration_multiplier`; the
+   per-holding nominal/TIPS mix and maturity profile stay unchanged.
+   Backtesting both against a constant-mix/fixed-bucket baseline, from
+   2003, is a logged follow-up, not blocking Phase D.
+4. **Scope (§6.1).** `include_credit` now defaults to **`false`** (was
+   `true`). In scope by default: Treasuries, TIPS, bills/cash-like,
+   aggregate funds. Agency MBS, IG corporate, and munis join high yield
+   and EM debt as excluded-by-default, reported as "excluded holdings" —
+   Phase E's model-portfolio tests found the duration overlay is a wash
+   on a Treasury+TIPS risk-parity sleeve and actively harmful on a
+   high-yield-proxy sleeve.
+5. **Other modules (§4, §8).** `path_score`/`carry_score`/`quadrant_score`/
+   `curve_score`/`trend_state` stay computed and displayed — labeled
+   "context" in the UI — but carry no weight in `duration_score`.
+6. **Curve regime (§4.6).** The wider/longer `curveRegimeStrict` config
+   (15bp/8bp/4wk) is now the only/default config — the original
+   10bp/5bp/2wk default averaged too much regime churn (6.0/year) for a
+   module that's context-only to begin with.
+7. **Ongoing validation (§7.4, new).** An annual re-run of the split-half
+   Sharpe/IC test on the live rule, flagging if valuation-only falls
+   behind constant duration over the most recent 5 years.
 
 ---
 
@@ -237,7 +281,7 @@ Follow the conventions found in Step 0. If none exist, use these tables.
   | `benchmark_duration` | null → use the sleeve's strategic duration (6.1) |
   | `tips_split_when_tilted` | 0.60 |
   | `eligible_instruments` | null → held instruments plus the default substitute list (6.3) |
-  | `include_credit` | `true` (6.2) |
+  | `include_credit` | `false` (v3, 6.1 — was `true` in v2.1) |
   | `macro_pillar_enabled` | `false` |
   | `min_trade_threshold` | 0.5% of portfolio |
   | `updated_at`, `updated_by` | |
@@ -283,12 +327,14 @@ For n ∈ {2, 5, 7, 10}:
 
 - **Modified duration (par bond):** `D_mod = (1/y) * (1 − (1 + y/2)^(−2n))`
 - **12-month carry and rolldown:** `CR_n = y_n + D_mod(n−1) * (y_n − y_(n−1))`, with `y_(n−1)` linearly interpolated.
-- **Breakeven yield rise:** `BE_n = CR_n / D_mod(n)`
-- **Efficiency:** `EFF_n = CR_n / D_mod(n)`, the carry earned per unit of rate risk.
+- **Breakeven yield rise:** `BE_n = CR_n / D_mod(n)`. Kept in the per-maturity UI table under this name.
+- **Efficiency (v2.2, 2026-10-02):** `EFF_n = (CR_n − y_3m) / (D_mod(n) * σ_n)` — excess carry over cash, per unit of that maturity's own yield volatility. `σ_n` is the trailing 1-year (252-trading-day) standard deviation of **daily changes** in `y_n`, annualized (`σ_n = stdev(Δy_n) * sqrt(252)`). `y_3m` is the 3-month bill yield (`DGS3MO`, falling back to `DTB3` where `DGS3MO` is unavailable).
+  - The original v2.1 reading — `EFF_n = CR_n / D_mod(n)`, identical to `BE_n`'s own formula — structurally favored the shortest maturity on any normal-ish curve, since `D_mod` grows faster than `CR` as `n` increases. The Sharpe-style ratio above is a genuine risk-adjusted measure instead: it responds to curve *shape* (excess carry) scaled by how much that point on the curve actually moves, so a calm long end can out-rank a jumpy short one even when their raw carry is similar.
+  - When every maturity's `EFF_n` is ≤ 0 (the curve isn't compensating for duration risk anywhere on it — e.g. fully inverted), `maturity_pref = "bills"` (see §5.4).
 
 **Output:**
 
-- a per-maturity table,
+- a per-maturity table (`BE_n` and `EFF_n` for n ∈ {2, 5, 7, 10}),
 - `carry_score`: z-score of (10y `CR` minus the 3m bill yield) over a rolling 10-year window.
 
 ### 4.2 Priced path vs. likely path
@@ -366,6 +412,13 @@ Measured on the 10y total return (IEF adjusted close, or synthetic):
 
 ### 4.6 Curve regime classifier (cross-check)
 
+**v3 (2026-10-02):** thresholds widened and persistence lengthened from
+the original values below — the original (10bp/5bp/2wk) averaged 6.0
+regime changes/year and sat neutral only 47.3% of weeks (1999-2026), too
+much churn for a module that's display-only "context" (§5.1) and was
+never the primary driver of anything. The wider config below (comparison
+numbers: 2.5 changes/year, 63.5% neutral) is now the only/default config.
+
 **Inputs** over a 63-trading-day window:
 
 - `Δlevel = Δ DGS10`
@@ -374,13 +427,13 @@ Measured on the 10y total return (IEF adjusted close, or synthetic):
 
 **Classification:**
 
-- **Level:** `bull` if Δlevel < −10bp; `bear` if > +10bp.
-- **Slope:** `steepening` if Δslope > +5bp; `flattening` if < −5bp.
+- **Level:** `bull` if Δlevel < −15bp; `bear` if > +15bp.
+- **Slope:** `steepening` if Δslope > +8bp; `flattening` if < −8bp.
 - **Neutral:** if either leg is below its threshold.
 
 **Persistence and transitions:**
 
-- 2-week persistence before a regime is confirmed.
+- 4-week persistence before a regime is confirmed.
 - Flag `bear_flattening → bull_flattening` as a late-cycle confirmation event.
 
 **Output:** `curve_regime`, `regime_since`, `transition_flag`, and `curve_score`:
@@ -405,30 +458,66 @@ Measured on the 10y total return (IEF adjusted close, or synthetic):
 
 ### 5.1 Duration score
 
+**v3 (2026-10-02, Scott's decision after Phase E completed in full —
+`docs/specs/bond-lens-phase-e-report.md`):**
+
 ```
-duration_score =
-    0.30 * valuation_score
-  + 0.25 * path_score
-  + 0.20 * carry_score
-  + 0.15 * quadrant_score
-  + 0.10 * curve_score
+duration_score = valuation_score
 ```
 
-**Trend gate:**
+No other module, no trend gate. Phase E's six-variant backtest (§7.2 Test
+3) found the original weighted-sum-plus-trend-gate composite doesn't beat
+a constant-1.0x-duration baseline on Sharpe in 2015-2026, and loses to
+simpler variants (trend-only, trend-gated-valuation) in one or both
+halves. Applying the decision rule mechanically, with no weight-tuning:
+the simplest variant that beats the baseline in **both** halves, and
+outperforms every other variant tested in both halves, is valuation alone
+— confirmed robust under ±50% threshold/multiplier sensitivity (§7.2 Test
+6). **No variant beats constant duration by more than about 0.1 Sharpe;
+the differences involved are within noise. Valuation-only is adopted as a
+modest, economically grounded tilt, not a proven edge.**
 
-- If `trend_state = down`, cap the score at **0**.
-- If `trend_state = mixed`, cap it at **+0.75**.
+`path_score`, `carry_score`, `quadrant_score`, `curve_score`, and
+`trend_state` are still computed (§4) and still displayed — labeled
+**"context"** in the UI (§8) — but none of them feed `duration_score`
+anymore. `carry_score` still feeds `maturity_pref`'s per-maturity table
+(§5.4); `quadrant_score`/`breakeven_gap_bp` still feed `instrument_pref`
+(§5.3); both of those stay **display-only** (§5.3/§5.4's own notes).
+
+**Thresholds:** fixed bands (below), not the percentile-based alternative
+also tested in Phase E (§7's stance-distribution task) — the fixed bands
+are what the winning Test 3 backtest actually used, so they're kept
+exactly as backtested rather than swapped for an untested alternative
+after the fact.
+
+**Coverage:** a row is computed whenever `valuation_score` is available —
+full stop. (Carry/trend were a hard requirement under the old weighted
+composite; they're context now, each already degrading gracefully on
+their own, so neither blocks a row.) This typically pushes
+`bond_lens_signal`'s own start back to roughly `valuation_score`'s own
+start (its pre-TIPS term-premium-only fallback, §4.3) — materially
+earlier than the pre-v3 ~1984 gate.
 
 ### 5.2 Stance mapping
+
+**v3:** "Max extend" is dropped — it existed only to reward `trend = up`
+at a score above 1.0, and there's no trend gate left to produce that
+condition. Phase E's own evidence doesn't support a 1.6× band either way
+(§7.2 Test 6 found the capped-at-Extend version performs within noise of
+the uncapped one). v1 caps at Extend (1.3×).
 
 | duration_score | duration_stance | duration_multiplier |
 |---|---|---|
 | < −0.75 | Short | 0.5× |
 | −0.75 to 0.5 | Neutral | 1.0× |
-| 0.5 to 1.0 | Extend | 1.3× |
-| > 1.0 **and** trend = up | Max extend | 1.6× |
+| > 0.5 | Extend | 1.3× |
 
 ### 5.3 Instrument preference
+
+**Display-only in v1 (v3)** — never backtested (Phase E only tested the
+duration decision, §7.2 Test 3), so Phase D (§6.2) doesn't apply it to any
+holding; the per-holding nominal/TIPS mix stays unchanged regardless of
+what this says. Shown in the market view and explanation text only.
 
 Evaluated in order; the first match wins:
 
@@ -436,15 +525,28 @@ Evaluated in order; the first match wins:
 2. `breakeven_gap > +25bp` **or** quadrant ∈ {Q2, Q3} → **TIPS-tilted**.
 3. Otherwise → **Nominal-tilted**.
 
+A real backtest of this rule against a constant mix, from 2003, is a
+logged follow-up (`bond-lens-decisions.md`) — not blocking Phase D.
+
 ### 5.4 Maturity preference
 
-The maturity with the highest `EFF_n` among {2, 5, 7, 10}. If the stance is Max extend, use **10y** instead.
+**Display-only in v1 (v3)**, same reasoning as §5.3 — never backtested,
+not applied to any holding by Phase D.
+
+The maturity with the highest risk-adjusted `EFF_n` (§4.1) among {2, 5, 7, 10}.
+
+If every available `EFF_n` is ≤ 0 (the curve doesn't compensate for duration risk anywhere on it), or if `EFF_n` can't be computed for any maturity at all (missing `σ_n`/`y_3m`/`CR_n`), `maturity_pref = "bills"` — the safest instrument, since there's no basis for preferring any point on the curve. This is a genuine fourth value, not an absence: `maturity_pref` is never null.
+
+A real backtest of this rule against a fixed 7-10y bucket, from 2003, is
+a logged follow-up (`bond-lens-decisions.md`) — not blocking Phase D.
 
 ### 5.5 Explanation
 
 Generate a plain-English market paragraph from the module outputs. Example:
 
-> "Duration: Neutral (score 0.35). Valuation favorable (real 10y 2.9% vs r-star 0.8%; term premium z +1.1), but trend is mixed, capping the score. Curve regime: bear flattening since Jan 2026. Stocks and bonds positively correlated (+0.31) — bonds not a reliable hedge; tilt toward TIPS. Best carry per unit risk: 5y (breakeven rise 1.1%)."
+> "Duration: Neutral (score 0.35). Valuation favorable (real 10y 2.9% vs r-star 0.8%; term premium z +1.1). Trend (context): mixed. Curve regime (context): bear flattening since Jan 2026. Stocks and bonds positively correlated (+0.31) — bonds not a reliable hedge; tilt toward TIPS. Best carry per unit risk: 5y (risk-adjusted carry 0.85). (Display only.)"
+>
+> Or, when no maturity compensates for duration risk: "...No maturity on the curve compensates for duration risk right now — prefer bills. (Display only.)"
 
 Store it in `explanation` (jsonb) as both text and structured drivers.
 
@@ -466,14 +568,25 @@ Classify each holding. Use the existing security master or metadata found in Ste
 | `maturity_bucket` | 0–1y, 1–3y, 3–7y, 7–12y, 12y+ |
 | `inflation_linked` | bool |
 
-**Which holdings are in scope:**
+**Which holdings are in scope (v3, 2026-10-02 — Scott's decision after Phase E):**
 
 | Holding type | Treatment |
 |---|---|
-| Treasuries, TIPS, bills/cash-like, agency MBS, aggregate | Always in scope |
-| IG corporate, munis | In scope when `include_credit = true` (default). Their duration is managed; their credit exposure is left unchanged. |
-| High yield, EM debt | **Excluded by default.** They behave more like risk assets. Report them as "excluded bond holdings". |
+| Treasuries, TIPS, bills/cash-like, aggregate funds | Always in scope |
+| Agency MBS | In scope when `include_credit = true` |
+| IG corporate, munis | In scope when `include_credit = true`. Their duration is managed; their credit exposure is left unchanged. |
+| High yield, EM debt | **Excluded by default**, same as before. They behave more like risk assets. |
 | Any holding the classifier can't identify | Excluded and flagged for Scott to classify. Never guessed. |
+
+**`include_credit` now defaults to `false`** (v3 — was `true` in v2.1). Phase E
+(Test 8/9, `bond-lens-phase-e-report.md`) found the duration-multiplier
+overlay is a wash on a Treasury+TIPS risk-parity sleeve and actively
+*harmful* on a high-yield-proxy sleeve — duration risk isn't what drives
+credit-spread drawdowns. With the default off, agency MBS/IG corporate/
+munis join high yield and EM debt as **"excluded bond holdings"**, reported
+identically regardless of which exclusion reason applies (default-off
+credit vs. always-excluded risk-like credit) — the report doesn't need to
+distinguish the reason, only the fact and the holding.
 
 **Sleeve statistics:**
 
@@ -486,39 +599,96 @@ Classify each holding. Use the existing security master or metadata found in Ste
 
 ### 6.2 Compute sleeve targets
 
-Starting from the global signal:
+**v3 (2026-10-02, Scott's decision after Phase E): duration only.**
+`instrument_pref` and `maturity_pref` were never backtested — Phase E only
+tested the duration decision itself (§7.2 Test 3, the six-variant sleeve
+backtest). They stay **display-only** in v1: shown in the market view and
+the explanation text, never applied to a holding.
 
 - **Target duration:** `benchmark_duration × duration_multiplier`.
-- **Target instrument mix:**
-  - *TIPS-tilted:* `tips_split_when_tilted` of the nominal-plus-TIPS portion goes to TIPS.
-  - *Bills / short TIPS:* shift duration risk into the shortest eligible holdings and TIPS.
-  - *Nominal-tilted:* keep the existing mix.
-- **Maturity focus:** concentrate any duration added or removed at `maturity_pref`.
-- **Credit holdings:** only their duration is adjusted (6.1). Credit allocation is unchanged.
+- **Target instrument mix:** unchanged from the portfolio's existing mix.
+  No TIPS tilt, no bills/short-TIPS shift, regardless of `instrument_pref`.
+- **Maturity focus:** unchanged from the portfolio's existing maturity
+  profile. No concentration at `maturity_pref`.
+- **Credit holdings:** only their duration is adjusted (6.1), same as
+  before — moot for most portfolios now that `include_credit` defaults to
+  `false`.
+
+A real backtest of the TIPS-tilt rule against a constant mix, and the
+EFF-based maturity choice against a fixed 7-10y bucket, is a logged
+follow-up (`bond-lens-decisions.md`) for a future phase, not blocking this
+one. If and when that backtest supports applying either rule, this
+section is revisited then — not before.
 
 ### 6.3 Translate targets into holding-level weights
 
-Solve a small optimization over the in-scope bond holdings.
+**v3.1 (2026-10-XX):** v3 dropped the mix/maturity-targeting that
+originally motivated a general LP here, so this is now a closed-form
+greedy solve, not a general optimizer — `solveDurationShiftWithinBucket`/
+`solveDurationShiftWithSubstitutes` in `lib/bondLensPortfolio.js`. For a
+single linear constraint (weighted-average duration) with an L1
+("minimize turnover") objective, the optimum moves weight only between
+the two current EXTREMES needed to close the gap (shortest-duration
+donor, longest-duration receiver when raising; reversed when lowering) —
+provably equivalent to a general LP's corner solution for this problem
+shape, without needing an LP library.
 
 **Objective:** minimize turnover, i.e. the sum of |Δweight|.
 
 **Constraints:**
 
 - **Sleeve weight is fixed.** The total weight of in-scope holdings stays unchanged; this is the default scope rule.
+- **Bucket split is fixed (v3).** The solver only moves weight WITHIN
+  each simulator bucket (`nb`, `tip`) — never between them. Each bucket's
+  own total % of the portfolio (from the strategic allocation /
+  `suggestedPcts`) is untouched; confirmed by test
+  (`tests/bondLensPortfolio.test.ts`, "Solver invariants" describe block).
 - **Duration:** sleeve duration within ±0.25 years of target.
-- **Mix:** instrument mix within ±5 percentage points of target.
-- **Eligible instruments:** the portfolio's held in-scope instruments, plus `eligible_instruments`. When the setting is null, the default substitute list is BIL/SHY (bills), IEI or a 5y Treasury (5y), IEF (7–10y), TIP/SCHP (TIPS) and STIP (short TIPS).
+- **Mix: dropped in v3.** §6.2's target mix is now always the portfolio's
+  existing mix (instrument/maturity preference are display-only), so a
+  separate ±5pp mix constraint has nothing to move toward.
+- **Eligible instruments (v3.1):** the portfolio's held in-scope
+  instruments first — turnover-minimizing preference, i.e. the solver
+  tries the held-only solve before ever reaching for a substitute.
+  **Default `eligible_instruments` when the setting is null:**
+  `nb: [BIL, SHY, IEF, TLT]`, `tip: [VTIP, SCHP]` (durations as of
+  2026-10-01: BIL 0.10y, SHY 1.84y, IEF 6.87y, TLT 14.63y, VTIP 2.40y,
+  SCHP 6.40y — sourced from each fund's own published fact sheet, see
+  `bond-lens-decisions.md`). A substitute is introduced only when the
+  held-only solve can't reach the target, and only the single MOST
+  EXTREME eligible candidate in the needed direction is ever introduced
+  (longest available when raising beyond every held holding's own
+  longest, shortest when lowering beyond every held holding's own
+  shortest) — provably sufficient on its own for this one-constraint
+  problem; no combination of multiple less-extreme substitutes could
+  reach further. **Known asymmetry:** VTIP is already the shortest
+  default `tip` instrument, so a target below VTIP's own duration stays
+  unreachable by default (no shorter TIPS substitute is listed) — not a
+  bug, just a consequence of the chosen defaults; a portfolio could add a
+  shorter TIPS instrument via its own `eligible_instruments` override if
+  this matters to it.
 - **No-trade band:** skip any change smaller than `min_trade_threshold`.
 - **Proceeds:** proceeds from shortening duration go to short-duration bonds or bills inside the sleeve. **No cash interaction in v1** (v2.1) — if the portfolio holds no eligible short instrument to receive them, don't shorten: set `target_reachable = false` and write a `gap_note` naming the missing instrument, same as any other unreachable-target case. Bond Lens never touches the cash bucket.
 
-**When the targets can't be reached:** if the eligible instruments can't hit the targets (e.g. no TIPS are held and none are eligible), get as close as possible.
+**When the targets can't be reached** (even after considering eligible substitutes): get as close as possible.
 
 - Set `target_reachable = false`.
 - Write a `gap_note` naming the missing instrument type, e.g. "No TIPS exposure eligible; TIPS tilt not applied".
 
+**Preview (§6.6):** a proposed substitute (not currently held) is shown
+as a distinct row labeled "Proposed — not held" in the Bond Lens card and
+the enable-preview modal. It is NEVER written as an actual holding —
+Bond Lens recommends a target weight for it, it never executes a trade
+or creates a `holdings` row. Confirming the overlay toggle only writes
+`use_bond_lens_overlay` and a `bond_lens_toggle_log` row, nothing else.
+
 **Per-holding output:** current weight, target weight, delta, and a one-line rationale, e.g. "Shorten: duration stance Neutral→Short; proceeds to SHY".
 
-**Holding churn down:** only publish new targets when the stance, instrument preference or maturity preference changes, **or** when drift from the current targets exceeds the no-trade band.
+**Holding churn down (v3):** only publish new targets when the **stance**
+changes (instrument/maturity preference are display-only in v1 and no
+longer drive targets, so a change in either alone no longer triggers a
+republish), **or** when drift from the current targets exceeds the
+no-trade band.
 
 ### 6.4 Optional sub-toggles (per portfolio, default off)
 
@@ -571,7 +741,13 @@ The market-conditions overlay may move equity to cash. Bond Lens then reshapes t
 
 ### Phase D acceptance
 
-- **Off portfolios:** outputs are identical to a build without Bond Lens. Test this explicitly.
+- **Off portfolios:** outputs are identical to a build without Bond Lens.
+  **(v3, re-confirmed by Scott) This must be an explicit automated test**
+  — a portfolio with `use_bond_lens_overlay = false` run through the full
+  overlay stack produces byte-identical holding-level weights/targets to
+  the same portfolio run through a build where Bond Lens's per-portfolio
+  application code doesn't execute at all, not merely "a code path that
+  happens to no-op." Part of Phase D's own test suite, not a manual check.
 - **On portfolios:** outputs reproduce deterministically for a given date and set of holdings.
 - **Sleeve weight:** always unchanged in v1 — `solver_override_enabled` (the only mechanism that could have changed it) is removed (v2.1).
 - **Sub-toggles:** have no effect when off.
@@ -586,6 +762,13 @@ The market-conditions overlay may move equity to cash. Bond Lens then reshapes t
 ---
 
 ## 7. Backtest and validation (Phase E)
+
+**Status: complete (2026-10-02).** Full results, methodology (monthly
+non-overlapping sampling, split-half reporting 2003-2014/2015-2026), and
+Scott's approved decisions are in `docs/specs/bond-lens-phase-e-report.md`
+— not duplicated here. §5's valuation-only duration score and §6.1/6.2's
+`include_credit = false` default/display-only instrument-maturity
+preference are the direct results of this report.
 
 Run before any portfolio can enable Bond Lens with live targets.
 
@@ -627,10 +810,31 @@ Run before any portfolio can enable Bond Lens with live targets.
    Report the bond-sleeve return, the total portfolio drawdown, turnover, and the number of rebalances per year.
 9. **Turnover.** Confirm the no-trade band keeps turnover reasonable. Target fewer than 6 sleeve rebalances per year in normal regimes.
 
+### 7.4 Ongoing validation: annual re-run (v3, 2026-10-02)
+
+Phase E doesn't end at launch — `duration_score` is a single-module
+(valuation-only) tilt adopted on modest, noise-level evidence (§5.1), not
+a proven edge, so it needs to keep earning its place. **Re-run the
+split-half Sharpe and IC test (§7.2 Test 3's methodology) on the LIVE
+rule once a year.** Each re-run:
+
+- Recomputes Sharpe and IC for the live valuation-only rule vs. the
+  constant-1.0x-duration baseline, using the same monthly non-overlapping
+  methodology, over a rolling window ending at the re-run date.
+- **Flags explicitly** if valuation-only has fallen behind constant
+  duration on Sharpe over the most recent 5 years (a rolling check, not
+  just the original 2015-2026 half re-used verbatim).
+- Writes a dated note to `docs/` (e.g.
+  `docs/specs/bond-lens-phase-e-rerun-YYYY.md`) with the numbers and a
+  pass/flag verdict — appended to, not overwriting, prior years' notes.
+- A flagged result doesn't auto-revert the live rule — it's a prompt for
+  Scott to review, same as the original Phase E report was.
+
 ### Phase E acceptance
 
-- A written backtest report in `docs/`, with charts and recommended default weights.
-- Scott approves before live use.
+- A written backtest report in `docs/`, with charts and recommended default weights. **Done** — `bond-lens-phase-e-report.md`.
+- Scott approves before live use. **Done**, with the v3 decisions recorded in `bond-lens-decisions.md`.
+- The annual re-run (§7.4) is scheduled and documented, not just specified.
 
 ---
 
@@ -651,23 +855,34 @@ Run before any portfolio can enable Bond Lens with live targets.
 ### Portfolio view (when enabled)
 
 - **Bond Lens card** showing:
-  - the stance gauge,
-  - the instrument and maturity preference,
-  - the hedge reliability badge.
-- **Sleeve before/after:** duration, mix and maturity profile, current vs. target.
+  - the stance gauge (Short/Neutral/Extend — no Max extend, v3),
+  - the instrument and maturity preference, each labeled **display-only** (v3 — not applied to holdings; see §5.3/§5.4),
+  - the hedge reliability badge,
+  - **the inflation-regime warning (v3, next to the hedge badge):** a
+    display-only flag when core PCE 12-month > 3.0% and not decelerating
+    (3-month annualized ≥ 12-month) — Phase E variant (a) found this
+    isn't reliable enough to drive `hedge_reliable` itself (36.8% hit
+    rate / 28.8% false-alarm rate, `bond-lens-phase-e-report.md`), but it
+    would have flagged 2022 roughly a year early, so it's shown as
+    context, not acted on,
+  - **an info tooltip** on the card, short version of §5.1's verdict:
+    *"No variant beats constant duration by more than about 0.1 Sharpe;
+    differences are within noise. Valuation-only is adopted as a modest,
+    economically grounded tilt, not a proven edge."*
+- **Sleeve before/after:** duration, mix and maturity profile, current vs. target. (v3: mix/maturity profile shown for context but shouldn't change between current and target, since §6.2 no longer targets either.)
 - **Per-holding table:** current weight, target weight, delta, rationale.
 - **Warnings** for:
-  - excluded holdings,
+  - excluded holdings — now includes agency MBS/IG corporate/munis whenever `include_credit = false` (the v3 default), alongside the always-excluded high yield/EM debt (§6.1),
   - unclassified tickers,
   - `target_reachable = false` gap notes,
   - a stale signal.
 
 ### Market view (global; always available, even with no portfolios enabled)
 
-- A per-maturity carry/breakeven table.
+- A per-maturity carry/breakeven table (`BE_n`/`EFF_n`, §4.1 — display-only).
 - A growth/inflation quadrant plot with a 12-week trail.
 - A 10y yield chart with curve-regime shading.
-- Component score bars, with an indicator when the trend gate is binding.
+- **Component score bars, labeled "context" (v3):** path/carry/quadrant/curve/trend no longer feed `duration_score` (§5.1) — shown for context, with a visual distinction from the one score that does (valuation).
 - The explanation paragraph.
 - **Auction cross-check (v2.1), display-only, next to term premium:** latest `bid_to_cover_ratio` and the dispersion proxy from `treasury_auction_results`. Not a score input in v1 (§7.2 test 7b).
 
@@ -695,7 +910,7 @@ E deliberately comes before D. No portfolio gets live Bond Lens targets until th
 
 1. **Default benchmark duration.** Should it be the strategic sleeve duration (the default), or a fixed number?
 2. **TIPS split when tilted.** The default is 60/40.
-3. **Credit holdings.** Should IG corporates and munis be in scope by default? The default is yes, with duration only.
+3. **Credit holdings.** Should IG corporates and munis be in scope by default? **Resolved in v3: no — `include_credit` now defaults to `false`**, per Phase E's model-portfolio tests (`bond-lens-phase-e-report.md`, Tests 8-9) showing the duration overlay is a wash-to-harmful on credit-driven sleeves.
 4. **Default substitute instrument list** (6.3). Should the overlay be allowed to suggest instruments the portfolio doesn't currently hold?
 5. **Solver override defaults.** The nominal bond risk cap (default 25%) and the redistribution split among TIPS, bills and gold.
 6. **Bond return series.** ETF adjusted closes (the default) or synthetic returns.

@@ -33,10 +33,18 @@ export interface CarryRolldownResult {
   Dmod_n1: number | null; // D_mod(n-1), the rolldown-leg duration
   y_n1: number | null; // y_(n-1), interpolated
   CR: number | null; // 12-month carry and rolldown
-  BE: number | null; // breakeven yield rise
-  EFF: number | null; // efficiency -- spec §4.1 defines this with the SAME formula as BE (CR/D_mod(n)), not a typo here, just what's specified
+  BE: number | null; // breakeven yield rise -- CR_n / D_mod(n). Kept in the UI per-maturity table.
 }
 
+// (2026-10-02 follow-up #7, Scott's "my spec error" fix): this used to also
+// return an `EFF` field with the SAME formula as BE (CR/D_mod(n)) -- that
+// field is gone. EFF_n is now a genuinely different, risk-adjusted metric
+// (excess carry per unit of yield vol: (CR_n - y_3m) / (D_mod(n) * sigma_n)
+// -- see composite.ts's sharpeEffHistory), which needs a full trailing
+// history of daily yield changes (sigma_n's own rolling window) that a
+// single day's curve knots can't supply -- so it's computed one level up,
+// in composite.ts, not here.
+//
 // `knots` must include the tenor `n` itself and enough of the curve around
 // n-1 to interpolate (or an exact match at n-1, e.g. n=2 -> y_1 = DGS1
 // directly, no interpolation needed).
@@ -44,14 +52,13 @@ export function carryAndRolldown(knots: CurveKnot[], n: number): CarryRolldownRe
   const y_n = interpolateYield(knots, n);
   const y_n1 = interpolateYield(knots, n - 1);
   if (y_n == null || y_n1 == null) {
-    return { Dmod_n: null, Dmod_n1: null, y_n1, CR: null, BE: null, EFF: null };
+    return { Dmod_n: null, Dmod_n1: null, y_n1, CR: null, BE: null };
   }
   const Dmod_n = modifiedDuration(y_n, n);
   const Dmod_n1 = modifiedDuration(y_n1, n - 1);
   const CR = y_n + Dmod_n1 * (y_n - y_n1);
   const BE = CR / Dmod_n;
-  const EFF = CR / Dmod_n; // spec §4.1: "EFF_n = CR_n / D_mod(n)" -- identical to BE_n's formula as written.
-  return { Dmod_n, Dmod_n1, y_n1, CR, BE, EFF };
+  return { Dmod_n, Dmod_n1, y_n1, CR, BE };
 }
 
 export interface CarryHistoryInputs {
@@ -64,6 +71,22 @@ export interface CarryHistoryInputs {
   dgs7: (number | null)[];
   dgs10: (number | null)[];
   dgs30: (number | null)[];
+  // DTB3 (secondary-market 3mo T-bill, FRED from 1954) -- fallback bill
+  // yield wherever DGS3MO (from 1981-09-01) is unavailable, so carry_score
+  // and the maturity-pref Sharpe ratio's y_3m term can both extend back to
+  // DTB3's start once it's backfilled (scripts/backfill-dtb3.mjs). Optional
+  // -- every existing caller/test that doesn't supply it just gets the
+  // pre-this-change DGS3MO-only behavior (billYieldPct falls through to
+  // null, same as `dgs3mo[t] ?? null` always did).
+  dtb3?: (number | null)[];
+}
+
+// The 3-month bill yield (percent, FRED convention) used for both
+// carry_score's bill leg and the maturity-pref Sharpe ratio's y_3m: DGS3MO
+// first, DTB3 as a fallback wherever DGS3MO is null (pre-1981-09, or any
+// gap). Factored out so both call sites use the exact same fallback rule.
+export function billYieldPct(inputs: CarryHistoryInputs, t: number): number | null {
+  return inputs.dgs3mo[t] ?? inputs.dtb3?.[t] ?? null;
 }
 
 export interface CarryDayResult {
@@ -80,7 +103,7 @@ export interface CarryDayResult {
 export function curveKnotsAt(inputs: CarryHistoryInputs, t: number): CurveKnot[] {
   const toDecimal = (pct: number | null) => (pct == null ? null : pct / 100);
   return [
-    [0.25, toDecimal(inputs.dgs3mo[t])],
+    [0.25, toDecimal(billYieldPct(inputs, t))],
     [1, toDecimal(inputs.dgs1[t])],
     [2, toDecimal(inputs.dgs2[t])],
     [3, toDecimal(inputs.dgs3[t])],
@@ -105,7 +128,7 @@ export function computeCarryHistory(inputs: CarryHistoryInputs, cfg = BOND_LENS_
   for (let t = 0; t < n; t++) {
     const knots = curveKnotsAt(inputs, t);
     const cr10 = carryAndRolldown(knots, 10);
-    const bill = toDecimal(inputs.dgs3mo[t]);
+    const bill = toDecimal(billYieldPct(inputs, t));
     if (cr10.CR != null && bill != null) cr10MinusBill[t] = cr10.CR - bill;
   }
 

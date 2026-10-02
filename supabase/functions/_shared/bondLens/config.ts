@@ -5,7 +5,7 @@
 // PLACEHOLDER values). Bump `version` whenever any value below changes.
 
 export const BOND_LENS_CONFIG = {
-  version: "bond-lens-1.0.1", // 2026-10-02 follow-up: continuous path/quadrant scoring, hedge/valuation/trend fallbacks, curveRegimeStrict added
+  version: "bond-lens-1.0.2", // 2026-10-02 follow-up #8: curveRegimeStrict promoted to the live default (Phase E decision)
 
   // §4's own normalization convention (v2.1 decisions, not Market
   // Conditions' percentile-rank convention): literal z-score, clipped to
@@ -49,28 +49,18 @@ export const BOND_LENS_CONFIG = {
   trend: { momentumLookbackDays: 252, smaWindow: 200 },
 
   // §4.6 curve regime: 63-trading-day Δlevel (ΔDGS10) / Δslope
-  // (Δ(DGS10-DGS5)), 2-week persistence before a regime is confirmed.
-  // These are the values LIVE compute still uses (bond_signals.curve_score
-  // is produced from this block, unchanged).
+  // (Δ(DGS10-DGS5)). (2026-10-02 follow-up #8, Phase E decision): the
+  // ORIGINAL defaults here (10bp/5bp/2wk) averaged 6.0 regime changes/year
+  // and sat neutral only 47.3% of weeks over 1999-2026 -- too much churn
+  // for a module that only carries a 0.10 composite weight (a cross-check,
+  // per spec, not a primary driver). The wider/longer "curveRegimeStrict"
+  // comparison config (15bp/8bp/4wk, built in follow-up #6 specifically so
+  // Phase E could compare both against real numbers rather than overwrite
+  // the shipped default on a judgment call) averaged 2.5 changes/year and
+  // 63.5% neutral over the same window -- promoted to the only config here
+  // once that comparison was in. No separate "strict" block anymore; this
+  // IS the default now.
   curveRegime: {
-    lookbackDays: 63,
-    levelThresholdBp: 10,
-    slopeThresholdBp: 5,
-    persistenceWeeks: 2,
-    scores: {
-      bull_flattening: 1, bull_steepening: 0.5, neutral: 0,
-      bear_flattening: -0.5, bear_steepening: -1,
-    } as Record<string, number>,
-  },
-
-  // Stricter candidate thresholds (2026-10-02 follow-up #6): wider bands,
-  // longer persistence, meant to cut the ~18x/year regime churn the
-  // looser defaults above produce. NOT wired into live compute -- kept
-  // here only so Phase E can run both side by side on the same history
-  // and pick a default with real comparison numbers, per Scott's explicit
-  // "keep both versions" instruction, rather than overwriting the
-  // already-shipped default on a judgment call.
-  curveRegimeStrict: {
     lookbackDays: 63,
     levelThresholdBp: 15,
     slopeThresholdBp: 8,

@@ -111,6 +111,49 @@ export function rollingZScoreSeries(
   return out;
 }
 
+// Day-over-day difference series[t] - series[t-1]; null at t=0 and
+// wherever either side is null. Used by the maturity-preference Sharpe
+// ratio (§5.4, 2026-10-02 follow-up #7) to get daily yield CHANGES before
+// taking their trailing stdev -- stdev of the yield LEVEL itself would
+// measure how much the curve has drifted, not its day-to-day vol.
+export function dailyDiff(series: (number | null)[]): (number | null)[] {
+  const out: (number | null)[] = new Array(series.length);
+  out[0] = null;
+  for (let t = 1; t < series.length; t++) {
+    const a = series[t - 1], b = series[t];
+    out[t] = a != null && b != null ? b - a : null;
+  }
+  return out;
+}
+
+// Trailing fixed-size-window sample stdev, O(n) via the same incremental
+// running sum/sum-of-squares technique as rollingZScoreSeries (see its own
+// comment for the CPU-budget reasoning this mirrors). Unlike
+// rollingZScoreSeries this has no minHistory grace period -- it requires a
+// FULL window of non-null values before producing a result, since "trailing
+// 1-year stdev" means exactly that, not "whatever history happens to exist
+// yet." No clipping either -- this feeds a denominator (§5.4's sigma_n),
+// not a module output score.
+export function rollingStdevSeries(series: (number | null)[], window: number): (number | null)[] {
+  const n = series.length;
+  const out: (number | null)[] = new Array(n);
+  let sum = 0, sumSq = 0, count = 0;
+  for (let t = 0; t < n; t++) {
+    const v = series[t];
+    if (v != null) { sum += v; sumSq += v * v; count++; }
+    const outIdx = t - window;
+    if (outIdx >= 0) {
+      const ov = series[outIdx];
+      if (ov != null) { sum -= ov; sumSq -= ov * ov; count--; }
+    }
+    if (count < window) { out[t] = null; continue; }
+    const m = sum / count;
+    const variance = Math.max(0, (sumSq - count * m * m) / (count - 1));
+    out[t] = Math.sqrt(variance);
+  }
+  return out;
+}
+
 // Carries the last available value in `rows` forward onto `dates`, as of
 // each target date, capped at `maxCarryDays` CALENDAR days of staleness.
 //

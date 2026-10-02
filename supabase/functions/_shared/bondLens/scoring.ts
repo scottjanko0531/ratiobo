@@ -23,6 +23,9 @@ export interface BondLensHistoryInputs {
   dates: string[]; // the shared trading calendar every series below is already aligned onto
   dgs3mo: (number | null)[]; dgs1: (number | null)[]; dgs2: (number | null)[]; dgs3: (number | null)[];
   dgs5: (number | null)[]; dgs7: (number | null)[]; dgs10: (number | null)[]; dgs30: (number | null)[];
+  // DTB3 fallback for the bill leg (see carry.ts's billYieldPct) -- optional,
+  // only present once scripts/backfill-dtb3.mjs has populated bond_raw_series.
+  dtb3?: (number | null)[];
   dfii5: (number | null)[]; dfii10: (number | null)[];
   t5yie: (number | null)[]; t10yie: (number | null)[]; t5yifr: (number | null)[];
   dff: (number | null)[];

@@ -563,3 +563,618 @@ cheap follow-up (one Python script, FRED's public `fredgraph.csv`
 endpoint, same shape as the Shiller/ACM backfills already in this repo)
 whenever there's budget for a session with direct DB write access, or
 Scott wants to run it himself.
+
+Resolved this session (see below): a reusable Node script,
+`scripts/backfill-dtb3.mjs`, run by Scott locally with his own
+service-role key -- same "assistant never handles the key" boundary,
+just solved with a script Scott runs instead of a session with direct
+DB access.
+
+---
+
+## Phase C fix: maturity preference ("my spec error") -- 2026-10-02
+
+Scott's own correction, verbatim: *"EFF_n = CR_n / D_mod(n) is the same
+formula as BE_n, and it structurally favors the shortest maturity."*
+Confirmed independently before the fix: on every one of the 5 spot-
+check dates, the OLD `maturityPref` picked **2y** every single time --
+not because 2y was genuinely the best risk/reward point on the curve,
+but because `D_mod(n)` grows roughly monotonically with `n` while `CR_n`
+does not grow nearly as fast, so `CR_n/D_mod(n)` is biased toward small
+`n` on essentially any realistic curve shape. The metric was
+structurally incapable of ever preferring 10y except via the separate
+Max-extend override.
+
+**Fix.** `EFF_n` is now a genuine Sharpe-style ratio:
+
+```
+EFF_n = (CR_n - y_3m) / (D_mod(n) * sigma_n)
+```
+
+`sigma_n` = trailing 1-year (252-trading-day) stdev of **daily changes**
+in `y_n`, annualized (`stdev(Δy_n) * sqrt(252)`). `y_3m` = the 3-month
+bill yield (`DGS3MO`, falling back to `DTB3`). The OLD formula
+(`CR_n/D_mod(n)`) didn't go away -- it's exactly what `BE_n` ("breakeven
+yield rise") already was, so removing the redundant `EFF` field from
+`carryAndRolldown`'s return type *was* the rename; `BE_n` is unchanged
+and still surfaces in the per-maturity UI table (`maturityTable` in the
+explanation drivers).
+
+**Implementation notes:**
+
+- All four maturities {2, 5, 7, 10} are EXACT knots in the curve table
+  (`DGS2`/`DGS5`/`DGS7`/`DGS10` directly) -- no interpolation needed to
+  get `y_n(t)` itself for the sigma calculation, only `CR_n`/`D_mod(n)`
+  (via the existing `carryAndRolldown`, for the `n-1` rolldown leg)
+  needs the full curve.
+- `sigma_n` is computed O(n) per maturity via two new `normalize.ts`
+  primitives (`dailyDiff`, `rollingStdevSeries`) using the same
+  incremental running-sum/sum-of-squares technique as
+  `rollingZScoreSeries` -- deliberately, given this module's own
+  prior history of CPU-time bugs from naive per-day window rescans.
+  `rollingStdevSeries` has NO `minHistory` grace period (unlike the
+  z-score version) -- "trailing 1-year stdev" means a full 252-value
+  window, not whatever history happens to exist yet.
+- **New `maturity_pref` value: `"bills"`.** When every available
+  `EFF_n` is <= 0 (the curve isn't compensating for duration risk
+  anywhere on it -- the inverted-curve case) OR when `EFF_n` can't be
+  computed for any maturity at all, `maturityPref` returns `"bills"`
+  rather than `null`. Judgment call: `bond_lens_signal.maturity_pref`
+  is `NOT NULL`, and "can't tell, so stay in cash" was picked over
+  silently skipping the row for one missing/non-positive piece. Added
+  via migration `bond_lens_signal_bills_and_nullable_hedge`
+  (`maturity_pref` check constraint now allows `'bills'`).
+- `docs/specs/bond-lens.md` §4.1 and §5.4 edited directly to describe
+  the new formula and the `"bills"` semantics -- the first time this
+  session edited the spec file itself rather than only this decisions
+  log.
+
+**Maturity-pref distribution, before vs. after** (full `bond_lens_signal`
+history; "before" captured by direct query immediately before the
+redeploy, "after" immediately after):
+
+| | before (n=4,861, 2006-04-11 to 2026-09-30) | after (n=10,516, 1984-09-11 to 2026-09-30) |
+|---|---|---|
+| 2y | 3,096 (63.7%) | 6,645 (63.2%) |
+| 5y | 906 (18.6%) | 1,124 (10.7%) |
+| 7y | 662 (13.6%) | 1,063 (10.1%) |
+| 10y | 197 (4.1%) | 816 (7.8%) |
+| bills | n/a (value didn't exist) | 868 (8.3%) |
+
+2y is still the single largest bucket (barely moved, 63.7% -> 63.2%),
+but that's no longer definitionally guaranteed the way it was under the
+old `CR_n/D_mod(n)` formula -- it's now a real empirical outcome (2y's
+own yield vol has often been low enough, relative to its carry, to
+still win on a genuine risk-adjusted basis in many periods) rather than
+a structural artifact that could never produce anything else. The real
+evidence the fix worked: 10y's share nearly doubled (4.1% -> 7.8%),
+5y/7y's shares dropped by roughly half each, and `"bills"` now exists
+as a real outcome in 8.3% of days -- days where the Sharpe-style ratio
+says no maturity on the curve is worth the duration risk, which the old
+formula could never express at all. Row count more than doubled
+(4,861 -> 10,516) purely from the separate coverage-gating fix below,
+not from this fix itself.
+
+Also note the coverage-gating fix (below) means "before" and "after"
+aren't drawing from identical date ranges -- "before" only covers
+2006-2026 (the old seven-way gate's binding window), "after" covers
+1984-2026. This table is reported as-is rather than re-run on a matched
+date range, since the whole point of both fixes landing together was
+to get both a correct formula AND a longer history at the same time.
+
+---
+
+## Composite coverage reweighting -- 2026-10-02
+
+Per §4's "missing inputs are reweighted" convention (previously applied
+only within individual modules, e.g. valuation's real-yield-gap vs.
+term-premium legs), now applied to the composite itself for the first
+time. Old gate: `computeBondLensSignalHistory` required ALL of
+`valuation_score`, `path_score`, `carry_score`, `quadrant_score`,
+`curve_score`, `trend_state`, AND `hedge_reliable` to be non-null before
+emitting a `bond_lens_signal` row at all -- an all-or-nothing gate.
+
+**New gate:** a row is attempted once `valuation_score`, `carry_score`,
+and `trend_state` are ALL present. `path_score`/`quadrant_score`/
+`curve_score` are each optional -- whichever of the three are present
+get their §5.1 weights (0.25/0.15/0.10 respectively) renormalized to
+sum back to 1.00 over just that subset, rather than treating a missing
+module as a silent zero (which would mechanically bias the composite
+toward "duration-unfavorable" purely from missing data, not a real
+market read). The result is flagged `degraded` (with the specific
+`missingModules` list) in `explanation.drivers.duration` whenever any
+of the three optional modules is absent.
+
+`hedge_reliable` was deliberately left OUT of this gate -- it's a
+separate concern (`instrumentPref` already degrades gracefully on a
+null hedge reading, falling through to the breakeven/quadrant rule) and
+in practice is non-null from ~1966 onward (36 months after the
+Shiller/synthetic hedge fallback's own warmup), well before
+`carry_score`'s own ~1984/~1972 start -- so by the time the new gate's
+three required fields are ever satisfiable, `hedge_reliable` is already
+populated. Confirmed this reasoning holds rather than just assumed it;
+also dropped the `NOT NULL` constraint on `bond_lens_signal.hedge_reliable`
+in the same migration as a defensive belt-and-suspenders measure, in
+case that reasoning is ever wrong for a data reason not anticipated here.
+
+**Expected effect:** the composite's own start moves from wherever the
+slowest-starting module among the ORIGINAL seven-way gate used to bind,
+back to roughly `carry_score`'s own start -- ~1984 on `DGS3MO` alone,
+or ~1972 once `DTB3` is backfilled and recomputed (§7.1's reduced
+backtest window depends on this).
+
+`durationScore`'s signature changed to accept `path`/`quadrant`/`curve`
+as `number | null` (previously all five were required `number`) and now
+returns `degraded`/`missingModules` alongside the existing `raw`/
+`score`/`stance`/`multiplier` fields. `raw` is now the RENORMALIZED
+pre-trend-gate score (not a plain 5-weight sum) -- when all five modules
+are present, renormalizing over weights summing to 1.00 is a no-op, so
+every pre-existing `durationScore` test continued to pass unchanged.
+
+---
+
+## Spot-check table (post-fix), 2026-10-02
+
+| Date | valuation | path | carry | quadrant | curve | raw composite | gated composite | stance | instrument | maturity | why gated≠raw |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2020-03-23 | -0.98 | 0.09 | -0.74 | 0.75 | 0.50 | -0.26 | -0.26 | Neutral | nominal_tilted | 2y | trend up, no cap |
+| 2022-06-14 | 0.26 | 0.46 | -0.44 | -0.16 | -0.50 | 0.03 | 0.00 | Neutral | 2y | nominal_tilted | trend down -> cap 0 |
+| 2023-10-19 | 1.30 | 0.62 | -1.02 | 0.35 | -1.00 | 0.29 | 0.00 | Neutral | bills_short_tips | bills | trend down -> cap 0 |
+| 2024-09-18 | 0.58 | 0.43 | -0.91 | 0.47 | 0.50 | 0.22 | 0.22 | Neutral | nominal_tilted | bills | trend up, no cap |
+| 2026-09-30 (today) | 1.34 | 1.58 | 0.37 | 0.44 | -0.50 | 0.89 | 0.00 | Neutral | bills_short_tips | 2y | trend down -> cap 0 |
+
+Explanation text, verbatim, for each:
+
+- **2020-03-23:** "Duration: Neutral (score -0.26). Valuation unfavorable (real 10y -0.0% vs r-star 1.3%; term premium z -1.7). Curve regime: bull steepening. Best carry per unit risk: 2y (risk-adjusted carry 0.23)."
+- **2022-06-14:** "Duration: Neutral (score 0.00). Valuation unfavorable (real 10y 0.9% vs r-star 1.5%; term premium z -0.1). Trend is down, capping the score at 0. Curve regime: bear flattening. Best carry per unit risk: 2y (risk-adjusted carry 1.10)."
+- **2023-10-19:** "Duration: Neutral (score 0.00). Valuation favorable (real 10y 2.5% vs r-star 1.0%; term premium z +1.1). Trend is down, capping the score at 0. Curve regime: bear steepening. Bonds not a reliable hedge for equities right now — tilt toward bills/short TIPS. No maturity on the curve compensates for duration risk right now — prefer bills."
+- **2024-09-18:** "Duration: Neutral (score 0.22). Valuation favorable (real 10y 1.6% vs r-star 0.9%; term premium z +0.4). Curve regime: bull steepening. No maturity on the curve compensates for duration risk right now — prefer bills."
+- **2026-09-30:** "Duration: Neutral (score 0.00). Valuation favorable (real 10y 2.9% vs r-star 1.0%; term premium z +2.1). Trend is down, capping the score at 0. Curve regime: bear flattening. Bonds not a reliable hedge for equities right now — tilt toward bills/short TIPS. Best carry per unit risk: 2y (risk-adjusted carry 0.73)."
+
+Two of five dates (2023-10-19, 2024-09-18) land on `maturity_pref =
+"bills"` -- real confirmation the new sentinel fires on live data, not
+just in synthetic tests. All five land in "Neutral" stance; three of
+five show the trend gate actually binding (raw != gated), which is the
+gate doing real work, not a decorative cap that never triggers.
+
+---
+
+## Phase E, re-run with corrected methodology -- 2026-10-02
+
+Per Scott's correction: monthly, non-overlapping sampling (not daily
+overlapping), 2003-2014 vs. 2015-2026 reported separately, judged on
+whether an improvement holds in BOTH halves, not the full-period
+aggregate.
+
+**(a) Inflation-regime hedge rule, re-tested on 1965-2002 (not
+2003-2019 -- core PCE never exceeded 3% there).** Ground truth: the
+pre-1993 Shiller/synthetic realized SPY-vs-synthetic-10y-bond monthly
+correlation, same construction already live in `scoring.ts`.
+
+- 317 months with usable joined data (of ~456 possible in the window).
+- Hit rate: 35/95 actual-bad-hedge months correctly flagged = **36.8%**.
+- False-alarm rate: 61/212 actual-good-hedge months incorrectly flagged
+  = **28.8%**.
+- H2 2021 sanity check, with 2-week hysteresis added: **18 of 26**
+  weeks flagged (vs. 17/26 without hysteresis -- barely changes, since
+  the underlying PCE signal here is monthly and persistent).
+
+**Verdict: do not adopt.** A 36.8% hit rate against a 28.8%
+false-alarm rate is a weak discriminator -- not much better than
+noise -- over the one 34-year window (1965-2002) that actually stress-
+tests it. It does correctly catch 2021-22 early, which is the
+headline case it was designed for, but the false-alarm rate elsewhere
+in history is too high to justify overriding the realized-correlation
+rule with it by default. Keep the existing correlation-based rule as
+the only live rule; this stays a documented comparison variant, not
+promoted.
+
+**(b) Quadrant removed from the composite, re-tested properly
+(monthly, split-half).** Alt: quadrant_score dropped, its weight moved
+to valuation (0.40 total; path 0.25, carry 0.20, curve 0.10 unchanged
+-- note this sums to 0.95, not 1.00, matching my own literal reading of
+Scott's "(0.40)" figure from the original ask rather than a renormalized
+0.45; flagged here rather than silently corrected).
+
+| Half | metric | live | alt |
+|---|---|---|---|
+| 2003-2014 (n=97 months) | IC | 0.025 | 0.176 |
+| 2003-2014 | hit rate | 52.6% | 55.7% |
+| 2015-2026 (n=128 months) | IC | -0.043 | -0.038 |
+| 2015-2026 | hit rate | 48.4% | 46.9% |
+
+**Verdict: do not adopt.** The full-period-only result from the prior
+(uncorrected) run -- IC 0.093->0.169, hit rate 48.65%->52.44% -- is
+confirmed to be an artifact of pooling. The entire apparent gain lives
+in 2003-2014; in 2015-2026 neither variant has real predictive power
+(both ICs are noise-level negative) and the alt variant's hit rate is
+outright worse than live's. This fails "holds in both halves" --
+keep quadrant_score in the live composite, weights unchanged.
+
+(The original ask also offered a second sub-variant -- quadrant's
+weight going to carry (0.25) instead of valuation -- which wasn't
+separately tested, since the valuation-targeted sub-variant above
+already fails decisively in the recent half; happy to run the
+carry-targeted version too if useful, but it's unlikely to change the
+"don't adopt" conclusion given the underlying problem (quadrant and
+path's own 0.72 correlation) doesn't depend on which module absorbs
+the freed-up weight.)
+
+**(c) Curve regime, live vs. strict -- unchanged from the earlier
+comparison, reported as-is:** live config (10bp/5bp/2wk) averages 6.0
+regime changes/year, 47.3% neutral; `curveRegimeStrict`
+(15bp/8bp/4wk) averages 2.5/year, 63.5% neutral, over 1999-2026. No
+new backtest run against forward returns this session -- this is a
+churn/stability comparison only, not a predictive-power one. Leaning
+recommendation: curve_score only carries a 0.10 composite weight (a
+cross-check, per spec, not a primary driver), so the live config's
+~6x/year flip rate looks more like noise than signal relative to what
+a 10%-weighted module should be contributing; `curveRegimeStrict` is
+the more defensible default on that reasoning, but this is Scott's
+call to make, not a data-driven win either way without a real
+forward-return test of the two configs against each other.
+
+**(d) Carry history via DTB3 -- unchanged, reported as-is:** analytically
+derived ~1972-73 start once DTB3 is backfilled (see above); backfill
+script (`scripts/backfill-dtb3.mjs`) written this session, not yet run
+(Scott runs it locally with his own service-role key).
+
+### Final recommendation
+
+**Default weights: unchanged** (0.30 valuation / 0.25 path / 0.20
+carry / 0.15 quadrant / 0.10 curve). Neither tested reweighting variant
+((a)'s rule change, (b)'s quadrant removal) earns promotion under the
+corrected split-half methodology -- (a) is a weak discriminator over
+its only real stress-test window, (b)'s apparent edge doesn't survive
+out-of-sample.
+
+**Adopt:**
+- The maturity-preference fix and composite coverage reweighting
+  (both already deployed, bond-lens-compute v13).
+- `curveRegimeStrict` as the live curve-regime config, on the
+  reasoning above -- Scott's call to confirm.
+- Run `scripts/backfill-dtb3.mjs` when convenient, to push carry's
+  (and the full composite's) start back from ~1984 to ~1972.
+
+**Don't adopt:**
+- Variant (a) (inflation-regime hedge override) -- 36.8%/28.8%
+  hit/false-alarm, too weak a discriminator.
+- Variant (b) (quadrant out of the composite) -- full-period gain
+  doesn't survive the 2015-2026 half.
+
+---
+
+## Phase E, completed -- 2026-10-02
+
+Scott's follow-up after reviewing the above: the full composite's own
+IC/hit-rate (0.025/-0.043, 52.6%/48.4%) is "essentially no predictive
+power," and §7 wasn't actually finished -- stance distribution, forward-
+return-by-stance, the 6-variant bond sleeve backtest, sensitivity, and
+model-portfolio tests were all still outstanding. Full results, decision
+rule applied mechanically (no weight-tuning), and the final recommendation
+are in **`docs/specs/bond-lens-phase-e-report.md`** -- not duplicated here.
+
+Headline: the full 5-module composite doesn't beat a constant-1.0x-
+duration baseline on Sharpe in 2015-2026, and loses to simpler variants in
+one or both halves. The simplest variant that beats the baseline in BOTH
+halves, and beats every other variant tested in both halves, is
+**valuation_score alone, no trend gate, no other module** -- confirmed
+robust under +/-50% threshold/multiplier sensitivity. Recommendation: v1
+drives `duration_score`/`duration_stance`/`duration_multiplier` from
+valuation alone; path/carry/quadrant/curve stay computed and displayed
+(explanation, maturity table, hedge/curve badges, a new display-only
+inflation-regime warning for variant (a)) but drop out of the stance
+decision. Not yet implemented in code -- pending Scott's review, per his
+explicit instruction not to start Phase D (or revise the shipped
+composite) until then.
+
+Also landed this session: `curveRegimeStrict` promoted to the only/default
+curve-regime config (`bond-lens-compute` v14, redeployed and recomputed --
+see composite.ts's own decision above); `.env.local` confirmed covered by
+`.gitignore` ahead of Scott adding `SUPABASE_SERVICE_ROLE_KEY` for the
+DTB3 backfill.
+
+---
+
+## Phase E approved; spec promoted to v3 -- 2026-10-02
+
+Scott's decisions on the Phase E report, in full:
+
+1. **Duration stance from valuation only, capped at Extend.**
+   `duration_score = valuation_score`, no trend gate, FIXED thresholds
+   (-0.75/0.5) -- exactly what the winning Test 3 backtest used, not the
+   percentile-based alternative (diagnostic only, never the scheme
+   actually backtested). "Max extend" dropped (its trend=up condition no
+   longer exists; no evidence supports a 1.6x band regardless). Sharpe
+   re-confirmed with the cap applied: **0.64 (2003-2014) / -0.12
+   (2015-2026)**, vs. the uncapped 0.66/-0.11 -- negligible difference
+   (the >1.0 band was rare in-sample), still beats the constant-duration
+   baseline (0.60/-0.20) in both halves. Implemented in `composite.ts`
+   (durationScore/maturityPref/instrumentPref/buildExplanation all
+   simplified -- `DurationStance` is now `"Short" | "Neutral" | "Extend"`,
+   `DurationScoreResult` dropped `raw`/`degraded`/`missingModules` since
+   there's only one input now and the composite-level gate (valuation_score
+   alone) replaces the old carry+trend+valuation gate). Redeployed as
+   `bond-lens-compute` v15.
+2. **Honest framing.** The exact line Scott specified is now the lead
+   sentence of `bond-lens-phase-e-report.md`'s verdict: *"No variant beats
+   constant duration by more than about 0.1 Sharpe; differences are
+   within noise. Valuation-only is adopted as a modest, economically
+   grounded tilt, not a proven edge."* A short version goes in the Bond
+   Lens card's info tooltip (§8 of the spec) -- **not yet implemented in
+   UI code**, since no Bond Lens frontend component exists in this repo
+   yet (Phase F hasn't started); logged here so the exact tooltip text is
+   ready whenever Phase F is built.
+3. **Instrument/maturity preference: display-only in v1.** Confirmed --
+   `instrument_pref`/`maturity_pref` were never backtested (Phase E only
+   tested the duration decision). Phase D (just-started, see below)
+   applies ONLY `duration_multiplier`; the per-holding nominal/TIPS mix
+   and maturity profile are left unchanged. **Follow-up, logged, not
+   blocking:** backtest the TIPS-tilt rule vs. a constant mix, and the
+   EFF-based maturity choice vs. a fixed 7-10y bucket, both from 2003.
+   Not run this session.
+4. **Scope.** `include_credit` now defaults to `false`. In scope by
+   default: Treasury, TIPS, bills, aggregate funds. Agency MBS, IG
+   corporate, and munis join HY/EM debt as excluded-by-default, reported
+   as "excluded holdings." `docs/specs/bond-lens.md` §6.1 updated
+   directly (and §5.1-5.4, §6.2-6.3, §7.4, §8, §10 -- see the spec's own
+   new "§0b. Changes from Phase E (v2.1 -> v3)" section for the full
+   list).
+5. **Other modules labeled "context."** path/carry/quadrant/curve/trend
+   stay computed and displayed, plus the hedge badge and a new
+   display-only inflation-regime warning (variant (a), next to the hedge
+   badge) -- but carry no weight in `duration_score`. The UI "context"
+   labeling and the inflation-regime warning badge are **spec'd, not yet
+   built** (same Phase-F-doesn't-exist-yet reason as item 2).
+6. **Annual Phase E re-run.** New §7.4 in the spec. **Not yet scheduled
+   as an actual recurring job this session** -- this repo's cron
+   mechanism (`pg_cron` + edge functions, per §0 item 8) would need a new
+   yearly-cadence job calling a new backtest edge function; that function
+   doesn't exist yet. Logged as a near-term follow-up, separate from
+   Phase D.
+
+Then Phase D per §6, with v2.1 and v3 changes together -- see the next
+entry for what's actually been built.
+
+---
+
+## Phase D built -- 2026-10-02
+
+Scope confirmed by direct query before writing anything: `portfolios.
+use_bond_lens_overlay` and `bond_lens_portfolio_settings` already existed
+(Phase A), `bond_lens_portfolio_settings` had 0 rows, `bond_instrument_meta`
+already had 31 rows with `effective_duration` already populated for every
+IN-SCOPE holding (SHY 1.84, TLT 14.63, SCHP 6.4, VTIP 2.4) -- no manual
+duration backfill needed. Reconnaissance (a dedicated fork) found
+`combineAllOverlays`/`computeAllocationDeltas` (`lib/simulatorKeys.js`,
+`lib/marketOverlayPortfolio.js`) already support a `sectorTargets`
+override map (per-symbol % of its OWN bucket's target, falling back to
+pro-rata) -- the exact mechanism every other overlay already uses to
+reshape holding-level weights. Decided to make Bond Lens a sectorTargets
+PRODUCER rather than a parallel pipeline, both for consistency and
+because it makes the "off == identical" acceptance test close to free
+(an empty sectorTargets map is already that function's own no-op
+default).
+
+**`lib/bondLensPortfolio.js`** (new, pure, no DB dependency):
+- `classifyBondSleeve` -- §6.1's scope table, by `bond_type`: always-in-
+  scope (`treasury_nominal`, `tips`, `bills_cash_like`, `aggregate`),
+  credit-gated on `include_credit` (`ig_corporate`, `muni`,
+  `agency_mbs`), always-excluded (everything else, e.g. `high_yield`,
+  `em_debt`). Unclassified/missing-duration holdings excluded and
+  flagged, never guessed (§6.7).
+- `sleeveStats` -- weight, weighted duration, mix (nominal/tips/bills/credit).
+- `solveDurationShiftWithinBucket` -- the actual new machinery. v3
+  dropped the mix/maturity-targeting that originally motivated a general
+  LP (§6.3's "small optimization"), so this is a closed-form greedy
+  two-extreme-point solver instead: to raise a bucket's weighted
+  duration, move weight from its shortest-duration holding(s) to its
+  longest (reverse to lower) -- provably turnover-minimal for a single
+  linear constraint with an L1 objective, no LP library needed. Flags
+  `target_reachable = false` with a `gap_note` when a bucket has only one
+  holding, or the target is beyond what its own held instruments can
+  reach (does NOT reach for `eligible_instruments` substitutes itself in
+  v1 -- flagged as a gap, not auto-resolved).
+- `computeBondLensSectorTargets` -- ties it together. Each bucket's own
+  target duration = that bucket's own CURRENT duration x (sleeve target /
+  sleeve current), where sleeve target = `benchmark_duration` (portfolio
+  setting, or the sleeve's own current duration if null, per §6.1) x
+  `duration_multiplier`. This is why Neutral (multiplier 1.0, no explicit
+  benchmark override) is a true no-op: ratio = 1 regardless of starting
+  duration. **No TIPS tilt, no maturity targeting anywhere in this module
+  -- v3 scope.**
+- 22 tests (`tests/bondLensPortfolio.test.ts`), including the literal
+  acceptance test from spec §6: `computeAllocationDeltas(holdings,
+  targets, { sectorTargets: {} })` (Bond Lens off) produces IDENTICAL
+  `actionRows` to the same call with `sectorTargets` omitted entirely
+  (no Bond Lens code in the picture at all) -- not a manual check, an
+  automated one.
+
+**UI wiring** (`app/portfolios/page.jsx`, two delegated passes): toggle
+checkbox mirroring `use_market_overlay`/`use_capex_overlay` exactly;
+Bond Lens card (stance/multiplier, instrument/maturity labeled
+"(display-only)", hedge badge, sleeve before/after, excluded holdings,
+gap notes, explanation text, stale-signal handling per §6.7); merged into
+the existing Portfolio Actions `computeAllocationDeltas` call via
+`sectorTargets`, strictly gated on `use_bond_lens_overlay` (the function
+is never even called when off, not called-then-discarded); `bond_lens_
+toggle_log` insert on enable/disable. 404/404 tests pass throughout
+(22 new, 382 unchanged), `npm run build` clean.
+
+**Explicitly NOT built this session (logged, not silently skipped):**
+- No settings-EDITING UI for `bond_lens_portfolio_settings` -- read-only
+  display only. No portfolio has a settings row yet (defaults apply to
+  all). Editing UI (benchmark duration override, min-trade-threshold,
+  etc.) is a follow-up.
+- No "settings change" entries in `bond_lens_toggle_log` (only
+  enable/disable) -- there's no settings-editing UI yet to generate one.
+- The info tooltip (Phase E's verdict line), the "context" labeling on
+  path/carry/quadrant/curve score bars, and the inflation-regime warning
+  badge (§8, items 2/5 from the prior entry) -- still not built; no Bond
+  Lens market-view/UI work has happened at all beyond the portfolio card
+  above. The inflation-regime warning specifically also needs a new
+  backend computation (core PCE 3-month-annualized vs. 12-month, not
+  currently a queryable column anywhere) that hasn't been built either.
+- `eligible_instruments` substitutes (BIL/SHY, IEI, IEF, TIP/SCHP, STIP)
+  are not consulted by the solver -- only currently-held instruments are
+  ever reallocated among. A bucket with only one holding simply reports
+  `target_reachable = false`.
+- The TIPS-tilt-vs-constant-mix and EFF-maturity-vs-fixed-bucket backtest
+  (logged as a Phase-E follow-up, not blocking) -- still not run.
+- Tests 8/9's full model-portfolio simulation already ran in Phase E
+  (`bond-lens-phase-e-report.md`) using IEF/TIP/HYG proxies -- Phase D's
+  OWN acceptance fixture set (Treasury-only, aggregate-fund-only, mixed
+  Treasury/TIPS/corporate, no bonds, HY-only, unknown ticker, per §6
+  "Phase D acceptance") was not separately built as fixture portfolios in
+  this app's own test data -- the `tests/bondLensPortfolio.test.ts` fixtures
+  cover the same cases in isolation (unit-level), not as literal seeded
+  portfolio rows.
+
+---
+
+## Phase D, Step 1: eligible_instruments substitutes -- 2026-10-02
+
+Per Scott's instruction, built in order, checkpointing before Step 2.
+
+**Why this was needed:** the dry run (above) found 3 of 9 portfolios
+(All Weather Alpha, All Weather With Equity Tilting, Dalio All Weather)
+flagged `target_reachable = false` purely because their nb/tip buckets
+each hold exactly ONE instrument -- nothing to shift weight between.
+
+**Ingestion:**
+- `asset_price_history`: BIL/SHY/IEF/TLT/VTIP already covered; **SCHP was
+  missing entirely** (0 rows) -- backfilled via the existing
+  `backfill-asset-price-history` edge function (`?symbols=SCHP`, no new
+  code needed), 4,065 rows, 2010-08-05 to present.
+- `bond_instrument_meta`: SHY/TLT/SCHP/VTIP already had `effective_duration`
+  + `duration_as_of` populated (real holdings, Phase A). BIL and IEF are
+  held by NO current portfolio, so they had no `holding_id` to attach to
+  at all -- required a real schema change, not just new rows: swapped the
+  table's PK from `holding_id` to a new surrogate `id`, added a `symbol`
+  column, made `holding_id` nullable with a check constraint
+  (`(holding_id IS NOT NULL) <> (symbol IS NOT NULL)`, exactly one of the
+  two set per row) and a partial unique index on each. Inserted two
+  reference rows (`holding_id: null`, `symbol` set instead):
+  - **BIL**: 0.10y effective duration, as of 2026-10-01. Source: SSGA/
+    State Street's own BIL fact sheet (1-3 month T-bill fund; stable,
+    near-zero duration by construction).
+  - **IEF**: 6.87y effective duration, as of 2026-10-01. Source:
+    iShares' own IEF product page (7-10y Treasury fund).
+  Both sourced via live web search against each fund's own published
+  page, not estimated from memory -- this directly drives real
+  duration math, so it needed a real citation, not a guess.
+
+**Solver** (`lib/bondLensPortfolio.js`):
+- `solveDurationShiftWithSubstitutes(entries, targetDuration, eligibleMeta, opts)`:
+  tries the held-only solve first (turnover-minimizing -- substitutes are
+  a last resort, never a first choice). If unreachable, finds eligible
+  candidates (not already held) on the correct side of the gap, and
+  introduces the SINGLE MOST EXTREME one (longest when raising past
+  every held holding's own max, shortest when lowering past every held
+  holding's own min). Proven sufficient on its own: for one linear
+  constraint with an L1 objective, no combination of two or more
+  less-extreme substitutes could ever reach further than the one most
+  extreme instrument already does alone -- so "fewest new instruments
+  possible" reduces to "at most one," always.
+- `solveDurationShiftWithinBucket` extended to accept synthetic
+  zero-weight substitute entries (`isSubstitute: true`) as valid
+  RECEIVERS without any other change to its logic -- a substitute
+  starting at $0 can never become a donor anyway (the existing
+  donor-capacity check already skips any entry with nothing to give
+  away), so this fell out of the existing code for free.
+- `computeBondLensSectorTargets` takes a new 5th param,
+  `bondInstrumentMetaBySymbol` (symbol-keyed, covering both held and
+  reference rows), and returns `proposedNewHoldings` for any introduced
+  substitutes -- entries not in the original `holdings` array at all,
+  so the UI can label them distinctly ("Proposed -- not held") rather
+  than conflating them with real holdings.
+- **Invariants re-confirmed, same three as the user's pre-enable
+  checklist, now covering substitutes too:** bucket totals still fixed
+  (a substitute's weight comes out of the SAME bucket's existing total,
+  never a different bucket or a new allocation); composition with
+  exposureMultiplier unaffected (substitutes flow through the exact same
+  `sectorTargets` mechanism); no cash/freedPct interaction (substitutes
+  never touch the cash bucket, same as before).
+- **Known asymmetry, logged plainly, not fixed:** the default `tip`
+  eligible list (`VTIP`, `SCHP`) has nothing shorter than VTIP's own
+  2.40y -- a tip-bucket target below that stays unreachable even with
+  substitutes, by construction of the chosen defaults (Scott's own
+  explicit list, not something this session second-guessed).
+
+**Tests:** 11 new (`tests/bondLensPortfolio.test.ts`, now 36 in that
+file / 418 total), covering single-instrument buckets needing a
+substitute in both directions, the "most extreme wins" selection logic,
+unreachable-even-with-substitutes, the default-vs-custom
+`eligible_instruments` list, and a portfolio already exactly at target
+(no trade, no substitute).
+
+**UI wiring**: `app/portfolios/page.jsx` -- `bondInstrumentMetaBySymbol`
+built client-side from data already fetched in `load()` (no new query:
+the existing `bond_instrument_meta` row set already contains both held
+and reference rows; held rows keyed by their holding's symbol via the
+already-fetched holdings-valued view, reference rows keyed by their own
+`symbol` column). Threaded through both `computeBondLensSectorTargets`
+call sites. `BondLensSleeveDetail` (shared by the live card and the
+enable-preview modal) renders `proposedNewHoldings` as a visually
+distinct "Proposed -- not held" block, with explicit copy that Bond Lens
+never creates a holding or places a trade. Confirm path re-verified:
+still only writes `portfolios` + `bond_lens_toggle_log`.
+
+**A real bug found by the dry run itself, fixed before Checkpoint 1**:
+Dalio All Weather has a $0 SCHP row (position fully sold down, row never
+deleted) alongside a real VTIP holding. The first substitute-solver pass
+treated "a row exists for this symbol" as "already held," which
+incorrectly excluded SCHP from ever being proposed there -- even though
+a $0 row contributes nothing to the bucket's actual achievable duration
+range and should be exactly as eligible as a truly-unheld substitute.
+Fixed: `solveDurationShiftWithSubstitutes` now derives held-symbols/
+held-durations from POSITIVE-weight entries only. Added a regression
+test. Re-ran the dry run after the fix: Dalio's `tip` bucket now
+correctly proposes SCHP too, matching the other two portfolios' tip
+buckets.
+
+**Checkpoint 1 result** (`docs/bond-lens-dry-run-2026-10-02.md`,
+before/after reachability for the 3 portfolios the first dry run flagged
+unreachable):
+
+| Portfolio | nb bucket, before | nb bucket, after | tip bucket, before | tip bucket, after |
+|---|---|---|---|---|
+| All Weather Alpha | unreachable (TLT only) | **still unreachable** (TLT already the longest default nb instrument -- no substitute is more extreme) | unreachable (VTIP only) | **reachable -- SCHP proposed** |
+| All Weather With Equity Tilting | unreachable (TLT only) | **still unreachable**, same reason | unreachable (VTIP only) | **reachable -- SCHP proposed** |
+| Dalio All Weather | unreachable (TLT only) | **still unreachable**, same reason | unreachable (VTIP only, plus the $0 SCHP row) | **reachable -- SCHP proposed**, after the fix above |
+
+Net: 0 of 3 portfolios are now FULLY reachable (each still has an
+unreachable `nb` bucket), but all 3 TIP buckets flip from unreachable to
+reachable. The remaining `nb`-bucket gap is structural, not a bug: TLT
+(14.63y) is already the longest instrument in the default `nb` eligible
+list (BIL/SHY/IEF/TLT) -- Extend's target duration for these particular
+portfolios' current allocations sits beyond what even the full default
+list can reach. A longer nb substitute (e.g. a 20+ year Treasury ETF)
+would need to be added to `eligible_instruments` to close this -- not
+done here, since Scott's instruction specified exactly BIL/SHY/IEF/TLT
+as the default and didn't ask for a longer option; logging this as a
+future option, not a gap to silently patch.
+
+Golden Butterfly Hedged and Note Portfolio: unchanged from the original
+dry run (both already had a clean answer -- a real trade and a trivial
+no-op respectively).
+
+Tests: 36 in `tests/bondLensPortfolio.test.ts` (419 total), including
+the single-instrument-bucket-in-both-directions, fewest-new-instruments,
+custom-vs-default-eligible-list, already-at-target, and the $0-holding
+regression cases Scott asked for. `npm run build` clean.
+
+**Stopping here for Scott's review, per his explicit instruction**
+("Work in order and stop at each checkpoint") -- Step 2 (defensive tier
+backtest) not started.
+
+---
+
+**DTB3 backfill: dropped from the to-do list (Scott, 2026-10-02).** Carry
+is context-only now (v3 §5.1) -- it no longer feeds `duration_score`, so
+extending its own history from ~1984/~1965 (valuation's own start, which
+already governs the composite's real start post-v3) back to ~1972 buys
+nothing for the live rule. `scripts/backfill-dtb3.mjs` stays in the repo,
+unused, in case a future reason to extend `carry_score`'s own display
+history (or a future model that weights carry again) comes up -- not
+deleted, just no longer on anyone's critical path.

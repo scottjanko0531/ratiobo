@@ -81,7 +81,7 @@ Deno.serve(async (req: Request) => {
       "DGS3MO", "DGS1", "DGS2", "DGS3", "DGS5", "DGS7", "DGS10", "DGS30",
       "DFII5", "DFII10", "T5YIE", "T10YIE", "T5YIFR", "DFF",
       "ACMTP10", "THREEFYTP10", "RSTAR_HLW_US", "PCEPILFE", "EXPINF1YR", "GDPNOW_ATL_NOWCAST",
-      "SHILLER_SP500_TR_MONTHLY",
+      "SHILLER_SP500_TR_MONTHLY", "DTB3",
     ];
     const rawResults: Record<string, { date: string; value: number; target_quarter?: string | null }[]> = {};
     const BATCH = 3; // reduced from 5 -- WORKER_RESOURCE_LIMIT kept firing even after the algorithmic fixes above
@@ -98,6 +98,7 @@ Deno.serve(async (req: Request) => {
     const acmRaw = rawResults.ACMTP10, threefytp10Raw = rawResults.THREEFYTP10, rstarRaw = rawResults.RSTAR_HLW_US;
     const pceRaw = rawResults.PCEPILFE, expInf1yrRaw = rawResults.EXPINF1YR, gdpnowRaw = rawResults.GDPNOW_ATL_NOWCAST;
     const shillerRaw = rawResults.SHILLER_SP500_TR_MONTHLY;
+    const dtb3Raw = rawResults.DTB3; // empty until scripts/backfill-dtb3.mjs has run -- harmless, aligns to all-null
     if (dgs10Raw.length === 0) throw new Error("no DGS10 history -- run bond-lens-ingest?source=fred first");
 
     // DGS10's own calendar is the backbone -- longest reliable daily
@@ -137,6 +138,7 @@ Deno.serve(async (req: Request) => {
       dates,
       dgs3mo: align(dgs3mo, DAILY_CAP), dgs1: align(dgs1, DAILY_CAP), dgs2: align(dgs2, DAILY_CAP), dgs3: align(dgs3, DAILY_CAP),
       dgs5: align(dgs5, DAILY_CAP), dgs7: align(dgs7, DAILY_CAP), dgs10: dgs10Raw.map((r) => r.value), dgs30: align(dgs30, DAILY_CAP),
+      dtb3: align(dtb3Raw, DAILY_CAP),
       dfii5: align(dfii5, DAILY_CAP), dfii10: align(dfii10, DAILY_CAP),
       t5yie: align(t5yie, DAILY_CAP), t10yie: align(t10yie, DAILY_CAP), t5yifr: align(t5yifr, DAILY_CAP),
       dff: align(dff, DAILY_CAP),
