@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mean, stdev, rollingZScoreAt, alignForwardFill, lagDaysThenAlign, indexDaysAgo } from "../supabase/functions/_shared/bondLens/normalize.ts";
+import { mean, stdev, rollingZScoreAt, rollingZScoreSeries, alignForwardFill, lagDaysThenAlign, indexDaysAgo } from "../supabase/functions/_shared/bondLens/normalize.ts";
 
 const CFG = { normWindow: 2520, minHistory: 756, clipZ: 3 };
 
@@ -40,6 +40,27 @@ describe("rollingZScoreAt", () => {
     const series = new Array(800).fill(5);
     const r = rollingZScoreAt(series, 799, CFG);
     expect(r.z).toBe(0);
+  });
+});
+
+describe("rollingZScoreSeries", () => {
+  // O(n) incremental version, added to keep bond-lens-compute under
+  // WORKER_RESOURCE_LIMIT once path_score/quadrant_score went continuous
+  // -- must match rollingZScoreAt called at every index exactly.
+  it("matches rollingZScoreAt called at every index, including nulls and an outlier", () => {
+    const series: (number | null)[] = Array.from({ length: 900 }, (_, i) => (i % 17 === 0 ? null : 1 + Math.sin(i) * 0.3));
+    series[850] = 1000; // outlier, should clip the same way in both
+    const batch = rollingZScoreSeries(series, CFG);
+    for (let t = 0; t < series.length; t++) {
+      const single = rollingZScoreAt(series, t, CFG);
+      expect(batch[t].excluded).toBe(single.excluded);
+      if (!single.excluded) expect(batch[t].z as number).toBeCloseTo(single.z as number, 9);
+    }
+  });
+
+  it("excludes when input is null", () => {
+    const series = [1, null, 3];
+    expect(rollingZScoreSeries(series, CFG)[1].excluded).toBe(true);
   });
 });
 

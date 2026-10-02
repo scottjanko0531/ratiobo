@@ -50,6 +50,43 @@ export function rollingZScoreAt(
   return { z: clip((x - mean(window)) / sd, -cfg.clipZ, cfg.clipZ), excluded: false };
 }
 
+// Same semantics and output as calling rollingZScoreAt(series, t, cfg)
+// for every t -- same fixed-index window, same minHistory gate, same
+// clip -- but computed in one O(n) pass via an incrementally-maintained
+// running sum/sum-of-squares, instead of O(n*window) from re-scanning
+// the window at every t. Added for the continuous path_score/
+// quadrant_score z-scores (2026-10-02 follow-up), which quadrupled the
+// number of full-history z-scorings per compute run and pushed
+// bond-lens-compute from "occasionally hits WORKER_RESOURCE_LIMIT" to
+// "consistently does." Not applied to the PRE-EXISTING carry/valuation
+// z-score call sites -- those already ran successfully (with retries)
+// before this change, no need to touch working code under time pressure.
+export function rollingZScoreSeries(
+  series: (number | null)[], cfg: { normWindow: number; minHistory: number; clipZ: number },
+): ZScoreResult[] {
+  const n = series.length;
+  const out: ZScoreResult[] = new Array(n);
+  let sum = 0, sumSq = 0, count = 0;
+  for (let t = 0; t < n; t++) {
+    const v = series[t];
+    if (v != null) { sum += v; sumSq += v * v; count++; }
+    const outIdx = t - cfg.normWindow;
+    if (outIdx >= 0) {
+      const ov = series[outIdx];
+      if (ov != null) { sum -= ov; sumSq -= ov * ov; count--; }
+    }
+    const x = series[t];
+    if (x == null) { out[t] = { z: null, excluded: true, excludeReason: "input unavailable" }; continue; }
+    if (count < cfg.minHistory) { out[t] = { z: null, excluded: true, excludeReason: "insufficient history" }; continue; }
+    const m = sum / count;
+    const variance = Math.max(0, (sumSq - count * m * m) / (count - 1));
+    const sd = Math.sqrt(variance);
+    if (sd === 0) { out[t] = { z: 0, excluded: false }; continue; }
+    out[t] = { z: clip((x - m) / sd, -cfg.clipZ, cfg.clipZ), excluded: false };
+  }
+  return out;
+}
+
 // Carries the last available value in `rows` forward onto `dates`, as of
 // each target date, capped at `maxCarryDays` CALENDAR days of staleness.
 //

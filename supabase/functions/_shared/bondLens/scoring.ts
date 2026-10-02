@@ -4,7 +4,7 @@
 // Conditions' computeMarketConditionsHistory.
 
 import { BOND_LENS_CONFIG } from "./config.ts";
-import { lagDaysThenAlign, indexDaysAgo, rollingZScoreAt } from "./normalize.ts";
+import { lagDaysThenAlign, indexDaysAgo, rollingZScoreSeries } from "./normalize.ts";
 import { computeCarryHistory, CarryHistoryInputs } from "./carry.ts";
 import { inflTrend, growthMom, growthMomFallback, pricedHikes, pathScoreContinuous, GrowthMomResult } from "./path.ts";
 import { valuationScore, dfii10MinusRstarGap, spliceAcmWithFallback } from "./valuation.ts";
@@ -168,6 +168,16 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
     rawQuadrantLabelSeries[t] = classifyQuadrantLabel(growthMomSeries[t], inflAxisSeries[t]);
   }
 
+  // O(n) z-scoring for the 4 series path_score/quadrant_score need --
+  // see rollingZScoreSeries's own comment on why this isn't just
+  // rollingZScoreAt called per day (same result, but O(n*window) instead
+  // of O(n), which is what pushed bond-lens-compute into consistently
+  // hitting WORKER_RESOURCE_LIMIT once these two modules went continuous.
+  const pricedHikesZSeries = rollingZScoreSeries(pricedHikesSeries, cfg);
+  const growthMomZSeries = rollingZScoreSeries(growthMomSeries, cfg);
+  const inflTrendZSeries = rollingZScoreSeries(inflTrendSeries, cfg);
+  const inflAxisZSeries = rollingZScoreSeries(inflAxisSeries, cfg);
+
   let hedgeState: HedgeState = { hedgeReliable: null, streak: 0 };
   let curveState: CurveRegimeState = { confirmed: null, candidate: null, candidateStreak: 0, regimeSince: null };
   let quadrantLabelState: QuadrantLabelState = { confirmed: null, candidate: null, candidateStreak: 0 };
@@ -178,9 +188,9 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
     if (growthMomFlags[t]) flags.growth_mom_degraded = growthMomFlags[t];
 
     // §4.2 path_score (continuous, 2026-10-02 follow-up #4)
-    const pricedHikesZ = rollingZScoreAt(pricedHikesSeries, t, cfg);
-    const growthMomZ = rollingZScoreAt(growthMomSeries, t, cfg);
-    const inflTrendZ = rollingZScoreAt(inflTrendSeries, t, cfg);
+    const pricedHikesZ = pricedHikesZSeries[t];
+    const growthMomZ = growthMomZSeries[t];
+    const inflTrendZ = inflTrendZSeries[t];
     const path = pathScoreContinuous(pricedHikesZ, growthMomZ, inflTrendZ);
 
     // §4.3 valuation (falls back to term premium alone pre-TIPS, 2026-10-02 follow-up #5)
@@ -192,7 +202,7 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
     if (val.realYieldGap.excluded && !val.excluded) flags.valuation_degraded_pre_tips = "DFII10 unavailable, scored from ACM term premium alone";
 
     // §4.4 quadrant (continuous score, 2026-10-02 follow-up #2)
-    const inflAxisZ = rollingZScoreAt(inflAxisSeries, t, cfg);
+    const inflAxisZ = inflAxisZSeries[t];
     const quad = quadrantScoreContinuous(growthMomZ, inflAxisZ);
     const rawLabel = rawQuadrantLabelSeries[t];
 
