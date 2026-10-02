@@ -102,6 +102,12 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
   // O(n^2) bug, the same class already found and fixed once in this file.
   const realYieldGapSeries = dfii10MinusRstarGap(inputs.dfii10, rstarLagged);
   const splicedTermPremium = spliceAcmWithFallback(inputs.acm, inputs.threefytp10);
+  // O(n) z-scoring for valuation's 3 legs -- same CPU-time reasoning as
+  // the path/quadrant series below; carry.ts's own carryScore z-scoring
+  // was converted the same way.
+  const gapZSeries = rollingZScoreSeries(realYieldGapSeries, cfg);
+  const dfii10ZSeries = rollingZScoreSeries(inputs.dfii10, cfg);
+  const termPremiumZSeries = rollingZScoreSeries(splicedTermPremium, cfg);
   // Pre-2011 growth_mom fallback's own input (§4.2) -- same once-only reasoning.
   const slope10y2y = inputs.dgs10.map((y, i) => (y != null && inputs.dgs2[i] != null ? y - (inputs.dgs2[i] as number) : null));
 
@@ -196,7 +202,8 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
     // §4.3 valuation (falls back to term premium alone pre-TIPS, 2026-10-02 follow-up #5)
     const val = valuationScore(
       inputs.dfii10, realYieldGapSeries, inputs.acm, splicedTermPremium,
-      inflRate12moSeries[t], inputs.expInf1yr[t], inputs.t5yifr[t], t, cfg,
+      gapZSeries[t], dfii10ZSeries[t], termPremiumZSeries[t],
+      inflRate12moSeries[t], inputs.expInf1yr[t], inputs.t5yifr[t], t,
     );
     if (val.termPremium.degraded) flags.term_premium_degraded = "ACM stale >10 business days, spliced THREEFYTP10";
     if (val.realYieldGap.excluded && !val.excluded) flags.valuation_degraded_pre_tips = "DFII10 unavailable, scored from ACM term premium alone";

@@ -1,6 +1,6 @@
 // Bond Lens overlay — §4.1 Carry and rolldown. Pure, Deno-API-free.
 
-import { rollingZScoreAt, ZScoreResult } from "./normalize.ts";
+import { rollingZScoreSeries, ZScoreResult } from "./normalize.ts";
 import { BOND_LENS_CONFIG } from "./config.ts";
 
 // Modified duration of a par bond paying semiannual coupons at the given
@@ -109,7 +109,14 @@ export function computeCarryHistory(inputs: CarryHistoryInputs, cfg = BOND_LENS_
     if (cr10.CR != null && bill != null) cr10MinusBill[t] = cr10.CR - bill;
   }
 
+  // O(n) via rollingZScoreSeries, not O(n*window) from calling
+  // rollingZScoreAt per day -- real CPU time, confirmed by edge function
+  // logs (bond-lens-compute hitting Supabase's ~2000ms per-invocation
+  // CPU cap, not a memory limit despite the WORKER_RESOURCE_LIMIT error
+  // code) once path_score/quadrant_score also went continuous and ate
+  // into the same budget.
+  const zSeries = rollingZScoreSeries(cr10MinusBill, cfg);
   const out: CarryDayResult[] = new Array(n);
-  for (let t = 0; t < n; t++) out[t] = { carryScore: rollingZScoreAt(cr10MinusBill, t, cfg) };
+  for (let t = 0; t < n; t++) out[t] = { carryScore: zSeries[t] };
   return out;
 }

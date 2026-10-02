@@ -1,8 +1,7 @@
 // Bond Lens overlay — §4.3 Valuation. Pure, Deno-API-free.
 
-import { rollingZScoreAt, ZScoreResult } from "./normalize.ts";
+import { ZScoreResult } from "./normalize.ts";
 import { ModuleResult } from "./types.ts";
-import { BOND_LENS_CONFIG } from "./config.ts";
 
 // Builds the DFII10-minus-rstar gap series once -- callers walking a full
 // history must compute this ONCE outside their per-day loop and pass the
@@ -17,12 +16,14 @@ export function dfii10MinusRstarGap(dfii10: (number | null)[], rstarLagged: (num
 // z-score(DFII10 against its own rolling history) -- spec §4.3: "Real
 // yield gap: DFII10 - rstar_HLW (lagged), plus DFII10 vs. its rolling
 // 10-year mean. The score is the average of the two z-scores." `gapSeries`
-// is dfii10MinusRstarGap's output, computed once by the caller.
+// is dfii10MinusRstarGap's output; `gapZ`/`levelZ` are
+// rollingZScoreSeries(gapSeries/dfii10, cfg)[t] -- precomputed ONCE by
+// the caller over the whole history (O(n) via normalize.ts's incremental
+// version), not recomputed per call (O(n*window) real CPU time that
+// pushed bond-lens-compute over its per-invocation CPU cap).
 export function realYieldGapScore(
-  dfii10: (number | null)[], gapSeries: (number | null)[], t: number, cfg = BOND_LENS_CONFIG,
+  gapZ: ZScoreResult, levelZ: ZScoreResult, gapSeries: (number | null)[], dfii10: (number | null)[], t: number,
 ): ModuleResult<{ gap: number | null; dfii10: number | null }> {
-  const gapZ = rollingZScoreAt(gapSeries, t, cfg);
-  const levelZ = rollingZScoreAt(dfii10, t, cfg);
   if (gapZ.excluded || levelZ.excluded) {
     return { raw: { gap: gapSeries[t], dfii10: dfii10[t] }, score: null, excluded: true, excludeReason: gapZ.excludeReason ?? levelZ.excludeReason };
   }
@@ -58,9 +59,10 @@ export function spliceAcmWithFallback(acmFF: (number | null)[], fallbackFF: (num
 // exactly what z-scoring `spliced` below gives: every point before the
 // first substitution still reads as ACM's own z-score (spliced == acmFF
 // there), and once substitution starts, the rolling window naturally
-// blends in THREEFYTP10 history too.
-export function termPremiumScore(acmFF: (number | null)[], spliced: (number | null)[], t: number, cfg = BOND_LENS_CONFIG): TermPremiumResult {
-  const z = rollingZScoreAt(spliced, t, cfg);
+// blends in THREEFYTP10 history too. `z` is
+// rollingZScoreSeries(spliced, cfg)[t], precomputed once by the caller
+// (same O(n)-not-O(n*window) reasoning as realYieldGapScore above).
+export function termPremiumScore(z: ZScoreResult, acmFF: (number | null)[], spliced: (number | null)[], t: number): TermPremiumResult {
   const value = spliced[t];
   const source: TermPremiumResult["source"] = value == null ? null : acmFF[t] != null ? "acm" : "threefytp10";
   return { value, source, score: z.z, excluded: z.excluded, degraded: acmFF[t] == null && spliced[t] != null };
@@ -102,11 +104,12 @@ export interface ValuationScoreResult {
 // window (§6) actually has a valuation input to run against.
 export function valuationScore(
   dfii10: (number | null)[], gapSeries: (number | null)[], acmFF: (number | null)[], splicedTermPremium: (number | null)[],
+  gapZ: ZScoreResult, levelZ: ZScoreResult, termPremiumZ: ZScoreResult,
   corePce12mo: number | null, expInf1yr: number | null, t5yifr: number | null,
-  t: number, cfg = BOND_LENS_CONFIG,
+  t: number,
 ): ValuationScoreResult {
-  const ryg = realYieldGapScore(dfii10, gapSeries, t, cfg);
-  const tp = termPremiumScore(acmFF, splicedTermPremium, t, cfg);
+  const ryg = realYieldGapScore(gapZ, levelZ, gapSeries, dfii10, t);
+  const tp = termPremiumScore(termPremiumZ, acmFF, splicedTermPremium, t);
   const be = breakevenGapBp(corePce12mo, expInf1yr, t5yifr);
   if (ryg.excluded && !tp.excluded) {
     return {
