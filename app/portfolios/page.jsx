@@ -58,8 +58,25 @@ function MonthlyGainTooltip({ active, payload }) {
 // for `use_bond_lens_overlay` (the portfolio's saved flag vs. the pending form
 // value), so the rendering itself has one definition instead of two.
 function BondLensSleeveDetail({ result, signalRow }) {
+  // EDV (zero-coupon strips, ~23.9y effective duration -- a bond_instrument_meta
+  // reference row, deliberately excluded from DEFAULT_ELIGIBLE_INSTRUMENTS) only
+  // ever appears here via an explicit bond_lens_portfolio_settings.eligible_instruments
+  // override (no settings editor yet, but the data layer already honors one if set
+  // directly) -- as an existing held position (sectorTargets) or a proposed
+  // substitute (proposedNewHoldings). Its duration risk is easy to underestimate
+  // next to the more familiar TLT, so it gets its own explicit warning, distinct
+  // from the stale/gap-note warnings above.
+  const edvPresent = Number(result.sectorTargets?.EDV ?? 0) > 0
+    || (result.proposedNewHoldings ?? []).some((p) => p.symbol === "EDV" && Number(p.targetVal) > 0);
+
   return (
     <>
+      {edvPresent && (
+        <p className="text-xs text-loss font-medium mb-3 px-2.5 py-1.5 rounded-lg border border-loss/40 bg-loss/10">
+          EDV — Zero-coupon strips: roughly 1.6× TLT's rate sensitivity.
+        </p>
+      )}
+
       {result.sleeveBefore.weight <= 0 ? (
         <p className="text-xs text-paper-dim italic mb-3">
           {result.excluded.length > 0

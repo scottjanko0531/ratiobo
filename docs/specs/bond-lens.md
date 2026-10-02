@@ -666,14 +666,27 @@ shape, without needing an LP library.
   unreachable by default (no shorter TIPS substitute is listed) — not a
   bug, just a consequence of the chosen defaults; a portfolio could add a
   shorter TIPS instrument via its own `eligible_instruments` override if
-  this matters to it.
+  this matters to it. **Confirmed (Scott, 2026-10-02): the `nb`-side
+  mirror of this — TLT (14.63y) already the longest default `nb`
+  instrument — is likewise not a bug, and deliberately not fixed by
+  widening the default list.** Extending further requires zero-coupon
+  strip ETFs (EDV, ZROZ), whose risk profile (far higher rate
+  sensitivity per dollar, ~1.6x TLT's for EDV) is too large a change for
+  a *default*. **EDV is available as an opt-in-only substitute**: a
+  `bond_instrument_meta` reference row exists for it (23.9y, Vanguard's
+  own fact sheet), but it is never in `DEFAULT_ELIGIBLE_INSTRUMENTS` —
+  only reachable via a portfolio's own `eligible_instruments` override
+  (the settings editor for this is §Step 3 of Phase D, not built yet).
+  When EDV is actually present in a computed result (held or proposed),
+  the UI shows: "Zero-coupon strips: roughly 1.6× TLT's rate
+  sensitivity."
 - **No-trade band:** skip any change smaller than `min_trade_threshold`.
 - **Proceeds:** proceeds from shortening duration go to short-duration bonds or bills inside the sleeve. **No cash interaction in v1** (v2.1) — if the portfolio holds no eligible short instrument to receive them, don't shorten: set `target_reachable = false` and write a `gap_note` naming the missing instrument, same as any other unreachable-target case. Bond Lens never touches the cash bucket.
 
 **When the targets can't be reached** (even after considering eligible substitutes): get as close as possible.
 
 - Set `target_reachable = false`.
-- Write a `gap_note` naming the missing instrument type, e.g. "No TIPS exposure eligible; TIPS tilt not applied".
+- Write a `gap_note` naming the missing instrument type, e.g. "No TIPS exposure eligible; TIPS tilt not applied" — or, specifically when the bucket is already at the long/short end of what's eligible (v3.1, 2026-10-02): "Already at the long end of eligible instruments; no further extension available. Shortening remains available if the stance turns defensive" (symmetric wording for the short end).
 
 **Preview (§6.6):** a proposed substitute (not currently held) is shown
 as a distinct row labeled "Proposed — not held" in the Bond Lens card and

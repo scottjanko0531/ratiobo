@@ -347,12 +347,35 @@ describe("solveDurationShiftWithSubstitutes", () => {
     expect(achieved).toBeCloseTo(5, 4);
   });
 
-  it("still flags unreachable when even the most extreme substitute can't get there", () => {
+  it("still flags unreachable when even the most extreme substitute can't get there, with the 'already at the long end' note", () => {
     const onlyTlt = [{ holding: { symbol: "TLT", current_value: 1000 }, meta: nbMeta.TLT }];
     const r = solveDurationShiftWithSubstitutes(onlyTlt, 20, eligibleNb); // beyond TLT, the longest instrument available at all
     expect(r.reachable).toBe(false);
     // TLT is itself the most extreme long instrument -- no substitute is longer, so none should be introduced uselessly.
     expect(r.substitutesUsed).toEqual([]);
+    // Scott's wording (2026-10-02, Checkpoint 1 follow-up): this is a
+    // permanent, expected state for the default list, not a generic gap.
+    expect(r.gapNote).toBe("Already at the long end of eligible instruments; no further extension available. Shortening remains available if the stance turns defensive.");
+  });
+
+  it("gives the symmetric 'already at the short end' note when lowering past the shortest eligible instrument", () => {
+    const onlyBil = [{ holding: { symbol: "BIL", current_value: 1000 }, meta: nbMeta.BIL }];
+    const r = solveDurationShiftWithSubstitutes(onlyBil, -1, eligibleNb); // below BIL, the shortest instrument available at all
+    expect(r.reachable).toBe(false);
+    expect(r.substitutesUsed).toEqual([]);
+    expect(r.gapNote).toBe("Already at the short end of eligible instruments; no further shortening available. Extending remains available if the stance turns more aggressive.");
+  });
+
+  it("EDV is opt-in only -- not reachable unless explicitly added to the eligible list", () => {
+    const onlyTlt = [{ holding: { symbol: "TLT", current_value: 1000 }, meta: nbMeta.TLT }];
+    // Without EDV in the candidate list (the default), beyond-TLT stays unreachable.
+    const withoutEdv = solveDurationShiftWithSubstitutes(onlyTlt, 20, eligibleNb);
+    expect(withoutEdv.reachable).toBe(false);
+    // With EDV explicitly added (simulating a portfolio that opted in via its own eligible_instruments setting), it becomes reachable.
+    const edvMeta = { symbol: "EDV", effective_duration: 23.9 };
+    const withEdv = solveDurationShiftWithSubstitutes(onlyTlt, 20, [...eligibleNb, edvMeta]);
+    expect(withEdv.reachable).toBe(true);
+    expect(withEdv.substitutesUsed).toEqual(["EDV"]);
   });
 
   it("tip bucket: single VTIP holding raises toward SCHP (the only longer eligible instrument)", () => {

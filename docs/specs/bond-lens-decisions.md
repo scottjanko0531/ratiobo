@@ -1170,6 +1170,51 @@ backtest) not started.
 
 ---
 
+## Checkpoint 1 follow-ups, approved by Scott -- 2026-10-02
+
+Confirmed: the `nb`-bucket gap (TLT already the longest default
+instrument) is NOT a bug -- deliberately not extending the default list
+with strip ETFs (EDV/ZROZ), which change the risk profile too much for a
+default.
+
+1. **Gap-note wording.** When `solveDurationShiftWithSubstitutes` finds
+   no eligible candidate beyond the currently-held extreme, it no longer
+   returns the generic "consider an eligible substitute" note -- it now
+   returns, verbatim: *"Already at the long end of eligible instruments;
+   no further extension available. Shortening remains available if the
+   stance turns defensive."* (symmetric short-end wording for the
+   opposite direction). Two new tests confirm the exact strings.
+2. **EDV, opt-in only.** Added as a `bond_instrument_meta` reference row
+   (23.9y effective duration, Vanguard's own fact sheet, as of
+   2026-08-31 -- ~1.6x TLT's 14.63y, matching Scott's own framing almost
+   exactly) and backfilled into `asset_price_history` (4,700 rows,
+   2008-01-29 to present). Deliberately NOT added to
+   `DEFAULT_ELIGIBLE_INSTRUMENTS` -- only reachable if a portfolio's own
+   `eligible_instruments` setting explicitly includes it (Step 3's
+   settings editor, not built yet -- the data layer already supports it
+   today if set directly). New test proves it's unreachable by default
+   and reachable once explicitly added to the candidate list. UI warning
+   added to `BondLensSleeveDetail` (shared by the live card and the
+   preview modal): "Zero-coupon strips: roughly 1.6x TLT's rate
+   sensitivity," shown whenever EDV appears with positive weight in
+   either `sectorTargets` or `proposedNewHoldings` -- i.e., whenever it's
+   actually part of what's being shown, not merely configured.
+3. **Short-stance reachability, confirmed.** A test-only forced
+   `duration_multiplier = 0.5` (the real signal untouched) shows all
+   three previously-nb-unreachable portfolios (All Weather Alpha, All
+   Weather With Equity Tilting, Dalio All Weather) become reachable --
+   each via **BIL** specifically (0.10y, the single most extreme eligible
+   short instrument, not SHY), landing around 7.3y. This confirms the
+   "already at the long end... shortening remains available" framing in
+   the new gap note is literally true, not just a nice sentence.
+   Appended to `docs/bond-lens-dry-run-2026-10-02.md`.
+
+Tests: 421 total (2 new for the gap-note wording, 2 new for EDV
+opt-in). `npm run build` clean. Committed, then proceeding directly to
+Step 2 per Scott's "then proceed" instruction.
+
+---
+
 **DTB3 backfill: dropped from the to-do list (Scott, 2026-10-02).** Carry
 is context-only now (v3 §5.1) -- it no longer feeds `duration_score`, so
 extending its own history from ~1984/~1965 (valuation's own start, which

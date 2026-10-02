@@ -2,7 +2,7 @@
 
 This is a **read-only dry run**. It uses the live `duration_score`/`duration_stance`/`duration_multiplier` from `bond_lens_signal` as of **2026-09-30** (stance **Extend**, multiplier **1.3x**, duration_score 1.34), computed with the real `lib/bondLensPortfolio.js` solver -- the exact same code the app itself would run, not a reimplementation. Nothing here was applied to any portfolio: no database writes happened as part of producing this report, and no portfolio currently has `use_bond_lens_overlay` enabled. This is purely "what would happen if it were turned on today."
 
-**Update (§6.3 substitutes):** this report now also shows what changes once the solver is allowed to introduce eligible-but-not-held substitute instruments (`DEFAULT_ELIGIBLE_INSTRUMENTS`: nb = BIL/SHY/IEF/TLT, tip = VTIP/SCHP) when the held-only solve can't reach the target. A fix has since landed in `solveDurationShiftWithSubstitutes`: "already held" for substitute-eligibility purposes is now based on POSITIVE weight, not merely the existence of a holding row -- a $0 row no longer blocks its own symbol from being proposed as a substitute. Of the 3 portfolios previously confirmed unreachable (All Weather Alpha, All Weather With Equity Tilting, Dalio All Weather), **0 of 3** are now fully (portfolio-level) reachable with substitutes, and **3 of 3** remain unreachable (All Weather Alpha, All Weather With Equity Tilting, Dalio All Weather) -- see each portfolio's bucket-level before/after table below for why (per-bucket improvement can still occur even when the portfolio-level flag stays false, since one bucket can fix while another stays stuck).
+**Update (§6.3 substitutes):** this report now also shows what changes once the solver is allowed to introduce eligible-but-not-held substitute instruments (`DEFAULT_ELIGIBLE_INSTRUMENTS`: nb = BIL/SHY/IEF/TLT, tip = VTIP/SCHP) when the held-only solve can't reach the target. A fix has landed in `solveDurationShiftWithSubstitutes`: "already held" for substitute-eligibility purposes is now based on POSITIVE weight, not merely the existence of a holding row -- a $0 row no longer blocks its own symbol from being proposed as a substitute. A second fix updated the gap-note wording for the "already at an extreme, no eligible substitute exists beyond it" case to say so plainly rather than using the generic "consider a substitute" phrasing. Of the 3 portfolios previously confirmed unreachable (All Weather Alpha, All Weather With Equity Tilting, Dalio All Weather), **0 of 3** are now fully (portfolio-level) reachable with substitutes, and **3 of 3** remain unreachable (All Weather Alpha, All Weather With Equity Tilting, Dalio All Weather) -- see each portfolio's bucket-level before/after table below for why (per-bucket improvement can still occur even when the portfolio-level flag stays false, since one bucket can fix while another stays stuck).
 
 ---
 
@@ -35,10 +35,8 @@ Target sleeve duration: 15.56y (benchmark × multiplier -- stance **Extend**, mu
 
 | bucket | before (held-only) | after (with substitutes) |
 |---|---|---|
-| nb | unreachable -- Only one in-scope holding (TLT) in this bucket -- can't shift duration without an eligible substitute instrument. | still unreachable -- Only one in-scope holding (TLT) in this bucket -- can't shift duration without an eligible substitute instrument. |
+| nb | unreachable -- Only one in-scope holding (TLT) in this bucket -- can't shift duration without an eligible substitute instrument. | still unreachable -- Already at the long end of eligible instruments; no further extension available. Shortening remains available if the stance turns defensive. |
 | tip | unreachable -- Only one in-scope holding (VTIP) in this bucket -- can't shift duration without an eligible substitute instrument. | reachable -- introduces **SCHP** (not previously held) |
-
-_Note (nb): the held instrument is already the most extreme default option in the needed direction (longest duration among `BIL/SHY/IEF/TLT`) -- no default substitute is more extreme, so the bucket stays unreachable even after trying substitutes._
 
 **Weight change if Bond Lens were applied today (with substitutes)**
 
@@ -73,10 +71,8 @@ Target sleeve duration: 15.53y (benchmark × multiplier -- stance **Extend**, mu
 
 | bucket | before (held-only) | after (with substitutes) |
 |---|---|---|
-| nb | unreachable -- Only one in-scope holding (TLT) in this bucket -- can't shift duration without an eligible substitute instrument. | still unreachable -- Only one in-scope holding (TLT) in this bucket -- can't shift duration without an eligible substitute instrument. |
+| nb | unreachable -- Only one in-scope holding (TLT) in this bucket -- can't shift duration without an eligible substitute instrument. | still unreachable -- Already at the long end of eligible instruments; no further extension available. Shortening remains available if the stance turns defensive. |
 | tip | unreachable -- Only one in-scope holding (VTIP) in this bucket -- can't shift duration without an eligible substitute instrument. | reachable -- introduces **SCHP** (not previously held) |
-
-_Note (nb): the held instrument is already the most extreme default option in the needed direction (longest duration among `BIL/SHY/IEF/TLT`) -- no default substitute is more extreme, so the bucket stays unreachable even after trying substitutes._
 
 **Weight change if Bond Lens were applied today (with substitutes)**
 
@@ -127,10 +123,8 @@ Target sleeve duration: 10.69y (benchmark × multiplier -- stance **Extend**, mu
 
 | bucket | before (held-only) | after (with substitutes) |
 |---|---|---|
-| nb | unreachable -- Only one in-scope holding (TLT) in this bucket -- can't shift duration without an eligible substitute instrument. | still unreachable -- Only one in-scope holding (TLT) in this bucket -- can't shift duration without an eligible substitute instrument. |
+| nb | unreachable -- Only one in-scope holding (TLT) in this bucket -- can't shift duration without an eligible substitute instrument. | still unreachable -- Already at the long end of eligible instruments; no further extension available. Shortening remains available if the stance turns defensive. |
 | tip | unreachable -- Only one in-scope holding (VTIP) in this bucket -- can't shift duration without an eligible substitute instrument. | reachable -- introduces **SCHP** (not previously held) |
-
-_Note (nb): the held instrument is already the most extreme default option in the needed direction (longest duration among `BIL/SHY/IEF/TLT`) -- no default substitute is more extreme, so the bucket stays unreachable even after trying substitutes._
 
 **Weight change if Bond Lens were applied today (with substitutes)**
 
@@ -233,6 +227,20 @@ All in-scope holdings in this sleeve currently carry $0 value -- there is no dol
 ## Rule Breakers
 
 No in-scope bond-sleeve (nb/tip bucket) holdings at all -- nothing for Bond Lens to act on in this portfolio.
+
+---
+
+## Short-stance test (for reference only, not a signal override)
+
+This is a **testing-only computation**, not a live signal change: the real `bond_lens_signal` row (as of 2026-09-30, stance **Extend**, multiplier **1.3x**) is untouched in the database. For this one check only, `duration_multiplier` was forced to **0.5** (a Short stance) in memory to confirm the 3 portfolios whose `nb` bucket is stuck unreachable at the real Extend stance (because TLT is already the longest default nb instrument, so nothing can extend further) would become reachable under a defensive/Short stance instead, via a shorter default nb substitute (BIL or SHY).
+
+| portfolio | nb bucket reachable? | substitute used | duration achieved |
+|---|---|---|---|
+| All Weather Alpha | Y | BIL | 7.32y |
+| All Weather With Equity Tilting | Y | BIL | 7.32y |
+| Dalio All Weather | Y | BIL | 7.31y |
+
+_Note: a new EDV reference row also exists in `bond_instrument_meta` now (opt-in only, not in `DEFAULT_ELIGIBLE_INSTRUMENTS`) -- available for future reference if a longer-duration default option is ever wanted, but not exercised by this Short-stance test._
 
 ---
 
