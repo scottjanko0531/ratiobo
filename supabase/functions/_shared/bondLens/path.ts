@@ -1,6 +1,6 @@
 // Bond Lens overlay — §4.2 Priced path vs. likely path. Pure, Deno-API-free.
 
-import { indexDaysAgo, clip } from "./normalize.ts";
+import { indexDaysAgo, clip, ZScoreResult } from "./normalize.ts";
 import { ModuleResult } from "./types.ts";
 
 // priced_hikes = DGS2 - DFF, in percentage points. Positive means the
@@ -66,7 +66,21 @@ export function growthMom(
     if (targetQuarters[i] !== nowQ) break;
     if (values[i] != null) firstIdx = i;
   }
-  if (firstIdx == null || firstIdx === t) return { value: null, degraded: true, reason: "quarter has no prior release yet" };
+  if (firstIdx == null) return { value: null, degraded: true, reason: "quarter has no prior release yet" };
+  if (firstIdx === t) {
+    // t IS the quarter's own first release -- zero elapsed time, so
+    // "change since first release" is undefined (division by zero).
+    // Carry the prior day's own growth_mom reading forward instead
+    // (Scott's documented fallback for exactly this one-day edge case,
+    // 2026-10-02 follow-up #3), flagged degraded. This was the actual
+    // source of the null rows observed at the end of Jan/Apr/Jul/Oct --
+    // GDPNow's target_quarter label flips to the new quarter ~1 day
+    // before month-end in each case, and that single day had no basis
+    // for a change, so it fell through to null.
+    if (t === 0) return { value: null, degraded: true, reason: "no prior growth_mom to carry forward" };
+    const prior = growthMom(dates, values, targetQuarters, t - 1, lookbackDays);
+    return { value: prior.value, degraded: true, reason: "first release of a new quarter -- carried prior day's growth_mom forward" };
+  }
   const daysSinceFirst = daysBetween(dates[firstIdx], dates[t]);
   if (daysSinceFirst <= 0) return { value: null, degraded: true, reason: "quarter has no prior release yet" };
   const changeSinceFirst = now - (values[firstIdx] as number);
@@ -95,39 +109,33 @@ export function growthMomFallback(
   return { value: (be - beBase) + (slope - slopeBase), degraded: true, reason: "pre-2011: 3mo breakeven change + curve momentum proxy" };
 }
 
-export interface PathScoreResult {
-  pricedHikes: number | null;
-  growthMom: GrowthMomResult;
-  inflTrend: ModuleResult<unknown>;
-  score: number | null;
-  excluded: boolean;
-}
-
-// Maps (priced_hikes, growth_mom) to [-2, +2]. Bond-bullish when hikes are
-// priced but growth is decelerating (the priced path is more hawkish than
-// the data supports -> yields likely fall as that gap closes); bond-
-// bearish when cuts are priced but growth is accelerating (mirror case);
-// "in between" (score near 0) when priced direction and data direction
-// AGREE (nothing left to re-price) or either input is unavailable.
+// Continuous path_score (2026-10-02 follow-up #4, replacing the 3-state
+// mismatch formula that landed exactly on 0 whenever priced and data
+// direction agreed -- 53% of months, far more "in between" than the
+// spec's qualitative rule actually implies).
 //
-// PRICED_SCALE/GROWTH_SCALE: provisional normalizing divisors (not spec
-// values -- the spec gives the qualitative rule, not a formula), Phase E
-// tunable like every other threshold in this module.
-const PRICED_SCALE = 1.0; // pp of DGS2-DFF considered a "large" priced move
-const GROWTH_SCALE = 1.5; // pp of 8-week GDPNow change considered "large"
-
-// `infl` is computed separately (inflTrend() above) and carried through
-// on the result unchanged -- it's a real §4.2 output (feeds bond_signals'
-// infl_trend column) but, per the spec's own text, consumed downstream by
-// §4.4's inflation axis, not by this module's own score.
-export function pathScore(dgs2: number | null, dff: number | null, gm: GrowthMomResult, infl: ModuleResult<unknown>): PathScoreResult {
-  const hikes = pricedHikes(dgs2, dff);
-  if (hikes == null || gm.value == null) {
-    return { pricedHikes: hikes, growthMom: gm, inflTrend: infl, score: null, excluded: true };
-  }
-  const pricedDir = clip(hikes / PRICED_SCALE, -1, 1);
-  const dataDir = clip(gm.value / GROWTH_SCALE, -1, 1);
-  const mismatch = Math.max(0, -pricedDir * dataDir); // >0 only when priced direction and data direction disagree
-  const score = clip(-dataDir * mismatch * 2, -2, 2);
-  return { pricedHikes: hikes, growthMom: gm, inflTrend: infl, score, excluded: false };
+// Scott's first draft of the formula was a plain product,
+// z(priced_hikes) * -z(data_momentum) -- algebraically that's always
+// positive whenever the two z's have opposite signs, REGARDLESS of which
+// one is positive. That collapses "hikes priced + data decelerating"
+// (bond-bullish) and "cuts priced + data accelerating" (bond-bearish)
+// onto the SAME sign, losing the directional distinction the old 3-state
+// formula preserved. Confirmed with Scott and corrected to:
+//   path = clip(-z(data_momentum) * abs(z(priced_hikes)), -2, +2)
+// Sign comes from data_momentum alone (bullish when the data is cooling,
+// bearish when it's heating); priced_hikes' magnitude only SCALES that
+// signal (a bigger priced repricing makes the same directional read
+// matter more), never flips it. data_momentum = average(z(growth_mom),
+// z(infl_trend)).
+export function pathScoreContinuous(pricedHikesZ: ZScoreResult, growthMomZ: ZScoreResult, inflTrendZ: ZScoreResult): { score: number | null; excluded: boolean; excludeReason?: string } {
+  if (pricedHikesZ.excluded) return { score: null, excluded: true, excludeReason: pricedHikesZ.excludeReason };
+  // data_momentum tolerates ONE of growth_mom/infl_trend being excluded
+  // (averages whichever is available) -- both excluded is the only
+  // genuine "no data" case, same reweighting spirit as §4 Phase B's
+  // "missing inputs are reweighted and flagged, never silently zeroed."
+  const parts = [growthMomZ, inflTrendZ].filter((z) => !z.excluded).map((z) => z.z as number);
+  if (parts.length === 0) return { score: null, excluded: true, excludeReason: "growth_mom and infl_trend both unavailable" };
+  const dataMomentumZ = parts.reduce((a, b) => a + b, 0) / parts.length;
+  const score = clip(-dataMomentumZ * Math.abs(pricedHikesZ.z as number), -2, 2);
+  return { score, excluded: false };
 }

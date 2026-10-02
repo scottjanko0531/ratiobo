@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pricedHikes, inflTrend, growthMom, growthMomFallback, pathScore } from "../supabase/functions/_shared/bondLens/path.ts";
+import { pricedHikes, inflTrend, growthMom, growthMomFallback, pathScoreContinuous } from "../supabase/functions/_shared/bondLens/path.ts";
 
 describe("pricedHikes", () => {
   it("positive when 2y yield exceeds fed funds (hikes priced)", () => {
@@ -65,6 +65,35 @@ describe("growthMom", () => {
     expect(r.value).toBeNull();
     expect(r.degraded).toBe(true);
   });
+
+  // 2026-10-02 follow-up #3: the exact day target_quarter flips to a new
+  // quarter has no prior same-quarter release to diff against -- this
+  // used to fall through to a flat null (observed as null rows at the
+  // end of Jan/Apr/Jul/Oct). It should now carry the prior day's own
+  // growth_mom reading forward instead, flagged degraded.
+  it("carries the prior day's growth_mom forward on the exact day a new quarter's first release lands", () => {
+    const values = new Array(120).fill(2.0);
+    const quarters: (string | null)[] = new Array(120).fill("2026Q2");
+    values[118] = 2.3; // last day of 2026Q2, 8-week change = 0.3 (same-quarter, not degraded)
+    quarters[119] = "2026Q3";
+    values[119] = 2.6; // t=119 IS 2026Q3's own first release -- no prior same-quarter release exists
+    const prior = growthMom(dates, values, quarters, 118, 56);
+    expect(prior.degraded).toBe(false);
+    const r = growthMom(dates, values, quarters, 119, 56);
+    expect(r.degraded).toBe(true);
+    expect(r.reason).toMatch(/carried prior day/);
+    expect(r.value).toBeCloseTo(prior.value as number, 10);
+  });
+
+  it("is degraded null (not a carry-forward) on the very first day of the whole series", () => {
+    const quarters: (string | null)[] = new Array(120).fill(null);
+    quarters[0] = "2026Q1";
+    const values = new Array(120).fill(null);
+    values[0] = 1.0;
+    const r = growthMom(dates, values, quarters, 0, 56);
+    expect(r.value).toBeNull();
+    expect(r.degraded).toBe(true);
+  });
 });
 
 describe("growthMomFallback", () => {
@@ -80,25 +109,47 @@ describe("growthMomFallback", () => {
   });
 });
 
-describe("pathScore", () => {
-  it("is bond-bullish when hikes are priced and growth is decelerating", () => {
-    const r = pathScore(4.5, 4.0, { value: -1.5, degraded: false }, { raw: null, score: null, excluded: true });
+describe("pathScoreContinuous", () => {
+  // 2026-10-02 follow-up #4: path = clip(-z(data_momentum) * abs(z(priced_hikes)), -2, 2).
+  // Sign comes from data_momentum (cooling -> bullish/positive, heating ->
+  // bearish/negative); priced_hikes' magnitude only scales the strength.
+  // (The literal "z(priced_hikes) * -z(data_momentum)" product Scott
+  // first proposed can't distinguish these two cases -- confirmed with
+  // him and corrected to the formula below.)
+  it("is bond-bullish (positive) when data is decelerating, regardless of priced_hikes' sign", () => {
+    const cooling = { z: -1.5, excluded: false };
+    const r = pathScoreContinuous({ z: 1.2, excluded: false }, cooling, { z: null, excluded: true });
     expect(r.excluded).toBe(false);
     expect(r.score).toBeGreaterThan(0);
   });
 
-  it("is bond-bearish when cuts are priced and growth is accelerating", () => {
-    const r = pathScore(3.5, 4.0, { value: 1.5, degraded: false }, { raw: null, score: null, excluded: true });
+  it("is bond-bearish (negative) when data is accelerating, regardless of priced_hikes' sign", () => {
+    const heating = { z: 1.5, excluded: false };
+    const r = pathScoreContinuous({ z: -1.2, excluded: false }, heating, { z: null, excluded: true });
     expect(r.score).toBeLessThan(0);
   });
 
-  it("is near-neutral when priced direction and data direction agree", () => {
-    const r = pathScore(4.5, 4.0, { value: 1.5, degraded: false }, { raw: null, score: null, excluded: true });
-    expect(r.score).toBeCloseTo(0, 10); // avoids a -0 vs 0 Object.is mismatch, not a logic difference
+  it("scales with priced_hikes' magnitude without flipping sign", () => {
+    const cooling = { z: -1, excluded: false };
+    const small = pathScoreContinuous({ z: 0.2, excluded: false }, cooling, { z: null, excluded: true });
+    const big = pathScoreContinuous({ z: 1.8, excluded: false }, cooling, { z: null, excluded: true });
+    expect(small.score as number).toBeGreaterThan(0);
+    expect(big.score as number).toBeGreaterThan(small.score as number);
   });
 
-  it("excludes when growth_mom is unavailable", () => {
-    const r = pathScore(4.5, 4.0, { value: null, degraded: true }, { raw: null, score: null, excluded: true });
+  it("averages growth_mom and infl_trend z-scores when both are available", () => {
+    const r = pathScoreContinuous({ z: 1, excluded: false }, { z: -1, excluded: false }, { z: -3, excluded: false });
+    // data_momentum = avg(-1, -3) = -2 -> score = -(-2)*abs(1) = 2, clipped to 2
+    expect(r.score).toBe(2);
+  });
+
+  it("excludes when priced_hikes is unavailable", () => {
+    const r = pathScoreContinuous({ z: null, excluded: true, excludeReason: "x" }, { z: 1, excluded: false }, { z: 1, excluded: false });
+    expect(r.excluded).toBe(true);
+  });
+
+  it("excludes when growth_mom and infl_trend are both unavailable", () => {
+    const r = pathScoreContinuous({ z: 1, excluded: false }, { z: null, excluded: true }, { z: null, excluded: true });
     expect(r.excluded).toBe(true);
   });
 });
