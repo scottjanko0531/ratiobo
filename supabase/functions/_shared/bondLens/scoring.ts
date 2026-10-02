@@ -4,7 +4,7 @@
 // Conditions' computeMarketConditionsHistory.
 
 import { BOND_LENS_CONFIG } from "./config.ts";
-import { lagDaysThenAlign, indexDaysAgo, rollingZScoreSeries } from "./normalize.ts";
+import { lagDaysThenAlign, indexDaysAgo, rollingZScoreSeries, moduleOutputScale } from "./normalize.ts";
 import { computeCarryHistory, CarryHistoryInputs } from "./carry.ts";
 import { inflTrend, growthMom, growthMomFallback, pricedHikes, pathScoreContinuous, GrowthMomResult } from "./path.ts";
 import { valuationScore, dfii10MinusRstarGap, spliceAcmWithFallback } from "./valuation.ts";
@@ -253,9 +253,14 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
 
     rows.push({
       as_of_date: dates[t],
-      carry_score: carryHistory[t].carryScore.z,
+      // §4's "every module returns a score in [-2,+2]" -- carry_score and
+      // valuation_score are the only two that are pure z-score (averages),
+      // so their natural range is +/-cfg.clipZ until rescaled here (2026-
+      // 10-02 follow-up #1). See moduleOutputScale's own comment for why
+      // a scale, not a second hard clamp.
+      carry_score: moduleOutputScale(carryHistory[t].carryScore.z, cfg.clipZ),
       path_score: path.score,
-      valuation_score: val.score,
+      valuation_score: moduleOutputScale(val.score, cfg.clipZ),
       quadrant_score: quad.score,
       curve_score: curveScore,
       trend_score: trend.score,

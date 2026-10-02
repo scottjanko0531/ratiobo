@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mean, stdev, rollingZScoreAt, rollingZScoreSeries, alignForwardFill, lagDaysThenAlign, indexDaysAgo } from "../supabase/functions/_shared/bondLens/normalize.ts";
+import { mean, stdev, rollingZScoreAt, rollingZScoreSeries, moduleOutputScale, alignForwardFill, lagDaysThenAlign, indexDaysAgo } from "../supabase/functions/_shared/bondLens/normalize.ts";
 
 const CFG = { normWindow: 2520, minHistory: 756, clipZ: 3 };
 
@@ -61,6 +61,22 @@ describe("rollingZScoreSeries", () => {
   it("excludes when input is null", () => {
     const series = [1, null, 3];
     expect(rollingZScoreSeries(series, CFG)[1].excluded).toBe(true);
+  });
+});
+
+describe("moduleOutputScale", () => {
+  // 2026-10-02 follow-up: §4's "every module returns a score in [-2,+2]" --
+  // carry_score and valuation_score are pure z-score averages, clipped
+  // only to +/-cfg.clipZ (3) by normalize.ts, so this scale is what
+  // actually enforces the module-output contract at the +/-2 boundary.
+  it("maps +/-clipZ losslessly onto +/-2", () => {
+    expect(moduleOutputScale(3, 3)).toBe(2);
+    expect(moduleOutputScale(-3, 3)).toBe(-2);
+    expect(moduleOutputScale(1.5, 3)).toBeCloseTo(1, 10);
+  });
+
+  it("passes null through", () => {
+    expect(moduleOutputScale(null, 3)).toBeNull();
   });
 });
 

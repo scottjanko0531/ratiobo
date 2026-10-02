@@ -22,6 +22,30 @@ export function clip(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x));
 }
 
+// §4's "Conventions for every module": "each module returns a score in
+// [-2, +2]." (2026-10-02 follow-up: valuation_score was observed hitting
+// 3.0 in 1981, carry_score -2.76/+2.28 -- both modules' output is a
+// literal z-score or average of z-scores, each individually clipped to
+// +/-cfg.clipZ (3) at the normalize.ts level, but never re-clipped down
+// to the module's own +/-2 output contract.) Scaling by 2/clipZ, rather
+// than a second hard clamp at +/-2, was the deliberate choice: carry/
+// valuation's z-score-average outputs have a KNOWN, exact range of
+// +/-clipZ, so a linear scale maps that range losslessly onto +/-2 --
+// a hard clamp would instead flatten every reading between 2 and 3 onto
+// the same value 2, discarding real magnitude information right at the
+// extremes, which is exactly where "how cheap" (this module family's own
+// stated reason for using z-scores over percentile rank) matters most.
+// path_score/quadrant_score already clip to +/-2 directly in their own
+// formulas (not simple z-averages -- path_score is a bounded PRODUCT of
+// two z's, whose natural range is +/-clipZ^2, not +/-clipZ, so the same
+// linear scale wouldn't land it in +/-2 either); trend_score (+/-1.5) and
+// curve_score (+/-1) are fixed-value tables, inherently inside +/-2.
+// Confirmed via a direct query across the whole bond_signals history
+// that only carry/valuation ever exceeded +/-2 -- the other four do not.
+export function moduleOutputScale(z: number | null, clipZ: number): number | null {
+  return z == null ? null : z * (2 / clipZ);
+}
+
 export interface ZScoreResult {
   z: number | null;
   excluded: boolean;
