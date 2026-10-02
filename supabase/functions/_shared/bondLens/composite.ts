@@ -46,7 +46,12 @@ export function durationScore(
   return { raw, score, stance, multiplier };
 }
 
-export type InstrumentPref = "Bills / short TIPS" | "TIPS-tilted" | "Nominal-tilted";
+// Snake_case, matching bond_lens_signal's own check constraint exactly
+// (bond_lens_signal_instrument_pref_check, from the Phase A migration --
+// discovered the hard way when the first live upsert after Phase C
+// violated it with the human-readable "Bills / short TIPS" etc.). The
+// human-readable form lives in the explanation text only.
+export type InstrumentPref = "bills_short_tips" | "tips_tilted" | "nominal_tilted";
 
 const STANCE_RANK: Record<DurationStance, number> = { Short: 0, Neutral: 1, Extend: 2, "Max extend": 3 };
 
@@ -57,9 +62,9 @@ const STANCE_RANK: Record<DurationStance, number> = { Short: 0, Neutral: 1, Exte
 export function instrumentPref(
   hedgeReliable: boolean | null, stance: DurationStance, breakevenGapBp: number | null, quadrant: Quadrant | null,
 ): InstrumentPref {
-  if (hedgeReliable === false && STANCE_RANK[stance] <= STANCE_RANK.Neutral) return "Bills / short TIPS";
-  if ((breakevenGapBp != null && breakevenGapBp > 25) || quadrant === "Q2" || quadrant === "Q3") return "TIPS-tilted";
-  return "Nominal-tilted";
+  if (hedgeReliable === false && STANCE_RANK[stance] <= STANCE_RANK.Neutral) return "bills_short_tips";
+  if ((breakevenGapBp != null && breakevenGapBp > 25) || quadrant === "Q2" || quadrant === "Q3") return "tips_tilted";
+  return "nominal_tilted";
 }
 
 export type MaturityYears = 2 | 5 | 7 | 10;
@@ -129,8 +134,8 @@ export function buildExplanation(x: ExplanationInputs): ExplanationResult {
   }
 
   if (x.hedgeReliable === false) {
-    parts.push(`Bonds not a reliable hedge for equities right now — tilt toward ${x.instrumentPref === "TIPS-tilted" ? "TIPS" : "bills/short TIPS"}.`);
-  } else if (x.hedgeReliable === true && x.instrumentPref === "TIPS-tilted") {
+    parts.push(`Bonds not a reliable hedge for equities right now — tilt toward ${x.instrumentPref === "tips_tilted" ? "TIPS" : "bills/short TIPS"}.`);
+  } else if (x.hedgeReliable === true && x.instrumentPref === "tips_tilted") {
     parts.push("Bonds still hedge equities, but breakevens or the macro quadrant favor TIPS.");
   }
 

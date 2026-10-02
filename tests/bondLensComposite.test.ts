@@ -47,29 +47,29 @@ describe("durationScore", () => {
 
 describe("instrumentPref", () => {
   it("prefers bills/short TIPS when hedge is unreliable and stance is Neutral or below", () => {
-    expect(instrumentPref(false, "Neutral", 0, "Q1")).toBe("Bills / short TIPS");
-    expect(instrumentPref(false, "Short", 0, "Q1")).toBe("Bills / short TIPS");
+    expect(instrumentPref(false, "Neutral", 0, "Q1")).toBe("bills_short_tips");
+    expect(instrumentPref(false, "Short", 0, "Q1")).toBe("bills_short_tips");
   });
 
   it("does not apply the hedge rule when hedge is only degraded (null), not explicitly false", () => {
-    expect(instrumentPref(null, "Neutral", 0, "Q1")).not.toBe("Bills / short TIPS");
+    expect(instrumentPref(null, "Neutral", 0, "Q1")).not.toBe("bills_short_tips");
   });
 
   it("does not apply the hedge rule above Neutral stance", () => {
-    expect(instrumentPref(false, "Extend", 0, "Q1")).not.toBe("Bills / short TIPS");
+    expect(instrumentPref(false, "Extend", 0, "Q1")).not.toBe("bills_short_tips");
   });
 
   it("prefers TIPS when breakeven gap is large", () => {
-    expect(instrumentPref(true, "Extend", 30, "Q1")).toBe("TIPS-tilted");
+    expect(instrumentPref(true, "Extend", 30, "Q1")).toBe("tips_tilted");
   });
 
   it("prefers TIPS when quadrant is Q2 or Q3, even with a small breakeven gap", () => {
-    expect(instrumentPref(true, "Extend", 0, "Q2")).toBe("TIPS-tilted");
-    expect(instrumentPref(true, "Extend", 0, "Q3")).toBe("TIPS-tilted");
+    expect(instrumentPref(true, "Extend", 0, "Q2")).toBe("tips_tilted");
+    expect(instrumentPref(true, "Extend", 0, "Q3")).toBe("tips_tilted");
   });
 
   it("defaults to nominal-tilted otherwise", () => {
-    expect(instrumentPref(true, "Extend", 0, "Q1")).toBe("Nominal-tilted");
+    expect(instrumentPref(true, "Extend", 0, "Q1")).toBe("nominal_tilted");
   });
 });
 
@@ -101,7 +101,7 @@ describe("buildExplanation", () => {
       durationScore: 0.35, durationStance: "Neutral", trendState: "mixed",
       realYieldGapPct: 2.1, dfii10Pct: 2.9, rstarPct: 0.8, termPremiumZ: 1.1,
       curveRegime: "bear_flattening", curveRegimeSince: null,
-      hedgeReliable: false, instrumentPref: "TIPS-tilted", maturityPref: "5y", maturityEff: 0.011,
+      hedgeReliable: false, instrumentPref: "tips_tilted", maturityPref: "5y", maturityEff: 0.011,
     });
     expect(r.text).toMatch(/Duration: Neutral \(score 0\.35\)/);
     expect(r.text).toMatch(/real 10y 2\.9% vs r-star 0\.8%/);
@@ -146,7 +146,7 @@ describe("computeBondLensSignalHistory", () => {
     expect(last).not.toBeNull();
     expect(typeof last!.duration_score).toBe("number");
     expect(["Short", "Neutral", "Extend", "Max extend"]).toContain(last!.duration_stance);
-    expect(["Bills / short TIPS", "TIPS-tilted", "Nominal-tilted"]).toContain(last!.instrument_pref);
+    expect(["bills_short_tips", "tips_tilted", "nominal_tilted"]).toContain(last!.instrument_pref);
     expect(["2y", "5y", "7y", "10y"]).toContain(last!.maturity_pref);
     expect(typeof last!.explanation.text).toBe("string");
   });
