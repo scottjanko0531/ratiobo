@@ -73,4 +73,23 @@ describe("valuationScore", () => {
     expect(r.score).toBeCloseTo(((r.realYieldGap.score as number) + (r.termPremium.score as number)) / 2, 10);
     expect(r.breakevenGapBp.excluded).toBe(false);
   });
+
+  // 2026-10-02 follow-up #5: before DFII10 (TIPS) existed, valuation_score
+  // used to be fully excluded even though ACM term premium alone had a
+  // real reading -- pulls the effective start back to ~1964 instead of
+  // ~2006.
+  it("falls back to term premium alone, flagged degraded, when DFII10 has no history yet", () => {
+    const dfii10: (number | null)[] = new Array(N).fill(null); // pre-TIPS: no DFII10 at all
+    const rstar = new Array(N).fill(0.5);
+    const acm = Array.from({ length: N }, () => 1.0 + (Math.random() - 0.5) * 0.01);
+    const fallback = new Array(N).fill(0.8);
+    const gap = dfii10MinusRstarGap(dfii10, rstar); // all null (no DFII10 to diff against rstar)
+    const spliced = spliceAcmWithFallback(acm, fallback);
+    const r = valuationScore(dfii10, gap, acm, spliced, null, null, null, N - 1);
+    expect(r.realYieldGap.excluded).toBe(true);
+    expect(r.termPremium.excluded).toBe(false);
+    expect(r.excluded).toBe(false);
+    expect(r.degraded).toBe(true);
+    expect(r.score).toBe(r.termPremium.score);
+  });
 });

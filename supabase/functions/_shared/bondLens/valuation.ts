@@ -89,6 +89,17 @@ export interface ValuationScoreResult {
   degraded: boolean;
 }
 
+// 2026-10-02 follow-up #5: before TIPS existed (DFII10 starts 2003, so
+// realYieldGap's own 756-day minimum pushes its first score to ~2006),
+// valuation_score was fully excluded even though ACM term premium alone
+// (available from 1961, scoreable from ~1964 once its own 756-day
+// minimum is met) had a real, scoreable reading the whole time. Spec's
+// own "missing inputs are reweighted and flagged" rule (§4 Phase B
+// acceptance) applies here exactly: when realYieldGap is excluded but
+// termPremium isn't, fall back to termPremium alone, flagged degraded --
+// pulling valuation_score's effective start back to ~1964 instead of
+// ~2006, so Phase E's "reduced, flagged as degraded: from 1990" backtest
+// window (§6) actually has a valuation input to run against.
 export function valuationScore(
   dfii10: (number | null)[], gapSeries: (number | null)[], acmFF: (number | null)[], splicedTermPremium: (number | null)[],
   corePce12mo: number | null, expInf1yr: number | null, t5yifr: number | null,
@@ -97,6 +108,12 @@ export function valuationScore(
   const ryg = realYieldGapScore(dfii10, gapSeries, t, cfg);
   const tp = termPremiumScore(acmFF, splicedTermPremium, t, cfg);
   const be = breakevenGapBp(corePce12mo, expInf1yr, t5yifr);
+  if (ryg.excluded && !tp.excluded) {
+    return {
+      realYieldGap: ryg, termPremium: tp, breakevenGapBp: be,
+      score: tp.score, excluded: false, degraded: true,
+    };
+  }
   const excluded = ryg.excluded || tp.excluded;
   return {
     realYieldGap: ryg, termPremium: tp, breakevenGapBp: be,
