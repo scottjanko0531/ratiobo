@@ -224,3 +224,103 @@ never decompressed at all). Tested standalone: 2,116 rows, 2011-08-25 to
 2026-07-28, zero gaps. Scheduled daily at 23:20 UTC weekdays
 (`20261001_schedule_bond_lens_gdpnow.sql`), after FRED/r-star in the same
 offset-from-Market-Conditions window.
+
+## Phase B review follow-up: hedge, quadrant, path, GDPNow, valuation, trend, curve regime (2026-10-02)
+
+Scott's Phase B chart review (§7.2 test 5 and five other items) surfaced
+real bugs and two scoring-formula changes:
+
+**1. Hedge flag.** Diagnosed by computing the raw 90-day SPY/IEF
+correlation directly in Postgres (not re-derived in JS) for Oct 2021-Dec
+2022: it is genuinely negative through mid-June 2022 (as low as -0.32)
+and only crosses positive and trips the Q2/Q3-and-corr>0 rule on
+2022-07-22 -- the hysteresis-confirmed flip already in `bond_signals`
+was correct given the real data, not a bug. The REAL bug: `HedgeState`'s
+initial value was `hedgeReliable: true`, and `stepHedgeReliable` held
+that default forever whenever `corr` was null -- which it was for the
+entire pre-IEF (2002) and pre-SPY (1993) history, so hedge_reliable read
+`true` for 40 years with no basis. Fixed: `hedgeReliable` is now
+`boolean | null`; null means "no reading yet," flagged
+`hedge_reliable_degraded`, never defaults to true. Below real-data
+coverage, falls back to a monthly construction (`syntheticBond.ts`):
+Shiller's monthly S&P total return (real SPY overrides it from 1993)
+against a synthetic 10y total return built from DGS10 via
+duration-based approximation (`-D_mod*Δy + y/252` per day), 36-month
+rolling correlation. The synthetic bond leg was validated against real
+IEF before use: corr 0.962, sd 0.00488 vs 0.00428, over the full
+2002-2026 overlap, computed directly in Postgres. Shiller's own P column
+is a monthly AVERAGE of daily closes (his own CAPE convention, not a
+month-end snapshot), so the equity leg only reads ~0.60 correlated with
+real SPY returns over the 1993-2004 overlap -- expected, and exactly why
+every fallback reading is flagged degraded regardless.
+
+**2. Quadrant churn.** `quadrant_score` is now continuous:
+`clip(-(z(growth_mom) + z(infl_axis))/2, -2, 2)`, replacing the fixed
+4-point lookup table. The `quadrant` label (Q1-Q4) stays sign-based but
+is now display-only with 3-week persistence (`stepQuadrantLabel`, same
+walk-forward pattern as `hedge_reliable`/`curve_regime`) --
+`cfg.quadrant.labelPersistenceWeeks`. Hedge reliability's own Q2/Q3
+check still reads the RAW (unpersisted) label, unchanged, since spec
+ties that rule to the actual regime, not the display cadence.
+
+**3. GDPNow quarter-boundary nulls.** Root cause: the scaled-change
+fallback (growth_mom's own first fix) returned null on the EXACT day
+`target_quarter` flips to a new quarter, because "change since the
+quarter's first release" is undefined with zero elapsed days -- that one
+day lands at/near each month-end (Jan/Apr/Jul/Oct), matching what Scott
+saw. Fixed: on that one day, carry the prior day's own growth_mom value
+forward, flagged degraded (Scott's documented fallback for exactly this
+case). Confirmed separately: the 2026-07-28 FRED-discontinuation
+boundary has no actual data gap (2026Q2's last release 07-28, 2026Q3's
+first 07-30), and the latest `GDPNOW_ATL_NOWCAST` row is 2026-10-01
+carrying September 2026 nowcasts.
+
+**4. path_score.** Continuous:
+`clip(-z(data_momentum) * abs(z(priced_hikes)), -2, 2)`, where
+`data_momentum = avg(z(growth_mom), z(infl_trend))`. Scott's first draft
+of the formula (`z(priced_hikes) * -z(data_momentum)`, a plain product)
+was mathematically direction-blind -- opposite-signed inputs always
+multiply to the same sign regardless of which input is which, so
+"hikes priced + cooling data" (bullish) and "cuts priced + heating data"
+(bearish) collapsed onto one sign. Confirmed with Scott (AskUserQuestion)
+and corrected so the sign comes from `data_momentum` alone and
+`priced_hikes` only scales the magnitude.
+
+**5. Coverage.** `valuationScore` now falls back to term premium alone,
+flagged degraded, whenever `realYieldGap` is excluded (pre-TIPS, i.e.
+before DFII10's ~2006 effective start) but `termPremium` isn't --
+pulls valuation_score's start back to ~1964 (ACM's own 756-day minimum
+after its 1961 start). `trend`'s "IEF or synthetic" now actually has a
+synthetic leg: `syntheticBond.ts`'s daily duration-based 10y total-return
+index, spliced continuously onto real IEF at its 2002-07-30 inception
+(`spliceSyntheticBeforeReal`, rescaled so the join has no jump), flagged
+`trend_degraded` until a full 252-day momentum window sits entirely
+within real-IEF-covered dates.
+
+**6. Curve regime thresholds.** Lower priority per Scott's own framing --
+added `BOND_LENS_CONFIG.curveRegimeStrict` (15bp level / 8bp slope /
+4-week persistence) alongside the live `curveRegime` config, unwired
+from production. Both configs are mechanically interchangeable with the
+same `curveRegimeRaw`/`classifyCurveCandidate`/`stepCurveRegime`
+functions, so Phase E can run both over the same history with zero code
+changes.
+
+**7. Staleness / operational gap found.** `bond_signals.flags` was empty
+on the latest row and `ACMTP10`'s own last observation (2026-09-30) is
+fresh relative to the 10-business-day cap, so valuation read live ACM,
+not the Kim-Wright fallback. Separately: **no cron job of any kind ever
+invoked `bond-lens-compute`** -- every ingest job was scheduled, but
+nothing recomputed `bond_signals` on a schedule, so it would have gone
+stale even with perfectly fresh inputs. Added `bond-lens-compute-daily`,
+23:40 UTC weekdays, after the three ingest jobs
+(`20261002_schedule_bond_lens_compute_daily.sql`). The ACM GitHub
+Actions workflow's own run history could not be confirmed from this
+session (no `gh` CLI available locally) -- Scott should check the repo's
+Actions tab, and confirm the `SUPABASE_SERVICE_ROLE_KEY` secret was
+actually added, since that step was never verifiable from here.
+
+One-time backfill, not a recurring job (the window it covers is
+permanently historical): `SHILLER_SP500_TR_MONTHLY`,
+`20261002_backfill_shiller_sp500_monthly_tr.sql`, 1962-01 through
+2004-12 (extra headroom past 1993 for validation), sourced from Shiller's
+own published `ie_data.xls` (shillerdata.com).
