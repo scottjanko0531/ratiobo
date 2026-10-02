@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { computeBondLensHistory, BondLensHistoryInputs } from "../_shared/bondLens/scoring.ts";
+import { computeBondLensSignalHistory } from "../_shared/bondLens/composite.ts";
 import { alignForwardFill } from "../_shared/bondLens/normalize.ts";
 import { BOND_LENS_CONFIG } from "../_shared/bondLens/config.ts";
 
@@ -166,10 +167,26 @@ Deno.serve(async (req: Request) => {
       if (error) throw new Error(`bond_signals upsert: ${error.message}`);
     }
 
+    // §5 global composite (Phase C) -- reuses `rows` (already computed
+    // above) and `inputs`, rather than re-fetching bond_signals and
+    // re-deriving anything; only recomputes the handful of O(n) pieces
+    // dayRows doesn't itself carry (see composite.ts's own comment).
+    const signalRowsRaw = computeBondLensSignalHistory(rows, inputs, BOND_LENS_CONFIG);
+    const signalComputedAt = new Date().toISOString();
+    const signalRows = signalRowsRaw.filter((r): r is NonNullable<typeof r> => r != null);
+    for (const r of signalRows) (r as unknown as { computed_at: string }).computed_at = signalComputedAt;
+    for (let i = 0; i < signalRows.length; i += chunkSize) {
+      const chunk = signalRows.slice(i, i + chunkSize);
+      const { error } = await supabase.from("bond_lens_signal").upsert(chunk, { onConflict: "as_of_date" });
+      if (error) throw new Error(`bond_lens_signal upsert: ${error.message}`);
+    }
+
     const last = rows[rows.length - 1];
+    const lastSignal = signalRows[signalRows.length - 1] ?? null;
     const report = {
       totalRows: rows.length, from: dates[0], to: dates[dates.length - 1],
       latest: last,
+      signalRows: signalRows.length, signalFrom: signalRows[0]?.as_of_date ?? null, latestSignal: lastSignal,
       configVersion: BOND_LENS_CONFIG.version,
     };
 
