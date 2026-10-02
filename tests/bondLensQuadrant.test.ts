@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { inflationAxis, classifyQuadrant, dailyReturns, hedgeCorrelation, stepHedgeReliable } from "../supabase/functions/_shared/bondLens/quadrant.ts";
+import {
+  inflationAxis, classifyQuadrantLabel, stepQuadrantLabel, quadrantScoreContinuous,
+  dailyReturns, hedgeCorrelation, stepHedgeReliable,
+} from "../supabase/functions/_shared/bondLens/quadrant.ts";
 
 describe("inflationAxis", () => {
   it("adds the T5YIE change and the infl_trend sign", () => {
@@ -11,28 +14,66 @@ describe("inflationAxis", () => {
   });
 });
 
-describe("classifyQuadrant", () => {
-  it("Q1: growth up, inflation down -> mildly negative", () => {
-    const r = classifyQuadrant(1, -1);
-    expect(r.quadrant).toBe("Q1");
-    expect(r.score).toBeLessThan(0);
+describe("classifyQuadrantLabel", () => {
+  it("Q1: growth up, inflation down", () => {
+    expect(classifyQuadrantLabel(1, -1)).toBe("Q1");
   });
-  it("Q2: growth up, inflation up -> negative", () => {
-    expect(classifyQuadrant(1, 1).quadrant).toBe("Q2");
+  it("Q2: growth up, inflation up", () => {
+    expect(classifyQuadrantLabel(1, 1)).toBe("Q2");
   });
-  it("Q3: growth down, inflation up -> most negative (nominal hedge weak)", () => {
-    const q2 = classifyQuadrant(1, 1);
-    const q3 = classifyQuadrant(-1, 1);
-    expect(q3.quadrant).toBe("Q3");
-    expect(q3.score as number).toBeLessThan(q2.score as number);
+  it("Q3: growth down, inflation up", () => {
+    expect(classifyQuadrantLabel(-1, 1)).toBe("Q3");
   });
-  it("Q4: growth down, inflation down -> strongly positive", () => {
-    const r = classifyQuadrant(-1, -1);
-    expect(r.quadrant).toBe("Q4");
-    expect(r.score as number).toBeGreaterThan(0);
+  it("Q4: growth down, inflation down", () => {
+    expect(classifyQuadrantLabel(-1, -1)).toBe("Q4");
   });
-  it("excludes when an axis is unavailable", () => {
-    expect(classifyQuadrant(null, 1).excluded).toBe(true);
+  it("null when an axis is unavailable", () => {
+    expect(classifyQuadrantLabel(null, 1)).toBeNull();
+  });
+});
+
+describe("quadrantScoreContinuous", () => {
+  // 2026-10-02 follow-up #2: score = clip(-(growth_z + infl_z)/2, -2, 2).
+  it("both axes up (hot growth, hot inflation) -> strongly negative", () => {
+    const r = quadrantScoreContinuous({ z: 2, excluded: false }, { z: 2, excluded: false });
+    expect(r.score).toBeCloseTo(-2, 6);
+  });
+  it("both axes down (cold growth, cold inflation) -> strongly positive", () => {
+    const r = quadrantScoreContinuous({ z: -2, excluded: false }, { z: -2, excluded: false });
+    expect(r.score).toBeCloseTo(2, 6);
+  });
+  it("clips at the +/-2 output bound even if z's are more extreme", () => {
+    const r = quadrantScoreContinuous({ z: -3, excluded: false }, { z: -3, excluded: false });
+    expect(r.score).toBe(2);
+  });
+  it("excludes when either axis is excluded", () => {
+    const r = quadrantScoreContinuous({ z: null, excluded: true, excludeReason: "x" }, { z: 1, excluded: false });
+    expect(r.excluded).toBe(true);
+    expect(r.score).toBeNull();
+  });
+});
+
+describe("stepQuadrantLabel", () => {
+  it("requires 3 consecutive agreeing reads before the displayed label changes", () => {
+    let state = { confirmed: "Q1" as const, candidate: "Q1" as const, candidateStreak: 0 };
+    state = stepQuadrantLabel("Q3", state);
+    expect(state.confirmed).toBe("Q1"); // not yet
+    state = stepQuadrantLabel("Q3", state);
+    expect(state.confirmed).toBe("Q1"); // still not yet (2 reads)
+    state = stepQuadrantLabel("Q3", state);
+    expect(state.confirmed).toBe("Q3"); // 3rd agreeing read confirms
+  });
+  it("resets the streak when a read disagrees with the pending candidate", () => {
+    let state = { confirmed: "Q1" as const, candidate: "Q1" as const, candidateStreak: 0 };
+    state = stepQuadrantLabel("Q3", state);
+    state = stepQuadrantLabel("Q2", state); // disagrees with Q3 candidate
+    expect(state.candidate).toBe("Q2");
+    expect(state.candidateStreak).toBe(1);
+    expect(state.confirmed).toBe("Q1");
+  });
+  it("holds state when there's no new read", () => {
+    const prior = { confirmed: "Q4" as const, candidate: "Q4" as const, candidateStreak: 0 };
+    expect(stepQuadrantLabel(null, prior)).toBe(prior);
   });
 });
 
@@ -67,6 +108,21 @@ describe("stepHedgeReliable", () => {
   it("holds state with no new read", () => {
     const prior = { hedgeReliable: true, streak: 0 };
     expect(stepHedgeReliable(null, "Q1", prior, cfg as any)).toEqual(prior);
+  });
+
+  it("2026-10-02 follow-up #1: stays null (degraded), never defaults to true, when no reading has ever existed", () => {
+    const prior = { hedgeReliable: null, streak: 0 };
+    const next = stepHedgeReliable(null, "Q1", prior, cfg as any);
+    expect(next.hedgeReliable).toBeNull();
+  });
+
+  it("establishes a real value once a reading arrives, from a null starting state", () => {
+    const prior = { hedgeReliable: null, streak: 0 };
+    // candidate = reliable (corr well below threshold); null !== true counts as a "change" the first time
+    const next = stepHedgeReliable(-0.1, "Q1", prior, cfg as any);
+    expect(next.hedgeReliable).toBeNull(); // first agreeing read, streak 1 -- hysteresis still applies from null
+    const next2 = stepHedgeReliable(-0.1, "Q1", next, cfg as any);
+    expect(next2.hedgeReliable).toBe(true); // 2nd agreeing read confirms
   });
 
   it("requires 2 consecutive agreeing reads before flipping to unreliable", () => {
