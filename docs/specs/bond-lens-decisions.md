@@ -410,3 +410,156 @@ case applies):
 Note rows 1&3 and 2&4 share a sign -- `priced_hikes`' sign genuinely
 doesn't determine direction, only its magnitude does (visible here since
 all four cells use the same `|z|`s).
+
+## Phase C: global composite (2026-10-02)
+
+Implements §5 exactly as written: `duration_score = 0.30*valuation +
+0.25*path + 0.20*carry + 0.15*quadrant + 0.10*curve`, trend-gated (down
+-> cap 0, mixed -> cap +0.75), mapped to stance/multiplier (§5.2),
+instrument preference evaluated in order (§5.3), maturity preference
+from the per-maturity EFF table with a Max-extend override to 10y
+(§5.4), and an explanation paragraph with structured drivers (§5.5).
+Wired into `bond-lens-compute` itself (not a separate function) --
+reuses the already-computed `bond_signals` history in memory rather
+than re-fetching it, only adding the handful of O(n) pieces (r-star
+lag, term premium z, per-maturity EFF) that pass wasn't already
+carrying.
+
+**`instrument_pref` values are snake_case** (`bills_short_tips`,
+`tips_tilted`, `nominal_tilted`) -- matches `bond_lens_signal`'s own
+check constraint from the Phase A migration exactly. Found this the
+hard way: the first live upsert after deploying Phase C failed on it
+(I'd used the human-readable form from spec's own prose). The
+human-readable form lives in the explanation text only.
+
+**Composite coverage starts 2006-04-11**, confirmed by directly
+querying which column was null right up to that date: NOT carry_score
+(already non-null since well before 2006, consistent with DGS3MO's own
+1981-09 start + 756-day warmup -> ~1984) -- it's `quadrant_score`,
+specifically its inflation axis, which needs T5YIE (5y breakeven,
+FRED start ~2003) plus the same 756-day minimum -> 2006. Spec's own
+§7.1 table says "full composite: from 2003"; the extra ~3 years here is
+the z-score warmup spec's own coverage table doesn't account for, not a
+discrepancy with spec's data-availability claim.
+
+**Maturity preference lands on 2y almost every time** (confirmed across
+all 5 spot-check dates below) -- checked this isn't a bug: `EFF_n =
+CR_n / D_mod(n)` structurally favors short maturities almost regardless
+of curve shape, since `D_mod` grows with `n` faster than `CR_n` does
+for anything resembling a normal-to-flat curve. This is a property of
+the spec's own literal EFF formula, not an implementation error -- worth
+a look in Phase E if a maturity-preference signal that actually
+responds to curve shape is wanted.
+
+### Spot-checks (`bond_lens_signal`, nearest trading day on/before each date)
+
+| Date | duration_score | stance | instrument_pref | maturity_pref | hedge_reliable | curve_regime | quadrant |
+|---|---|---|---|---|---|---|---|
+| 2020-03-20 | -0.20 | Neutral | nominal_tilted | 2y | true | bull_steepening | Q1 |
+| 2022-06-17 | 0.00 (trend-capped) | Neutral | tips_tilted | 2y | true | bear_flattening | Q3 |
+| 2023-10-20 | 0.00 (trend-capped) | Neutral | bills_short_tips | 2y | false | bear_steepening | Q1 |
+| 2024-09-20 | 0.23 | Neutral | nominal_tilted | 2y | true | bull_steepening | Q4 |
+| 2026-09-30 (latest) | 0.00 (trend-capped) | Neutral | bills_short_tips | 2y | false | bear_flattening | Q4 |
+
+All five read as directionally sane against the real macro backdrop for
+each date (e.g. 2022-06-17 lands in Q3/stagflation with a TIPS tilt
+during the Fed's hiking cycle; 2023-10-20's bear_steepening during the
+late-2023 long-end selloff triggers the hedge-unreliable bills tilt).
+None hit Extend/Max extend/Short in this particular five-date sample --
+not surprising given the trend gate caps most of them at 0 and the
+underlying composite rarely swings past +-0.75 in practice; worth
+widening the spot-check set in Phase E if the stance bands themselves
+need stress-testing.
+
+## Phase E test variants (2026-10-02, NOT wired into production)
+
+Four variants, per Scott's explicit request to test before Phase E
+proper, kept entirely separate from the live config/compute:
+
+**(a) Inflation-regime hedge rule.** `hedge_reliable_alt = false` when
+core PCE 12mo > 3.0% AND not decelerating (3mo annualized >= 12mo rate),
+regardless of realized correlation; otherwise the existing correlation
+rule. Computed directly in Postgres (PCEPILFE's own LAG(3)/LAG(12) on
+its monthly rows, forward-joined onto each Friday) rather than pulled
+into a script -- kept the result to a handful of summary numbers:
+
+- **Late 2021:** flags 17 of 26 weeks (65%) in H2 2021, first flagging
+  on **2021-04-02** -- over 15 months before the real correlation rule
+  flipped (2022-07-22). Directly confirms Scott's own framing: the
+  realized-correlation rule only caught the hedge breakdown "after the
+  damage was done."
+- **False alarms, 2003-2019 (859 weeks):** **zero.** The alt rule never
+  once said "unreliable" while the real correlation-based rule still
+  said "reliable" across this entire 16-year stretch.
+
+A genuinely clean result on both ends -- catches the 2021 setup far
+earlier, with no false-alarm cost over the preceding 16 "normal" years
+in this specific data. Doesn't by itself say whether 3.0%/accelerating
+is the RIGHT threshold (only that it's not obviously too loose over
+2003-2019) -- Phase E's own sensitivity test (§7.2 test 6) is the place
+to vary it.
+
+**(b) Path/quadrant overlap.** Variant: quadrant_score leaves the
+duration composite (still feeds instrument_pref and hedge_reliable's
+own Q2/Q3 rule, unchanged); its 0.15 weight splits as +0.10 to
+valuation (0.30->0.40) and +0.05 to carry (0.20->0.25) -- the only
+split that keeps the remaining four weights summing to 1.00. Tested
+against forward 12-month IEF excess returns (IEF total return minus the
+prevailing DGS1 yield, both computed directly in Postgres), over the
+4,598 trading days where both the composite and a forward 12-month
+window exist (2006-04 through ~1yr before the latest date):
+
+| | live (with quadrant) | alt (quadrant removed) |
+|---|---|---|
+| IC (corr with fwd 12m excess) | 0.093 | **0.169** |
+| Hit rate | 48.65% (below chance) | **52.44%** |
+
+The alt variant's IC is nearly double live's, and its hit rate clears
+50% where live's doesn't. `corr(live, alt) = 0.94` -- they move together
+almost identically day to day (expected, sharing 4 of 5 inputs), so this
+is a real but modest effect, not two different signals. Caveat: this is
+overlapping daily data (heavy autocorrelation in both the composite and
+12-month forward returns), so the effective independent sample size is
+far smaller than 4,598 -- a real IC/hit-rate test with properly spaced,
+non-overlapping windows belongs in Phase E proper. Directionally,
+though, this supports pulling quadrant out of the duration composite.
+
+**(c) Curve regime.** Already computed in the pre-Phase-C review
+(2026-10-02, item 6 above): live config (10bp/5bp/2wk) averages **6.0
+regime changes/year**, neutral 47.3% of weeks; `curveRegimeStrict`
+(15bp/8bp/4wk) averages **2.5/year**, neutral 63.5% of weeks, over
+1999-2026. Both configs already live side by side in
+`BOND_LENS_CONFIG` for Phase E to pick from directly.
+
+**(d) Carry history via DTB3.** Confirmed via direct queries against
+`bond_raw_series`: `DGS3MO` starts 1981-09-01 (the actual binding
+constraint on today's `carry_score`, consistent with Scott's own
+framing); `DTB3` (3-month T-bill, secondary market) starts 1954-01-04;
+`DGS7` starts 1969-07-01; `DGS10` starts 1962-01-02. `carry_score`'s
+true dependencies are only the bill leg and the 10y/9y-interpolated
+leg (needs `DGS7` and `DGS10` specifically, not `DGS1`/`DGS2`/`DGS3`/
+`DGS5` -- those only feed the OTHER maturities' EFF table, not
+`carry_score` itself).
+
+Using `DGS3MO ?? DTB3` as the bill fallback would therefore push
+`carry_score`'s real binding constraint from `DGS3MO` (1981-09) back to
+**`DGS7` (1969-07-01)** -- `DTB3` itself is no longer the limiter once
+it's available from 1954. Extended start: 1969-07-01 + 756 trading days
+-> **~1972-73**, not all the way back to DTB3's own 1954 start.
+
+**Not backfilled.** `DTB3` itself (1954-2026, ~18k rows) and the
+subsequent recompute both ran into a hard interface wall this session:
+every write path available here (`execute_sql`/`apply_migration`) takes
+the full SQL text as a literal parameter, and a dataset this size
+either exceeds the tool's own return-size limit (on read) or costs an
+enormous amount of context to push through in one block (on write) --
+there's no service-role key or direct Postgres connection available
+from this session to route around it (by design -- service-role keys
+shouldn't be handled by the assistant per this project's own security
+posture, same reasoning as the ACM GitHub Actions refresh). The 1969-73
+start-date math above is the real, verified answer (built from actual
+queried FRED start dates, not guessed) -- the backfill itself is a
+cheap follow-up (one Python script, FRED's public `fredgraph.csv`
+endpoint, same shape as the Shiller/ACM backfills already in this repo)
+whenever there's budget for a session with direct DB write access, or
+Scott wants to run it himself.
