@@ -5,7 +5,7 @@
 // PLACEHOLDER values). Bump `version` whenever any value below changes.
 
 export const BOND_LENS_CONFIG = {
-  version: "bond-lens-1.0.0",
+  version: "bond-lens-1.0.1", // 2026-10-02 follow-up: continuous path/quadrant scoring, hedge/valuation/trend fallbacks, curveRegimeStrict added
 
   // §4's own normalization convention (v2.1 decisions, not Market
   // Conditions' percentile-rank convention): literal z-score, clipped to
