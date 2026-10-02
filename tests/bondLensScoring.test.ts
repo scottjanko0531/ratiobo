@@ -31,6 +31,7 @@ describe("computeBondLensHistory", () => {
     gdpnowQuarter: dates.map((d) => `${d.slice(0, 4)}Q${Math.floor((+d.slice(5, 7) - 1) / 3) + 1}`),
     spy: Array.from({ length: n }, (_, i) => 100 * Math.pow(1.0003, i)),
     ief: Array.from({ length: n }, (_, i) => 100 * Math.pow(1.00005, i)),
+    shillerSp500MonthlyTr: [], // real SPY/IEF cover this whole synthetic window -- fallback never triggers
   };
 
   it("produces one row per date with no thrown errors", () => {
@@ -62,5 +63,20 @@ describe("computeBondLensHistory", () => {
     // show the same hedge_reliable/curve_regime (only updated at week-end).
     const a = rows[n - 3], b = rows[n - 2];
     expect(a.hedge_reliable).toBe(b.hedge_reliable);
+  });
+
+  // 2026-10-02 follow-up #1: hedge_reliable must stay null (degraded),
+  // never silently default to true, when there's no real SPY/IEF
+  // correlation AND no pre-1993 fallback data either.
+  it("holds hedge_reliable null, flagged degraded, with no price data and no fallback at all", () => {
+    const noPrices: BondLensHistoryInputs = {
+      ...inputs,
+      spy: new Array(n).fill(null),
+      ief: new Array(n).fill(null),
+      shillerSp500MonthlyTr: [],
+    };
+    const rows = computeBondLensHistory(noPrices);
+    expect(rows[n - 1].hedge_reliable).toBeNull();
+    expect(rows[n - 1].flags.hedge_reliable_degraded).toBeTruthy();
   });
 });
