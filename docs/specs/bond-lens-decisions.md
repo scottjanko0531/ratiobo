@@ -324,3 +324,89 @@ permanently historical): `SHILLER_SP500_TR_MONTHLY`,
 `20261002_backfill_shiller_sp500_monthly_tr.sql`, 1962-01 through
 2004-12 (extra headroom past 1993 for validation), sourced from Shiller's
 own published `ie_data.xls` (shillerdata.com).
+
+## Pre-Phase-C fixes (2026-10-02)
+
+**Module output range.** §4's "Conventions for every module" requires
+every module score in `[-2, +2]`. A direct query across the full
+`bond_signals` history found `valuation_score` reaching `3.0` (1981) and
+`carry_score` ranging `-2.76` to `+2.28` -- both are pure z-score
+averages, clipped only to `+/-cfg.clipZ` (3) by `normalize.ts`, never
+re-clipped to the module's own `+/-2` contract. The other four
+(`path_score`, `quadrant_score`, `trend_score`, `curve_score`) were
+confirmed already inside `+/-2` by the same query.
+
+Fixed by rescaling (`moduleOutputScale`, `z * (2 / clipZ)`) rather than a
+second hard clamp at `+/-2`: carry/valuation's output is a simple
+average of z-scores with a KNOWN exact range of `+/-clipZ`, so a linear
+scale maps that range onto `+/-2` losslessly. A hard clamp would instead
+flatten every reading between 2 and 3 onto the identical value 2,
+destroying exactly the magnitude information ("how cheap") that's the
+whole stated reason this module family uses z-scores over percentile
+rank in the first place. Applied once, at the `bond_signals` row-output
+boundary in `scoring.ts` -- not inside `carry.ts`/`valuation.ts`
+themselves, so any other caller that wants the raw z-score (Phase E,
+say) still gets it unscaled.
+
+**growth_mom in the first ~10 trading days of a quarter.** Confirmed by
+reading the code and re-querying live data: the scaled-change fallback
+(`(value_now - value_at_first_release) / days_elapsed * 56`) was already
+scaling to an 8-week equivalent exactly as intended -- that part worked.
+The gap: it would scale off as little as a 1-day gap, meaning an early
+noisy GDPNow revision could get multiplied by up to ~56x. Fixed by
+requiring at least 10 TRADING days elapsed (`t - firstIdx`, both
+indices into the same gap-free trading calendar, so this is an exact
+trading-day count, not an approximation) before trusting the scaled
+estimate; below that, carries the prior day's own growth_mom reading
+forward, flagged degraded -- the same mechanism already used for the
+`firstIdx === t` case, which this new check subsumes (0 trading days
+elapsed is always below any positive minimum).
+
+Verified live after recompute, 2025's four quarter boundaries
+(`bond_signals`, `growth_mom_degraded` flag reasons):
+
+| Date | Trading days since Q start | Behavior |
+|---|---|---|
+| 2025-01-29 to 01-30 | (prior quarter, not yet boundary) | plain 8-week diff, not degraded |
+| 2025-01-31 | 0 | carried forward, degraded |
+| 2025-02-03 to ~02-13 | 1-9 | carried forward, degraded |
+| 2025-02-14 onward (~10td) | >=10 | scaled 8-week-equivalent, degraded |
+| 2025-04-30, 07-31, 10-31 | 0 | same pattern at each boundary |
+
+**path_score formula, final.**
+
+```
+data_momentum_z = avg(z(growth_mom), z(infl_trend))   // whichever of the two is available; both missing -> excluded
+path_score = clip(-data_momentum_z * abs(z(priced_hikes)), -2, +2)
+```
+
+Sign comes from `data_momentum_z` ALONE -- cooling data (`data_momentum_z
+< 0`) is bond-bullish (positive), heating data (`> 0`) is bond-bearish
+(negative). `priced_hikes`' own sign never flips the result; only its
+MAGNITUDE scales how much a given data trend matters (a bigger priced
+repricing means the market is actively engaged on this axis, so new data
+confirming or denying it carries more weight for duration).
+
+Scott's first draft of the formula was the plain product
+`z(priced_hikes) * -z(data_momentum)` -- algebraically that's positive
+whenever the two z's have opposite signs REGARDLESS of which one is
+which, so it couldn't distinguish "hikes priced + cooling" (bullish)
+from "cuts priced + heating" (bearish): both landed on the same sign.
+Caught via AskUserQuestion before shipping; Scott confirmed the
+sign-from-data-momentum version above.
+
+Four-case truth table (illustrative `|z|` = 1.5 for priced_hikes, 1.0
+for data_momentum in every cell, to isolate the sign logic -- actual
+magnitude always scales with the real `|z|`s, independent of which
+case applies):
+
+| priced_hikes | data_momentum | sign | path_score | reading |
+|---|---|---|---|---|
+| Hikes priced (z=+1.5) | Cooling (z=-1.0) | + | +1.5 | Bond-bullish: hawkish pricing, data not supporting it |
+| Hikes priced (z=+1.5) | Heating (z=+1.0) | - | -1.5 | Bond-bearish: data confirms the hawkish pricing, more to go |
+| Cuts priced (z=-1.5) | Cooling (z=-1.0) | + | +1.5 | Bond-bullish: data confirms the dovish pricing, more to go |
+| Cuts priced (z=-1.5) | Heating (z=+1.0) | - | -1.5 | Bond-bearish: dovish pricing, data not supporting it |
+
+Note rows 1&3 and 2&4 share a sign -- `priced_hikes`' sign genuinely
+doesn't determine direction, only its magnitude does (visible here since
+all four cells use the same `|z|`s).
