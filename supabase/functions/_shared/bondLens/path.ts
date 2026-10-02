@@ -67,22 +67,25 @@ export function growthMom(
     if (values[i] != null) firstIdx = i;
   }
   if (firstIdx == null) return { value: null, degraded: true, reason: "quarter has no prior release yet" };
-  if (firstIdx === t) {
-    // t IS the quarter's own first release -- zero elapsed time, so
-    // "change since first release" is undefined (division by zero).
-    // Carry the prior day's own growth_mom reading forward instead
-    // (Scott's documented fallback for exactly this one-day edge case,
-    // 2026-10-02 follow-up #3), flagged degraded. This was the actual
-    // source of the null rows observed at the end of Jan/Apr/Jul/Oct --
-    // GDPNow's target_quarter label flips to the new quarter ~1 day
-    // before month-end in each case, and that single day had no basis
-    // for a change, so it fell through to null.
+
+  // 2026-10-02 follow-up #2: require at least MIN_TRADING_DAYS trading
+  // days elapsed since the quarter's own first release before trusting
+  // the scaled estimate -- scaling a 1- or 2-day change by 56/days is far
+  // too noisy to call an "8-week-equivalent" rate. `t - firstIdx` is
+  // trading days directly (both are indices into the same gap-free
+  // trading calendar). Below that minimum, carry the prior day's own
+  // growth_mom reading forward instead, flagged degraded -- this also
+  // subsumes the old firstIdx === t case (0 trading days elapsed is
+  // always < MIN_TRADING_DAYS), which was the actual source of the null
+  // rows observed at the end of Jan/Apr/Jul/Oct.
+  const MIN_TRADING_DAYS = 10;
+  const tradingDaysSinceFirst = t - firstIdx;
+  if (tradingDaysSinceFirst < MIN_TRADING_DAYS) {
     if (t === 0) return { value: null, degraded: true, reason: "no prior growth_mom to carry forward" };
     const prior = growthMom(dates, values, targetQuarters, t - 1, lookbackDays);
-    return { value: prior.value, degraded: true, reason: "first release of a new quarter -- carried prior day's growth_mom forward" };
+    return { value: prior.value, degraded: true, reason: `fewer than ${MIN_TRADING_DAYS} trading days since the quarter's first release -- carried prior day's growth_mom forward` };
   }
   const daysSinceFirst = daysBetween(dates[firstIdx], dates[t]);
-  if (daysSinceFirst <= 0) return { value: null, degraded: true, reason: "quarter has no prior release yet" };
   const changeSinceFirst = now - (values[firstIdx] as number);
   return { value: (changeSinceFirst / daysSinceFirst) * lookbackDays, degraded: true, reason: "scaled to 8-week-equivalent across a quarter boundary" };
 }

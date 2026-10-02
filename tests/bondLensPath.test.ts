@@ -44,18 +44,37 @@ describe("growthMom", () => {
     expect(r.value).toBeCloseTo(0.5, 5);
   });
 
-  it("falls back to the scaled version across a quarter boundary", () => {
+  it("falls back to the scaled version once at least 10 trading days have elapsed", () => {
     const values = new Array(120).fill(2.0);
     const quarters: (string | null)[] = new Array(120).fill("2026Q2");
-    // New quarter starts 10 days before t=119, first release 2.0, now 2.2.
-    for (let i = 110; i <= 119; i++) quarters[i] = "2026Q3";
-    values[110] = 2.0;
+    // New quarter starts 19 trading days before t=119 (>= the 10-day minimum), first release 2.0, now 2.2.
+    for (let i = 100; i <= 119; i++) quarters[i] = "2026Q3";
+    values[100] = 2.0;
     values[119] = 2.2;
     const r = growthMom(dates, values, quarters, 119, 56);
     expect(r.degraded).toBe(true);
     expect(r.reason).toMatch(/scaled/);
-    // change-since-first (0.2) over 9 days, scaled to 56 days -> 0.2/9*56 ~= 1.244
-    expect(r.value).toBeCloseTo((0.2 / 9) * 56, 2);
+    // change-since-first (0.2) over 19 days, scaled to 56 days -> 0.2/19*56 ~= 0.589
+    expect(r.value).toBeCloseTo((0.2 / 19) * 56, 2);
+  });
+
+  // 2026-10-02 follow-up #2: fewer than 10 trading days since the
+  // quarter's first release makes the scaled estimate too noisy to trust
+  // (scaling a 1-2 day change by up to 56x) -- carry the prior day's
+  // reading forward instead, flagged degraded, same mechanism as the
+  // firstIdx === t case this now subsumes.
+  it("carries the prior day's growth_mom forward when fewer than 10 trading days have elapsed since the quarter's first release", () => {
+    const values = new Array(120).fill(2.0);
+    const quarters: (string | null)[] = new Array(120).fill("2026Q2");
+    for (let i = 112; i <= 119; i++) quarters[i] = "2026Q3"; // 7 trading days old at t=119
+    values[111] = 2.3; // last day of 2026Q2
+    values[112] = 2.0; // 2026Q3's first release
+    values[119] = 2.9; // only 7 trading days later -- would scale a 0.9pt move by 8x
+    const prior = growthMom(dates, values, quarters, 118, 56); // still 2026Q3, 6 trading days old
+    const r = growthMom(dates, values, quarters, 119, 56);
+    expect(r.degraded).toBe(true);
+    expect(r.reason).toMatch(/fewer than 10 trading days/);
+    expect(r.value).toBeCloseTo(prior.value as number, 10);
   });
 
   it("is degraded null when GDPNow or target_quarter is unavailable", () => {
