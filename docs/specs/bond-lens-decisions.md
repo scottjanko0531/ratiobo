@@ -1215,6 +1215,72 @@ Step 2 per Scott's "then proceed" instruction.
 
 ---
 
+## Step 2: defensive tier -- tested and rejected -- 2026-10-02
+
+Trigger tested: `valuation_score < -0.75` AND `trend_state = down` AND
+`hedge_reliable = false`, 2-week hysteresis on the combined condition.
+Effect tested: 0.1x multiplier (modeled as a direct override on the
+same sleeve_return formula Phase E used -- BIL's own duration, ~0.10y,
+is close enough to cash that this is a reasonable backtest
+simplification for "shift into BIL," stated explicitly rather than
+building a separate BIL return series).
+
+**Only 4 episodes ever activate across the full 1965-2026 history**:
+1994-12-09 to 1995-01-13, 1996-05-24 to 1996-06-14, 1996-07-19 to
+1996-08-02, and 2021-06-18 to 2021-07-16. **2022, 2013 (taper tantrum),
+and the 1980s never trigger at all** -- confirmed directly against the
+real `valuation_score` series:
+
+- **2022**: valuation_score bottomed near -1.05 in March, while
+  `hedge_reliable` was still `true`. By late July, when hedge flipped
+  `false`, valuation had already recovered to -0.2/-0.4 -- the two
+  conditions never overlap.
+- **2013 taper tantrum**: same pattern -- valuation recovers before
+  trend/hedge confirm.
+- **1980s (Volcker disinflation)**: `valuation_score` actually reads
+  strongly FAVORABLE (+1 to +2) through this period, since it measures
+  richness relative to r-star/term premium, not absolute yield level --
+  despite extreme absolute yields, the model doesn't see bonds as
+  "expensive" here at all. Trend/hedge may fire; valuation never does.
+  This is the model behaving as designed, not a flaw to patch -- the
+  defensive tier's valuation leg is just never satisfied in a regime
+  the naive "yields are high" intuition would expect it to be.
+
+**The underlying problem, structural, not a parameter-tuning issue**:
+the three conditions are anti-correlated in practice. Valuation tends
+to recover (bonds get cheap, i.e. yields rise enough) BEFORE trend and
+hedge_reliable both confirm -- by the rare times all three align, the
+easy money in avoiding the selloff has usually already been missed.
+
+**False-trigger cost**: the 1994-12-09 episode missed one of the best
+bond rallies on record (DGS10 7.79% -> 5.73% over the next 12 months)
+while defensively parked. The two 1996 episodes cost little (roughly
+flat-to-mild-rally, -9 to -54bp). The one real-IEF-data-era trigger
+(2021-06-18) was flat over its own active window and had already
+deactivated well before 2022 -- it does NOT get credit for correctly
+avoiding 2022, since the rule wasn't active when 2022 actually hit.
+
+**Quantitative result** (monthly, real IEF/DGS3MO, same methodology as
+the Phase E report, baseline = live v3):
+
+| Half | Baseline Sharpe/maxDD/turnover | +Defensive tier |
+|---|---|---|
+| 2003-2014 (0 active months) | 0.64 / -7.87% / 11.1% | identical -- no historical trigger falls in this window |
+| 2015-2026 (1 active month) | -0.12 / -17.71% / 11.3% | -0.13 / -18.35% / 12.1% -- WORSE on every metric |
+
+**Decision: tested and rejected**, per the stated adoption bar
+("improves max drawdown without lowering Sharpe in either half"). H1
+shows zero effect at all. H2 -- the only half it does anything in --
+makes Sharpe worse, max drawdown worse, AND turnover higher. Fails even
+the weaker "does no harm" bar. Not adopted. Not wired into any live
+code or config -- this was backtest-only throughout, as instructed.
+
+**Stopping here for Scott's decision, per his explicit instruction**
+("stop at Checkpoint 2") -- Step 3 (settings editor) and Step 4 (market
+view) not started.
+
+---
+
 **DTB3 backfill: dropped from the to-do list (Scott, 2026-10-02).** Carry
 is context-only now (v3 §5.1) -- it no longer feeds `duration_score`, so
 extending its own history from ~1984/~1965 (valuation's own start, which
