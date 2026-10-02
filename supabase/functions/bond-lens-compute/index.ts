@@ -5,14 +5,14 @@ import { computeBondLensSignalHistory } from "../_shared/bondLens/composite.ts";
 import { alignForwardFill } from "../_shared/bondLens/normalize.ts";
 import { BOND_LENS_CONFIG } from "../_shared/bondLens/config.ts";
 
-// Bond Lens overlay — Phase B compute (docs/specs/bond-lens.md §4).
+// Bond Lens overlay — Phase B + C compute (docs/specs/bond-lens.md §4-5).
 // Reads bond_raw_series + asset_price_history, walks the full aligned
-// history through every §4 module (_shared/bondLens/scoring.ts), and
-// full-rebuild-upserts bond_signals -- same "derived table, full rebuild
-// avoids incremental bugs" choice as market-conditions-compute. Does NOT
-// populate bond_lens_signal (the published composite) -- that's Phase C,
-// which still needs to define how these six module scores combine into
-// duration_stance/instrument_pref/maturity_pref.
+// history through every §4 module (_shared/bondLens/scoring.ts),
+// full-rebuild-upserts bond_signals, then combines those six module
+// scores into the §5 global composite (_shared/bondLens/composite.ts)
+// and full-rebuild-upserts bond_lens_signal -- same "derived table, full
+// rebuild avoids incremental bugs" choice as market-conditions-compute,
+// applied to both tables.
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",

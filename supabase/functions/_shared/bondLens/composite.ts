@@ -209,7 +209,12 @@ export function computeBondLensSignalHistory(
       7: carryAndRolldown(knots, 7).EFF, 10: carryAndRolldown(knots, 10).EFF,
     };
 
-    const dur = durationScore(day.valuation_score, day.path_score, day.carry_score, day.quadrant_score, day.curve_score, day.trend_state);
+    // BondLensDayRow types trend_state as a plain string (it also backs
+    // the bond_signals.trend_state text column); narrowed here since
+    // scoring.ts's trendFilter() only ever sets it to "up"/"down"/"mixed"
+    // or null, and the null case was already filtered out above.
+    const trendState = day.trend_state as TrendState;
+    const dur = durationScore(day.valuation_score, day.path_score, day.carry_score, day.quadrant_score, day.curve_score, trendState);
     const instr = instrumentPref(day.hedge_reliable, dur.stance, day.breakeven_gap_bp, day.quadrant as Quadrant | null);
     const maturity = maturityPref(effTable, dur.stance);
     if (maturity == null) { out[t] = null; continue; }
@@ -221,7 +226,7 @@ export function computeBondLensSignalHistory(
     const maturityN = Number(maturity.slice(0, -1)) as MaturityYears;
 
     const { text, drivers } = buildExplanation({
-      durationScore: dur.score, durationStance: dur.stance, trendState: day.trend_state,
+      durationScore: dur.score, durationStance: dur.stance, trendState,
       realYieldGapPct, dfii10Pct, rstarPct, termPremiumZ,
       curveRegime: day.curve_regime, curveRegimeSince: null, // regimeSince isn't carried on BondLensDayRow -- see decisions.md
       hedgeReliable: day.hedge_reliable, instrumentPref: instr, maturityPref: maturity, maturityEff: effTable[maturityN],
