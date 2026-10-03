@@ -31,6 +31,39 @@ export function inflTrend(
   return { raw: { ann3mo, rate12mo }, score: ann3mo - rate12mo, excluded: false };
 }
 
+export interface InflationRegimeWarningState {
+  warning: boolean;
+  streak: number;
+}
+
+// Display-only inflation-regime warning (2026-10-03, Phase D Step 4,
+// §8): core PCE 12-month > threshold (3.0%) AND not decelerating
+// (3-month annualized >= 12-month) -- the SAME rule Phase E tested as
+// variant (a) for driving hedge_reliable directly, and rejected for
+// that purpose (36.8% hit rate / 28.8% false-alarm rate, too weak a
+// discriminator -- bond-lens-phase-e-report.md). Kept here purely as
+// context next to the hedge badge: it would have flagged 2022 roughly a
+// year early, which is useful to SEE even though it isn't reliable
+// enough to ACT on automatically.
+//
+// Same 2-consecutive-weekly-reads hysteresis shape as
+// stepHedgeReliable (quadrant.ts) -- holds the last known state through
+// a week with no PCE reading at all (never silently resets to false
+// just because this week's data hasn't landed yet), and only flips
+// after the condition (or its negation) has held for
+// cfg.inflationRegime.hysteresisReads consecutive weekly reads.
+export function stepInflationRegimeWarning(
+  rate12mo: number | null, ann3mo: number | null, prior: InflationRegimeWarningState,
+  cfg: { inflationRegime: { threshold: number; hysteresisReads: number } },
+): InflationRegimeWarningState {
+  if (rate12mo == null || ann3mo == null) return prior;
+  const candidate = rate12mo > cfg.inflationRegime.threshold && ann3mo >= rate12mo;
+  if (candidate === prior.warning) return { warning: prior.warning, streak: 0 };
+  const streak = prior.streak + 1;
+  if (streak >= cfg.inflationRegime.hysteresisReads) return { warning: candidate, streak: 0 };
+  return { warning: prior.warning, streak };
+}
+
 export interface GrowthMomResult {
   value: number | null;
   degraded: boolean;

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { pricedHikes, inflTrend, growthMom, growthMomFallback, pathScoreContinuous } from "../supabase/functions/_shared/bondLens/path.ts";
+import {
+  pricedHikes, inflTrend, growthMom, growthMomFallback, pathScoreContinuous, stepInflationRegimeWarning,
+} from "../supabase/functions/_shared/bondLens/path.ts";
+
+const INFL_CFG = { inflationRegime: { threshold: 0.03, hysteresisReads: 2 } };
 
 describe("pricedHikes", () => {
   it("positive when 2y yield exceeds fed funds (hikes priced)", () => {
@@ -170,6 +174,53 @@ describe("pathScoreContinuous", () => {
   it("excludes when growth_mom and infl_trend are both unavailable", () => {
     const r = pathScoreContinuous({ z: 1, excluded: false }, { z: null, excluded: true }, { z: null, excluded: true });
     expect(r.excluded).toBe(true);
+  });
+});
+
+describe("stepInflationRegimeWarning", () => {
+  it("requires 2 consecutive weekly reads above threshold and not decelerating before warning", () => {
+    let state = { warning: false, streak: 0 };
+    state = stepInflationRegimeWarning(0.035, 0.04, state, INFL_CFG); // week 1: >3%, accelerating
+    expect(state.warning).toBe(false);
+    state = stepInflationRegimeWarning(0.035, 0.04, state, INFL_CFG); // week 2
+    expect(state.warning).toBe(true);
+  });
+
+  it("does not warn when above 3% but decelerating (ann3mo < rate12mo)", () => {
+    let state = { warning: false, streak: 0 };
+    state = stepInflationRegimeWarning(0.035, 0.02, state, INFL_CFG);
+    state = stepInflationRegimeWarning(0.035, 0.02, state, INFL_CFG);
+    expect(state.warning).toBe(false);
+  });
+
+  it("does not warn when below the 3% threshold even if accelerating", () => {
+    let state = { warning: false, streak: 0 };
+    state = stepInflationRegimeWarning(0.02, 0.025, state, INFL_CFG);
+    state = stepInflationRegimeWarning(0.02, 0.025, state, INFL_CFG);
+    expect(state.warning).toBe(false);
+  });
+
+  it("holds the prior state through a week with no PCE reading", () => {
+    let state = { warning: true, streak: 0 };
+    state = stepInflationRegimeWarning(null, null, state, INFL_CFG);
+    expect(state.warning).toBe(true);
+  });
+
+  it("requires 2 consecutive weekly reads to deactivate too", () => {
+    let state = { warning: true, streak: 0 };
+    state = stepInflationRegimeWarning(0.02, 0.01, state, INFL_CFG); // week 1: condition now false
+    expect(state.warning).toBe(true);
+    state = stepInflationRegimeWarning(0.02, 0.01, state, INFL_CFG); // week 2
+    expect(state.warning).toBe(false);
+  });
+
+  it("resets the streak if a mid-flip week reverts before confirming", () => {
+    let state = { warning: false, streak: 0 };
+    state = stepInflationRegimeWarning(0.035, 0.04, state, INFL_CFG); // streak 1 toward true
+    state = stepInflationRegimeWarning(0.02, 0.01, state, INFL_CFG); // reverts -- matches current state (false), streak resets
+    expect(state.warning).toBe(false);
+    state = stepInflationRegimeWarning(0.035, 0.04, state, INFL_CFG); // streak 1 again, not yet 2
+    expect(state.warning).toBe(false);
   });
 });
 

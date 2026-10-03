@@ -88,7 +88,10 @@ describe("maturityPref", () => {
 
 describe("buildExplanation", () => {
   const maturityTable = {
-    2: { BE: 0.01, EFF: 0.5 }, 5: { BE: 0.012, EFF: 0.85 }, 7: { BE: 0.011, EFF: 0.6 }, 10: { BE: 0.013, EFF: 0.3 },
+    2: { yieldPct: 4.5, Dmod: 1.9, BE: 0.01, EFF: 0.5 },
+    5: { yieldPct: 4.3, Dmod: 4.4, BE: 0.012, EFF: 0.85 },
+    7: { yieldPct: 4.2, Dmod: 5.9, BE: 0.011, EFF: 0.6 },
+    10: { yieldPct: 4.1, Dmod: 7.8, BE: 0.013, EFF: 0.3 },
   };
 
   it("includes the duration, valuation, curve, and maturity sentences", () => {
@@ -97,7 +100,7 @@ describe("buildExplanation", () => {
       durationStance: "Neutral", trendState: "mixed",
       realYieldGapPct: 2.1, dfii10Pct: 2.9, rstarPct: 0.8, termPremiumZ: 1.1,
       curveRegime: "bear_flattening", curveRegimeSince: null,
-      hedgeReliable: false, instrumentPref: "tips_tilted", maturityPref: "5y", maturityEff: 0.85, maturityTable,
+      hedgeReliable: false, inflationRegimeWarning: false, instrumentPref: "tips_tilted", maturityPref: "5y", maturityEff: 0.85, maturityTable,
     });
     expect(r.text).toMatch(/Duration: Neutral \(score 0\.35\)/);
     expect(r.text).toMatch(/real 10y 2\.9% vs r-star 0\.8%/);
@@ -118,9 +121,22 @@ describe("buildExplanation", () => {
       durationStance: "Neutral", trendState: "up",
       realYieldGapPct: null, dfii10Pct: null, rstarPct: null, termPremiumZ: null,
       curveRegime: null, curveRegimeSince: null,
-      hedgeReliable: true, instrumentPref: "nominal_tilted", maturityPref: "bills", maturityEff: null, maturityTable,
+      hedgeReliable: true, inflationRegimeWarning: false, instrumentPref: "nominal_tilted", maturityPref: "bills", maturityEff: null, maturityTable,
     });
     expect(r.text).toMatch(/prefer bills/);
+  });
+
+  it("includes the inflation-regime warning sentence when active, labeled as context only", () => {
+    const r = buildExplanation({
+      durationScore: 0.1,
+      durationStance: "Neutral", trendState: "up",
+      realYieldGapPct: null, dfii10Pct: null, rstarPct: null, termPremiumZ: null,
+      curveRegime: null, curveRegimeSince: null,
+      hedgeReliable: true, inflationRegimeWarning: true, instrumentPref: "nominal_tilted", maturityPref: "bills", maturityEff: null, maturityTable,
+    });
+    expect(r.text).toMatch(/Inflation-regime warning \(context, not a driver\)/);
+    expect((r.drivers.inflation_regime_warning as { warning: boolean; context_only: boolean }).warning).toBe(true);
+    expect((r.drivers.inflation_regime_warning as { context_only: boolean }).context_only).toBe(true);
   });
 });
 
@@ -159,6 +175,13 @@ describe("computeBondLensSignalHistory", () => {
     expect(["bills_short_tips", "tips_tilted", "nominal_tilted"]).toContain(last!.instrument_pref);
     expect(["2y", "5y", "7y", "10y", "bills"]).toContain(last!.maturity_pref);
     expect(typeof last!.explanation.text).toBe("string");
+    // Market-view per-maturity table (Phase D Step 4): yield/D_mod
+    // populated alongside BE/EFF for every maturity, not just the chosen one.
+    const table = (last!.explanation.drivers as { maturity: { table: Record<number, { yieldPct: number | null; Dmod: number | null }> } }).maturity.table;
+    for (const mN of [2, 5, 7, 10]) {
+      expect(typeof table[mN].yieldPct).toBe("number");
+      expect(typeof table[mN].Dmod).toBe("number");
+    }
   });
 
   it("no longer requires carry_score/trend_state to emit a row -- the gate is valuation_score alone", () => {

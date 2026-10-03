@@ -5,7 +5,7 @@
 // PLACEHOLDER values). Bump `version` whenever any value below changes.
 
 export const BOND_LENS_CONFIG = {
-  version: "bond-lens-1.0.2", // 2026-10-02 follow-up #8: curveRegimeStrict promoted to the live default (Phase E decision)
+  version: "bond-lens-1.0.3", // 2026-10-03: inflation-regime warning badge (display-only, §8) added
 
   // §4's own normalization convention (v2.1 decisions, not Market
   // Conditions' percentile-rank convention): literal z-score, clipped to
@@ -70,4 +70,14 @@ export const BOND_LENS_CONFIG = {
       bear_flattening: -0.5, bear_steepening: -1,
     } as Record<string, number>,
   },
+
+  // Display-only inflation-regime warning (2026-10-03, Phase D Step 4):
+  // Phase E variant (a) found core PCE > 3% + not-decelerating too weak
+  // a discriminator to DRIVE hedge_reliable (36.8% hit rate / 28.8%
+  // false-alarm rate, 1965-2002, bond-lens-phase-e-report.md) -- but
+  // Scott still wants it shown as context next to the hedge badge, since
+  // it would have flagged 2022 roughly a year early. Same 2-consecutive-
+  // weekly-reads hysteresis convention as hedge_reliable/curve regime,
+  // just a different trigger and no effect on any score or stance.
+  inflationRegime: { threshold: 0.03, hysteresisReads: 2 },
 } as const;

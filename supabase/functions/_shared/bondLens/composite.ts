@@ -17,7 +17,7 @@
 import { Quadrant } from "./types.ts";
 import { BOND_LENS_CONFIG } from "./config.ts";
 import { lagDaysThenAlign, rollingZScoreSeries, dailyDiff, rollingStdevSeries } from "./normalize.ts";
-import { curveKnotsAt, carryAndRolldown, billYieldPct, CarryHistoryInputs } from "./carry.ts";
+import { curveKnotsAt, carryAndRolldown, billYieldPct, interpolateYield, CarryHistoryInputs } from "./carry.ts";
 import { spliceAcmWithFallback } from "./valuation.ts";
 import { BondLensHistoryInputs, BondLensDayRow } from "./scoring.ts";
 
@@ -89,7 +89,7 @@ const MATURITIES: MaturityYears[] = [2, 5, 7, 10];
 // Display-only in v3 (see InstrumentPref's own comment) -- not applied to
 // any holding by Phase D.
 export type EffTable = Record<MaturityYears, number | null>;
-export interface MaturityTableEntry { BE: number | null; EFF: number | null }
+export interface MaturityTableEntry { yieldPct: number | null; Dmod: number | null; BE: number | null; EFF: number | null }
 export type MaturityTable = Record<MaturityYears, MaturityTableEntry>;
 
 function yieldSeriesForMaturity(inputs: BondLensHistoryInputs, n: MaturityYears): (number | null)[] {
@@ -147,6 +147,7 @@ export interface ExplanationInputs {
   curveRegime: string | null;
   curveRegimeSince: string | null;
   hedgeReliable: boolean | null;
+  inflationRegimeWarning: boolean; // display-only, next to the hedge badge -- see path.ts's stepInflationRegimeWarning
   instrumentPref: InstrumentPref;
   maturityPref: MaturityPrefValue;
   maturityEff: number | null; // Sharpe EFF_n at maturityPref, null for "bills"
@@ -187,6 +188,10 @@ export function buildExplanation(x: ExplanationInputs): ExplanationResult {
     parts.push("Bonds still hedge equities, but breakevens or the macro quadrant favor TIPS.");
   }
 
+  if (x.inflationRegimeWarning) {
+    parts.push("Inflation-regime warning (context, not a driver): core PCE is above 3% and not decelerating.");
+  }
+
   if (x.maturityPref === "bills") {
     parts.push("No maturity on the curve compensates for duration risk right now — prefer bills. (Display only.)");
   } else {
@@ -204,6 +209,7 @@ export function buildExplanation(x: ExplanationInputs): ExplanationResult {
       trend: { state: x.trendState, context_only: true },
       curve: { regime: x.curveRegime, since: x.curveRegimeSince, context_only: true },
       hedge: { reliable: x.hedgeReliable },
+      inflation_regime_warning: { warning: x.inflationRegimeWarning, context_only: true },
       maturity: { pref: x.maturityPref, eff: x.maturityEff, table: x.maturityTable, display_only: true },
     },
   };
@@ -217,6 +223,7 @@ export interface BondLensSignalRow {
   instrument_pref: InstrumentPref;
   maturity_pref: MaturityPrefValue;
   hedge_reliable: boolean | null;
+  inflation_regime_warning: boolean;
   curve_regime: string | null;
   quadrant: string | null;
   explanation: Record<string, unknown>;
@@ -270,7 +277,12 @@ export function computeBondLensSignalHistory(
       const eff = CR != null && Dmod_n != null && y3m != null && sigmaN != null && sigmaN !== 0
         ? (CR - y3m) / (Dmod_n * sigmaN)
         : null;
-      maturityTable[mN] = { BE, EFF: eff };
+      // Market-view per-maturity table (§8, Phase D Step 4): yield and
+      // D_mod alongside the existing BE_n/EFF_n -- yieldPct in percent
+      // (FRED convention, matching bond_signals' other *Pct fields), not
+      // decimal, since this is for display, not further math.
+      const yieldDecimal = interpolateYield(knots, mN);
+      maturityTable[mN] = { yieldPct: yieldDecimal == null ? null : yieldDecimal * 100, Dmod: Dmod_n, BE, EFF: eff };
       effTable[mN] = eff;
     }
 
@@ -288,13 +300,15 @@ export function computeBondLensSignalHistory(
       durationScore: dur.score, durationStance: dur.stance, trendState: day.trend_state,
       realYieldGapPct, dfii10Pct, rstarPct, termPremiumZ,
       curveRegime: day.curve_regime, curveRegimeSince: null, // regimeSince isn't carried on BondLensDayRow -- see decisions.md
-      hedgeReliable: day.hedge_reliable, instrumentPref: instr, maturityPref: maturity, maturityEff, maturityTable,
+      hedgeReliable: day.hedge_reliable, inflationRegimeWarning: day.inflation_regime_warning,
+      instrumentPref: instr, maturityPref: maturity, maturityEff, maturityTable,
     });
 
     out[t] = {
       as_of_date: dates[t],
       duration_score: dur.score, duration_stance: dur.stance, duration_multiplier: dur.multiplier,
       instrument_pref: instr, maturity_pref: maturity, hedge_reliable: day.hedge_reliable,
+      inflation_regime_warning: day.inflation_regime_warning,
       curve_regime: day.curve_regime, quadrant: day.quadrant,
       explanation: { text, drivers },
     };

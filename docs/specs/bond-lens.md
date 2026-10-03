@@ -853,6 +853,13 @@ rule once a year.** Each re-run:
 
 ## 8. UI (Phase F)
 
+**Status (2026-10-03):** the portfolio-side pieces (toggle, preview-
+before-enable, Bond Lens card, settings editor) and the global market
+view below all shipped as part of Phase D (not a separate Phase F pass
+-- built incrementally alongside the per-portfolio application work
+once it existed to preview/display). `app/bond-lens/page.jsx` is the
+market view; `app/portfolios/page.jsx` carries the rest.
+
 ### Portfolio settings
 
 - A **Bond Lens on/off toggle**, using the same placement and style as the other overlays.

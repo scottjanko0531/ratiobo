@@ -17,6 +17,7 @@ const links = [
   { href: "/big-cycle", label: "Big Cycle" },
   { href: "/ai-capex", label: "AI Capex" },
   { href: "/market-conditions", label: "Market Conditions" },
+  { href: "/bond-lens", label: "Bond Lens" },
   { href: "/simulator", label: "Simulator" },
   { href: "/backtesting", label: "Backtesting" },
   { href: "/planning", label: "Planning" },

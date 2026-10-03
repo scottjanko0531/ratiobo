@@ -6,7 +6,10 @@
 import { BOND_LENS_CONFIG } from "./config.ts";
 import { lagDaysThenAlign, indexDaysAgo, rollingZScoreSeries, moduleOutputScale } from "./normalize.ts";
 import { computeCarryHistory, CarryHistoryInputs } from "./carry.ts";
-import { inflTrend, growthMom, growthMomFallback, pricedHikes, pathScoreContinuous, GrowthMomResult } from "./path.ts";
+import {
+  inflTrend, growthMom, growthMomFallback, pricedHikes, pathScoreContinuous, GrowthMomResult,
+  stepInflationRegimeWarning, InflationRegimeWarningState,
+} from "./path.ts";
 import { valuationScore, dfii10MinusRstarGap, spliceAcmWithFallback } from "./valuation.ts";
 import {
   inflationAxis, classifyQuadrantLabel, stepQuadrantLabel, quadrantScoreContinuous, QuadrantLabelState,
@@ -54,6 +57,7 @@ export interface BondLensDayRow {
   quadrant: string | null;
   curve_regime: string | null;
   hedge_reliable: boolean | null;
+  inflation_regime_warning: boolean;
   breakeven_gap_bp: number | null;
   inputs_hash: string | null;
   flags: Record<string, unknown>;
@@ -153,6 +157,7 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
   const growthMomFlags: (string | undefined)[] = new Array(n);
   const inflTrendSeries: (number | null)[] = new Array(n);
   const inflRate12moSeries: (number | null)[] = new Array(n);
+  const inflAnn3moSeries: (number | null)[] = new Array(n); // display-only inflation-regime warning's "not decelerating" leg -- see stepInflationRegimeWarning
   const inflAxisSeries: (number | null)[] = new Array(n);
   const pricedHikesSeries: (number | null)[] = new Array(n);
   const rawQuadrantLabelSeries: (ReturnType<typeof classifyQuadrantLabel>)[] = new Array(n);
@@ -160,6 +165,7 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
     const infl = inflTrend(inputs.pceIndex, dates, t);
     inflTrendSeries[t] = infl.score;
     inflRate12moSeries[t] = infl.excluded ? null : (infl.raw as { rate12mo: number | null }).rate12mo;
+    inflAnn3moSeries[t] = infl.excluded ? null : (infl.raw as { ann3mo: number | null }).ann3mo;
     const inflSign = infl.score == null ? null : sign(infl.score);
 
     const gm: GrowthMomResult = dates[t] < "2011-01-01"
@@ -190,6 +196,7 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
   let hedgeState: HedgeState = { hedgeReliable: null, streak: 0 };
   let curveState: CurveRegimeState = { confirmed: null, candidate: null, candidateStreak: 0, regimeSince: null };
   let quadrantLabelState: QuadrantLabelState = { confirmed: null, candidate: null, candidateStreak: 0 };
+  let inflationRegimeState: InflationRegimeWarningState = { warning: false, streak: 0 };
 
   const rows: BondLensDayRow[] = [];
   for (let t = 0; t < n; t++) {
@@ -230,6 +237,11 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
       const corr = realCorr ?? fallbackCorr;
       if (realCorr == null && fallbackCorr != null) flags.hedge_reliable_degraded = "pre-1993 monthly Shiller/synthetic-bond fallback, not real SPY/IEF correlation";
       hedgeState = stepHedgeReliable(corr, rawLabel, hedgeState, cfg);
+
+      // Display-only inflation-regime warning (2026-10-03, §8) -- next
+      // to the hedge badge, not a driver of hedge_reliable itself (see
+      // stepInflationRegimeWarning's own comment for why).
+      inflationRegimeState = stepInflationRegimeWarning(inflRate12moSeries[t], inflAnn3moSeries[t], inflationRegimeState, cfg);
     }
     if (hedgeState.hedgeReliable === null) {
       flags.hedge_reliable_degraded = "no SPY/IEF correlation (real or pre-1993 fallback) available yet";
@@ -272,6 +284,7 @@ export function computeBondLensHistory(inputs: BondLensHistoryInputs, cfg = BOND
       curve_regime: curveState.confirmed,
       hedge_reliable: hedgeState.hedgeReliable,
       breakeven_gap_bp: val.breakevenGapBp.score,
+      inflation_regime_warning: inflationRegimeState.warning,
       inputs_hash: null,
       flags,
     });

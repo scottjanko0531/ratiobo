@@ -1312,6 +1312,53 @@ refetch round-trip needed.
 Tests: 428 (no new test files -- UI wiring only, exercised by the
 existing suite's unchanged pass). Build clean.
 
+---
+
+## Step 4: market view -- 2026-10-03
+
+New route `app/bond-lens/page.jsx`, modeled on `/market-conditions`'s
+layout/chart conventions (duplicated rather than shared, matching this
+codebase's existing per-page style), nav link added to
+`components/Nav.jsx`. Always available, no portfolio opt-in required --
+read-only, no writes.
+
+**Two backend additions needed first** (both now live, `bond-lens-compute`
+v17):
+- **Inflation-regime warning** (`inflation_regime_warning`, new column
+  on `bond_signals`/`bond_lens_signal`): core PCE 12m > 3.0% AND not
+  decelerating (3m annualized >= 12m), 2-consecutive-weekly-reads
+  hysteresis (`stepInflationRegimeWarning`, `path.ts` -- same shape as
+  `stepHedgeReliable`). Display-only, never drives `hedge_reliable` or
+  any score -- this is the exact rule Phase E tested as variant (a) and
+  rejected for driving `hedge_reliable` directly (too weak a
+  discriminator). Spot-checked the earliest `true` date (1966-11-10)
+  against raw `PCEPILFE`: 12mo rate ~3.06%, 3mo annualized ~3.59% --
+  genuinely accelerating, not a bug. The 1966 "guns and butter"
+  Vietnam-era inflation pressure is a real, documented early warning
+  sign economists point to before the late-60s/70s Great Inflation, so
+  this checks out historically too, not just arithmetically.
+- **Per-maturity yieldPct/Dmod**: added to `explanation.drivers.
+  maturity.table` alongside the existing BE_n/EFF_n, for the market
+  view's own table (`composite.ts`, `MaturityTableEntry`).
+
+**Page sections**: stance gauge (valuation-driven, labeled as such);
+per-maturity table (yield/D_mod/BE/EFF for 2/5/7/10, with BE and EFF
+captioned to explain which one actually drives `maturity_pref` and that
+`maturity_pref` itself is display-only); 10y yield chart with
+curve-regime shading (contiguous same-regime date runs computed
+client-side, rendered as recharts `ReferenceArea`s, same technique
+`/market-conditions` uses for its own tier zones; 5 regime colors
+extending the existing palette); hedge badge + inflation-regime warning
+badge, explicitly labeled context/not-a-driver; a visually de-emphasized
+"Context -- not used in the decision" section for carry/path/quadrant/
+curve/trend; an ACM-staleness banner reusing the same
+`flags.term_premium_degraded` check and wording already built into the
+portfolio page's card.
+
+Tests: 428 (no new test files -- a read-only display page over
+already-tested data). `npm run build` clean, `/bond-lens` route
+confirmed present (5.9 kB) and generating as static content.
+
 **Stopping here for Scott's decision, per his explicit instruction**
 ("stop at Checkpoint 2") -- Step 3 (settings editor) and Step 4 (market
 view) not started.
