@@ -1359,6 +1359,100 @@ Tests: 428 (no new test files -- a read-only display page over
 already-tested data). `npm run build` clean, `/bond-lens` route
 confirmed present (5.9 kB) and generating as static content.
 
+---
+
+## Real bug: toggle log and settings writes silently rejected by RLS -- 2026-10-03
+
+Scott enabled the overlay on two real portfolios (Golden Butterfly
+Hedged, All Weather Alpha) via the actual UI -- `portfolios.
+use_bond_lens_overlay` flipped correctly for both (confirmed via
+`updated_at`, both today), but `bond_lens_toggle_log` had zero rows.
+
+**Root cause, confirmed via `pg_policy`:** both `bond_lens_toggle_log`
+and `bond_lens_portfolio_settings` have had RLS enabled since the Phase
+A migration with ONLY a read policy (`using: true`) -- no INSERT policy
+ever existed on either table. Every client-side write (the toggle-log
+insert on enable/disable, and the Step 3 settings upsert) has been
+rejected by Postgres's default-deny RLS behavior the entire time. The
+app's fire-and-forget error handling on these writes
+(`.then(() => {}, () => {})`) swallowed the rejection completely --
+`bond_lens_portfolio_settings` is ALSO still at 0 rows, confirming the
+Step 3 settings editor has the identical silent-failure bug and nobody
+would have known until trying it.
+
+**Fix**: added `bond_lens_toggle_log_write` (INSERT) and
+`bond_lens_portfolio_settings_write` (ALL) policies, both scoped to the
+same ownership boundary `portfolios` itself already uses
+(`auth.uid() = user_id`, via `portfolio_id -> portfolios.user_id`) --
+not left wide open like the existing read policies, since these are
+real writes tied to a specific user's own portfolios.
+
+**Backfilled**: one `enabled` row per portfolio in
+`bond_lens_toggle_log`, `changed_at` set to the real
+`portfolios.updated_at` timestamp from when each was actually enabled,
+with a `note` in `new_value` explaining it's a backfill and why the
+original insert never landed.
+
+This is the kind of bug that's easy to miss specifically BECAUSE
+fire-and-forget error handling is the deliberate, correct pattern for
+non-critical logging (a toggle log shouldn't block a portfolio save) --
+the lesson isn't "don't fire-and-forget," it's "verify the write
+actually landed at least once with a direct query before considering a
+logging feature done," which wasn't done when Phase D's toggle logging
+first shipped. Worth the same spot-check on any FUTURE write path that
+uses this pattern.
+
+---
+
+## Presentation fixes, reported by Scott after real use -- 2026-10-03
+
+Scott enabled Bond Lens on two real portfolios and found the UI didn't
+actually tell him what to do, plus a real correctness bug:
+
+1. **Action list on the card.** `BondLensSleeveDetail` now renders an
+   explicit Sell/Buy list (`buildBondLensActions`, pairs real-holding
+   sells against real-holding or substitute buys within each bucket,
+   largest-first greedy pairing -- not a perfect matching algorithm,
+   just a readable one, since each bucket's own total weight is fixed
+   so sells and buys balance by construction) using the same `$`
+   formatting Portfolio Actions already used (`fmtTradeAmt`, factored
+   out of three inline copies). Substitute buys are tagged "(not
+   currently held)". A sleeve duration before -> after line sits above
+   the list. When there's nothing to do, shows the actual `gap_note`
+   verbatim when it's the "already at the long/short end" message,
+   else a generic "no action needed."
+2. **Attribution in Portfolio Actions.** A header line ("Bond Lens
+   overlay · {stance} x{multiplier} · included below") appears only
+   when Bond Lens actually changed something that render (not merely
+   "is on"), and a small "BL" badge tags every `actionRows` row Bond
+   Lens actually touched.
+3. **Real bug, confirmed and fixed: orphaned sells.** A substitute
+   (e.g. SCHP) is never a real holding, so `computeAllocationDeltas`
+   (`lib/simulatorKeys.js`) can never produce a buy row for it -- it
+   only ever iterates the real `holdings` array. Merging a substitute
+   bucket's `sectorTargets` into Portfolio Actions was showing a real
+   holding's sell (e.g. VTIP) with no matching buy anywhere in that
+   table -- confirmed exactly where Scott saw it, All Weather Alpha's
+   `tip` bucket. **Fixed by excluding substitute-driven buckets from
+   Portfolio Actions' sectorTargets entirely** (`bondLensSectorTargets
+   ForPortfolioActions`, filters out any bucket present in `proposed
+   NewHoldings`) -- that bucket falls back to plain pro-rata there (no
+   visible change), while the full real recommendation still shows
+   correctly on the card via item 1. Buckets with no substitute (e.g.
+   Golden Butterfly's SHY<->TLT, both already held) are unaffected and
+   still flow through to Portfolio Actions normally, with the BL badge.
+
+Tests: 428 (unchanged -- UI wiring only, no new pure logic to test).
+Build clean, `/portfolios` route confirmed compiling (23.7 kB).
+
+**Verification note:** Scott is taking the screenshots himself --
+`/portfolios` requires a real Supabase login with no dev/test bypass
+(confirmed: `components/Shell.jsx` redirects to `/login` with no
+session; standard email/password via `app/login/page.jsx`), so this
+session can't authenticate as him to verify visually, and a fresh test
+signup wouldn't show his real portfolios anyway. `npm run dev` runs on
+port 3000 by default.
+
 **Stopping here for Scott's decision, per his explicit instruction**
 ("stop at Checkpoint 2") -- Step 3 (settings editor) and Step 4 (market
 view) not started.

@@ -8,7 +8,7 @@ import { supabase } from "../../lib/supabase";
 import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META, ILLIQUID_KEYS, EQUITY_KEYS, computeAllocationDeltas } from "../../lib/simulatorKeys";
 import { capexMultipliersBySymbol, mergeExposureMultipliers, CAPEX_REGIME_META } from "../../lib/capexOverlay";
 import { marketOverlayMultipliersBySymbol, combineAllOverlays, applyOverlayToTargets, shouldProposeRebalance } from "../../lib/marketOverlayPortfolio";
-import { computeBondLensSectorTargets, DEFAULT_ELIGIBLE_INSTRUMENTS } from "../../lib/bondLensPortfolio";
+import { computeBondLensSectorTargets, classifyBondSleeve, DEFAULT_ELIGIBLE_INSTRUMENTS } from "../../lib/bondLensPortfolio";
 import { TIER_META } from "../../lib/marketConditionsMeta";
 import HoldingDetailDrawer from "../../components/HoldingDetailDrawer";
 import StageInfoIcon from "../../components/StageInfoIcon";
@@ -22,6 +22,15 @@ const fmtPct = (v, digits = 2) => {
   if (v == null || isNaN(Number(v))) return "—";
   const n = Number(v);
   return `${n > 0 ? "+" : ""}${n.toFixed(digits)}%`;
+};
+
+// Same compact $ formatting Portfolio Actions already uses for its own trade
+// labels ("Add $X"/"Sell $X" at lines ~1552/1555/1574/1594 below) -- centralized
+// here as a named helper (it was inlined three times already) rather than
+// reinvented for Bond Lens's own action list.
+const fmtTradeAmt = (v) => {
+  const abs = Math.abs(Number(v) || 0);
+  return abs < 1000 ? `$${abs.toFixed(0)}` : `$${(abs / 1000).toFixed(1)}k`;
 };
 
 const gainCls = (v) =>
@@ -51,6 +60,71 @@ function MonthlyGainTooltip({ active, payload }) {
   );
 }
 
+// Turns a computeBondLensSectorTargets `result` (sectorTargets, proposedNewHoldings,
+// inScope) into a readable Sell/Buy action list, one bucket at a time. Pure
+// function of `result` -- used both by BondLensSleeveDetail (to render the list)
+// and, at the top of the component below, to derive exactly which symbols get the
+// "BL" badge in Portfolio Actions (same pairs, same definition of "changed").
+//
+// Pairing: within each bucket, sort real sells/substitute-or-real buys each by
+// size descending, then walk both lists taking min(remaining sell, remaining buy)
+// per step. A bucket with one seller and one buyer (the common case) pairs in a
+// single line; sizes that don't match exactly just produce a few more lines --
+// not a perfect matching algorithm, just a readable one, per spec. Since each
+// bucket's own total weight is fixed (v3; see computeBondLensSectorTargets's own
+// comment), sum(sells) ≈ sum(buys) within a bucket, so nothing is left over
+// beyond floating-point dust.
+function buildBondLensActions(result) {
+  if (!result) return [];
+  const inScope = result.inScope ?? [];
+  const sectorTargets = result.sectorTargets ?? {};
+  const proposedNewHoldings = result.proposedNewHoldings ?? [];
+  const substituteBuckets = new Set(proposedNewHoldings.map((p) => p.key));
+
+  const byBucket = {};
+  for (const e of inScope) (byBucket[e.key] ??= []).push(e);
+
+  const EPS = 1; // dollars -- ignore floating-point dust, not a real action
+  const pairs = [];
+
+  for (const [bucketKey, entries] of Object.entries(byBucket)) {
+    const bucketTotal = entries.reduce((s, e) => s + Number(e.holding.current_value ?? 0), 0);
+    const sells = [], buys = [];
+    for (const e of entries) {
+      const cur = Number(e.holding.current_value ?? 0);
+      const pct = sectorTargets[e.holding.symbol];
+      const target = pct != null && bucketTotal > 0 ? (pct / 100) * bucketTotal : cur;
+      const delta = target - cur;
+      if (delta <= -EPS) sells.push({ symbol: e.holding.symbol, amount: -delta });
+      else if (delta >= EPS) buys.push({ symbol: e.holding.symbol, amount: delta, substitute: false });
+    }
+    for (const p of proposedNewHoldings) {
+      if (p.key !== bucketKey) continue;
+      const amt = Number(p.targetVal ?? 0);
+      if (amt >= EPS) buys.push({ symbol: p.symbol, amount: amt, substitute: true });
+    }
+    if (sells.length === 0 && buys.length === 0) continue;
+
+    sells.sort((a, b) => b.amount - a.amount);
+    buys.sort((a, b) => b.amount - a.amount);
+    const sRemain = sells.map((s) => s.amount);
+    const bRemain = buys.map((b) => b.amount);
+    const isSubstituteBucket = substituteBuckets.has(bucketKey);
+    let si = 0, bi = 0;
+    while (si < sells.length && bi < buys.length) {
+      const amt = Math.min(sRemain[si], bRemain[bi]);
+      pairs.push({ bucketKey, isSubstituteBucket, sellSymbol: sells[si].symbol, buySymbol: buys[bi].symbol, buySubstitute: buys[bi].substitute, amount: amt });
+      sRemain[si] -= amt; bRemain[bi] -= amt;
+      if (sRemain[si] <= EPS) si++;
+      if (bRemain[bi] <= EPS) bi++;
+    }
+    while (si < sells.length) { pairs.push({ bucketKey, isSubstituteBucket, sellSymbol: sells[si].symbol, buySymbol: null, amount: sRemain[si] }); si++; }
+    while (bi < buys.length) { pairs.push({ bucketKey, isSubstituteBucket, sellSymbol: null, buySymbol: buys[bi].symbol, buySubstitute: buys[bi].substitute, amount: bRemain[bi] }); bi++; }
+  }
+
+  return pairs;
+}
+
 // Bond Lens (Phase D, lib/bondLensPortfolio.js) sleeve-stats/excluded-holdings/
 // gap-notes rendering, shared between the always-on Bond Lens card and the
 // preview-before-enable confirmation modal (§6.6) -- both show the exact same
@@ -68,6 +142,9 @@ function BondLensSleeveDetail({ result, signalRow }) {
   // from the stale/gap-note warnings above.
   const edvPresent = Number(result.sectorTargets?.EDV ?? 0) > 0
     || (result.proposedNewHoldings ?? []).some((p) => p.symbol === "EDV" && Number(p.targetVal) > 0);
+
+  const bondLensActionPairs = buildBondLensActions(result);
+  const hasBondLensAction = bondLensActionPairs.length > 0;
 
   return (
     <>
@@ -135,31 +212,37 @@ function BondLensSleeveDetail({ result, signalRow }) {
         </>
       )}
 
-      {(result.proposedNewHoldings ?? []).length > 0 && (
+      {hasBondLensAction ? (
         <div className="mb-3">
-          <p className="text-[10px] text-paper-dim mb-1">Proposed substitute instruments</p>
+          <p className="text-[10px] text-paper-dim mb-1">Action</p>
+          <p className="text-[11px] text-paper-dim mb-1.5">
+            duration {result.sleeveBefore.weightedDuration != null ? `${result.sleeveBefore.weightedDuration.toFixed(1)}y` : "—"}
+            {" → "}
+            {result.sleeveAfter.weightedDuration != null ? `${result.sleeveAfter.weightedDuration.toFixed(1)}y` : "—"}
+          </p>
           <ul className="space-y-1">
-            {result.proposedNewHoldings.map((p) => (
-              <li
-                key={p.symbol}
-                className="flex items-center justify-between gap-2 text-[11px] border border-dashed border-brass/40 rounded-lg px-2 py-1.5"
-              >
-                <span className="flex items-center gap-1.5 min-w-0">
-                  <span className="text-paper font-medium italic">{p.symbol}</span>
-                  <span className="text-[9px] uppercase tracking-wide text-brass-soft border border-brass/40 rounded px-1 py-0.5 shrink-0">
-                    Proposed — not held
+            {bondLensActionPairs.map((p, i) => (
+              <li key={i} className="text-[11px]">
+                {p.sellSymbol && (
+                  <span className="text-loss font-medium">Sell {p.sellSymbol} {fmtTradeAmt(p.amount)}</span>
+                )}
+                {p.sellSymbol && p.buySymbol && <span className="text-paper-dim"> → </span>}
+                {p.buySymbol && (
+                  <span className="text-gain font-medium">
+                    Buy {p.buySymbol} {fmtTradeAmt(p.amount)}
+                    {p.buySubstitute && <span className="text-paper-dim font-normal"> (not currently held)</span>}
                   </span>
-                </span>
-                <span className="text-paper-dim shrink-0">{p.key}</span>
-                <span className="num text-paper-dim shrink-0">{usd(p.targetVal)}</span>
+                )}
               </li>
             ))}
           </ul>
-          <p className="text-[10px] text-paper-dim/60 mt-1 leading-relaxed">
-            Not held — proposed only. Bond Lens recommends target weights but never creates a holding or places a
-            trade; reaching this target would require adding the instrument above manually.
-          </p>
         </div>
+      ) : (
+        <p className="text-xs text-paper-dim italic mb-3">
+          {result.gapNotes?.[0] && /already at the (long|short) end/.test(result.gapNotes[0])
+            ? result.gapNotes[0]
+            : "No action needed — already at target."}
+        </p>
       )}
 
       {result.excluded.length > 0 && (
@@ -175,7 +258,7 @@ function BondLensSleeveDetail({ result, signalRow }) {
         </div>
       )}
 
-      {!result.targetReachable && result.gapNotes.length > 0 && (
+      {hasBondLensAction && !result.targetReachable && result.gapNotes.length > 0 && (
         <div className="mb-3">
           <p className="text-[10px] text-brass-soft mb-1">Target not fully reachable</p>
           <ul className="space-y-0.5">
@@ -707,12 +790,66 @@ export default function PortfoliosPage() {
   const bondLensResult = useMemo(() => {
     if (!viewingPortfolio?.use_bond_lens_overlay) return null;
     const hs = holdingsFor(viewingPortfolio.id);
-    return computeBondLensSectorTargets(hs, bondInstrumentMetaByHoldingId, latestBondLensSignal, bondLensSettingsForCompute, bondInstrumentMetaBySymbol);
+    const base = computeBondLensSectorTargets(hs, bondInstrumentMetaByHoldingId, latestBondLensSignal, bondLensSettingsForCompute, bondInstrumentMetaBySymbol);
+    // `inScope` (holding/meta/bucket-key triples) isn't part of computeBondLensSectorTargets's
+    // own return value -- it only returns aggregated sleeveBefore/After stats -- but the
+    // per-holding action list (BondLensSleeveDetail, below) needs each holding's own current
+    // $ value to turn `sectorTargets` percentages into Sell/Buy dollar amounts. Re-deriving via
+    // the already-exported classifyBondSleeve (same inputs, same pure function the lib itself
+    // calls internally) is cheap and avoids changing computeBondLensSectorTargets's own
+    // contract/tests just to thread this through.
+    const inScope = classifyBondSleeve(hs, bondInstrumentMetaByHoldingId, bondLensSettingsForCompute.include_credit).inScope;
+    return { ...base, inScope };
   }, [viewingPortfolio?.id, viewingPortfolio?.use_bond_lens_overlay, holdingsFor, bondInstrumentMetaByHoldingId, latestBondLensSignal, bondLensSettingsForCompute, bondInstrumentMetaBySymbol]);
   // Stale signal (§6.7): hold the last targets and show a warning instead of applying a
   // possibly-stale tilt -- treated as "off" for the sectorTargets merge below, but the
   // card still renders (with the warning) rather than disappearing.
   const bondLensApplied = Boolean(viewingPortfolio?.use_bond_lens_overlay) && !bondLensStale;
+
+  // Bond Lens -> Portfolio Actions bridge (bug fix, 2026-10-03): a substitute
+  // instrument (e.g. SCHP) is never a real holding, so computeAllocationDeltas
+  // can NEVER produce a buy row for it -- it only ever iterates `holdings`. Merging
+  // that bucket's sectorTargets into Portfolio Actions would show a real holding's
+  // sell with NO matching buy anywhere in the table ("not acceptable" per Scott,
+  // confirmed root cause: All Weather Alpha's tip bucket, VTIP sold with SCHP's buy
+  // nowhere to be seen). Fix: exclude an ENTIRE bucket's sectorTargets overrides from
+  // Portfolio Actions whenever that bucket has a proposedNewHoldings entry -- that
+  // bucket falls back to plain pro-rata there (no visible Bond Lens effect for it),
+  // while the full real recommendation (sell+buy together) still shows correctly on
+  // the card via BondLensSleeveDetail's action list below. Buckets with no substitute
+  // (e.g. Golden Butterfly's SHY<->TLT, both already held) are unaffected and still
+  // flow through to Portfolio Actions normally, tagged with the "BL" badge.
+  const bondLensSubstituteBuckets = useMemo(
+    () => new Set((bondLensResult?.proposedNewHoldings ?? []).map((p) => p.key)),
+    [bondLensResult]
+  );
+  const bondLensBucketBySymbol = useMemo(
+    () => new Map((bondLensResult?.inScope ?? []).map((e) => [e.holding.symbol, e.key])),
+    [bondLensResult]
+  );
+  const bondLensSectorTargetsForPortfolioActions = useMemo(() => {
+    if (!bondLensResult) return {};
+    const out = {};
+    for (const [sym, pct] of Object.entries(bondLensResult.sectorTargets ?? {})) {
+      const bucket = bondLensBucketBySymbol.get(sym);
+      if (bucket && bondLensSubstituteBuckets.has(bucket)) continue; // substitute bucket -- card-only
+      out[sym] = pct;
+    }
+    return out;
+  }, [bondLensResult, bondLensBucketBySymbol, bondLensSubstituteBuckets]);
+  // Symbols that actually get the "BL" badge in Portfolio Actions below -- exactly
+  // the real-holding legs of the card's own action list (buildBondLensActions,
+  // module scope), restricted to buckets that still flow through to Portfolio
+  // Actions at all (i.e. the same restriction as the filtered map just above).
+  const bondLensBadgeSymbols = useMemo(() => {
+    const syms = new Set();
+    for (const p of buildBondLensActions(bondLensResult)) {
+      if (p.isSubstituteBucket) continue;
+      if (p.sellSymbol) syms.add(p.sellSymbol);
+      if (p.buySymbol) syms.add(p.buySymbol);
+    }
+    return syms;
+  }, [bondLensResult]);
 
   // Bond Lens preview-before-enable (§6.6): closing the preview without confirming
   // discards the WHOLE pending edit's bond-lens intent, not just this field -- the
@@ -803,7 +940,10 @@ export default function PortfoliosPage() {
     if (bondLensTurningOn && !bondLensConfirmed) {
       const hs = holdingsFor(editingPortfolio.id);
       const preview = computeBondLensSectorTargets(hs, bondInstrumentMetaByHoldingId, latestBondLensSignal, bondLensSettingsForCompute, bondInstrumentMetaBySymbol);
-      setBondLensPreview(preview);
+      // Same inScope attachment as bondLensResult above, so the preview modal's
+      // BondLensSleeveDetail can render the same per-holding action list.
+      const inScope = classifyBondSleeve(hs, bondInstrumentMetaByHoldingId, bondLensSettingsForCompute.include_credit).inScope;
+      setBondLensPreview({ ...preview, inScope });
       return;
     }
 
@@ -1481,7 +1621,7 @@ export default function PortfoliosPage() {
                   // off (or stale) portfolio's action rows are byte-identical to a build
                   // without Bond Lens (docs/specs/bond-lens.md §6.7 acceptance test).
                   const sectorTargetsWithBondLens = bondLensApplied && bondLensResult
-                    ? { ...sectorTargets, ...bondLensResult.sectorTargets }
+                    ? { ...sectorTargets, ...bondLensSectorTargetsForPortfolioActions }
                     : sectorTargets;
 
                   const { actionRows, buyRows: rawBuyRows } = computeAllocationDeltas(
@@ -1524,6 +1664,17 @@ export default function PortfoliosPage() {
                           </p>
                         );
                       })()}
+                      {bondLensApplied && bondLensResult && (bondLensBadgeSymbols.size > 0 || bondLensSubstituteBuckets.size > 0) && (
+                        <p className="text-[11px] text-paper-dim mb-3 leading-relaxed">
+                          <a href="/bond-lens" className="text-brass-soft hover:text-brass">Bond Lens overlay</a>
+                          {" · "}
+                          <span className={latestBondLensSignal?.duration_stance === "Extend" ? "text-gain" : latestBondLensSignal?.duration_stance === "Short" ? "text-loss" : "text-paper-dim"}>
+                            {latestBondLensSignal?.duration_stance ?? bondLensResult.stance ?? "—"}
+                          </span>
+                          {" ×"}{Number(latestBondLensSignal?.duration_multiplier ?? bondLensResult.multiplier ?? 1).toFixed(2)}
+                          {" · included below"}
+                        </p>
+                      )}
                       <div className="border border-ink-line rounded-lg overflow-hidden text-[11px]">
                         <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-1.5 bg-ink-soft/50 border-b border-ink-line text-[10px] text-paper-dim">
                           <span>Holding</span>
@@ -1557,10 +1708,21 @@ export default function PortfoliosPage() {
                           }
                           const resize = resizeSignals[r.symbol];
                           const isResized = resize && resize.reduced;
+                          const hasBondLensBadge = bondLensBadgeSymbols.has(r.symbol);
                           return (
                             <div key={`${r.symbol}-${r.key}`} className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-2 border-b border-ink-line/50 items-center">
                               <span className="min-w-0">
-                                <span className="font-medium text-paper truncate block">{r.symbol}</span>
+                                <span className="font-medium text-paper truncate block">
+                                  {r.symbol}
+                                  {hasBondLensBadge && (
+                                    <span
+                                      className="ml-1.5 text-[8px] font-bold uppercase tracking-wide text-brass-soft border border-brass/40 rounded px-1 py-0.5 align-middle"
+                                      title="Target changed by the Bond Lens overlay"
+                                    >
+                                      BL
+                                    </span>
+                                  )}
+                                </span>
                                 {isResized && (
                                   <span
                                     className="text-[9px] text-brass-soft/80 block truncate"
