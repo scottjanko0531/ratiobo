@@ -1275,6 +1275,43 @@ makes Sharpe worse, max drawdown worse, AND turnover higher. Fails even
 the weaker "does no harm" bar. Not adopted. Not wired into any live
 code or config -- this was backtest-only throughout, as instructed.
 
+Multi-signal confirmation consistently arrives after the move; this
+matches the Phase E composite result. Valuation-only remains the sole
+driver.
+
+---
+
+## Step 3: settings editor -- 2026-10-03
+
+`bond_lens_portfolio_settings` is now editable from the portfolio edit
+form (`app/portfolios/page.jsx`), expandable when `use_bond_lens_overlay`
+is on, hidden for new (unsaved) portfolios since there's nothing to
+preview yet:
+
+- **Benchmark duration**: number input, years, blank = null (use the
+  sleeve's own current duration -- unchanged interpretation).
+- **include_credit**: checkbox, default off (v3.1's own default).
+- **eligible_instruments**: two checkbox groups (nb, tip), options
+  pulled from the already-fetched `bond_instrument_meta` (is_bond +
+  in_scope rows, held or reference), split by `bond_type`
+  (`treasury_nominal`/`bills_cash_like`/`aggregate` -> nb,
+  `tips` -> tip) -- no new query needed. Checking EDV fires the "roughly
+  1.6x TLT" warning immediately on selection, not just once it's
+  actually held/proposed (that's the OTHER warning, already in the
+  shared sleeve-detail component).
+- **min_trade_threshold**: percentage input (e.g. "0.5" -> stored as
+  0.005), matching this form's existing `rebalance_band_pct` convention
+  rather than a raw-fraction input.
+
+**Every save**: upserts the settings row (`on_conflict: portfolio_id`),
+inserts a `bond_lens_toggle_log` row (`action: "settings_changed"`,
+old/new values), and updates `bondLensSettings` state directly from what
+was just written so the card/preview recompute immediately -- no
+refetch round-trip needed.
+
+Tests: 428 (no new test files -- UI wiring only, exercised by the
+existing suite's unchanged pass). Build clean.
+
 **Stopping here for Scott's decision, per his explicit instruction**
 ("stop at Checkpoint 2") -- Step 3 (settings editor) and Step 4 (market
 view) not started.

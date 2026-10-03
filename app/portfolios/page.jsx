@@ -8,7 +8,7 @@ import { supabase } from "../../lib/supabase";
 import { SIMULATOR_KEYS, resolveSimulatorKey, REGIME_META, ILLIQUID_KEYS, EQUITY_KEYS, computeAllocationDeltas } from "../../lib/simulatorKeys";
 import { capexMultipliersBySymbol, mergeExposureMultipliers, CAPEX_REGIME_META } from "../../lib/capexOverlay";
 import { marketOverlayMultipliersBySymbol, combineAllOverlays, applyOverlayToTargets, shouldProposeRebalance } from "../../lib/marketOverlayPortfolio";
-import { computeBondLensSectorTargets } from "../../lib/bondLensPortfolio";
+import { computeBondLensSectorTargets, DEFAULT_ELIGIBLE_INSTRUMENTS } from "../../lib/bondLensPortfolio";
 import { TIER_META } from "../../lib/marketConditionsMeta";
 import HoldingDetailDrawer from "../../components/HoldingDetailDrawer";
 import StageInfoIcon from "../../components/StageInfoIcon";
@@ -213,6 +213,22 @@ export default function PortfoliosPage() {
   const [latestBondSignalFlags, setLatestBondSignalFlags]                 = useState(null); // global, computed once (bond_signals.flags)
   const [bondLensPreview, setBondLensPreview]                             = useState(null); // computeBondLensSectorTargets result awaiting Confirm/Cancel (§6.6)
   const [bondLensInfoOpen, setBondLensInfoOpen]                           = useState(false); // honest-framing tooltip toggle
+
+  // Bond Lens settings editor (Phase D, Step 3, §8) -- a separate little form/save
+  // action from the main portfolio edit form below, since it writes a different
+  // table (bond_lens_portfolio_settings) on its own upsert, not the portfolios
+  // update. min_trade_threshold is edited here as a PERCENTAGE (e.g. "0.5" meaning
+  // 0.5%, stored as the fraction 0.005) rather than the raw fraction -- matches
+  // this form's own existing convention of percentage-style numbers (Rebalance
+  // Band is entered as "5" meaning 5 points, not 0.05), which is less surprising
+  // here than switching to a bare-fraction field just for this one setting.
+  const [blSettingsExpanded, setBlSettingsExpanded] = useState(false);
+  const [blForm, setBlForm] = useState({
+    benchmark_duration: "", include_credit: false, eligible_nb: [], eligible_tip: [], min_trade_threshold_pct: "0.5",
+  });
+  const [blSettingsBusy, setBlSettingsBusy]   = useState(false);
+  const [blSettingsError, setBlSettingsError] = useState("");
+  const [blSettingsSaved, setBlSettingsSaved] = useState(false); // brief "Saved" confirmation after a successful upsert
 
   const [detailHolding, setDetailHolding]     = useState(null);
 
@@ -493,6 +509,92 @@ export default function PortfoliosPage() {
       .then(({ data }) => setBondLensSettings(data ?? null), () => setBondLensSettings(null));
   }, [viewingPortfolio?.id]);
 
+  // Seeds blForm whenever a different portfolio's edit form opens, or once
+  // bondLensSettings' async fetch above lands (it may still be in flight the
+  // instant openEdit runs, since Edit is only reachable from an already-open
+  // viewingPortfolio -- so this re-seeds again when the real row arrives rather
+  // than openEdit alone trying to read a maybe-stale bondLensSettings value).
+  // Skipped for a brand-new portfolio: there's no portfolio_id yet to upsert
+  // bond_lens_portfolio_settings against, so the editor stays at its defaults
+  // and is hidden (see the expandable section below).
+  useEffect(() => {
+    if (!editingPortfolio || editingPortfolio === "new") return;
+    const s = bondLensSettings;
+    setBlForm({
+      benchmark_duration: s?.benchmark_duration != null ? String(s.benchmark_duration) : "",
+      include_credit: s?.include_credit ?? false,
+      eligible_nb: s?.eligible_instruments?.nb ?? DEFAULT_ELIGIBLE_INSTRUMENTS.nb,
+      eligible_tip: s?.eligible_instruments?.tip ?? DEFAULT_ELIGIBLE_INSTRUMENTS.tip,
+      min_trade_threshold_pct: String((s?.min_trade_threshold ?? 0.005) * 100),
+    });
+  }, [editingPortfolio, bondLensSettings]);
+
+  // Eligible-instrument options pool (§8): bond_instrument_meta rows with
+  // is_bond=true AND in_scope=true, deduped by symbol -- filtered client-side
+  // from bondInstrumentMetaBySymbol (already the full table, fetched once in
+  // load()) rather than a second query, same reuse-what's-already-fetched
+  // pattern used to build bondInstrumentMetaBySymbol itself. Grouped into the
+  // nb/tip multi-selects by bond_type, same bucket split §6.1 already uses.
+  const eligibleInstrumentOptions = useMemo(() => {
+    const nb = [], tip = [];
+    for (const [symbol, meta] of Object.entries(bondInstrumentMetaBySymbol)) {
+      if (!meta?.is_bond || !meta?.in_scope) continue;
+      if (meta.bond_type === "tips") tip.push(symbol);
+      else if (["treasury_nominal", "bills_cash_like", "aggregate"].includes(meta.bond_type)) nb.push(symbol);
+    }
+    nb.sort(); tip.sort();
+    return { nb, tip };
+  }, [bondInstrumentMetaBySymbol]);
+
+  async function saveBondLensSettings() {
+    if (!editingPortfolio || editingPortfolio === "new") return;
+    setBlSettingsError(""); setBlSettingsSaved(false);
+
+    const benchStr = blForm.benchmark_duration.trim();
+    const benchmarkDuration = benchStr === "" ? null : Number(benchStr);
+    if (benchStr !== "" && (!Number.isFinite(benchmarkDuration) || benchmarkDuration <= 0)) {
+      setBlSettingsError("Benchmark duration must be a positive number of years, or blank.");
+      return;
+    }
+    const minTradePct = blForm.min_trade_threshold_pct.trim();
+    const minTradeThreshold = minTradePct === "" ? 0.005 : Number(minTradePct) / 100;
+    if (!Number.isFinite(minTradeThreshold) || minTradeThreshold < 0) {
+      setBlSettingsError("No-trade band must be a non-negative percentage.");
+      return;
+    }
+
+    setBlSettingsBusy(true);
+    const { data: { user } } = await supabase.auth.getUser();
+    const oldValue = bondLensSettings ?? {};
+    const newRow = {
+      portfolio_id: editingPortfolio.id,
+      benchmark_duration: benchmarkDuration,
+      include_credit: Boolean(blForm.include_credit),
+      eligible_instruments: { nb: blForm.eligible_nb, tip: blForm.eligible_tip },
+      min_trade_threshold: minTradeThreshold,
+      updated_at: new Date().toISOString(),
+      updated_by: user?.id ?? null,
+    };
+    const { error } = await supabase.from("bond_lens_portfolio_settings").upsert(newRow, { onConflict: "portfolio_id" });
+    setBlSettingsBusy(false);
+    if (error) { setBlSettingsError(error.message); return; }
+
+    // Toggle log (§6.6/§8) -- fire-and-forget, same pattern as the enable/disable
+    // insert in savePortfolio: never blocks or fails this save on a logging error.
+    supabase.from("bond_lens_toggle_log").insert({
+      portfolio_id: editingPortfolio.id,
+      action: "settings_changed",
+      old_value: oldValue,
+      new_value: newRow,
+    }).then(() => {}, () => {});
+
+    // Recompute preview/card immediately: set bondLensSettings directly from what
+    // was just written rather than re-fetching, so bondLensSettingsForCompute (and
+    // everything derived from it) reflects the new settings on this same render.
+    setBondLensSettings(newRow);
+    setBlSettingsSaved(true);
+  }
+
   // Overlay only proposes a rebalance on a tier change, so acknowledging it
   // is an explicit write (button click), not something that happens automatically.
   async function markOverlayRebalanced(portfolioId, tier) {
@@ -661,6 +763,7 @@ export default function PortfoliosPage() {
   function openNew() {
     setForm({ portfolio_name: "", description: "", strategy_detail: "", target_allocations: {}, rebalance_band_pct: 5, strategy_framework: "", use_market_overlay: false, use_capex_overlay: false, use_bond_lens_overlay: false });
     setFormError("");
+    setBlSettingsExpanded(false); setBlSettingsError(""); setBlSettingsSaved(false);
     setEditingPortfolio("new");
   }
 
@@ -677,6 +780,7 @@ export default function PortfoliosPage() {
       use_bond_lens_overlay: pf.use_bond_lens_overlay ?? false,
     });
     setFormError("");
+    setBlSettingsExpanded(false); setBlSettingsError(""); setBlSettingsSaved(false);
     setEditingPortfolio(pf);
   }
 
@@ -1820,6 +1924,149 @@ export default function PortfoliosPage() {
                   docs/specs/bond-lens.md.
                 </p>
               </div>
+
+              {/* Bond Lens settings (Phase D, Step 3, §8) -- expandable, visible only
+                 while the overlay checkbox above is on (settings are moot otherwise),
+                 hidden entirely for a brand-new portfolio (no portfolio_id yet to
+                 upsert bond_lens_portfolio_settings against). Its own separate save
+                 action/table from the main portfolio Save below -- clearer than
+                 folding a second upsert into that button, and lets settings be saved
+                 (and the card/preview recomputed) without going through the
+                 preview-before-enable flow, which only concerns the on/off flag. */}
+              {form.use_bond_lens_overlay && editingPortfolio !== "new" && (
+                <div className="border border-ink-line rounded-lg">
+                  <button
+                    type="button"
+                    onClick={() => setBlSettingsExpanded((v) => !v)}
+                    className="w-full flex items-center justify-between px-3 py-2 text-left"
+                  >
+                    <span className="label text-[10px]">Bond Lens settings</span>
+                    <span className="text-paper-dim text-xs">{blSettingsExpanded ? "▾" : "▸"}</span>
+                  </button>
+
+                  {blSettingsExpanded && (
+                    <div className="px-3 pb-3 space-y-3 border-t border-ink-line pt-3">
+                      <div>
+                        <label className="label block mb-1.5 text-[10px]">Benchmark duration</label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number" min="0" step="0.1"
+                            className="field w-20 py-1.5 px-2 text-xs"
+                            placeholder="auto"
+                            value={blForm.benchmark_duration}
+                            onChange={(e) => setBlForm((f) => ({ ...f, benchmark_duration: e.target.value }))}
+                          />
+                          <span className="text-xs text-paper-dim">years</span>
+                        </div>
+                        <p className="text-[10px] text-paper-dim/60 mt-1">
+                          Blank uses the sleeve's own duration under the portfolio's strategic allocation as the
+                          benchmark — "Neutral" then leaves the sleeve exactly where it already sits.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={blForm.include_credit}
+                            onChange={(e) => setBlForm((f) => ({ ...f, include_credit: e.target.checked }))}
+                          />
+                          <span className="label text-[10px]">Include credit</span>
+                        </label>
+                        <p className="text-[10px] text-paper-dim/60 mt-1">
+                          Brings agency MBS/IG corporate/munis into the sleeve (duration only adjusted, credit
+                          exposure untouched). Off by default — Phase E found the overlay is a wash on Treasury+TIPS
+                          and harmful on a high-yield-proxy sleeve.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="label block mb-1.5 text-[10px]">Eligible instruments — nb bucket</label>
+                        <div className="flex flex-wrap gap-2">
+                          {eligibleInstrumentOptions.nb.map((sym) => (
+                            <label key={sym} className="flex items-center gap-1 text-xs text-paper-dim cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={blForm.eligible_nb.includes(sym)}
+                                onChange={(e) => setBlForm((f) => ({
+                                  ...f,
+                                  eligible_nb: e.target.checked ? [...f.eligible_nb, sym] : f.eligible_nb.filter((s) => s !== sym),
+                                }))}
+                              />
+                              {sym}
+                            </label>
+                          ))}
+                        </div>
+                        {blForm.eligible_nb.includes("EDV") && (
+                          <p className="text-[11px] text-loss font-medium mt-1.5 px-2 py-1 rounded border border-loss/40 bg-loss/10">
+                            EDV — Zero-coupon strips: roughly 1.6× TLT's rate sensitivity.
+                          </p>
+                        )}
+                        <p className="text-[10px] text-paper-dim/60 mt-1">
+                          Substitute instruments the solver may introduce to reach a target duration within the nb
+                          (nominal/bills/aggregate) bucket, beyond what's currently held.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="label block mb-1.5 text-[10px]">Eligible instruments — tip bucket</label>
+                        <div className="flex flex-wrap gap-2">
+                          {eligibleInstrumentOptions.tip.map((sym) => (
+                            <label key={sym} className="flex items-center gap-1 text-xs text-paper-dim cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={blForm.eligible_tip.includes(sym)}
+                                onChange={(e) => setBlForm((f) => ({
+                                  ...f,
+                                  eligible_tip: e.target.checked ? [...f.eligible_tip, sym] : f.eligible_tip.filter((s) => s !== sym),
+                                }))}
+                              />
+                              {sym}
+                            </label>
+                          ))}
+                        </div>
+                        <p className="text-[10px] text-paper-dim/60 mt-1">
+                          Same, for the TIPS bucket.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="label block mb-1.5 text-[10px]">No-trade band</label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number" min="0" step="0.1"
+                            className="field w-20 py-1.5 px-2 text-xs"
+                            value={blForm.min_trade_threshold_pct}
+                            onChange={(e) => setBlForm((f) => ({ ...f, min_trade_threshold_pct: e.target.value }))}
+                          />
+                          <span className="text-xs text-paper-dim">% of sleeve</span>
+                        </div>
+                        <p className="text-[10px] text-paper-dim/60 mt-1">
+                          Skip any per-holding change smaller than this share of the sleeve — avoids churn from
+                          immaterial rebalances. Stored as a fraction (e.g. 0.5% here is saved as 0.005).
+                        </p>
+                      </div>
+
+                      {blSettingsError && <p className="text-loss text-xs">{blSettingsError}</p>}
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={saveBondLensSettings}
+                          disabled={blSettingsBusy}
+                          className="px-3 py-1.5 rounded-lg text-xs border border-brass/40 text-brass-soft hover:bg-brass/10 disabled:opacity-50 transition-colors"
+                        >
+                          {blSettingsBusy ? "Saving…" : "Save Bond Lens settings"}
+                        </button>
+                        {blSettingsSaved && !blSettingsBusy && <span className="text-[11px] text-gain">Saved</span>}
+                      </div>
+                      <p className="text-[10px] text-paper-dim/60">
+                        Saved immediately on its own — independent of the main "Save changes" button below.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div>
                 <label className="label block mb-2">Target Allocations</label>
