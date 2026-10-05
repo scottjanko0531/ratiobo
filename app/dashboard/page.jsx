@@ -176,7 +176,7 @@ export default function Dashboard() {
   const totalGainPct = totals.basis > 0 ? (totalGain / totals.basis) * 100 : null;
 
   const periodChanges = useMemo(() => {
-    if (!portfolioHistory.length) return { week: null, mtd: null, ytd: null, mtdRefDate: null };
+    if (!portfolioHistory.length) return { day: null, week: null, mtd: null, ytd: null, mtdRefDate: null };
     const now = new Date();
     // Calendar week (Monday-Sunday), not a rolling trailing-7-days lookback —
     // on a Monday this must resolve to today, so Week Change equals Day Change,
@@ -191,8 +191,14 @@ export default function Dashboard() {
       return ([...portfolioHistory].reverse().find(e => e.date <= targetStr) ?? portfolioHistory[0]) ?? null;
     };
     const current = totals.value;
-    const we = findEntry(weekStart), me = findEntry(mtdStart), ye = findEntry(ytdStart);
+    const de = findEntry(now), we = findEntry(weekStart), me = findEntry(mtdStart), ye = findEntry(ytdStart);
     return {
+      // Same total-vs-snapshot-total basis as week/mtd/ytd below (not the
+      // per-holding totals.dayChange sum, which silently excludes any
+      // holding lacking its own snapshot row for today -- e.g. one created
+      // intraday, after today's snapshot cron already ran -- so it can
+      // diverge from week/mtd/ytd even when their reference date is today).
+      day:  de ? current - de.value : null,
       week: we ? current - we.value : null,
       mtd:  me ? current - me.value : null,
       ytd:  ye ? current - ye.value : null,
@@ -262,7 +268,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
         <div className="card p-4">
           <p className="label mb-1">Day change</p>
-          <p className="num text-xl"><GainText value={totals.dayChange} /></p>
+          <p className="num text-xl"><GainText value={periodChanges.day} /></p>
         </div>
         <div className="card p-4">
           <p className="label mb-1">Week change</p>
