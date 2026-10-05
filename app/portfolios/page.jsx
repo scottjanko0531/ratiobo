@@ -1304,9 +1304,15 @@ export default function PortfoliosPage() {
                    equity-exposure dial driven by market_conditions_scores'
                    daily tier/exposure_multiplier. Deliberately kept separate
                    from the resize/capex overlay below: an independent boolean
-                   (use_market_overlay), its own freed-weight-to-cash math
-                   scoped to EQUITY_KEYS only (lib/marketOverlayPortfolio.js),
-                   shown regardless of strategy_framework. A recommendation
+                   (use_market_overlay), shown regardless of strategy_framework.
+                   The MARKET multiplier itself only ever applies to EQUITY_KEYS
+                   (lib/marketOverlayPortfolio.js) — but the freed-weight-to-cash
+                   total is NOT equity-scoped: it sums every bucket via
+                   applyOverlayToTargets, so a capex or resize cut landing on a
+                   bond or gold holding also grows the cash figure. The row
+                   filter below shows that holding whenever it has a material
+                   trade, so the cash number always has a visible source rather
+                   than including a cut no row explains. A recommendation
                    only — the only write on this page is "Mark rebalanced",
                    an explicit acknowledgment that gates the next proposal to
                    the NEXT tier change rather than every daily score move. */}
@@ -1352,8 +1358,15 @@ export default function PortfoliosPage() {
                     const withoutBySymbol = Object.fromEntries(without.actionRows.map((r) => [r.symbol, r]));
                     const holdingBySymbol = Object.fromEntries(hs.map((h) => [h.symbol, h]));
 
+                    // Equity-key rows and cash always show (even at "Hold") so the
+                    // dial's baseline state is visible; any OTHER bucket (bonds,
+                    // gold) only shows up when it actually has a material trade --
+                    // this is what surfaces a capex/resize cut landing outside
+                    // equity (e.g. a bond sleeve's AI Capex cut) as its own row,
+                    // instead of silently vanishing into the cash total with no
+                    // visible source (the bug this filter used to cause).
                     rows = withOv.actionRows
-                      .filter((r) => EQUITY_KEYS.has(r.key) || r.key === "cash")
+                      .filter((r) => EQUITY_KEYS.has(r.key) || r.key === "cash" || Math.abs(r.deltaVal) >= 1)
                       .map((r) => {
                         const wo = withoutBySymbol[r.symbol];
                         const h = holdingBySymbol[r.symbol];
