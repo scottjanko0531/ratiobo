@@ -742,19 +742,27 @@ export default function HoldingsPage() {
       cols[p.key] = mkCol(unrealizedChange(periodSnaps[p.key]), txnsIn(p.from));
     }
 
-    // ALL: unrealized = net_gain from view; income = pre-aggregated totals from holdings_valued
-    const totalNetGain = investmentHoldings.reduce((s, h) => s + Number(h.net_gain ?? 0), 0);
+    // ALL: unrealized_gain/realized_gain are the view's own columns, each
+    // covering FULL history. net_gain = unrealized_gain + realized_gain
+    // combined (holdings_valued migration 20261005) -- summing net_gain AND
+    // separately summing raw sell/principal transaction amounts here would
+    // double-count realized gains (and triple-dip principal paydowns, which
+    // aren't "gain" at all -- they're return of capital already netted into
+    // realized_gain against each unit's average cost). Use the view's own
+    // pre-netted components directly instead.
+    const totalUnrealized = investmentHoldings.reduce((s, h) => s + Number(h.unrealized_gain ?? 0), 0);
+    const totalRealized = investmentHoldings.reduce((s, h) => s + Number(h.realized_gain ?? 0), 0);
     const allTimeIncome = investmentHoldings.reduce((s, h) =>
       s + Number(h.total_interest ?? 0) + Number(h.total_dividends ?? 0) - Number(h.total_fees ?? 0), 0);
     const ytdTxns = txnsIn(null);
     cols.all = {
-      unrealized: totalNetGain,
-      realized:  ytdTxns.realized,
+      unrealized: totalUnrealized,
+      realized:  totalRealized,
       income:    allTimeIncome,
       principal: ytdTxns.principal,
       buy:       ytdTxns.buy,
       reinvest:  ytdTxns.reinvest,
-      total:     totalNetGain + ytdTxns.realized + allTimeIncome + ytdTxns.principal,
+      total:     totalUnrealized + totalRealized + allTimeIncome,
       winners:   investmentHoldings.filter((h) => Number(h.net_gain ?? 0) > 0.005).length,
       losers:    investmentHoldings.filter((h) => Number(h.net_gain ?? 0) < -0.005).length,
     };
