@@ -4,6 +4,7 @@ import {
   ResponsiveContainer, ComposedChart, Line, Scatter, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceArea,
 } from "recharts";
 import Shell from "../../components/Shell";
+import StageInfoIcon from "../../components/StageInfoIcon";
 import { supabase } from "../../lib/supabase";
 import {
   TIER_META, TREND_STATE_META, SUB_INDICATOR_META, VALIDATION_SUMMARY,
@@ -79,38 +80,54 @@ function PillarBar({ label, score }) {
   );
 }
 
-function SubIndicatorRow({ code, ind, staleInputs }) {
+function SubIndicatorRow({ code, ind, staleInputs, open, onToggle }) {
   const meta = SUB_INDICATOR_META[code];
   if (!ind || !meta) return null;
   const staleKeys = (meta.staleSeries ?? []).filter((s) => staleInputs?.[s] != null);
   return (
-    <tr className="border-b border-ink-line last:border-b-0">
-      <td className="py-2 pr-3">
-        <span className="text-paper text-sm font-medium">{code}</span>
-        <span className="text-paper-dim text-[11px] ml-2">{meta.label}</span>
-      </td>
-      <td className="py-2 pr-3 num text-sm text-paper text-right">
-        {ind.excluded ? "—" : `${fmtNum(ind.raw, 3)}${meta.unit ? ` ${meta.unit}` : ""}`}
-      </td>
-      <td className="py-2 pr-3 num text-sm text-right">
-        {ind.excluded ? (
-          <span className="text-paper-dim">—</span>
-        ) : (
-          <span className={ind.score >= 0 ? "text-gain" : "text-loss"}>{ind.score > 0 ? "+" : ""}{fmtNum(ind.score)}</span>
-        )}
-      </td>
-      <td className="py-2 text-right">
-        {ind.excluded ? (
-          <span className="text-[10px] px-1.5 py-0.5 rounded border border-loss/30 text-loss" title={ind.excludeReason}>excluded</span>
-        ) : staleKeys.length > 0 ? (
-          <span className="text-[10px] px-1.5 py-0.5 rounded border border-brass/30 text-brass-soft" title={staleKeys.map((s) => `${s}: ${staleInputs[s]}d stale`).join(", ")}>
-            stale {staleKeys.map((s) => `${staleInputs[s]}d`).join(", ")}
+    <>
+      <tr className="border-b border-ink-line last:border-b-0">
+        <td className="py-2 pr-3">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="text-paper text-sm font-medium">{code}</span>
+            <span className="text-paper-dim text-[11px]">{meta.label}</span>
+            <StageInfoIcon active={open} onClick={onToggle} label={`About ${code}`} />
           </span>
-        ) : (
-          <span className="text-[10px] px-1.5 py-0.5 rounded border border-gain/30 text-gain">fresh</span>
-        )}
-      </td>
-    </tr>
+        </td>
+        <td className="py-2 pr-3 num text-sm text-paper text-right">
+          {ind.excluded ? "—" : `${fmtNum(ind.raw, 3)}${meta.unit ? ` ${meta.unit}` : ""}`}
+        </td>
+        <td className="py-2 pr-3 num text-sm text-right">
+          {ind.excluded ? (
+            <span className="text-paper-dim">—</span>
+          ) : (
+            <span className={ind.score >= 0 ? "text-gain" : "text-loss"}>{ind.score > 0 ? "+" : ""}{fmtNum(ind.score)}</span>
+          )}
+        </td>
+        <td className="py-2 text-right">
+          {ind.excluded ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded border border-loss/30 text-loss" title={ind.excludeReason}>excluded</span>
+          ) : staleKeys.length > 0 ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded border border-brass/30 text-brass-soft" title={staleKeys.map((s) => `${s}: ${staleInputs[s]}d stale`).join(", ")}>
+              stale {staleKeys.map((s) => `${staleInputs[s]}d`).join(", ")}
+            </span>
+          ) : (
+            <span className="text-[10px] px-1.5 py-0.5 rounded border border-gain/30 text-gain">fresh</span>
+          )}
+        </td>
+      </tr>
+      {open && (
+        <tr className="border-b border-ink-line last:border-b-0">
+          <td colSpan={4} className="pb-3 pt-1">
+            <div className="p-3 rounded-lg border border-ink-line bg-ink text-[11px] leading-relaxed space-y-1.5">
+              <p><span className="text-paper font-semibold">What it measures — </span><span className="text-paper-dim">{meta.what}</span></p>
+              <p><span className="text-paper font-semibold">How it's measured — </span><span className="text-paper-dim">{meta.how}</span></p>
+              <p><span className="text-paper font-semibold">Why it matters — </span><span className="text-paper-dim">{meta.why}</span></p>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -150,6 +167,8 @@ export default function MarketConditionsPage() {
   const [liveLog, setLiveLog] = useState([]); // mc_signal_log_live
   const [busy, setBusy] = useState(true);
   const [range, setRange] = useState("5Y");
+  const [openSubIndicator, setOpenSubIndicator] = useState(null); // code (e.g. "T1") or null
+  const toggleSubIndicator = (code) => setOpenSubIndicator((v) => (v === code ? null : code));
 
   useEffect(() => {
     async function load() {
@@ -354,7 +373,10 @@ export default function MarketConditionsPage() {
             </thead>
             <tbody>
               {["T1", "T2", "T3", "T4"].map((code) => (
-                <SubIndicatorRow key={code} code={code} ind={latest.components?.trend?.[code]} staleInputs={staleInputs} />
+                <SubIndicatorRow
+                  key={code} code={code} ind={latest.components?.trend?.[code]} staleInputs={staleInputs}
+                  open={openSubIndicator === code} onToggle={() => toggleSubIndicator(code)}
+                />
               ))}
             </tbody>
           </table>
@@ -372,7 +394,10 @@ export default function MarketConditionsPage() {
             </thead>
             <tbody>
               {["S1", "S2", "S3", "S4", "S5", "S6"].map((code) => (
-                <SubIndicatorRow key={code} code={code} ind={latest.components?.stress?.[code]} staleInputs={staleInputs} />
+                <SubIndicatorRow
+                  key={code} code={code} ind={latest.components?.stress?.[code]} staleInputs={staleInputs}
+                  open={openSubIndicator === code} onToggle={() => toggleSubIndicator(code)}
+                />
               ))}
             </tbody>
           </table>
