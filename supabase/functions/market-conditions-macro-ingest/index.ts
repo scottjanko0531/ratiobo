@@ -10,6 +10,16 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 // idempotent design as market-conditions-ingest -- see that file's header
 // comment for the rationale; this is a sibling, not a replacement.
 //
+// Deployed with verify_jwt=false (Supabase project setting, not expressible
+// in this file or any committed config -- this repo has no
+// supabase/config.toml and no other function's verify_jwt setting is
+// tracked in git either, so this isn't a gap specific to this function).
+// Required because 20261008_schedule_market_conditions_macro_ingest.sql's
+// nightly cron calls this via net.http_post with no Authorization header,
+// same as market-conditions-ingest/-compute's own cron entries -- a
+// verify_jwt=true redeploy will make the scheduled run 401 silently
+// (check mc_job_runs if the nightly row stops appearing).
+//
 // published_at vs date: every OTHER series this repo ingests into
 // mc_series_daily (VIXCLS, VIX3M, BAA10Y, BAMLH0A0HYM2, DTB3) is daily with
 // no real reporting lag, so market-conditions-ingest hardcodes
