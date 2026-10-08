@@ -1,5 +1,108 @@
 # Market Conditions Overlay — decisions log
 
+## MOVE index pre-registered keep-or-drop test (Stress pillar S7/S8), DROP (2026-10-08)
+
+Tested whether adding MOVE-index-derived sub-indicators to the Stress
+pillar passes the pre-registered keep-or-drop rule (Section 9), motivated
+by the known, repeatedly-flagged weakness elsewhere in this log: "slow-grind
+bears without credit stress (2022)" (Section 9's own reference note, and
+the mc-1.3.0 robustness round above). MOVE (ICE BofA MOVE Index, bond-market
+implied volatility, `^MOVE` on Yahoo) is the natural Treasury analog of
+VIX — this tests whether it catches stress 2022's equity-VIX-based
+indicators missed.
+
+### Method
+- **S7** = MOVE level, inverted rolling percentile — same formula/window as
+  S2/S4/S5 — in the level group.
+- **S8** = MOVE 20-day change, inverted rolling percentile — same formula
+  as S3/S6 — in the change group.
+- **Weights** — the only scheme tried, stated once and not tuned
+  afterward: split each group evenly across its new membership. Level group
+  (S1/S2/S4/S5/S7) 10% each (was 12.5% each across 4); change group
+  (S3/S6/S8) 16.67% each (was 25% each across 2).
+- **Engine**: a full line-for-line port of `_shared/marketConditions/`
+  (normalize/trend/stress/scoring) plus the `market-conditions-veto-
+  ablation`/`crossmarket` backtest harness (identical Calmar/Sharpe/CAGR/
+  max-DD formulas, bear-episode dates, sub-period split, turnover cost, and
+  DTB3 cash-residual convention), run standalone — **not** deployed as an
+  edge function; report-only, nothing live touched. An `includeMove` flag
+  toggles S7/S8 on/off from the identical code path so baseline and
+  treatment are apples-to-apples.
+- **MOVE source**: Yahoo `^MOVE`, daily history from **2002-11-12** (5,912
+  rows through today) — about 6.5 years short of SPY's 1996 backtest start,
+  so S7/S8 are excluded (insufficient history, same mechanism as every
+  other percentile indicator) until roughly 2005-2006 once 756 trading days
+  accumulate.
+- **One run.** No re-tuning after seeing the result below, and no
+  GFC-specific or other equity-history variant attempted — explicitly out
+  of scope for this round, per instruction.
+
+### Result: DROP
+
+| Metric (SPY, full period) | Baseline (mc-1.4.0, frozen) | With MOVE (S7+S8) |
+|---|---|---|
+| CAGR | 9.55% | 9.69% |
+| Vol | 12.50% | 12.48% |
+| Max DD | -22.65% | -23.91% |
+| **Calmar** | **0.4216** | **0.4053** |
+
+Fails the primary Section 9 criterion outright: full-period Calmar must
+*improve*; it fell (0.4216 → 0.4053 — a real decline, not rounding noise).
+Baseline figures reproduce the frozen `VALIDATION_SUMMARY` table almost
+exactly (max DD and Calmar match to the table's own precision; CAGR/vol
+differ by ~0.04pp, consistent with a few extra days of data accrued since
+that table was last frozen) — confirms this is a faithful port, not an
+implementation discrepancy.
+
+| Sub-period | Baseline Calmar | With MOVE Calmar |
+|---|---|---|
+| 1996-02-23 → 2008-12-31 | 0.35 | 0.34 |
+| 2009-01-01 → present | 0.56 | 0.60 |
+
+| Bear episode | Baseline max DD | With MOVE max DD | Δ (pp) |
+|---|---|---|---|
+| 2000-02 (dot-com) | -21.76% | -19.76% | +2.00 |
+| 2007-09 (GFC) | -22.65% | -23.91% | -1.26 |
+| 2020 (COVID) | -18.53% | -18.53% | 0.00 |
+| **2022** | **-19.11%** | **-18.01%** | **+1.10** |
+
+All four stay within the ±2pp tolerance (criterion 2 passes). **2022 — the
+episode this test was motivated by — genuinely improves by 1.1pp**, the
+first time anything in this log has moved that specific number in the
+right direction. But the GFC episode is the single worst drawdown in both
+variants, and MOVE deepens it by 1.26pp; since GFC drives the full-period
+max DD either way, that one episode's modest deterioration is what pulls
+full-period Calmar down even though three of four named crises improved or
+held flat.
+
+| Market | Baseline Calmar | With MOVE Calmar | Δ |
+|---|---|---|---|
+| QQQ | 0.22 | 0.22 | 0.00 |
+| IWM | 0.21 | 0.24 | +0.03 |
+| EFA | 0.22 | 0.24 | +0.02 |
+| EEM | 0.19 | 0.19 | 0.00 |
+
+Criterion 3 (doesn't worsen Calmar on 2+ of QQQ/IWM/EFA) passes cleanly —
+none worsen, two improve. EEM included for the same reason it was added to
+`market-conditions-crossmarket` (2026-09-29 portfolio-overlay review): no
+worsening there either.
+
+**Verdict: DROP, per the letter of the pre-registered rule.** Two of three
+criteria pass comfortably, and the one motivating case (2022) genuinely
+improved — but the rule requires full-period Calmar to improve, not merely
+hold steady or win on secondary criteria, and it didn't. No re-tuning
+attempted (a GFC-specific carve-out, a different weight split, a narrower
+window) — explicitly out of scope for this round. S7/S8 are **not** added
+to `_shared/marketConditions/indicators/stress.ts`; no `config_version`
+bump; nothing in production scoring changed.
+
+**Follow-up, not a retest:** MOVE is a reasonable pre-registered candidate
+for the **Bond Lens overlay** instead — a genuinely different asset
+(bond-sleeve duration/stance decisions on Bond Lens's own validated
+criteria) and a different application, not a second attempt at the same
+equity-overlay Stress pillar this round rejected it from. Flagging for
+whoever picks up Bond Lens next, not committing to it here.
+
 ## Per-portfolio AI Capex Cycle overlay toggle (2026-09-30)
 
 New `portfolios.use_capex_overlay` boolean (default false), mirroring
