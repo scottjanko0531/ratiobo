@@ -7,7 +7,7 @@ import Shell from "../../components/Shell";
 import StageInfoIcon from "../../components/StageInfoIcon";
 import { supabase } from "../../lib/supabase";
 import {
-  TIER_META, TREND_STATE_META, SUB_INDICATOR_META, VALIDATION_SUMMARY,
+  TIER_META, TREND_STATE_META, SUB_INDICATOR_META, VALIDATION_SUMMARY, MACRO_CONTEXT_META,
   entrySignalDisplay, fmtDate, fmtNum,
 } from "../../lib/marketConditionsMeta";
 
@@ -169,6 +169,7 @@ export default function MarketConditionsPage() {
   const [range, setRange] = useState("5Y");
   const [openSubIndicator, setOpenSubIndicator] = useState(null); // code (e.g. "T1") or null
   const toggleSubIndicator = (code) => setOpenSubIndicator((v) => (v === code ? null : code));
+  const [macroSeries, setMacroSeries] = useState({}); // { seriesId: [{date, value}], ... } -- display only, not scored
 
   useEffect(() => {
     async function load() {
@@ -192,6 +193,62 @@ export default function MarketConditionsPage() {
     }
     load();
   }, []);
+
+  // Macro context panel (display only, not scored) -- independent fetch so
+  // a slow/large pull here never blocks the scored Trend/Stress load above.
+  // 400 calendar days covers a 1-year percentile window plus the ~30d
+  // lookback used for the direction arrow.
+  useEffect(() => {
+    async function loadMacro() {
+      const since = new Date();
+      since.setDate(since.getDate() - 400);
+      const sinceStr = since.toISOString().slice(0, 10);
+      const { data, error } = await supabase
+        .from("mc_series_daily")
+        .select("series_id, date, value")
+        .in("series_id", Object.keys(MACRO_CONTEXT_META))
+        .gte("date", sinceStr)
+        .order("date", { ascending: true });
+      if (error) { console.error("macro context load failed:", error); return; }
+      const bySeries = {};
+      for (const row of data ?? []) {
+        (bySeries[row.series_id] ??= []).push({ date: row.date, value: Number(row.value) });
+      }
+      setMacroSeries(bySeries);
+    }
+    loadMacro();
+  }, []);
+
+  // Current value / 1-year percentile / 30d direction per macro-context
+  // series -- display only, same percentile-rank formula as the scored
+  // sub-indicators (lib/marketConditionsMeta's SUB_INDICATOR_META uses the
+  // identical tie-handling convention) but with NO inversion, NO minHistory
+  // gate, and NO effect on composite/tier -- this panel never feeds scoring.
+  const macroContextRows = useMemo(() => {
+    const rows = [];
+    for (const [seriesId, meta] of Object.entries(MACRO_CONTEXT_META)) {
+      const series = macroSeries[seriesId];
+      if (!series || series.length === 0) { rows.push({ seriesId, meta, missing: true }); continue; }
+      const last = series[series.length - 1];
+      const window = series.map((r) => r.value);
+      let less = 0, equal = 0;
+      for (const v of window) { if (v < last.value) less++; else if (v === last.value) equal++; }
+      const percentile = ((less + 0.5 * equal) / window.length) * 100;
+      const cutoff = new Date(last.date); cutoff.setDate(cutoff.getDate() - 30);
+      const cutoffStr = cutoff.toISOString().slice(0, 10);
+      let prior = null;
+      for (let i = series.length - 2; i >= 0; i--) { if (series[i].date <= cutoffStr) { prior = series[i].value; break; } }
+      const direction = prior == null ? null : (last.value > prior ? "up" : last.value < prior ? "down" : "flat");
+      rows.push({ seriesId, meta, missing: false, date: last.date, value: last.value, percentile, direction, nWindow: window.length });
+    }
+    return rows;
+  }, [macroSeries]);
+
+  const macroGroups = useMemo(() => {
+    const groups = {};
+    for (const r of macroContextRows) (groups[r.meta.group] ??= []).push(r);
+    return groups;
+  }, [macroContextRows]);
 
   // Merge SPY closes + tier/entry history into one chart series, once.
   const fullSeries = useMemo(() => {
@@ -401,6 +458,51 @@ export default function MarketConditionsPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Macro context (Phase 4 scope reduced to display-only) -- NOT
+         scored, composite/tier/exposure_multiplier are unaffected. */}
+      <div className="card p-4 mb-6">
+        <p className="label text-[10px] mb-1">Macro context</p>
+        <p className="text-[10px] text-paper-dim/60 mb-3">Display only — not scored, no effect on tier or exposure. Percentile is each series' current value ranked against its own trailing ~1 year.</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6">
+          {Object.entries(macroGroups).map(([group, rows]) => (
+            <div key={group} className="mb-4">
+              <p className="text-[10px] text-paper-dim uppercase tracking-wide mb-1.5">{group}</p>
+              <table className="w-full">
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.seriesId} className="border-b border-ink-line/50 last:border-0">
+                      <td className="py-1.5 pr-3">
+                        <span className="text-paper text-sm font-medium">{r.seriesId}</span>
+                        <span className="text-paper-dim text-[11px] ml-2">{r.meta.label}</span>
+                      </td>
+                      <td className="py-1.5 pr-3 num text-sm text-paper text-right whitespace-nowrap">
+                        {r.missing ? "—" : `${fmtNum(r.value, 2)}${r.meta.unit ? ` ${r.meta.unit}` : ""}`}
+                      </td>
+                      <td className="py-1.5 pr-3 num text-[11px] text-paper-dim text-right whitespace-nowrap">
+                        {r.missing || r.percentile == null ? "—" : `${Math.round(r.percentile)}th pctl`}
+                      </td>
+                      <td className="py-1.5 text-right whitespace-nowrap">
+                        {r.missing ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border border-loss/30 text-loss">no data</span>
+                        ) : r.direction === "up" ? (
+                          <span className="text-[11px] text-gain">▲ up</span>
+                        ) : r.direction === "down" ? (
+                          <span className="text-[11px] text-loss">▼ down</span>
+                        ) : r.direction === "flat" ? (
+                          <span className="text-[11px] text-paper-dim">flat</span>
+                        ) : (
+                          <span className="text-[11px] text-paper-dim">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
         </div>
       </div>
 
