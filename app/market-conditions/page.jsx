@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer, ComposedChart, Line, Scatter, CartesianGrid, XAxis, YAxis, Tooltip, ReferenceArea,
 } from "recharts";
@@ -223,6 +223,23 @@ export default function MarketConditionsPage() {
     loadMacro().catch((e) => console.error("macro context load failed:", e));
   }, []);
 
+  const [macroRatioOpen, setMacroRatioOpen] = useState(false);
+
+  // Whether a RISING value is typically supportive (green) or a warning
+  // (red) for that series -- review feedback: color by meaning, not raw
+  // direction. Curves/breakevens/bank-lending aren't in this map and stay
+  // neutral gray regardless of direction (listed explicitly below, not
+  // just "whatever's missing", so a future series addition doesn't
+  // silently inherit a polarity that was never decided for it).
+  const DIRECTION_POLARITY = { NFCI: "warning", ICSA: "warning", VIX9D: "warning", VVIX: "warning", MOVE: "warning", HGF_GCF_RATIO: "supportive" };
+  function directionColorClass(seriesId, direction) {
+    const polarity = DIRECTION_POLARITY[seriesId];
+    if (direction == null || direction === "flat" || !polarity) return "text-paper-dim";
+    const isUp = direction === "up";
+    const isGood = polarity === "supportive" ? isUp : !isUp;
+    return isGood ? "text-gain" : "text-loss";
+  }
+
   // Current value / 1y+10y percentile / 30d direction / plain-language
   // context per macro-context series -- display only, same percentile-rank
   // tie-handling as the scored sub-indicators, but with NO inversion, NO
@@ -242,26 +259,70 @@ export default function MarketConditionsPage() {
       for (let i = series.length - 2; i >= 0; i--) if (series[i].date <= cutoffStr) return series[i].value;
       return null;
     };
+    const percentiles = (series, last) => {
+      const oneYearAgoStr = daysAgoStr(last.date, 365);
+      const window1y = series.filter((r) => r.date >= oneYearAgoStr).map((r) => r.value);
+      const window10y = series.map((r) => r.value); // fetch is already capped at ~10y
+      return {
+        percentile1y: window1y.length ? pctRank(window1y, last.value) : null,
+        percentile10y: pctRank(window10y, last.value),
+      };
+    };
 
     function baseRow(seriesId, meta, series) {
       if (!series || series.length === 0) return { seriesId, meta, missing: true };
       const last = series[series.length - 1];
-      const oneYearAgoStr = daysAgoStr(last.date, 365);
-      const window1y = series.filter((r) => r.date >= oneYearAgoStr).map((r) => r.value);
-      const window10y = series.map((r) => r.value); // fetch is already capped at ~10y
-      const percentile1y = window1y.length ? pctRank(window1y, last.value) : null;
-      const percentile10y = pctRank(window10y, last.value);
       const prior30 = valueBefore(series, daysAgoStr(last.date, 30));
       const direction = prior30 == null ? null : (last.value > prior30 ? "up" : last.value < prior30 ? "down" : "flat");
-      return { seriesId, meta, missing: false, date: last.date, value: last.value, percentile1y, percentile10y, direction };
+      return { seriesId, meta, missing: false, date: last.date, value: last.value, direction, ...percentiles(series, last) };
+    }
+
+    // ICSA: review feedback -- display AND compute (percentile, direction)
+    // from the 4-week moving average of ICSA itself, not the raw weekly
+    // print. The MA4 series becomes the primary series for this row, not
+    // just an input to the "vs 52w low" context line.
+    function icsaRow(seriesId, meta, series) {
+      if (!series || series.length < 4) return { seriesId, meta, missing: true };
+      const ma4Series = series
+        .map((r, i) => (i < 3 ? null : { date: r.date, value: (series[i - 3].value + series[i - 2].value + series[i - 1].value + r.value) / 4 }))
+        .filter(Boolean);
+      const last = ma4Series[ma4Series.length - 1];
+      const prior30 = valueBefore(ma4Series, daysAgoStr(last.date, 30));
+      const direction = prior30 == null ? null : (last.value > prior30 ? "up" : last.value < prior30 ? "down" : "flat");
+      const oneYearAgoStr = daysAgoStr(last.date, 365);
+      const window1y = ma4Series.filter((r) => r.date >= oneYearAgoStr).map((r) => r.value);
+      const low = window1y.length ? Math.min(...window1y) : null;
+      const pctAboveLow = low != null && low !== 0 ? ((last.value - low) / low) * 100 : null;
+      const warn = pctAboveLow != null && pctAboveLow >= 20;
+      const context = pctAboveLow == null ? "—" : `${pctAboveLow >= 0 ? "+" : ""}${pctAboveLow.toFixed(0)}% vs 52w low${warn ? " — Warning" : ""}`;
+      return { seriesId, meta, missing: false, date: last.date, value: last.value, direction, context, warn, ...percentiles(ma4Series, last) };
+    }
+
+    function drtscilmRow(seriesId, meta, series) {
+      if (!series || series.length === 0) return { seriesId, meta, missing: true };
+      const last = series[series.length - 1];
+      const prior = series.length >= 2 ? series[series.length - 2].value : null;
+      const change = prior != null ? last.value - prior : null;
+      const d = new Date(last.date);
+      const q = Math.floor(d.getUTCMonth() / 3) + 1;
+      const quarterLabel = `${d.getUTCFullYear()} Q${q}`;
+      // Review feedback: label on the LEVEL (this series' own sign already
+      // means net % tightening vs easing), not the quarter-over-quarter
+      // change -- the change is still shown, just not what drives the label.
+      const label = last.value > 0 ? "Tightening" : last.value < 0 ? "Easing" : "Unchanged";
+      const changeStr = change == null ? "" : ` (${change >= 0 ? "+" : ""}${change.toFixed(1)}pp vs prior qtr)`;
+      return { seriesId, meta, missing: false, date: last.date, value: last.value, quarterLabel, context: label + changeStr, noPercentile: true };
     }
 
     // Series-specific "context" -- natural reference points, not scores.
     // Each rule below is exactly the one specified for that series; any
     // series without a named rule gets no context label (dash), not a
-    // guessed one.
+    // guessed one. vixclsRaw comes from the already-loaded scored Stress
+    // pillar (S5's raw value IS the current VIXCLS level) -- no separate
+    // fetch needed for the VIX9D/VIX ratio.
+    const vixclsRaw = latest?.components?.stress?.S5?.raw ?? null;
     function addContext(row, series) {
-      if (row.missing) return row;
+      if (row.missing || row.context !== undefined) return row; // icsaRow/drtscilmRow already set their own
       const { seriesId, value, date } = row;
       const oneYearAgoStr = daysAgoStr(date, 365);
 
@@ -277,68 +338,61 @@ export default function MarketConditionsPage() {
         const d = value - 2.0;
         return { ...row, context: `${d >= 0 ? "+" : ""}${d.toFixed(2)}pp vs 2.0%` };
       }
-      if (seriesId === "ICSA") {
-        // 4-week moving average of ICSA itself, then % the current 4wk
-        // average sits above its own trailing-52-week low.
-        const ma4 = series.map((r, i) => i < 3 ? null : (series[i - 3].value + series[i - 2].value + series[i - 1].value + r.value) / 4);
-        const lastMa4 = ma4[ma4.length - 1];
-        const windowMa4 = series.map((r, i) => ({ date: r.date, ma: ma4[i] })).filter((r) => r.ma != null && r.date >= oneYearAgoStr).map((r) => r.ma);
-        const low = windowMa4.length ? Math.min(...windowMa4) : null;
-        const pctAboveLow = low != null && low !== 0 && lastMa4 != null ? ((lastMa4 - low) / low) * 100 : null;
-        if (pctAboveLow == null) return { ...row, context: "—" };
-        const warn = pctAboveLow >= 20;
-        return { ...row, context: `${pctAboveLow >= 0 ? "+" : ""}${pctAboveLow.toFixed(0)}% vs 52w low${warn ? " — Warning" : ""}`, warn };
+      if (seriesId === "VIX9D") {
+        if (vixclsRaw == null || vixclsRaw === 0) return { ...row, context: "—" };
+        return { ...row, context: (value / vixclsRaw) >= 1.0 ? "Short-term stress" : "—" };
       }
-      if (seriesId === "DRTSCILM") {
-        const prior = series.length >= 2 ? series[series.length - 2].value : null;
-        const change = prior != null ? value - prior : null;
-        const d = new Date(date);
-        const q = Math.floor(d.getUTCMonth() / 3) + 1;
-        const quarterLabel = `${d.getUTCFullYear()} Q${q}`;
-        const changeStr = change == null ? "" : ` (${change >= 0 ? "+" : ""}${change.toFixed(1)} vs prior qtr)`;
-        const context = change == null ? "—" : (change > 0 ? "Tightening" : change < 0 ? "Easing" : "Unchanged");
-        return { ...row, quarterLabel: quarterLabel + changeStr, context, noPercentile: true };
+      if (seriesId === "VVIX") {
+        return { ...row, context: value >= 115 ? "Elevated hedging demand" : "—" };
       }
+      // MOVE: percentile only, no context label (explicit per review).
       return { ...row, context: "—" };
     }
 
     const rows = [];
     for (const [seriesId, meta] of Object.entries(MACRO_CONTEXT_META)) {
-      rows.push(addContext(baseRow(seriesId, meta, macroSeries[seriesId]), macroSeries[seriesId] ?? []));
+      if (seriesId === "HGF" || seriesId === "GCF") continue; // folded into the ratio row below
+      const series = macroSeries[seriesId] ?? [];
+      const row = seriesId === "ICSA" ? icsaRow(seriesId, meta, series)
+        : seriesId === "DRTSCILM" ? drtscilmRow(seriesId, meta, series)
+        : baseRow(seriesId, meta, series);
+      rows.push(addContext(row, series));
     }
 
     // Copper/gold ratio -- synthetic row, not its own mc_series_daily
-    // series. Joined by date from the already-fetched HGF/GCF series; 3-
-    // month change is the series-specific context rule (rising = growth
-    // improving, the complementary "falling = growth softening" is the
-    // natural opposite, not separately specified).
+    // series; HGF/GCF's own rows are collapsed into this one (expandable,
+    // see macroRatioOpen). Joined by date from the already-fetched HGF/GCF
+    // series; 3-month change is the series-specific context rule (rising =
+    // growth improving, "falling = growth softening" is the natural
+    // opposite, not separately specified). Displayed at x1000 -- the raw
+    // ratio is ~0.001-0.002, unreadable at 2 decimal places otherwise.
     const hgf = macroSeries.HGF, gcf = macroSeries.GCF;
     if (hgf?.length && gcf?.length) {
       const gcfByDate = new Map(gcf.map((r) => [r.date, r.value]));
       const ratioSeries = hgf.filter((r) => gcfByDate.has(r.date)).map((r) => ({ date: r.date, value: r.value / gcfByDate.get(r.date) }));
       if (ratioSeries.length) {
         const last = ratioSeries[ratioSeries.length - 1];
-        const oneYearAgoStr = daysAgoStr(last.date, 365);
-        const window1y = ratioSeries.filter((r) => r.date >= oneYearAgoStr).map((r) => r.value);
-        const window10y = ratioSeries.map((r) => r.value);
         const prior3mo = valueBefore(ratioSeries, daysAgoStr(last.date, 90));
         const change3mo = prior3mo != null ? last.value - prior3mo : null;
         rows.push({
           seriesId: "HGF_GCF_RATIO",
-          meta: { group: "Commodities", label: "Copper / gold ratio", unit: "" },
+          meta: { group: "Commodities", label: "Copper / gold ratio", unit: "", displayMultiplier: 1000, displaySuffix: "×1,000" },
           missing: false,
           date: last.date,
           value: last.value,
-          percentile1y: window1y.length ? pctRank(window1y, last.value) : null,
-          percentile10y: pctRank(window10y, last.value),
           direction: change3mo == null ? null : (change3mo > 0 ? "up" : change3mo < 0 ? "down" : "flat"),
           context: change3mo == null ? "—" : (change3mo > 0 ? "Growth improving" : change3mo < 0 ? "Growth softening" : "Flat"),
+          ...percentiles(ratioSeries, last),
+          raw: {
+            hgf: hgf[hgf.length - 1], gcf: gcf[gcf.length - 1],
+            hgfMeta: MACRO_CONTEXT_META.HGF, gcfMeta: MACRO_CONTEXT_META.GCF,
+          },
         });
       }
     }
 
     return rows;
-  }, [macroSeries]);
+  }, [macroSeries, latest]);
 
   const macroGroups = useMemo(() => {
     const groups = {};
@@ -561,7 +615,10 @@ export default function MarketConditionsPage() {
          scored, composite/tier/exposure_multiplier are unaffected. */}
       <div className="card p-4 mb-6">
         <p className="label text-[10px] mb-1">Macro context</p>
-        <p className="text-[10px] text-paper-dim/60 mb-3">Display only — not scored, no effect on tier or exposure. "As of" lags today for weekly/quarterly series (real reporting delay, not stale data). Percentiles rank the current value against its own trailing history.</p>
+        <p className="text-[10px] text-paper-dim/60 mb-1">Display only — not scored, no effect on tier or exposure. "As of" lags today for weekly/quarterly series (real reporting delay, not stale data). Percentiles rank the current value against its own trailing history.</p>
+        <p className="text-[10px] text-paper-dim/60 mb-3">
+          <span className="text-gain">▲/▼</span> colored by whether rising is typically supportive (green) or a warning (red) for that series — not by raw direction. Curves, breakevens, and bank-lending standards are shown neutral (gray) regardless of direction.
+        </p>
         <div className="overflow-x-auto">
           {Object.entries(macroGroups).map(([group, rows]) => (
             <div key={group} className="mb-5 last:mb-0 min-w-[760px]">
@@ -579,46 +636,69 @@ export default function MarketConditionsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.seriesId} className="border-b border-ink-line/50 last:border-0">
-                      <td className="py-1.5 pr-3">
-                        <span className="text-paper text-sm font-medium">{r.seriesId}</span>
-                        <span className="text-paper-dim text-[11px] ml-2">{r.meta.label}</span>
-                      </td>
-                      <td className="py-1.5 pr-3 num text-[11px] text-paper-dim text-right whitespace-nowrap">
-                        {r.missing ? "—" : fmtDate(r.date)}
-                      </td>
-                      <td className="py-1.5 pr-3 num text-sm text-paper text-right whitespace-nowrap">
-                        {r.missing ? "—" : r.quarterLabel ? r.quarterLabel : `${fmtNum(r.value, 2)}${r.meta.unit ? ` ${r.meta.unit}` : ""}`}
-                      </td>
-                      <td className="py-1.5 pr-3 num text-[11px] text-paper-dim text-right whitespace-nowrap">
-                        {r.missing || r.noPercentile || r.percentile1y == null ? "—" : `${Math.round(r.percentile1y)}th`}
-                      </td>
-                      <td className="py-1.5 pr-3 num text-[11px] text-paper-dim text-right whitespace-nowrap">
-                        {r.missing || r.noPercentile || r.percentile10y == null ? "—" : `${Math.round(r.percentile10y)}th`}
-                      </td>
-                      <td className="py-1.5 pr-3 text-right whitespace-nowrap">
-                        {r.missing ? (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded border border-loss/30 text-loss">no data</span>
-                        ) : r.direction === "up" ? (
-                          <span className="text-[11px] text-gain">▲</span>
-                        ) : r.direction === "down" ? (
-                          <span className="text-[11px] text-loss">▼</span>
-                        ) : r.direction === "flat" ? (
-                          <span className="text-[11px] text-paper-dim">flat</span>
-                        ) : (
-                          <span className="text-[11px] text-paper-dim">—</span>
-                        )}
-                      </td>
-                      <td className="py-1.5 pl-3 text-left whitespace-nowrap">
-                        {!r.missing && r.context && r.context !== "—" ? (
-                          <span className={`text-[11px] ${r.warn ? "text-loss font-medium" : "text-paper-dim"}`}>{r.context}</span>
-                        ) : (
-                          <span className="text-[11px] text-paper-dim">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                  {rows.map((r) => {
+                    const isRatio = r.seriesId === "HGF_GCF_RATIO";
+                    const displayValue = r.missing ? null : (r.meta.displayMultiplier ? r.value * r.meta.displayMultiplier : r.value);
+                    return (
+                    <Fragment key={r.seriesId}>
+                      <tr className="border-b border-ink-line/50 last:border-0">
+                        <td className="py-1.5 pr-3">
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="text-paper text-sm font-medium">{r.seriesId}</span>
+                            <span className="text-paper-dim text-[11px]">{r.meta.label}</span>
+                            {isRatio && (
+                              <StageInfoIcon active={macroRatioOpen} onClick={() => setMacroRatioOpen((v) => !v)} label="Show copper/gold raw legs" />
+                            )}
+                          </span>
+                        </td>
+                        <td className="py-1.5 pr-3 num text-[11px] text-paper-dim text-right whitespace-nowrap">
+                          {r.missing ? "—" : fmtDate(r.date)}
+                        </td>
+                        <td className="py-1.5 pr-3 num text-sm text-paper text-right whitespace-nowrap">
+                          {r.missing ? "—" : r.quarterLabel
+                            ? `${fmtNum(r.value, 1)}% (${r.quarterLabel})`
+                            : `${fmtNum(displayValue, 2)}${r.meta.unit ? ` ${r.meta.unit}` : ""}${r.meta.displaySuffix ? ` ${r.meta.displaySuffix}` : ""}`}
+                        </td>
+                        <td className="py-1.5 pr-3 num text-[11px] text-paper-dim text-right whitespace-nowrap">
+                          {r.missing || r.noPercentile || r.percentile1y == null ? "—" : `${Math.round(r.percentile1y)}th`}
+                        </td>
+                        <td className="py-1.5 pr-3 num text-[11px] text-paper-dim text-right whitespace-nowrap">
+                          {r.missing || r.noPercentile || r.percentile10y == null ? "—" : `${Math.round(r.percentile10y)}th`}
+                        </td>
+                        <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                          {r.missing ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded border border-loss/30 text-loss">no data</span>
+                          ) : r.direction === "up" ? (
+                            <span className={`text-[11px] ${directionColorClass(r.seriesId, "up")}`}>▲</span>
+                          ) : r.direction === "down" ? (
+                            <span className={`text-[11px] ${directionColorClass(r.seriesId, "down")}`}>▼</span>
+                          ) : r.direction === "flat" ? (
+                            <span className="text-[11px] text-paper-dim">flat</span>
+                          ) : (
+                            <span className="text-[11px] text-paper-dim">—</span>
+                          )}
+                        </td>
+                        <td className="py-1.5 pl-3 text-left whitespace-nowrap">
+                          {!r.missing && r.context && r.context !== "—" ? (
+                            <span className={`text-[11px] ${r.warn ? "text-loss font-medium" : "text-paper-dim"}`}>{r.context}</span>
+                          ) : (
+                            <span className="text-[11px] text-paper-dim">—</span>
+                          )}
+                        </td>
+                      </tr>
+                      {isRatio && macroRatioOpen && r.raw && (
+                        <tr className="border-b border-ink-line/50 last:border-0">
+                          <td colSpan={7} className="pb-2 pt-0.5">
+                            <div className="p-2.5 rounded-lg border border-ink-line bg-ink text-[11px] leading-relaxed flex gap-6">
+                              <span><span className="text-paper-dim">HGF</span> <span className="text-paper">{r.raw.hgfMeta.label}</span> — <span className="num text-paper">{fmtNum(r.raw.hgf.value, 3)}</span> <span className="text-paper-dim">as of {fmtDate(r.raw.hgf.date)}</span></span>
+                              <span><span className="text-paper-dim">GCF</span> <span className="text-paper">{r.raw.gcfMeta.label}</span> — <span className="num text-paper">{fmtNum(r.raw.gcf.value, 2)}</span> <span className="text-paper-dim">as of {fmtDate(r.raw.gcf.date)}</span></span>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
