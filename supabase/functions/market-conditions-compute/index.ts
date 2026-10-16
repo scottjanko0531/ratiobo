@@ -22,6 +22,13 @@ import { alignWithForwardFill, SeriesRowWithPublish } from "../_shared/marketCon
 //
 // pg_cron-scheduled a few minutes after market-conditions-ingest (see
 // 20260928_schedule_market_conditions.sql).
+//
+// mc-1.4.1: now also passes the native (unaligned) `baa10yRows` and
+// `MAX_CARRY_DAYS` straight through to computeMarketConditionsHistory --
+// S3 computes its own alignment internally now (indicators/stress.ts),
+// rather than this file pre-differencing the already-aligned
+// `creditSpread` array. `creditSpread` itself is still built and passed
+// for S2's level.
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -117,7 +124,7 @@ Deno.serve(async (req: Request) => {
     recordStale("VIX3M", vix3mFF);
     recordStale("BAA10Y", baa10yFF);
 
-    const rows = computeMarketConditionsHistory({ dates, closes, vix, vix3m, creditSpread }, MC_CONFIG);
+    const rows = computeMarketConditionsHistory({ dates, closes, vix, vix3m, creditSpread, baa10yRows, maxCarryDays: MAX_CARRY_DAYS }, MC_CONFIG);
 
     const dbRows = rows.map((r) => {
       const stale = staleByDate.get(r.date);

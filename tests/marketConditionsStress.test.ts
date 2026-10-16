@@ -1,6 +1,30 @@
 import { describe, it, expect } from "vitest";
 import { computeStressRawSeries, scoreStressAtIndex, vetoConditionsAtIndex } from "../supabase/functions/_shared/marketConditions/indicators/stress.ts";
 import { MC_CONFIG } from "../supabase/functions/_shared/marketConditions/config.ts";
+import { SeriesRowWithPublish } from "../supabase/functions/_shared/marketConditions/normalize.ts";
+
+// mc-1.4.1: computeStressRawSeries now computes S3 on BAA10Y's own native
+// print sequence (dates, baa10yNativeRows, maxCarryDays), not by
+// differencing the already-aligned `creditSpread` array -- see
+// indicators/stress.ts's header comment. These two helpers build a
+// synthetic, gap-free "target calendar" and the matching native-row
+// representation of a plain `creditSpread`-style array, so every existing
+// test below stays behaviorally equivalent to the pre-fix formula (proven
+// equivalent whenever the two calendars have no gaps, which is true for
+// every synthetic array in this file -- no test here constructs an actual
+// calendar mismatch). `syntheticDates`' strings only need to string-compare
+// in chronological order for alignWithForwardFill's published_at <= t
+// check; they don't need to parse as real dates.
+function syntheticDates(n: number): string[] {
+  return Array.from({ length: n }, (_, i) => `D${String(i).padStart(5, "0")}`);
+}
+function nativeRows(dates: string[], values: (number | null)[]): SeriesRowWithPublish[] {
+  const out: SeriesRowWithPublish[] = [];
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] != null) out.push({ date: dates[i], published_at: dates[i], value: values[i]! });
+  }
+  return out;
+}
 
 describe("computeStressRawSeries — raw values", () => {
   it("S1 = VIX / VIX3M", () => {
@@ -8,7 +32,8 @@ describe("computeStressRawSeries — raw values", () => {
     const vix = [20, 25, 30];
     const vix3m = [20, 20, 20];
     const creditSpread = [null, null, null];
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     expect(raw.s1raw[1]).toBeCloseTo(25 / 20, 10);
   });
 
@@ -17,7 +42,8 @@ describe("computeStressRawSeries — raw values", () => {
     const vix = [20, 20];
     const vix3m = [null, 18];
     const creditSpread = [null, null];
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     expect(raw.s1raw[0]).toBeNull();
     expect(raw.s1raw[1]).toBeCloseTo(20 / 18, 10);
   });
@@ -27,7 +53,8 @@ describe("computeStressRawSeries — raw values", () => {
     const vix = [null, null];
     const vix3m = [null, null];
     const creditSpread = [2.03, 2.50];
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     expect(raw.s2raw[1]).toBe(2.50);
   });
 
@@ -41,7 +68,8 @@ describe("computeStressRawSeries — raw values", () => {
     const vix3m = new Array(n).fill(null);
     const creditSpread = new Array(n).fill(2.00);
     creditSpread[24] = 2.50; // 20 trading days after index 4
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     expect(raw.s3raw[24]).toBeCloseTo(50, 5);
   });
 
@@ -52,7 +80,8 @@ describe("computeStressRawSeries — raw values", () => {
     const vix = new Array(n).fill(null);
     const vix3m = new Array(n).fill(null);
     const creditSpread = new Array(n).fill(null);
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     expect(raw.s4raw[24]).toBeCloseTo(0, 6);
   });
 
@@ -61,7 +90,8 @@ describe("computeStressRawSeries — raw values", () => {
     const vix = [18, 22];
     const vix3m = [null, null];
     const creditSpread = [null, null];
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     expect(raw.s5raw[1]).toBe(22);
   });
 
@@ -72,7 +102,8 @@ describe("computeStressRawSeries — raw values", () => {
     const creditSpread = new Array(n).fill(null);
     const vix = new Array(n).fill(18);
     vix[24] = 25; // +7 points over 20 days
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     expect(raw.s6raw[24]).toBeCloseTo(7, 10);
   });
 
@@ -83,7 +114,8 @@ describe("computeStressRawSeries — raw values", () => {
     const creditSpread = new Array(n).fill(null);
     const vix = new Array(n).fill(20);
     vix[10] = null; // a gap -- should be skipped, not treated as 0
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     // 50 points ending at t=54, one of which (index 10) is null -> only 49 non-null -> not enough for a full 50-count window.
     expect(raw.vixSma50[54]).toBeNull();
   });
@@ -99,7 +131,8 @@ describe("scoreStressAtIndex — inversion", () => {
     const vix = Array.from({ length: n }, (_, i) => (i === n - 1 ? 80 : 15 + (i % 5)));
     const vix3m = new Array(n).fill(null);
     const creditSpread = new Array(n).fill(null);
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const result = scoreStressAtIndex(raw, n - 1, MC_CONFIG);
     expect(result.indicators.S5.percentile).toBeGreaterThan(95);
     expect(result.indicators.S5.score).toBeLessThan(-0.9);
@@ -111,7 +144,8 @@ describe("scoreStressAtIndex — inversion", () => {
     const vix = new Array(n).fill(20);
     const vix3m = new Array(n).fill(null);
     const creditSpread = new Array(n).fill(null); // never available
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const result = scoreStressAtIndex(raw, n - 1, MC_CONFIG);
     expect(result.indicators.S1.excluded).toBe(true); // no VIX3M
     expect(result.indicators.S2.excluded).toBe(true); // no credit spread
@@ -129,7 +163,8 @@ describe("scoreStressAtIndex — change-vs-level weighting (mc-1.3.0)", () => {
     const vix = Array.from({ length: n }, (_, i) => 18 + (i % 7));
     const vix3m = Array.from({ length: n }, () => 19);
     const creditSpread = Array.from({ length: n }, (_, i) => 2 + Math.sin(i / 30) * 0.3);
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const result = scoreStressAtIndex(raw, n - 1, MC_CONFIG);
     const { S1, S2, S3, S4, S5, S6 } = result.indicators;
     for (const r of [S1, S2, S3, S4, S5, S6]) expect(r.excluded).toBe(false); // sanity: all six actually contributing
@@ -143,7 +178,8 @@ describe("scoreStressAtIndex — change-vs-level weighting (mc-1.3.0)", () => {
     const vix = Array.from({ length: n }, (_, i) => 18 + (i % 7));
     const vix3m = new Array(n).fill(null); // S1 excluded, everything else unaffected
     const creditSpread = Array.from({ length: n }, (_, i) => 2 + Math.sin(i / 30) * 0.3);
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const result = scoreStressAtIndex(raw, n - 1, MC_CONFIG);
     const { S1, S2, S3, S4, S5, S6 } = result.indicators;
     expect(S1.excluded).toBe(true);
@@ -161,7 +197,8 @@ describe("scoreStressAtIndex — S1 absolute mapping (mc-1.2.0)", () => {
     const vix = [17];
     const vix3m = [20]; // ratio 0.85
     const creditSpread = [null];
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const result = scoreStressAtIndex(raw, 0, MC_CONFIG);
     expect(result.indicators.S1.percentile).toBeNull(); // absolute, not percentile-ranked
     expect(result.indicators.S1.score).toBeCloseTo(1, 10);
@@ -172,7 +209,8 @@ describe("scoreStressAtIndex — S1 absolute mapping (mc-1.2.0)", () => {
     const vix = [21];
     const vix3m = [20]; // ratio 1.05
     const creditSpread = [null];
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const result = scoreStressAtIndex(raw, 0, MC_CONFIG);
     expect(result.indicators.S1.score).toBeCloseTo(-1, 10);
   });
@@ -182,7 +220,8 @@ describe("scoreStressAtIndex — S1 absolute mapping (mc-1.2.0)", () => {
     const vix = [19];
     const vix3m = [20]; // ratio 0.95
     const creditSpread = [null];
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const result = scoreStressAtIndex(raw, 0, MC_CONFIG);
     expect(result.indicators.S1.score).toBeCloseTo(0, 10);
   });
@@ -194,7 +233,8 @@ describe("scoreStressAtIndex — S1 absolute mapping (mc-1.2.0)", () => {
     const vix = [17];
     const vix3m = [20];
     const creditSpread = [null];
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const result = scoreStressAtIndex(raw, 0, MC_CONFIG);
     expect(result.indicators.S1.excluded).toBe(false);
   });
@@ -206,7 +246,8 @@ describe("vetoConditionsAtIndex", () => {
     const vix = [30];
     const vix3m = [20]; // ratio 1.5 > 1.05
     const creditSpread = [null];
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const conds = vetoConditionsAtIndex(raw, 0, MC_CONFIG);
     expect(conds.termStructureTriggered).toBe(true);
   });
@@ -216,7 +257,8 @@ describe("vetoConditionsAtIndex", () => {
     const vix = [20];
     const vix3m = [20]; // ratio 1.0
     const creditSpread = [null];
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const conds = vetoConditionsAtIndex(raw, 0, MC_CONFIG);
     expect(conds.termStructureTriggered).toBe(false);
   });
@@ -228,7 +270,8 @@ describe("vetoConditionsAtIndex", () => {
     const vix3m = new Array(n).fill(null);
     const creditSpread = new Array(n).fill(2.00);
     creditSpread[24] = 2.50; // +50bp over 20 days, just above the 45bp threshold
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const conds = vetoConditionsAtIndex(raw, 24, MC_CONFIG);
     expect(conds.creditWideningTriggered).toBe(true);
   });
@@ -240,8 +283,40 @@ describe("vetoConditionsAtIndex", () => {
     const vix3m = new Array(n).fill(null);
     const creditSpread = new Array(n).fill(2.00);
     creditSpread[24] = 2.40; // +40bp, below threshold
-    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const dates = syntheticDates(closes.length);
+    const raw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, nativeRows(dates, creditSpread), 3);
     const conds = vetoConditionsAtIndex(raw, 24, MC_CONFIG);
     expect(conds.creditWideningTriggered).toBe(false);
+  });
+});
+
+describe("computeStressRawSeries — S3 calendar-gap fix (mc-1.4.1)", () => {
+  it("computes a true 20-observation change even when the target calendar's 'today' has no native BAA10Y print (e.g. Columbus Day)", () => {
+    // BAA10Y value rises by exactly 1 per native print (0, 1, 2, ..., 28),
+    // so ANY true 20-observation window should read exactly 20 (2000bp) --
+    // a straight-line series makes the correct answer calendar-independent,
+    // which is exactly what exposes the old bug: differencing the
+    // target-calendar-aligned array at FIXED indices instead compares a
+    // forward-filled "yesterday" value against a genuine "20 days ago"
+    // value, reading 19 (1900bp) rather than the true 20 (2000bp).
+    const n = 30; // target calendar: 30 days, index 0..29
+    const closes = new Array(n).fill(100);
+    const vix = new Array(n).fill(null);
+    const vix3m = new Array(n).fill(null);
+    const dates = syntheticDates(n);
+    // BAA10Y publishes every day EXCEPT the very last one (index 29,
+    // "today") -- mirrors Columbus Day: the target calendar (SPY) trades
+    // that day, BAA10Y does not.
+    const baa10yNative: SeriesRowWithPublish[] = Array.from({ length: n - 1 }, (_, i) => ({
+      date: dates[i], published_at: dates[i], value: i,
+    }));
+    const raw = computeStressRawSeries(closes, vix, vix3m, new Array(n).fill(null), dates, baa10yNative, 3);
+    // Correct: BAA10Y's own 20-observation change is always exactly 20
+    // (the series rises by 1 per NATIVE print), forward-filled from native
+    // day 28 onto target day 29 -- NOT 19 (1900bp), which is what the old
+    // fixed-target-calendar-index method would have produced by comparing
+    // target-aligned day 29 (value 28, forward-filled) against
+    // target-aligned day 9 (value 9, exact) = (28-9)*100 = 1900.
+    expect(raw.s3raw[29]).toBeCloseTo(2000, 10);
   });
 });

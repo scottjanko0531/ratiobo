@@ -258,7 +258,7 @@ Deno.serve(async (req: Request) => {
     // (trendBand) vary, and both are O(1) per day, so scoreTrendAtIndex/
     // resolveTrendState stay inside the per-variant loop cheaply.
     const trendRaw = computeTrendRawSeries(closes, dates, MC_CONFIG);
-    const stressRaw = computeStressRawSeries(closes, vix, vix3m, creditSpread);
+    const stressRaw = computeStressRawSeries(closes, vix, vix3m, creditSpread, dates, baa10yRows, MAX_CARRY_DAYS);
     const stressPillarScore: (number | null)[] = new Array(n).fill(null);
     for (let t = 0; t < n; t++) stressPillarScore[t] = scoreStressAtIndex(stressRaw, t, MC_CONFIG).pillarScore;
 

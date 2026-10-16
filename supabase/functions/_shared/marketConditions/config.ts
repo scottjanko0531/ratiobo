@@ -102,7 +102,7 @@ export const MC_CONFIG = {
   // round (see DECISIONS.md); tier logic itself is otherwise UNCHANGED
   // this round unless the ablation's own pre-registered rule said
   // otherwise.
-  version: "mc-1.4.0",
+  version: "mc-1.4.1",
 
   normWindow: 2520, // ~10y trading days, rolling percentile cap
   minHistory: 756, // ~3y trading days, minimum before a percentile indicator counts
@@ -150,6 +150,16 @@ export const MC_CONFIG = {
   // exposure -- a separate mechanism from the entry-signal E-VETO rule
   // removed this round) is itself pulling its weight. See DECISIONS.md for
   // the ablation result and the pre-registered keep/remove rule.
+  //
+  // creditWideningBp (mc-1.4.1 note, not a value change): this threshold is
+  // compared against S3's raw value, which as of mc-1.4.1 is computed on
+  // BAA10Y's own native print sequence rather than a forward-filled-then-
+  // differenced array (indicators/stress.ts) -- the fix changes S3's value
+  // on the handful of historical dates a SIFMA bond-market holiday fell on
+  // one edge of its 20-observation window, which can shift exactly when
+  // this veto (and the recovery fast-path's own baa10yChangeMaxBp check,
+  // below) fires on those specific dates. Still an unvalidated Phase-5
+  // placeholder regardless.
   veto: { termStructure: 1.05, termStructureDays: 2, creditWideningBp: 45, clearDays: 5, disabled: false }, // creditWideningBp: placeholder pending Phase 5 recalibration for BAA10Y
 
   // ALL PLACEHOLDER VALUES, none backtested -- see DECISIONS.md, Phase 5.
@@ -183,6 +193,21 @@ export const MC_CONFIG = {
     hotRsi: 75, hotStretch: 2.0,
   },
 } as const;
+
+// mc-1.4.1 (2026-10-16): fixed S3 (BAA10Y 20-day change) to compute its
+// window on BAA10Y's own native print sequence, forward-filling the
+// already-computed result onto the target calendar, instead of forward-
+// filling BAA10Y first and differencing the aligned array at fixed target-
+// calendar indices -- the old method silently shortened or widened the
+// window to 19 or 21 real observations whenever a SIFMA bond-market
+// holiday (Columbus Day, Veterans Day) fell on one edge, since SPY trades
+// through both but BAA10Y never publishes on either. No threshold/weight
+// value above changed; this is a pure correctness fix to how S3's raw
+// input is assembled (indicators/stress.ts), version-bumped per this
+// file's own stated rule ("bump version whenever any value below
+// changes") treated here as "whenever a scored indicator's OUTPUT can
+// change for the same historical inputs," which this does. See
+// DECISIONS.md for the full before/after and every call site updated.
 
 // Tier ordering, best (FULL, index 0) to worst (RISK_OFF, index 4). Every
 // hysteresis/cap/veto operation in scoring.ts works on this index, not the

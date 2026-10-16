@@ -50,10 +50,17 @@
 // when vetoActive) is a separate mechanism, unaffected. cfg.veto.disabled
 // (default false) is a diagnostic-only ablation hook, not a real feature —
 // see stepTierState.
+//
+// mc-1.4.1: ComputeInputs gained `baa10yRows`/`maxCarryDays`, threaded
+// straight through to computeStressRawSeries -- see indicators/stress.ts's
+// header comment for the S3 calendar-alignment fix this enables. No logic
+// in this file changed; every caller of computeMarketConditionsHistory
+// needed updating to supply the two new fields (see DECISIONS.md for the
+// full list).
 
 import { PillarName, TrendState, HysteresisState, DayScoreRow, TierName } from "./types.ts";
 import { MC_CONFIG, TIER_ORDER, NORMAL_IDX, CAUTIOUS_IDX, DEFENSIVE_IDX, tierForComposite } from "./config.ts";
-import { clip } from "./normalize.ts";
+import { clip, SeriesRowWithPublish } from "./normalize.ts";
 import { computeTrendRawSeries, scoreTrendAtIndex, resolveTrendState } from "./indicators/trend.ts";
 import { computeStressRawSeries, scoreStressAtIndex, vetoConditionsAtIndex } from "./indicators/stress.ts";
 import { computeOscillatorRawSeries } from "./indicators/oscillators.ts";
@@ -65,6 +72,14 @@ export interface ComputeInputs {
   vix: (number | null)[]; // VIXCLS, aligned to `dates`
   vix3m: (number | null)[]; // ^VIX3M, aligned to `dates`
   creditSpread: (number | null)[]; // BAA10Y (mc-1.1.0+; was BAMLH0A0HYM2), aligned to `dates`
+  // mc-1.4.1: BAA10Y's OWN native (unaligned) rows, ascending by date, plus
+  // the same forward-fill cap every caller already uses to build
+  // `creditSpread` above -- threaded through to computeStressRawSeries so
+  // S3 (BAA10Y 20d change) can be computed on BAA10Y's own print sequence
+  // instead of differencing the aligned `creditSpread` array at fixed
+  // `dates`-indices (see indicators/stress.ts's header comment for why).
+  baa10yRows: SeriesRowWithPublish[];
+  maxCarryDays: number;
   // mc-1.4.0 breadth round: OPTIONAL, aligned to `dates`. Omitted by
   // market-conditions-compute (the live/production caller) -- production
   // scoring stays trend+stress only, unaffected by this round, per
@@ -213,7 +228,7 @@ export function stepTierState(inp: TierStepInput, prior: HysteresisState, cfg = 
 export function computeMarketConditionsHistory(inp: ComputeInputs, cfg = MC_CONFIG): DayScoreRow[] {
   const n = inp.dates.length;
   const trendRaw = computeTrendRawSeries(inp.closes, inp.dates, cfg);
-  const stressRaw = computeStressRawSeries(inp.closes, inp.vix, inp.vix3m, inp.creditSpread);
+  const stressRaw = computeStressRawSeries(inp.closes, inp.vix, inp.vix3m, inp.creditSpread, inp.dates, inp.baa10yRows, inp.maxCarryDays);
   const oscRaw = computeOscillatorRawSeries(inp.closes);
 
   const rows: DayScoreRow[] = [];

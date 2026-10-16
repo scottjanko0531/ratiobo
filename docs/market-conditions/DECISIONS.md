@@ -1,5 +1,83 @@
 # Market Conditions Overlay — decisions log
 
+## mc-1.4.1: S3 (BAA10Y 20-day change) now anchored to BAA10Y's own publish dates, not the target calendar (2026-10-16)
+
+**Reported by the user**, reviewing S3's percentile/score math directly:
+forward-fill quietly shortens (or widens) S3's window whenever BAA10Y's own
+calendar diverges from the target series' (SPY's) calendar on either edge of
+the 20-step lookback — pairing a forward-filled "today" with the actual
+print 20 target-calendar days back makes it an effectively-19-day (or
+21-day) change, not a true 20-observation change.
+
+### Root cause, confirmed
+
+The old code aligned BAA10Y onto SPY's calendar first (`alignWithForwardFill`)
+and then differenced that *already-aligned* array at fixed indices:
+`s3raw[t] = (creditSpread[t] - creditSpread[t-20]) * 100`. Whenever a SIFMA
+bond-market-only holiday falls on either edge of that 20-index window — SPY
+trades through Columbus Day and Veterans Day, but BAA10Y never publishes on
+either (confirmed directly against `mc_series_daily`, 2023–2026, zero BAA10Y
+prints on either holiday every year) — the forward-fill silently shifts
+which *real* BAA10Y print lands at `t` or `t-20`, so the effective window
+spans 19 or 21 real observations instead of 20.
+
+**Concrete example, 2025-10-13 (Columbus Day)**: SPY's own `t-20` lands on
+9/15 (BAA10Y 1.68%, exact match, no forward-fill involved there). But 10/13
+itself has no BAA10Y print and was forward-filled from 10/10 (1.72%). Old
+(buggy) `s3raw` = (1.72 − 1.68) × 100 = **4.00bp**. BAA10Y's own 20th print
+back from its last real print (10/10) lands on 9/12 (1.70%, since BAA10Y has
+zero gaps between 9/10 and 10/10) — correct `s3raw` = (1.72 − 1.70) × 100 =
+**2.00bp**, exactly half the old value.
+
+Checked whether S6 (VIXCLS 20-day change, the only other change-type stress
+indicator) has the same issue: **no** — VIXCLS has zero calendar mismatches
+against SPY, 2023–present. S6 was deliberately left on the old fixed-index
+method; only S3 needed this fix.
+
+### Fix
+
+`indicators/stress.ts`'s `computeStressRawSeries` now takes the native
+(unaligned) BAA10Y rows plus `maxCarryDays` directly. It first builds a
+per-native-print S3 series — each BAA10Y publish date `i` diffed against
+publish date `i-20` on BAA10Y's own sequence — then forward-fills that
+*already-computed* S3 series onto the target calendar with the same
+`alignWithForwardFill` used everywhere else, rather than forward-filling the
+raw level and differencing at fixed target-calendar indices. `creditSpread`
+(S2's level reading) is unchanged.
+
+**Version bump**: `mc-1.4.0` → `mc-1.4.1`. No threshold or weight changed —
+bumped per `config.ts`'s own stated rule ("bump whenever any value below
+changes"), read here as "whenever a scored indicator's output can change for
+the same historical inputs."
+
+**Call sites updated** (every real caller of `computeStressRawSeries` /
+`computeMarketConditionsHistory`, found via exhaustive repo search): the
+`ComputeInputs` interface and its one call in `scoring.ts`; the six
+functions that already had `baa10yRows` in scope (fetched before
+`alignWithForwardFill` was applied) and needed only `baa10yRows,
+maxCarryDays: MAX_CARRY_DAYS` threaded through —
+`market-conditions-compute` (production, nightly pg_cron), `market-
+conditions-crossmarket`, `market-conditions-entrysignal-validation`,
+`market-conditions-sensitivity` (the one direct `computeStressRawSeries`
+caller, not via `computeMarketConditionsHistory`), `market-conditions-veto-
+ablation`, `market-conditions-breadth-backtest`; and both
+`tests/marketConditionsStress.test.ts` (20 call sites updated, plus one new
+test proving the fix against a synthetic Columbus-Day-shaped gap) and
+`tests/marketConditionsScoring.test.ts` (3 `ComputeInputs` literals, given
+`baa10yRows: []` since this file's `creditSpread` is always synthetic
+nulls). Confirmed NOT callers: `_shared/bondLens/scoring.ts` and
+`indicators/breadth.ts` (comment mentions only); `market-conditions-backtest-
+preliminary` and `market-conditions-robustness` (read pre-computed tables,
+never recompute).
+
+**Verified live**: redeployed `market-conditions-compute` and invoked it —
+full historical recompute, 8,296 rows, 1993-10-29 through present. Re-queried
+`market_conditions_scores` for every known SIFMA-holiday date on BAA10Y's
+side: S3 raw changed exactly as predicted (2025-10-13: 4.00bp → 2.00bp;
+2024-10-14: unchanged sign, now −18.00bp; 2024-11-11: −16.00bp; 2025-11-11:
+1.00bp; 2023-10-09: 5.00bp), all now stamped `config_version: mc-1.4.1`. Full
+vitest suite: 26 files, 429/429 passing, no regressions.
+
 ## MOVE index pre-registered keep-or-drop test (Stress pillar S7/S8), DROP (2026-10-08)
 
 Tested whether adding MOVE-index-derived sub-indicators to the Stress

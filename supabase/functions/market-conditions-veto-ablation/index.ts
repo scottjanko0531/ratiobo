@@ -148,7 +148,7 @@ Deno.serve(async (req: Request) => {
     const creditSpread = baa10yFF.map((r) => r.value);
 
     const cfg = vetoOff ? { ...MC_CONFIG, veto: { ...MC_CONFIG.veto, disabled: true } } : MC_CONFIG;
-    const rows = computeMarketConditionsHistory({ dates, closes, vix, vix3m, creditSpread }, cfg);
+    const rows = computeMarketConditionsHistory({ dates, closes, vix, vix3m, creditSpread, baa10yRows, maxCarryDays: MAX_CARRY_DAYS }, cfg);
     const expByDate = new Map(rows.map((r) => [r.date, r.exposureMultiplier]));
 
     const dtb3ByDate = new Map(dtb3Rows.map((r) => [r.date, r.value]));

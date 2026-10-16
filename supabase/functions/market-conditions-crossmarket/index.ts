@@ -175,7 +175,7 @@ Deno.serve(async (req: Request) => {
       const vix3m = vix3mFF.map((r) => r.value);
       const creditSpread = baa10yFF.map((r) => r.value);
 
-      const rows = computeMarketConditionsHistory({ dates, closes, vix, vix3m, creditSpread }, MC_CONFIG);
+      const rows = computeMarketConditionsHistory({ dates, closes, vix, vix3m, creditSpread, baa10yRows, maxCarryDays: MAX_CARRY_DAYS }, MC_CONFIG);
       const expByDate = new Map(rows.map((r) => [r.date, r.exposureMultiplier]));
 
       const sma200: (number | null)[] = dates.map((_, t) => sma(closes, t, 200));

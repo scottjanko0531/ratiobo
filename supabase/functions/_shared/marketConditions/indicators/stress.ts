@@ -23,9 +23,27 @@
 // before 2006-07-17, so the fast-path's term-structure leg substitutes
 // "VIXCLS below its own 50d average and falling" — s6raw < 0 covers the
 // "falling" half, vixSma50 covers the "below its average" half).
+//
+// mc-1.4.1 (2026-10-16): S3 fixed to compute its 20-observation change on
+// BAA10Y's OWN native print sequence, then forward-fill that already-
+// computed per-print value onto the target calendar -- not (as before)
+// forward-fill BAA10Y first and difference the aligned array at fixed
+// target-calendar indices. The old approach silently shortened or widened
+// the window to 19 or 21 real BAA10Y observations whenever a SIFMA
+// bond-market holiday (Columbus Day, Veterans Day -- confirmed empirically:
+// SPY trades both days every year, BAA10Y never publishes on either) fell
+// on one edge of the window; e.g. 2025-10-13 (Columbus Day) read as a 4bp
+// change under the old method vs. the correct 2bp on BAA10Y's own calendar.
+// S6 (VIXCLS 20-day change) is NOT given the same treatment: VIXCLS's own
+// publish calendar matches SPY's exactly (checked directly, 2023-present,
+// zero mismatched trading days other than the ordinary same-day-not-yet-
+// published lag every daily series already has), so there is no calendar
+// gap for a native-sequence computation to correct there. See
+// docs/market-conditions/DECISIONS.md for the full before/after and the
+// list of every call site updated for this signature change.
 
 import { SubIndicatorResult } from "../types.ts";
-import { percentileRank, percentileToScore, collectPriorNonNull, stdevPop, clip } from "../normalize.ts";
+import { percentileRank, percentileToScore, collectPriorNonNull, stdevPop, clip, alignWithForwardFill, SeriesRowWithPublish } from "../normalize.ts";
 import { MC_CONFIG } from "../config.ts";
 
 export interface StressRawSeries {
@@ -40,6 +58,7 @@ export interface StressRawSeries {
 
 export function computeStressRawSeries(
   closes: number[], vix: (number | null)[], vix3m: (number | null)[], creditSpread: (number | null)[],
+  dates: string[], baa10yNativeRows: SeriesRowWithPublish[], maxCarryDays: number,
 ): StressRawSeries {
   const n = closes.length;
   const s1raw: (number | null)[] = new Array(n).fill(null);
@@ -54,6 +73,30 @@ export function computeStressRawSeries(
   for (let i = 1; i < n; i++) {
     if (closes[i] > 0 && closes[i - 1] > 0) logRet[i] = Math.log(closes[i] / closes[i - 1]);
   }
+
+  // S3: 20-observation change on BAA10Y's OWN native print sequence (its
+  // own calendar, ascending, ASSUMED SORTED BY THE CALLER -- every existing
+  // fetchAllSeries(...).order("date", {ascending: true}) call site already
+  // guarantees this), not the target-calendar-aligned `creditSpread` array
+  // above. Each native print i is diffed against native print i-20 (20
+  // REAL BAA10Y observations apart, regardless of how many target-calendar
+  // trading days that spans), producing one {date, published_at, value}
+  // triple per BAA10Y print date; that already-computed series is then
+  // forward-filled onto the target calendar exactly like any other input
+  // series -- see file header (mc-1.4.1) for why this differs from simply
+  // differencing the aligned `creditSpread` array at fixed indices.
+  const s3Native: SeriesRowWithPublish[] = [];
+  for (let i = 20; i < baa10yNativeRows.length; i++) {
+    s3Native.push({
+      date: baa10yNativeRows[i].date,
+      published_at: baa10yNativeRows[i].published_at,
+      // Stored in percentage points (FRED units: "Percent"). A 20-print
+      // change of 0.01pp = 1bp, so *100 converts to bp -- matches
+      // config.veto.creditWideningBp's own bp units directly.
+      value: (baa10yNativeRows[i].value - baa10yNativeRows[i - 20].value) * 100,
+    });
+  }
+  const s3Aligned = alignWithForwardFill(dates, s3Native, maxCarryDays);
 
   // vix is a plain array here (not "with nulls filtered"), so sma()'s
   // index-arithmetic needs a null-tolerant read -- vix may contain nulls
@@ -71,12 +114,7 @@ export function computeStressRawSeries(
   for (let t = 0; t < n; t++) {
     if (vix[t] != null && vix3m[t] != null && vix3m[t] !== 0) s1raw[t] = vix[t]! / vix3m[t]!;
     if (creditSpread[t] != null) s2raw[t] = creditSpread[t];
-    // Stored in percentage points (FRED units: "Percent"). A 20-day change
-    // of 0.01pp = 1bp, so *100 converts to bp -- matches
-    // config.veto.creditWideningBp's own bp units directly.
-    if (t - 20 >= 0 && creditSpread[t] != null && creditSpread[t - 20] != null) {
-      s3raw[t] = (creditSpread[t]! - creditSpread[t - 20]!) * 100;
-    }
+    s3raw[t] = s3Aligned[t].value;
     if (t - 19 >= 0) {
       const window: number[] = [];
       for (let i = t - 19; i <= t; i++) { const r = logRet[i]; if (r != null) window.push(r); }

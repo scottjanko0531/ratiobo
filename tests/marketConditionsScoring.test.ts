@@ -314,6 +314,7 @@ describe("computeMarketConditionsHistory — integration", () => {
     const rows = computeMarketConditionsHistory({
       dates, closes,
       vix: new Array(n).fill(null), vix3m: new Array(n).fill(null), creditSpread: new Array(n).fill(null),
+      baa10yRows: [], maxCarryDays: 3,
     }, MC_CONFIG);
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0].scoreBreadth).toBeNull();
@@ -324,7 +325,7 @@ describe("computeMarketConditionsHistory — integration", () => {
     const n = 300;
     const dates = makeDates(n);
     const closes = Array.from({ length: n }, (_, i) => 100 + Math.sin(i / 7) * 3 + i * 0.1);
-    const inputs = { dates, closes, vix: new Array(n).fill(null), vix3m: new Array(n).fill(null), creditSpread: new Array(n).fill(null) };
+    const inputs = { dates, closes, vix: new Array(n).fill(null), vix3m: new Array(n).fill(null), creditSpread: new Array(n).fill(null), baa10yRows: [], maxCarryDays: 3 };
     const rows1 = computeMarketConditionsHistory(inputs, MC_CONFIG);
     const rows2 = computeMarketConditionsHistory(inputs, MC_CONFIG);
     expect(rows1).toEqual(rows2);
@@ -334,7 +335,7 @@ describe("computeMarketConditionsHistory — integration", () => {
     const n = 300;
     const dates = makeDates(n);
     const closes = Array.from({ length: n }, (_, i) => 100 + Math.sin(i / 7) * 3 + i * 0.1);
-    const baseInputs = { dates, closes, vix: new Array(n).fill(null), vix3m: new Array(n).fill(null), creditSpread: new Array(n).fill(null) };
+    const baseInputs = { dates, closes, vix: new Array(n).fill(null), vix3m: new Array(n).fill(null), creditSpread: new Array(n).fill(null), baa10yRows: [], maxCarryDays: 3 };
 
     it("omitted (market-conditions-compute's own call shape): identical output to a run that never had the field at all", () => {
       const withUndefinedField = computeMarketConditionsHistory({ ...baseInputs, breadthScore: undefined }, MC_CONFIG);

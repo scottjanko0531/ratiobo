@@ -213,7 +213,7 @@ Deno.serve(async (req: Request) => {
       breadthScore = breadthFF.map((r) => r.value);
     }
 
-    const rows = computeMarketConditionsHistory({ dates, closes, vix, vix3m, creditSpread, breadthScore }, MC_CONFIG);
+    const rows = computeMarketConditionsHistory({ dates, closes, vix, vix3m, creditSpread, breadthScore, baa10yRows, maxCarryDays: MAX_CARRY_DAYS }, MC_CONFIG);
     const expByDate = new Map(rows.map((r) => [r.date, r.exposureMultiplier]));
     const tierByDate = new Map(rows.map((r) => [r.date, r.tier]));
 

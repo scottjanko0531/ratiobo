@@ -164,7 +164,7 @@ Deno.serve(async (req: Request) => {
     const creditSpread = baa10yFF.map((r) => r.value);
 
     // NO breadthScore -- rejected this round, mc-1.3.0 stays trend+stress.
-    const rows = computeMarketConditionsHistory({ dates, closes, vix, vix3m, creditSpread }, MC_CONFIG);
+    const rows = computeMarketConditionsHistory({ dates, closes, vix, vix3m, creditSpread, baa10yRows, maxCarryDays: MAX_CARRY_DAYS }, MC_CONFIG);
 
     const dateToIdx = new Map(dates.map((d, i) => [d, i]));
     const startDate = MARKET_START[market];
