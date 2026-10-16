@@ -1794,7 +1794,7 @@ function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime, current
               </p>
               <p className="text-[10px] text-paper-dim max-w-[220px]">{rightDesc}</p>
             </div>
-            {panel.forwardKey && (
+            {panel.forwardKey ? (
               <div className="ml-auto text-right">
                 <p className="text-[10px] text-paper-dim mb-0.5">Signal strength (Combined)</p>
                 <p className="num text-sm">{panel.confidence}%</p>
@@ -1822,6 +1822,22 @@ function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime, current
                     debt cycle {panel.structMod > 0 ? "confirms" : "contradicts"} ({panel.structMod > 0 ? "+" : ""}{panel.structMod})
                   </p>
                 )}
+              </div>
+            ) : (
+              // No forwardKey means no combined quadrant was scored -- either
+              // both axes sit in Persistence (bothPersistent above) or one
+              // axis is directional and the other is Persistence (the
+              // "leans (provisional)" case). Averaging a resolved leg's
+              // confidence with an unresolved one would produce exactly the
+              // misleadingly-precise single number the dead-band-persistence
+              // spec was built to avoid (see gConf/iConf comment above) --
+              // this makes that explicit instead of silently rendering
+              // nothing, which read as ambiguous (missing vs. 100% certain).
+              <div className="ml-auto text-right max-w-[150px]">
+                <p className="text-[10px] text-paper-dim mb-0.5">Signal strength (Combined)</p>
+                <p className="text-[10px] text-brass-soft/80 leading-snug">
+                  Not scored — {bothPersistent ? "both axes" : panel.growthPersistence ? "Growth" : "Inflation"} in Persistence
+                </p>
               </div>
             )}
           </div>
