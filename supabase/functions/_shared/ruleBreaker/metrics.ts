@@ -53,17 +53,28 @@ export function grossProfitOverAssets(raw: RbFundamentalsRaw): number | null {
   return safeDiv(gp[0], assets[0]);
 }
 
+// Confirmed bug fix: must also null-check gp[0]/gp[1] explicitly -- `null`
+// coerces to `0` in division, so without this a company with no gross-profit
+// tracking at all (gp=[null,null], e.g. ANAB/RKT/NU) silently computed a
+// fake 0 ("no change") instead of the real null, which also polluted this
+// metric's cross-sectional universe for every other symbol.
 export function grossMarginChange(raw: RbFundamentalsRaw): number | null {
   const gp = raw.gp, rev = raw.rev;
-  if (!gp || !rev || rev[0] == null || rev[1] == null || rev[0] === 0 || rev[1] === 0) return null;
+  if (!gp || !rev || gp[0] == null || gp[1] == null || rev[0] == null || rev[1] == null || rev[0] === 0 || rev[1] === 0) {
+    return null;
+  }
   const marginNow = gp[0] / rev[0];
   const marginPrior = gp[1] / rev[1];
   return marginNow - marginPrior;
 }
 
+// Non-positive gross profit makes the ratio's sign meaningless, so it nulls
+// out rather than reporting a negative value -- confirmed via VELO
+// (gp[0]=-7404000, rd=10653000, would otherwise compute -1.44, but the real
+// driver is null).
 export function rdOverGrossProfit(raw: RbFundamentalsRaw): number | null {
   const gp = raw.gp;
-  if (!gp) return null;
+  if (!gp || gp[0] == null || gp[0] <= 0) return null;
   return safeDiv(raw.rd, gp[0]);
 }
 
@@ -106,14 +117,18 @@ export function institutionalOwnership(raw: RbFundamentalsRaw): number | null {
 // foreign-currency symbols in the baseline (TSM/TWD, TBBB/MXN, ONON/CHF,
 // TOITF/EUR, NTDOY/JPY, BNTX/EUR); for a USD-denominated symbol fxToUsd=1
 // so this is a no-op.
+// A missing debt or cash figure is treated as 0, not as invalidating the
+// whole ratio -- confirmed exact across 6 real cases where only one of the
+// two was null (NU: cash=null; NTDOY/AX/RKT/UPST/LULU: debt=null; e.g. NU's
+// ev=mcapUsd+debt-0 reproduces its real EV/sales exactly).
 export function evOverSales(raw: RbFundamentalsRaw, mcapUsd: number | null, fxToUsd: number | null): number | null {
   const rev = raw.rev;
-  if (!rev || rev[0] == null || rev[0] === 0 || mcapUsd == null || raw.debt == null || raw.cash == null || fxToUsd == null) {
+  if (!rev || rev[0] == null || rev[0] === 0 || mcapUsd == null || fxToUsd == null) {
     return null;
   }
   const revUsd = rev[0] * fxToUsd;
-  const debtUsd = raw.debt * fxToUsd;
-  const cashUsd = raw.cash * fxToUsd;
+  const debtUsd = (raw.debt ?? 0) * fxToUsd;
+  const cashUsd = (raw.cash ?? 0) * fxToUsd;
   const ev = mcapUsd + debtUsd - cashUsd;
   return ev / revUsd;
 }
@@ -172,33 +187,43 @@ export function leverage(raw: RbFundamentalsRaw): number | null {
   return assets[0] / eq;
 }
 
-// Most negative single-quarter operating-income drop, normalized by
-// assets and sign-flipped so a real drop reads as a positive number,
-// floored at 0 when there's no real drop at all (every quarter-over-
-// quarter diff non-negative) -- confirmed clean across 18 no-drop baseline
-// cases (e.g. NVDA, TSM: minDiff is a large positive number, i.e. pure
-// growth every quarter, and the driver value is exactly 0, not a negative
-// number representing "best case").
+// Sum of every quarter-over-quarter DECLINE's magnitude across the qoi
+// sequence (not just the single worst drop, and not a running-peak
+// drawdown) -- confirmed exact across 119/155 real baseline cases,
+// including every case with more than one separate down-move (e.g. PANW's
+// two dips: 497.2M->309M and 397M->-183M sum to a combined 768.2M drop,
+// not just the larger of the two). A single-max-drawdown formula was tried
+// first and matches whenever there's exactly one contiguous declining
+// region (e.g. SPCX, ARM, NET, CRWD) but understates real cases with
+// multiple separate dips (PANW, TEAM, NBIS, FIGS, and ~30 others).
 //
-// KNOWN GAP: for the ~8 of 155 baseline symbols that DO have a real drop
-// (CRWD, NET, PANW, ABNB, GH, AXON, IOT, SPCX), this formula's sign and
-// floor behavior are right but the MAGNITUDE is consistently off by
-// 10-40% (e.g. CRWD: this formula gives 0.0040, real value is 0.0042).
-// `assets[0]` alone and `mean(assets[0], assets[1])` were both tried as
-// the denominator and neither reproduces the real value exactly for any
-// of these 8 -- the real denominator is something else not yet
-// identified. Left as an open item for scripts/rb-calibrate.ts rather
-// than guessed further.
-export function operatingIncomeDrop(raw: RbFundamentalsRaw): number | null {
-  const qoi = raw.qoi, assets = raw.assets;
-  if (!qoi || qoi.length < 2 || !assets || assets[0] == null || assets[0] === 0) return null;
-  let minDiff = Infinity;
-  for (let i = 1; i < qoi.length; i++) {
-    const diff = qoi[i] - qoi[i - 1];
-    if (diff < minDiff) minDiff = diff;
+// When qoi itself is empty (confirmed real cases: NU, RKT, AX, UPST), the
+// real formula falls back to qni (quarterly net income) as the series
+// instead -- confirmed exact on all 4 (e.g. NU's qni dips 892.38M->872.06M,
+// a 20.32M decline / assets[0]=74894000000 = 0.0002713..., matching the
+// real driver exactly).
+//
+// KNOWN GAP: 36/155 real-world cases with a non-empty qoi still don't
+// match exactly, and in every one the *required* total decline exceeds
+// what's even possible to sum from this export's 5 quarters of qoi -- i.e.
+// the real calculation draws on more quarterly history than this dataset
+// captured (same documented gap as `growthAcceleration`'s "only 5 of the
+// needed quarters" limitation), not a formula error.
+function sumOfDeclines(series: number[]): number {
+  let totalDecline = 0;
+  for (let i = 1; i < series.length; i++) {
+    const decline = series[i - 1] - series[i];
+    if (decline > 0) totalDecline += decline;
   }
-  if (!Number.isFinite(minDiff)) return null;
-  return Math.max(0, -minDiff / assets[0]);
+  return totalDecline;
+}
+
+export function operatingIncomeDrop(raw: RbFundamentalsRaw): number | null {
+  const assets = raw.assets;
+  if (!assets || assets[0] == null || assets[0] === 0) return null;
+  const series = raw.qoi && raw.qoi.length >= 2 ? raw.qoi : raw.qni;
+  if (!series || series.length < 2) return null;
+  return sumOfDeclines(series) / assets[0];
 }
 
 export function priceVolatility1y(raw: RbFundamentalsRaw): number | null {
@@ -213,14 +238,22 @@ export function operatingCashFlowOverSales(raw: RbFundamentalsRaw): number | nul
   return safeDiv(cfo[0], rev[0]);
 }
 
+// A missing stock-comp figure is treated as 0, not as invalidating the
+// ratio -- confirmed exact on TOITF/NTDOY (both sbc=null): e.g. TOITF's
+// 412680000/1552300000 (sbc treated as 0) matches the real driver exactly.
 export function cashFlowAfterStockPayOverSales(raw: RbFundamentalsRaw): number | null {
   const cfo = raw.cfo, rev = raw.rev;
-  if (!cfo || !rev || raw.sbc == null) return null;
-  return safeDiv(cfo[0] - raw.sbc, rev[0]);
+  if (!cfo || !rev) return null;
+  return safeDiv(cfo[0] - (raw.sbc ?? 0), rev[0]);
 }
 
+// Non-positive invested capital makes the ratio's sign meaningless, same
+// pattern as leverage/rdOverGrossProfit's own invalid-denominator guards --
+// confirmed via CBRS (ic=-578660000, would otherwise compute a positive
+// 87th-percentile-looking ROIC from two negatives, but the real driver is
+// null).
 export function returnOnInvestedCapital(raw: RbFundamentalsRaw): number | null {
-  if (raw.ebit == null || raw.tax == null) return null;
+  if (raw.ebit == null || raw.tax == null || raw.ic == null || raw.ic <= 0) return null;
   return safeDiv(raw.ebit * (1 - raw.tax), raw.ic);
 }
 
@@ -228,10 +261,12 @@ export function returnOnInvestedCapital(raw: RbFundamentalsRaw): number | null {
 
 // Confirmed formula uses the SAME cash-after-stock-pay figure as `prof`
 // above, not a naive (ni-cfo)/assets -- (ni - (cfo[0]-sbc)) / assets[0].
+// Same missing-sbc-treated-as-0 convention as cashFlowAfterStockPayOverSales
+// above -- confirmed exact on TOITF/NTDOY.
 export function accruals(raw: RbFundamentalsRaw): number | null {
   const cfo = raw.cfo, assets = raw.assets;
-  if (!cfo || !assets || assets[0] == null || assets[0] === 0 || raw.ni == null || raw.sbc == null) return null;
-  const cashFlowAfterStockPay = cfo[0] - raw.sbc;
+  if (!cfo || !assets || assets[0] == null || assets[0] === 0 || raw.ni == null) return null;
+  const cashFlowAfterStockPay = cfo[0] - (raw.sbc ?? 0);
   return (raw.ni - cashFlowAfterStockPay) / assets[0];
 }
 

@@ -1,10 +1,19 @@
 // Rule Breaker Screener — top-level orchestrator. Wires metrics.ts's raw
 // formulas through crossSectionalRank.ts into pillars.ts/classify.ts/
-// vwap.ts to produce one symbol's full ComputedRbScore. Will throw for
-// every real symbol until scripts/rb-calibrate.ts resolves pillars.ts's
-// NotCalibratedError stubs (c2-c6, safety, quality, risk_type) -- that's
-// expected at this stage; this file's job is correct wiring, not papering
-// over what's still unsolved.
+// vwap.ts to produce every symbol's full ComputedRbScore for one date.
+//
+// `safety` and `quality` are each a SECOND-ORDER cross-sectional
+// percentile (first average some percentiles into a raw score, then rank
+// THAT raw score again across the whole universe -- see pillars.ts's
+// header comment), so this can't be a simple per-symbol function the way
+// metrics.ts's formulas are: it genuinely needs two sequential
+// universe-wide passes (one to collect every symbol's safetyRaw before
+// any symbol's safetyPct is knowable, a second to collect every symbol's
+// qraw -- which itself depends on safetyPct -- before any symbol's
+// quality is knowable). `computeUniverseScores` below is that multi-pass
+// orchestration; there is no single-symbol equivalent exposed, because
+// there isn't a single-symbol answer for safety/quality until the whole
+// universe has been seen once.
 
 import { RB_CONFIG } from "./config.ts";
 import * as metrics from "./metrics.ts";
@@ -12,7 +21,15 @@ import { crossSectionalPercentile } from "./crossSectionalRank.ts";
 import * as pillars from "./pillars.ts";
 import { computeScreen, computeQgroup, computeWeakPillar, computeRiskType } from "./classify.ts";
 import { computeVwapZ, computeVwapState, computeAction } from "./vwap.ts";
-import type { ComputedRbScore, DriverEntry, Drivers, RbFundamentalsRaw, RbWeeklyBarInput, RbFoolInput } from "./types.ts";
+import type {
+  ComputedRbScore,
+  DriverEntry,
+  Drivers,
+  RbFundamentalsRaw,
+  RbWeeklyBarInput,
+  RbFoolInput,
+  RbRatingInput,
+} from "./types.ts";
 
 export interface UniverseMember {
   symbol: string;
@@ -158,93 +175,178 @@ export function buildDrivers(
   };
 }
 
-export interface ComputeRbScoreInput {
+export interface SymbolScoreInput {
   symbol: string;
   date: string;
   raw: RbFundamentalsRaw;
   mcapUsd: number | null;
   fxToUsd: number | null;
-  metricUniverse: MetricUniverse;
-  compositeUniverse: number[]; // every symbol's composite for this date, including this one, in a fixed/stable order
-  compositeUniverseIndex: number; // this symbol's own position within compositeUniverse (needed for descendingRank's tie-break -- see crossSectionalRank.ts)
-  currentBar: RbWeeklyBarInput;
-  priorBar: RbWeeklyBarInput | null;
+  // Ascending by week_start, the LAST element is the current/latest week.
+  // Needs at least 8 weeks (computeVwapState's `won` backward scan).
+  weeklyBars: RbWeeklyBarInput[];
   fool: RbFoolInput | null;
+  rating: RbRatingInput | null;
   owned: boolean;
   priorWeekScore: number | null;
 }
 
-export function computeRbScore(input: ComputeRbScoreInput): ComputedRbScore {
-  const drivers = buildDrivers(input.raw, input.mcapUsd, input.fxToUsd, input.metricUniverse);
+interface StageA {
+  input: SymbolScoreInput;
+  drivers: Drivers;
+  c1: number | null;
+  c2: number | null;
+  c3: number | null;
+  c4: number | null;
+  c5: number | null;
+  c6: number | null;
+  composite: number | null;
+  safetyRaw: number | null;
+  profNum: number | null;
+  cashNum: number | null;
+  trendNum: number | null;
+}
 
-  const c1 = pillars.computeC1(drivers.c1);
-  const c2 = pillars.computeC2(drivers.c2);
-  const c3 = pillars.computeC3(drivers.c3);
-  const c4 = pillars.computeC4(drivers.c4);
-  const c5 = pillars.computeC5();
-  const c6 = pillars.computeC6(drivers.c6);
-  const safety = pillars.computeSafety(drivers.safety);
-  const quality = pillars.computeQuality();
+// Computes every symbol's full score for one date. Must be called with
+// EVERY symbol that should share a ranking universe that date -- a subset
+// would silently rank against the wrong population (see pillars.ts's
+// header comment on why safety/quality specifically need a full universe
+// pass, not just composite/score/rank).
+export function computeUniverseScores(members: SymbolScoreInput[]): ComputedRbScore[] {
+  const metricUniverse = buildMetricUniverse(
+    members.map((m) => ({ symbol: m.symbol, raw: m.raw, mcapUsd: m.mcapUsd, fxToUsd: m.fxToUsd })),
+  );
 
-  if (c1 == null) throw new Error(`computeRbScore(${input.symbol}): c1 is null -- insufficient driver data`);
-  const composite = pillars.computeComposite(c1, c2, c3, c4, c5, c6);
-  const score = pillars.computeScore(composite, input.compositeUniverse);
-  const rank = pillars.computeRank(input.compositeUniverse, input.compositeUniverseIndex);
-  const met = [c1, c2, c3, c4, c5, c6].filter((v) => v >= 50).length; // TODO(rb-calibrate): confirm "met" = count of pillars >= 50, not yet verified against baseline
-
-  const screen = computeScreen(met, score);
-  const qgroup = computeQgroup(met, quality);
-  const weakPillar = computeWeakPillar({
-    cashDrivers: drivers.cash,
-    trendDrivers: drivers.trend,
-    profDrivers: drivers.prof,
-    safety,
+  // ── Stage A: everything computable without a universe-wide pass beyond metricUniverse ──
+  const stageA: StageA[] = members.map((input) => {
+    const drivers = buildDrivers(input.raw, input.mcapUsd, input.fxToUsd, metricUniverse);
+    const rating = input.rating;
+    const c1 = pillars.computeC1(drivers.c1, rating?.td ?? null);
+    const c2 = pillars.computeC2(drivers.c2, rating?.moat ?? null);
+    const c3 = pillars.computeC3(drivers.c3);
+    const c4 = pillars.computeC4(drivers.c4, rating?.mgmt ?? null);
+    const c5 = pillars.computeC5(rating?.appeal ?? null);
+    const c6 = pillars.computeC6(drivers.c6);
+    const composite = pillars.computeComposite([c1, c2, c3, c4, c5, c6]);
+    const safetyRaw = pillars.computeSafetyRaw(drivers.safety);
+    return {
+      input, drivers, c1, c2, c3, c4, c5, c6, composite, safetyRaw,
+      profNum: pillars.pillarNum(drivers.prof),
+      cashNum: pillars.pillarNum(drivers.cash),
+      trendNum: pillars.pillarNum(drivers.trend),
+    };
   });
-  const riskType = computeRiskType();
 
-  const close = input.currentBar.close;
-  const vwap6a = input.currentBar.vwap6_a;
-  const vwap6sigma = input.currentBar.vwap6_sigma;
-  if (close == null || vwap6a == null || vwap6sigma == null) {
-    throw new Error(`computeRbScore(${input.symbol}): missing weekly-bar inputs for vwap_z`);
+  // ── Universe pass 1: safetyRaw -> safetyPct (second-order percentile) ──
+  const safetyRawUniverse = stageA.map((s) => s.safetyRaw).filter((v): v is number => v != null);
+  const safetyPcts = stageA.map((s) =>
+    s.safetyRaw == null ? null : crossSectionalPercentile(safetyRawUniverse, s.safetyRaw),
+  );
+
+  // ── Stage B: qraw (depends on safetyPct, NOT safetyRaw -- see pillars.ts) ──
+  const qraws = stageA.map((s, i) =>
+    pillars.computeQualityRaw(s.drivers.prof, s.drivers.cash, s.drivers.trend, safetyPcts[i]),
+  );
+
+  // ── Universe pass 2: qraw -> quality (second-order percentile) ──
+  const qrawUniverse = qraws.filter((v): v is number => v != null);
+  const qualityPcts = qraws.map((q) => (q == null ? null : crossSectionalPercentile(qrawUniverse, q)));
+
+  // ── Universe pass 3: composite -> score/rank (first confirmed this session, unchanged) ──
+  // `compositeUniverse` drops nulls, so each stageA entry's position there
+  // is NOT the same as its position in `stageA` -- track the mapping
+  // explicitly rather than re-deriving it via indexOf (indexOf would
+  // misattribute ties to whichever symbol happens to appear first, same
+  // bug class crossSectionalRank.ts's descendingRank already guards
+  // against for exactly this reason).
+  const compositeUniverse: number[] = [];
+  const compositeUniverseIndexByStageA: Array<number | null> = [];
+  for (const s of stageA) {
+    if (s.composite == null) {
+      compositeUniverseIndexByStageA.push(null);
+    } else {
+      compositeUniverseIndexByStageA.push(compositeUniverse.length);
+      compositeUniverse.push(s.composite);
+    }
   }
-  const vwapZ = computeVwapZ(close, vwap6a, vwap6sigma);
-  if (vwapZ == null) throw new Error(`computeRbScore(${input.symbol}): vwap6_sigma is zero`);
-  const vwapState = computeVwapState(vwapZ, input.currentBar.signal, vwap6a, input.priorBar?.vwap6_a ?? null);
-  const { action, actionKey, actionWhy } = computeAction({
-    symbol: input.symbol,
-    score,
-    safety,
-    met,
-    owned: input.owned,
-    vwapState,
-    vwapZ,
-    closedOn: input.fool?.closed_on ?? null,
-    priorWeekScore: input.priorWeekScore,
-    vwap6a,
-    vwap6sigma,
-  });
 
-  return {
-    symbol: input.symbol,
-    date: input.date,
-    config_version: RB_CONFIG.version,
-    c1, c2, c3, c4, c5, c6,
-    met,
-    composite,
-    score,
-    rank,
-    screen,
-    safety,
-    quality,
-    qgroup,
-    weak_pillar: weakPillar,
-    risk_type: riskType,
-    action,
-    action_key: actionKey,
-    action_why: actionWhy,
-    vwap_state: vwapState,
-    vwap_z: vwapZ,
-    drivers,
-  };
+  return stageA.map((s, i) => {
+    const input = s.input;
+    const safety = pillars.computeSafety(safetyPcts[i]);
+    const quality = pillars.computeQuality(qualityPcts[i]);
+
+    const compositeIndex = compositeUniverseIndexByStageA[i];
+    if (s.composite == null || compositeIndex == null) {
+      throw new Error(`computeUniverseScores(${input.symbol}): composite is null -- every pillar sign was null`);
+    }
+    const score = pillars.computeScore(s.composite, compositeUniverse);
+    const rank = pillars.computeRank(compositeUniverse, compositeIndex);
+    const met = pillars.computeMet([s.c1, s.c2, s.c3, s.c4, s.c5, s.c6]);
+
+    const screen = computeScreen(met, score);
+    const qgroup = computeQgroup(met, quality);
+    const weakPillar = computeWeakPillar({
+      cashDrivers: s.drivers.cash,
+      trendDrivers: s.drivers.trend,
+      profDrivers: s.drivers.prof,
+      safety,
+    });
+    const riskType = computeRiskType(input.raw.rv ?? null);
+
+    const currentBar = input.weeklyBars[input.weeklyBars.length - 1];
+    const close = currentBar.close;
+    const vwap6a = currentBar.vwap6_a;
+    const vwap6sigma = currentBar.vwap6_sigma;
+    if (close == null || vwap6a == null || vwap6sigma == null) {
+      throw new Error(`computeUniverseScores(${input.symbol}): missing weekly-bar inputs for vwap_z`);
+    }
+    const vwapZ = computeVwapZ(close, vwap6a, vwap6sigma);
+    if (vwapZ == null) throw new Error(`computeUniverseScores(${input.symbol}): vwap6_sigma is zero`);
+    // The oldest weeks can be partial (not enough daily-bar lookback yet to
+    // compute a 6-wk VWAP at all) -- drop those entirely rather than
+    // requiring the whole raw history to be populated; `computeVwapState`'s
+    // own week indexing is relative to this trimmed, valid-only series.
+    const weeklyBarsForState = input.weeklyBars
+      .filter((b) => b.close != null && b.vwap6_a != null)
+      .map((b) => ({ close: b.close!, vwap6: b.vwap6_a! }));
+    if (weeklyBarsForState.length < 8) {
+      throw new Error(`computeUniverseScores(${input.symbol}): needs at least 8 weeks of usable weekly-bar history`);
+    }
+    const vwapState = computeVwapState(weeklyBarsForState);
+    const { action, actionKey, actionWhy } = computeAction({
+      symbol: input.symbol,
+      score,
+      safety,
+      met,
+      owned: input.owned,
+      vwapState,
+      vwapZ,
+      closedOn: input.fool?.closed_on ?? null,
+      priorWeekScore: input.priorWeekScore,
+      vwap6a,
+      vwap6sigma,
+    });
+
+    return {
+      symbol: input.symbol,
+      date: input.date,
+      config_version: RB_CONFIG.version,
+      c1: s.c1, c2: s.c2, c3: s.c3, c4: s.c4, c5: s.c5, c6: s.c6,
+      met,
+      composite: s.composite,
+      score,
+      rank,
+      screen,
+      safety,
+      quality,
+      qgroup,
+      weak_pillar: weakPillar,
+      risk_type: riskType,
+      action,
+      action_key: actionKey,
+      action_why: actionWhy,
+      vwap_state: vwapState,
+      vwap_z: vwapZ,
+      drivers: s.drivers,
+    };
+  });
 }

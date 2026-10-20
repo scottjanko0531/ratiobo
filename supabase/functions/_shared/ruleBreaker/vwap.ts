@@ -15,24 +15,50 @@ export function computeVwapZ(close: number, vwap6a: number, vwap6sigma: number):
 
 export type VwapState = "Below VWAP: exit / stay out" | "Above, VWAP falling: caution" | "Uptrend: hold" | "Entry signal";
 
-// Confirmed 143/155 (92%) exact with this rule: a fresh 'u' signal this
-// week wins outright ("Entry signal"); else z<0 is "Below VWAP"; else
-// (z>=0) compare this week's vwap6_a to last week's to call "Uptrend:
-// hold" (rising) vs "Above, VWAP falling: caution" (falling). The 12
-// residual mismatches all involve a very small week-over-week vwap6_a
-// change near z>1 -- likely a trend dead-zone or longer lookback is
-// needed; left as a documented gap for scripts/rb-calibrate.ts rather than
-// guessed further.
-export function computeVwapState(
-  z: number,
-  latestSignal: "u" | "d" | null,
-  vwap6aNow: number,
-  vwap6aPrior: number | null,
-): VwapState {
-  if (latestSignal === "u" && RB_CONFIG.vwap.entrySignalWinsOutright) return "Entry signal";
-  if (z < 0) return "Below VWAP: exit / stay out";
-  if (vwap6aPrior != null && vwap6aNow < vwap6aPrior) return "Above, VWAP falling: caution";
-  return "Uptrend: hold";
+export interface WeeklyBarForVwapState {
+  close: number;
+  vwap6: number; // vm = the volume-weighted 6-wk VWAP mean for THIS week
+}
+
+// on(k) per the user's exact formula: up (close above its own 6-wk VWAP)
+// AND rising (that 6-wk VWAP above what it was two weeks earlier).
+function isOn(bars: WeeklyBarForVwapState[], k: number): boolean {
+  return bars[k].close > bars[k].vwap6 && bars[k].vwap6 > bars[k - 2].vwap6;
+}
+
+// Formula supplied directly by the user from the live screen's own source
+// code (not reverse-engineered) and confirmed 155/155 exact against the
+// full real baseline: `i` = the latest week (weeklyBars' last index,
+// ascending by week_start). up = close > vm (this week's own 6-wk VWAP
+// mean); rising = vm > mp, where mp is the 6-wk VWAP mean AS OF TWO WEEKS
+// EARLIER -- that's `weeklyBars[i-2].vwap6`, NOT the imported `vwap12`
+// field. An earlier attempt used the stored `vwap12` field for this
+// comparison (reasoning it was a precomputed stand-in) and topped out at
+// 152/155 -- `vwap12` is a genuinely different 12-week aggregate that
+// happens to track `mp` closely but not exactly, confirmed by the 3
+// residual mismatches (RDDT/WING/AMT/TREX/ETSY/MNST-shaped cases) all
+// having `vwap6[i] <= vwap12[i]` (predicting "falling") while the real
+// state was "Entry signal", which only resolves once `mp` is read from
+// `weeklyBars[i-2].vwap6` directly. `won` = weeks since `on()` (evaluated
+// at each historical week k>=7) was last false, scanning k=i-1 down to 7;
+// "Entry signal" requires up && rising && won<=2, else "Uptrend: hold".
+// Needs at least 8 weeks of history (i>=7).
+export function computeVwapState(weeklyBars: WeeklyBarForVwapState[]): VwapState {
+  const i = weeklyBars.length - 1;
+  if (i < 7) throw new Error("computeVwapState: needs at least 8 weeks of weekly-bar history");
+  const up = weeklyBars[i].close > weeklyBars[i].vwap6;
+  const rising = weeklyBars[i].vwap6 > weeklyBars[i - 2].vwap6;
+  if (!up) return "Below VWAP: exit / stay out";
+  if (!rising) return "Above, VWAP falling: caution";
+  let won: number | null = null;
+  for (let k = i - 1; k >= 7; k--) {
+    if (!isOn(weeklyBars, k)) {
+      won = i - k;
+      break;
+    }
+  }
+  if (won == null) won = i - 6; // "on" as far back as checkable (k>=7 floor) -- never found a false week
+  return won <= 2 ? "Entry signal" : "Uptrend: hold";
 }
 
 export type ActionKey = "nonew" | "wait" | "hold" | "buy" | "pull" | "half";

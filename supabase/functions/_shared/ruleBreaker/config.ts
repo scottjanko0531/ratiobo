@@ -93,38 +93,25 @@ export const RB_CONFIG = {
     stretchedZThreshold: 2, // vwap_z >= 2 -> "stretched above +2σ" messaging
   },
 
-  // vwap_state classification (vwap.ts) -- confirmed 143/155 (92%) exact
-  // with this simple rule; residual 12 mismatches are all cases where
-  // vwap6 moved by a very small amount week-over-week near a z>1 band,
-  // suggesting a trend dead-zone or longer-lookback refinement is needed
-  // -- left as a TODO for scripts/rb-calibrate.ts rather than guessed.
-  vwap: {
-    // Evaluated in this order: fresh 'u' signal this week wins outright;
-    // else z<0 is "Below VWAP"; else (z>=0) compare this week's vwap6_a
-    // to last week's to call "Uptrend: hold" vs "Above, VWAP falling".
-    entrySignalWinsOutright: true,
-  },
-
-  // Pillar aggregation (pillars.ts) -- NONE of c1-c6/safety/quality are
-  // confirmed. A flat mean of each pillar's driver pcts was tested against
-  // the FULL 155-row baseline (not just one example) and refuted for
-  // every one checked, including c1 (0/155 match -- an earlier single-
-  // example "confirmation" of c1 turned out to be coincidental, see
-  // pillars.ts's header comment) and safety (flat mean of its 4 driver
-  // pcts gives 61.77 vs actual 75 on one example). A "percentile of a
-  // combined raw metric" alternative was also tried for c1 and refuted
-  // (3/154). `composite` = mean(c1..c6) and `score`/`rank` built on top of
-  // it ARE confirmed exact -- only the c1-c6/safety/quality inputs feeding
-  // composite remain unsolved. `c5` has no `drivers` entry at all and is a
-  // discrete 5-value field (20/40/60/80/100 only) -- rb_ratings.td*20 was
-  // tested and refuted (96/154 match only). All of this is
-  // scripts/rb-calibrate.ts's open job.
-  pillars: {
-    // TODO(rb-calibrate): c1Weights, c2Weights, c3Weights, c4Weights,
-    // c6Weights, safetyWeights, qualityFormula, c5Formula -- intentionally
-    // absent. This likely needs a real search (e.g. linear regression
-    // against the 155 ground-truth pillar values), not more hand-guessing
-    // -- several plausible-sounding hypotheses were already tried and
-    // refuted this session.
-  },
+  // Pillar aggregation (pillars.ts) -- c1-c6, met, composite, score, rank,
+  // safety, quality, qgroup, weak_pillar are ALL confirmed 155/155 exact.
+  // The formula was supplied directly by the user from the live screen's
+  // own source code (not reverse-engineered the way everything above
+  // was): c1/c2/c4 blend a computed pillar number with a human rating
+  // (rb_ratings.td/moat/mgmt * 20) 50/50 when both exist; c5 is purely
+  // rb_ratings.appeal * 20 (no fundamentals component, confirmed via
+  // ECHO's null-rating case); c3/c6 are purely computed. safety and
+  // quality are each a second-order cross-sectional percentile -- see
+  // pillars.ts's header comment for the full shape. This round also found
+  // and fixed 8 real metric-formula bugs (null-coercion-to-0 in
+  // grossMarginChange/evOverSales's debt-or-cash/cashFlowAfterStockPay-
+  // OverSales/accruals's sbc, a missing non-positive-denominator guard on
+  // rdOverGrossProfit/returnOnInvestedCapital, and operatingIncomeDrop's
+  // formula being a sum-of-all-declines rather than a single min-diff or
+  // max-drawdown) -- see metrics.ts for each fix's detail. Nothing is
+  // left unsolved in this block; `pillars` is kept as an empty object
+  // because every value above (percentile engine, thresholds, sentinel)
+  // already lives in this same config file, not because anything here is
+  // still a placeholder.
+  pillars: {},
 } as const;

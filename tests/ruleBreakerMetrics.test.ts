@@ -130,11 +130,16 @@ describe("safety metrics", () => {
     expect(leverage({ ...TESTCO_RAW, eq: -500 })).toBeNull();
     expect(leverage({ ...TESTCO_RAW, eq: 0 })).toBeNull();
   });
-  it("operatingIncomeDrop = -min(qoi consecutive diffs)/assets[0] when a real drop exists", () => {
-    // diffs: 1404e6, 482e6, -276e6, 514e6 -> min is -276e6
+  it("operatingIncomeDrop = sum of every quarter-over-quarter decline's magnitude / assets[0] (a single dip here, so it equals that one diff)", () => {
+    // diffs: +1404e6, +482e6, -276e6, +514e6 -> only one decline, 276e6
     expect(operatingIncomeDrop(TESTCO_RAW)).toBeCloseTo(0.0035879, 6);
   });
-  it("operatingIncomeDrop floors at 0 when every quarter-over-quarter diff is non-negative (no real drop) -- confirmed real cases (NVDA, TSM, etc.)", () => {
+  it("sums EVERY separate decline, not just the single worst one -- confirmed real case (PANW): two separate dips (497.2M->309M and 397M->-183M) combine to a 768.2M total, not just the larger 580M dip alone", () => {
+    expect(
+      operatingIncomeDrop({ ...TESTCO_RAW, qoi: [497200000, 309000000, 397000000, -183000000, 172000000], assets: [48460000000, 23576000000] }),
+    ).toBeCloseTo(0.01585224927775485, 9);
+  });
+  it("operatingIncomeDrop stays 0 when every quarter sets a new high (no real drop) -- confirmed real cases (NVDA, TSM, etc.)", () => {
     expect(operatingIncomeDrop({ ...TESTCO_RAW, qoi: [100, 200, 300, 400, 500] })).toBe(0);
   });
 });
@@ -146,11 +151,24 @@ describe("prof/cash/trend metrics (weak_pillar sub-scores)", () => {
   it("cashFlowAfterStockPayOverSales = (cfo[0]-sbc)/rev[0]", () => {
     expect(cashFlowAfterStockPayOverSales(TESTCO_RAW)).toBeCloseTo(0.1752649, 6);
   });
+  it("cashFlowAfterStockPayOverSales treats a missing sbc as 0 rather than nulling out -- confirmed real cases (TOITF, NTDOY, both sbc=null)", () => {
+    expect(cashFlowAfterStockPayOverSales({ ...TESTCO_RAW, sbc: null })).toBeCloseTo(
+      cashFlowAfterStockPayOverSales(TESTCO_RAW)! + TESTCO_RAW.sbc! / TESTCO_RAW.rev![0],
+      6,
+    );
+  });
   it("returnOnInvestedCapital = ebit*(1-tax)/ic", () => {
     expect(returnOnInvestedCapital(TESTCO_RAW)).toBeCloseTo(0.050952, 5);
   });
+  it("returnOnInvestedCapital nulls out for non-positive invested capital (sign would be meaningless) -- confirmed real case (CBRS: ic=-578660000)", () => {
+    expect(returnOnInvestedCapital({ ...TESTCO_RAW, ic: -578660000 })).toBeNull();
+    expect(returnOnInvestedCapital({ ...TESTCO_RAW, ic: 0 })).toBeNull();
+  });
   it("accruals = (ni - (cfo[0]-sbc)) / assets[0] -- uses the cash-after-stock-pay figure, not a naive (ni-cfo)/assets", () => {
     expect(accruals(TESTCO_RAW)).toBeCloseTo(-0.0225671, 6);
+  });
+  it("accruals also treats a missing sbc as 0 rather than nulling out -- confirmed real cases (TOITF, NTDOY)", () => {
+    expect(accruals({ ...TESTCO_RAW, sbc: null })).not.toBeNull();
   });
   it("stockPayOverSales = sbc/rev[0]", () => {
     expect(stockPayOverSales(TESTCO_RAW)).toBeCloseTo(0.0472877, 6);

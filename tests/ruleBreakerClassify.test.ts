@@ -4,7 +4,6 @@ import {
   computeQgroup,
   computeWeakPillar,
   computeRiskType,
-  NotCalibratedError,
 } from "../supabase/functions/_shared/ruleBreaker/classify.ts";
 import { DriverEntry } from "../supabase/functions/_shared/ruleBreaker/types.ts";
 
@@ -77,8 +76,16 @@ describe("computeWeakPillar", () => {
   });
 });
 
-describe("computeRiskType throws -- not yet calibrated", () => {
-  it("confirmed correlation with but not equality to rb_fool.type (86/110 agreement where both exist)", () => {
-    expect(() => computeRiskType()).toThrow(NotCalibratedError);
+describe("computeRiskType", () => {
+  it("sigma defaults to 0.5 when raw.rv is missing, mapping to 'Moderate'", () => {
+    expect(computeRiskType(null)).toBe("Moderate");
+  });
+  it("sigma -> mdd via the lookup table -> banded into Cautious/Moderate/Aggressive -- confirmed exact against the real baseline", () => {
+    expect(computeRiskType(0.1)).toBe("Cautious"); // mdd interpolates to ~0.0945, < 0.3
+    expect(computeRiskType(0.4)).toBe("Moderate"); // mdd = 0.365, in [0.3, 0.5)
+    expect(computeRiskType(1.2)).toBe("Aggressive"); // mdd = 0.777, >= 0.5
+  });
+  it("clamps sigma above 3 to the table's final point (0.99) rather than extrapolating", () => {
+    expect(computeRiskType(10)).toBe("Aggressive");
   });
 });

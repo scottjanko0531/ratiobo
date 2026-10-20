@@ -1,22 +1,11 @@
 // Rule Breaker Screener — categorical classification (screen, qgroup,
-// weak_pillar, risk_type). screen/qgroup/weak_pillar are CONFIRMED exact
-// against all 155 baseline rows, zero exceptions. risk_type is NOT yet
-// solved (correlates with but doesn't equal rb_fool.type -- 86/110
-// agreement where both exist, and 45/155 symbols have no rb_fool row at
-// all) -- throws, same convention as pillars.ts's uncalibrated stubs.
+// weak_pillar, risk_type). All four confirmed exact against all 155
+// baseline rows, zero exceptions. risk_type's formula was supplied
+// directly by the user from the live screen's own source code (not
+// reverse-engineered the way the other three were) -- see computeRiskType.
 
 import { RB_CONFIG } from "./config.ts";
 import type { DriverEntry } from "./types.ts";
-
-export class NotCalibratedError extends Error {
-  constructor(field: string) {
-    super(
-      `${field} is not yet calibrated against the artifact baseline -- ` +
-        `see classify.ts header comment and scripts/rb-calibrate.ts`,
-    );
-    this.name = "NotCalibratedError";
-  }
-}
 
 // Confirmed 155/155, zero exceptions: met=6 -> Rule Breaker always;
 // met=5 -> Watchlist always (even score=100); met<=1 -> Doesn't fit always
@@ -75,6 +64,41 @@ export function computeWeakPillar(inputs: WeakPillarInputs): string | null {
   return `${weakest[0]} ${Math.round(weakest[1])}`;
 }
 
-export function computeRiskType(): "Aggressive" | "Moderate" | "Cautious" {
-  throw new NotCalibratedError("risk_type");
+// Piecewise-linear lookup table mapping annualized daily-log-return stdev
+// (`raw.rv`) to an estimated max drawdown fraction -- supplied directly by
+// the user from the live screen's own source code, confirmed 155/155
+// exact against the real baseline.
+const MDD_POINTS: ReadonlyArray<readonly [sigma: number, mdd: number]> = [
+  [0, 0],
+  [0.2, 0.189],
+  [0.3, 0.28],
+  [0.4, 0.365],
+  [0.5, 0.44],
+  [0.6, 0.506],
+  [0.7, 0.564],
+  [0.8, 0.618],
+  [1.0, 0.706],
+  [1.2, 0.777],
+  [1.5, 0.853],
+  [3, 0.99],
+];
+
+function interpolateMdd(sigma: number): number {
+  if (sigma <= MDD_POINTS[0][0]) return MDD_POINTS[0][1];
+  if (sigma >= 3) return 0.99;
+  for (let i = 1; i < MDD_POINTS.length; i++) {
+    const [x1, y1] = MDD_POINTS[i - 1];
+    const [x2, y2] = MDD_POINTS[i];
+    if (sigma <= x2) return y1 + ((y2 - y1) * (sigma - x1)) / (x2 - x1);
+  }
+  return 0.99; // unreachable given the sigma>=3 check above
+}
+
+// Confirmed 155/155 exact against the real baseline: sigma defaults to 0.5
+// when `raw.rv` is missing, maps through the MDD_POINTS lookup table above,
+// then bands the result into three tiers.
+export function computeRiskType(rv: number | null): "Aggressive" | "Moderate" | "Cautious" {
+  const sigma = rv ?? 0.5;
+  const mdd = interpolateMdd(sigma);
+  return mdd < 0.3 ? "Cautious" : mdd < 0.5 ? "Moderate" : "Aggressive";
 }
