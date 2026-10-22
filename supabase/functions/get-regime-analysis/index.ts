@@ -1258,6 +1258,7 @@ Deno.serve(async (req: Request) => {
     // not have, so the lookback is replaced with the identical live
     // computation instead of a second, independently-drifting source.
     let lastConfirmedLabel: string | null = null;
+    let lastConfirmedKey: string | null = null;
     if (structuralPersistent || marketPersistent || fwdGrowthPersistence || fwdInflPersistence || nearTermGrowthPersistence || nearTermInflPersistence) {
       const rawGdp = get("Real GDP Growth");
       const rawCpi = get("CPI (YoY)");
@@ -1269,6 +1270,7 @@ Deno.serve(async (req: Request) => {
           joblessClaimsTrend: get("Initial Jobless Claims Trend"),
         };
         const rawKey = detectRegimeKeyRaw(rawGdp, rawCpi, breakevenVal, gdp4qAvg, rawLaborInputs);
+        lastConfirmedKey = rawKey;
         lastConfirmedLabel = REGIME_LABELS[rawKey] ?? rawKey;
       }
     }
@@ -1289,6 +1291,20 @@ Deno.serve(async (req: Request) => {
       : structuralPersistent
         ? leaningLabel(!!structuralGrowthAxis?.persistence, !!structuralInflAxis?.persistence, structuralGrowthAxis, structuralInflAxis, lastConfirmedLabel)
         : "Unknown";
+    // Raw structural KEY (not a display label) for update-regime-portfolio-
+    // targets to consume -- that function needs something it can look up in
+    // REGIME_DEFAULT_WEIGHTS, not a string. Same precedence as regimeLabel
+    // above: both axes in their dead band -> "stay in the last, true regime"
+    // (lastConfirmedKey) per Scott's spec, rather than a fresh nearSide
+    // guess; only one axis Persistent -> the nearSide-implied leaning
+    // quadrant; neither Persistent and no real crossover either -> null
+    // (genuinely missing GDP/CPI data, not a dead-band case).
+    const structuralKeyForPersist = structuralKey
+      ?? (structuralGrowthAxis?.persistence && structuralInflAxis?.persistence
+            ? lastConfirmedKey
+            : structuralPersistent
+              ? leaningQuadrantKey(structuralGrowthAxis, structuralInflAxis)
+              : null);
     const marketLabel = marketKey
       ? (REGIME_LABELS[marketKey] ?? marketKey)
       : marketPersistent
@@ -1400,6 +1416,7 @@ Deno.serve(async (req: Request) => {
       news_headlines: headlines.length > 0 ? headlines : null,
       alignment: divergence ? "divergent" : "aligned",
       structural_regime: regimeLabel,
+      structural_key: structuralKeyForPersist,
       market_regime: marketLabel,
       forward_key: fwdKey,
       forward_confidence: fwdConf,

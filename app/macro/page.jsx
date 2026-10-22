@@ -1663,7 +1663,7 @@ function isNearThreshold(s) {
 // They are independently scored and never averaged or reconciled into one
 // number (see the forward-signal two-horizon spec); each gets its own
 // "Current → [panel]" transition since the two can legitimately disagree.
-function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime, currentGrowthLevel, currentInflLevel }) {
+function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime, currentGrowthLevel, currentInflLevel, signalState }) {
   return (
     <div>
       <p className="label mb-3">
@@ -1843,8 +1843,44 @@ function ForwardSignalPanel({ title, horizonLabel, panel, currentRegime, current
           </div>
         );
       })()}
+      {signalState && (() => {
+        // Override-clock status line — see nearterm_signal_state's migration
+        // comment for why this is read from one shared, portfolio-independent
+        // row rather than re-derived from `panel` here: `panel` is this
+        // page's own live recompute of TODAY's reading only, with no memory
+        // of which date the current streak started. Only rendered when the
+        // caller passes signalState (Near-Term only — Medium-Term has no
+        // override clock to show).
+        const fmt = (d) => d ? new Date(d + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }) : null;
+        const { pending_key, pending_since, confirmed_key, confirmed_since, active } = signalState;
+        if (active && confirmed_key) {
+          const label = REGIME_META[confirmed_key]?.label ?? confirmed_key;
+          return (
+            <p className="text-[10px] text-gain mt-2">
+              ✓ Confirmed — {label} in place since {fmt(confirmed_since)}.
+            </p>
+          );
+        }
+        if (pending_key) {
+          const label = REGIME_META[pending_key]?.label ?? pending_key;
+          const confirmsOn = fmt(addDaysUTC(pending_since, 7));
+          return (
+            <p className="text-[10px] text-brass-soft mt-2">
+              {label} crossed 60% confidence on {fmt(pending_since)} — confirms {confirmsOn} if it holds 7 days.
+            </p>
+          );
+        }
+        return null;
+      })()}
     </div>
   );
+}
+
+function addDaysUTC(dateStr, days) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
 function QuadrantCard({ indicators, holdings, assetData, bigCycleArmedCount }) {
@@ -2095,6 +2131,18 @@ function QuadrantCard({ indicators, holdings, assetData, bigCycleArmedCount }) {
       }
       setResizeSignals(latestBySymbol);
     }).catch(() => setResizeSignals({}));
+  }, []);
+
+  // Near-Term Forward Signal's own pending/confirmed clock — the ONE place
+  // this is tracked now (see nearterm_signal_state's migration comment),
+  // written daily by update-regime-portfolio-targets. Feeds the "crossed
+  // 60% on / confirms on / confirmed and in place since" line in the
+  // Near-Term ForwardSignalPanel below.
+  const [nearTermSignalState, setNearTermSignalState] = useState(null);
+  useEffect(() => {
+    supabase.from("nearterm_signal_state").select("pending_key, pending_since, confirmed_key, confirmed_since, active").eq("id", true).maybeSingle()
+      .then(({ data }) => setNearTermSignalState(data))
+      .catch(() => setNearTermSignalState(null));
   }, []);
   const exposureMultipliers = useMemo(
     () => Object.fromEntries(Object.entries(resizeSignals).map(([sym, s]) => [sym, Number(s.exposure_multiplier)])),
@@ -2471,7 +2519,7 @@ function QuadrantCard({ indicators, holdings, assetData, bigCycleArmedCount }) {
               forward-signal two-horizon spec). Not averaged or reconciled
               into one number; they can legitimately disagree. */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <ForwardSignalPanel title="Near-Term Signal" horizonLabel="2-3 Month Outlook" panel={fwd.nearTerm} currentRegime={regime} currentGrowthLevel={gdpFastVal} currentInflLevel={cpiFastVal} />
+            <ForwardSignalPanel title="Near-Term Signal" horizonLabel="2-3 Month Outlook" panel={fwd.nearTerm} currentRegime={regime} currentGrowthLevel={gdpFastVal} currentInflLevel={cpiFastVal} signalState={nearTermSignalState} />
             <ForwardSignalPanel title="Medium-Term Signal" horizonLabel="6-18 Month Outlook" panel={fwd.mediumTerm} currentRegime={regime} currentGrowthLevel={gdpFastVal} currentInflLevel={cpiFastVal} />
           </div>
 
