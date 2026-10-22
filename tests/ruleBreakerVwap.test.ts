@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeVwapZ, computeVwapState, computeAction, ActionInputs } from "../supabase/functions/_shared/ruleBreaker/vwap.ts";
+import { computeVwapZ, computeVwapState, computeAction, ActionInputs, NO_VWAP_DATA } from "../supabase/functions/_shared/ruleBreaker/vwap.ts";
 
 describe("computeVwapZ", () => {
   it("= (close - vwap6_a) / vwap6_sigma, confirmed exact on multiple real cases", () => {
@@ -48,8 +48,12 @@ describe("computeVwapState", () => {
     expect(computeVwapState(weeklyBars)).toBe("Above, VWAP falling: caution");
   });
 
-  it("throws when given fewer than 8 weeks of history", () => {
-    expect(() => computeVwapState(bars([[1, 1], [1, 1], [1, 1], [1, 1], [1, 1], [1, 1], [1, 1]]))).toThrow();
+  it("returns NO_VWAP_DATA rather than throwing when given fewer than 8 weeks of history -- a per-symbol data gap must never abort scoring the rest of the universe", () => {
+    expect(computeVwapState(bars([[1, 1], [1, 1], [1, 1], [1, 1], [1, 1], [1, 1], [1, 1]]))).toBe(NO_VWAP_DATA);
+  });
+
+  it("returns NO_VWAP_DATA for a brand-new symbol with zero weeks of history", () => {
+    expect(computeVwapState([])).toBe(NO_VWAP_DATA);
   });
 });
 
@@ -66,6 +70,8 @@ describe("computeAction", () => {
     priorWeekScore: 90,
     vwap6a: 100,
     vwap6sigma: 10,
+    price: 101,
+    riskType: "Moderate",
   };
 
   it("closed recommendation always wins -> nonew, regardless of everything else", () => {
@@ -90,6 +96,28 @@ describe("computeAction", () => {
     const r = computeAction({ ...base, score: 60, priorWeekScore: 48, vwapState: "Below VWAP: exit / stay out" });
     expect(r.actionKey).toBe("wait");
     expect(r.actionWhy).toBe("Newly qualified (last week 48): confirm next week.");
+  });
+
+  it("newly-qualified threshold rises to 60 when THIS week's score is >=60 -- confirmed real case (BRZE, 2026-10-20): last week 49, this week 62 -> Wait, even though 49 already cleared the flat 50 bar", () => {
+    const r = computeAction({ ...base, score: 62, priorWeekScore: 49, vwapState: "Entry signal", vwapZ: 0.5 });
+    expect(r.actionKey).toBe("wait");
+    expect(r.actionWhy).toBe("Newly qualified (last week 49): confirm next week.");
+  });
+
+  it("newly-qualified threshold stays at 50 when THIS week's score is <60 -- confirmed real case (EXEL, 2026-10-20): last week 44, this week 52 -> Wait (52<60 so the bar stays 50, and 44<50)", () => {
+    const r = computeAction({ ...base, score: 52, priorWeekScore: 44, vwapState: "Entry signal", vwapZ: 0.5 });
+    expect(r.actionKey).toBe("wait");
+    expect(r.actionWhy).toBe("Newly qualified (last week 44): confirm next week.");
+  });
+
+  it("score>=60 raising the threshold to 60 can flag a symbol that already cleared the flat 50 bar last week -- last week 55 (>=50, qualified under the old flat rule) but this week's score 62 raises the bar to 60, so 55<60 -> still Wait", () => {
+    const r = computeAction({ ...base, score: 62, priorWeekScore: 55, vwapState: "Entry signal", vwapZ: 0.5 });
+    expect(r.actionKey).toBe("wait");
+  });
+
+  it("score<60 keeps the threshold at 50 -- last week 55 clears the flat 50 bar and this week's score 58 doesn't raise it to 60, so no newly-qualified wait", () => {
+    const r = computeAction({ ...base, score: 58, priorWeekScore: 55, vwapState: "Entry signal", vwapZ: 0.5, met: 4 });
+    expect(r.actionKey).not.toBe("wait");
   });
 
   it("owned=true always holds once qualifying, regardless of vwap_state/vwap_z", () => {
@@ -117,15 +145,51 @@ describe("computeAction", () => {
   });
 
   it("not owned, Uptrend/Entry, z in [1,2) -> buy on pullback, with the confirmed exact zone formula [vwap6a, vwap6a+sigma]", () => {
-    const r = computeAction({ ...base, vwapState: "Entry signal", vwapZ: 1.7, met: 5, vwap6a: 15.472, vwap6sigma: 2.3463 });
+    const r = computeAction({ ...base, vwapState: "Entry signal", vwapZ: 1.7, met: 5, vwap6a: 15.472, vwap6sigma: 2.3463, price: 16.1 });
     expect(r.actionKey).toBe("pull");
     expect(r.actionWhy).toContain("15.47");
     expect(r.actionWhy).toContain("17.82");
   });
 
   it("not owned, met=6, z>=2 -> full buy (the one confirmed real example's exact condition)", () => {
-    const r = computeAction({ ...base, vwapState: "Entry signal", vwapZ: 2.42, met: 6, vwap6a: 43.719 });
+    const r = computeAction({ ...base, vwapState: "Entry signal", vwapZ: 2.42, met: 6, vwap6a: 43.719, price: 47.04 });
     expect(r.actionKey).toBe("buy");
     expect(r.actionWhy).not.toContain("not a Rule Breaker");
+    expect(r.actionWhy).toContain("47.04");
+  });
+
+  it("not owned, met!=6, z>=2 -> half size, not buy on pullback -- confirmed real case (DOCS, 2026-10-20): met=3, z=2.41 resolved to 'Half size', not 'Buy on pullback'", () => {
+    const r = computeAction({ ...base, vwapState: "Uptrend: hold", vwapZ: 2.41, met: 3, vwap6a: 30, vwap6sigma: 1.4, price: 33.35 });
+    expect(r.actionKey).toBe("half");
+    expect(r.actionWhy).toBe(
+      "Stretched above +2σ (33.35). In the backtest these kept rising more often than not; consider a smaller starter position. Half size (score 90).",
+    );
+  });
+
+  it("not owned, pull/half bands append an Aggressive risk caveat when riskType is Aggressive, never when Moderate/Cautious -- confirmed via real IOT/FIGS/RDDT/WRBY (Aggressive, caveat present) vs ONON/UI/TSLA/SHOP/ATRC/ISRG (Moderate, absent) on 2026-10-20", () => {
+    const aggressive = computeAction({ ...base, vwapState: "Entry signal", vwapZ: 0.4, met: 4, riskType: "Aggressive" });
+    expect(aggressive.actionWhy).toContain("Aggressive: keep it small.");
+    const moderate = computeAction({ ...base, vwapState: "Entry signal", vwapZ: 0.4, met: 4, riskType: "Moderate" });
+    expect(moderate.actionWhy).not.toContain("keep it small");
+  });
+
+  it("owned Hold branches never append the Aggressive risk caveat, even when riskType is Aggressive -- confirmed via 7 real owned+Aggressive rows on 2026-10-20, none carry it", () => {
+    const r = computeAction({ ...base, owned: true, vwapState: "Below VWAP: exit / stay out", riskType: "Aggressive" });
+    expect(r.actionWhy).not.toContain("keep it small");
+  });
+
+  it("NO_VWAP_DATA -> neutral wait, regardless of owned, with null vwapZ/vwap6a/vwap6sigma/price (no weekly-bar history to band on)", () => {
+    const notOwned = computeAction({ ...base, vwapState: NO_VWAP_DATA, vwapZ: null, vwap6a: null, vwap6sigma: null, price: null });
+    expect(notOwned.actionKey).toBe("wait");
+    expect(notOwned.actionWhy).toBe("No VWAP data yet for this symbol.");
+    const owned = computeAction({ ...base, owned: true, vwapState: NO_VWAP_DATA, vwapZ: null, vwap6a: null, vwap6sigma: null, price: null });
+    expect(owned.actionKey).toBe("wait");
+  });
+
+  it("gates above NO_VWAP_DATA still win outright even with no weekly-bar history", () => {
+    const closed = computeAction({ ...base, vwapState: NO_VWAP_DATA, vwapZ: null, vwap6a: null, vwap6sigma: null, price: null, closedOn: "2026-09-30" });
+    expect(closed.actionKey).toBe("nonew");
+    const vetoed = computeAction({ ...base, vwapState: NO_VWAP_DATA, vwapZ: null, vwap6a: null, vwap6sigma: null, price: null, safety: 10 });
+    expect(vetoed.actionKey).toBe("nonew");
   });
 });

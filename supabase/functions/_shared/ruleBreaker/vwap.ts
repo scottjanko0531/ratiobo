@@ -13,7 +13,20 @@ export function computeVwapZ(close: number, vwap6a: number, vwap6sigma: number):
   return (close - vwap6a) / vwap6sigma;
 }
 
-export type VwapState = "Below VWAP: exit / stay out" | "Above, VWAP falling: caution" | "Uptrend: hold" | "Entry signal";
+export type VwapState =
+  | "Below VWAP: exit / stay out"
+  | "Above, VWAP falling: caution"
+  | "Uptrend: hold"
+  | "Entry signal"
+  | "Wait – no VWAP data yet";
+
+// Placeholder for a symbol that doesn't (yet) have enough weekly-bar
+// history to compute a VWAP state -- a newly-added symbol, or one where
+// today's refresh hasn't landed a usable latest bar. The scoring engine
+// must score this symbol normally on every OTHER field (percentiles are
+// universe-wide; dropping the symbol would shift everyone else's rank)
+// and simply fall back to this state + a neutral "Wait" action instead.
+export const NO_VWAP_DATA: VwapState = "Wait – no VWAP data yet";
 
 export interface WeeklyBarForVwapState {
   close: number;
@@ -43,9 +56,12 @@ function isOn(bars: WeeklyBarForVwapState[], k: number): boolean {
 // at each historical week k>=7) was last false, scanning k=i-1 down to 7;
 // "Entry signal" requires up && rising && won<=2, else "Uptrend: hold".
 // Needs at least 8 weeks of history (i>=7).
+// Returns NO_VWAP_DATA rather than throwing when there isn't enough
+// history yet (needs i>=7, i.e. 8+ weeks) -- a per-symbol data gap, not a
+// reason to abort scoring the rest of the universe.
 export function computeVwapState(weeklyBars: WeeklyBarForVwapState[]): VwapState {
   const i = weeklyBars.length - 1;
-  if (i < 7) throw new Error("computeVwapState: needs at least 8 weeks of weekly-bar history");
+  if (i < 7) return NO_VWAP_DATA;
   const up = weeklyBars[i].close > weeklyBars[i].vwap6;
   const rising = weeklyBars[i].vwap6 > weeklyBars[i - 2].vwap6;
   if (!up) return "Below VWAP: exit / stay out";
@@ -70,11 +86,13 @@ export interface ActionInputs {
   met: number;
   owned: boolean;
   vwapState: VwapState;
-  vwapZ: number;
+  vwapZ: number | null; // null exactly when vwapState is NO_VWAP_DATA
   closedOn: string | null;
   priorWeekScore: number | null; // from rb_scores_history, the most recent row before this one
-  vwap6a: number;
-  vwap6sigma: number;
+  vwap6a: number | null;
+  vwap6sigma: number | null;
+  price: number | null; // current week's close -- null exactly when vwapState is NO_VWAP_DATA, same as vwap6a/vwap6sigma
+  riskType: "Aggressive" | "Moderate" | "Cautious";
 }
 
 export interface ActionResult {
@@ -85,14 +103,14 @@ export interface ActionResult {
 
 // Confirmed decision tree, evaluated in this exact precedence order against
 // all 155 baseline rows (see config.ts's `action` block for per-step match
-// evidence). The one genuine ambiguity: whether "buy" (full size) requires
-// met===6 specifically, or just vwapZ>=stretchedZThreshold -- only one real
-// "buy" example exists (met=6 AND z>=2 together), so this can't be
-// disambiguated from the current baseline. This implementation requires
-// met===6, the more conservative reading (matches the spec's own framing
-// of a true "Rule Breaker" vs a partial-qualifier needing hedged sizing).
+// evidence), PLUS a live 2026-10-20 confirmation (DOCS: met=3, z=2.41 ->
+// "Half size", not "Buy on pullback") that resolved the one ambiguity the
+// 2026-10-19 historical baseline couldn't: a stretched (z>=2) symbol that
+// ISN'T met===6 gets "Half size", not "Buy on pullback" -- only met===6
+// AND z>=2 together gets the full "Buy". See the z>=stretchedZThreshold
+// branch below.
 export function computeAction(inputs: ActionInputs): ActionResult {
-  const { score, safety, met, owned, vwapState, vwapZ, closedOn, priorWeekScore } = inputs;
+  const { score, safety, met, owned, vwapState, vwapZ, closedOn, priorWeekScore, riskType } = inputs;
   const { safetyVetoThreshold, qualifyingScoreThreshold, stretchedZThreshold, halfSizeZBand, buyOnPullbackZBand } =
     RB_CONFIG.action;
 
@@ -109,7 +127,17 @@ export function computeAction(inputs: ActionInputs): ActionResult {
   if (score < qualifyingScoreThreshold) {
     return { action: "No new money", actionKey: "nonew", actionWhy: `Score ${score} is under 50.` };
   }
-  const wasQualifiedLastWeek = priorWeekScore == null ? null : priorWeekScore >= qualifyingScoreThreshold;
+  // "Newly qualified" compares priorWeekScore against a threshold that
+  // depends on TODAY's score, not the flat qualifyingScoreThreshold above
+  // -- confirmed via two real 2026-10-20 cases: BRZE (last week 49, this
+  // week 62 -> Wait, since 62>=60 raises the bar to 60 and 49<60) and EXEL
+  // (last week 44, this week 52 -> Wait, since 52<60 keeps the bar at 50
+  // and 44<50). A flat 50 threshold would have missed BRZE (49>=50, so a
+  // flat-50 gate would NOT have flagged it newly-qualified) -- supplied
+  // directly by the user from the artifact's real behavior, not
+  // reverse-engineered.
+  const newlyQualifiedThreshold = score >= 60 ? 60 : qualifyingScoreThreshold;
+  const wasQualifiedLastWeek = priorWeekScore == null ? null : priorWeekScore >= newlyQualifiedThreshold;
   if (wasQualifiedLastWeek === false) {
     return {
       action: "Wait",
@@ -117,6 +145,21 @@ export function computeAction(inputs: ActionInputs): ActionResult {
       actionWhy: `Newly qualified (last week ${priorWeekScore}): confirm next week.`,
     };
   }
+
+  // No weekly-bar history yet (new symbol, or today's refresh hasn't
+  // landed a usable latest bar) -- every gate above still applies (a
+  // closed rec, a safety veto, or a sub-50 score all still win outright),
+  // but there's nothing to band on past this point, so this is a neutral
+  // "Wait" rather than a guess.
+  if (vwapState === NO_VWAP_DATA) {
+    return { action: "Wait", actionKey: "wait", actionWhy: "No VWAP data yet for this symbol." };
+  }
+  // vwapState !== NO_VWAP_DATA from here on, which the caller only sets
+  // alongside a real vwapZ/vwap6a/vwap6sigma -- safe to treat as non-null.
+  const z = vwapZ as number;
+  const vwap6a = inputs.vwap6a as number;
+  const vwap6sigma = inputs.vwap6sigma as number;
+  const price = inputs.price as number;
 
   if (owned) {
     if (vwapState === "Below VWAP: exit / stay out") {
@@ -126,7 +169,7 @@ export function computeAction(inputs: ActionInputs): ActionResult {
         actionWhy: `Below its 6-wk VWAP, but the score is still ${score}: let the winner run. Exit only if the score drops below 45.`,
       };
     }
-    if (vwapZ >= stretchedZThreshold) {
+    if (z >= stretchedZThreshold) {
       return {
         action: "Hold",
         actionKey: "hold",
@@ -150,45 +193,78 @@ export function computeAction(inputs: ActionInputs): ActionResult {
   // vwapState is "Entry signal" or "Uptrend: hold" from here -- z-banded
   // buy/pull/half, with the suggested limit-order zone confirmed as
   // exactly [vwap6_a, vwap6_a + 1*vwap6_sigma] on every pull/half example.
-  const zoneLow = inputs.vwap6a;
-  const zoneHigh = inputs.vwap6a + inputs.vwap6sigma;
+  // The number shown in actionWhy's opening clause is the current PRICE
+  // (confirmed via MNST/DOCS on 2026-10-20: the displayed figure matched
+  // `spot.price`, not vwap6a, despite an earlier version of this file
+  // guessing vwap6a -- that guess was never actually checked against a
+  // real numeric value, only against actionKey/action, so it went
+  // unnoticed until this live date's ground truth was available).
+  const zoneLow = vwap6a;
+  const zoneHigh = vwap6a + vwap6sigma;
   const isRuleBreaker = met === 6;
+  const priceStr = price.toFixed(2);
+  // Confirmed via 4 real Aggressive examples carrying this suffix (IOT,
+  // FIGS, RDDT, WRBY) vs. 6 real Moderate examples without it (ONON, UI,
+  // TSLA, SHOP, ATRC, ISRG) on 2026-10-20 -- present only in the not-owned
+  // pull/half/stretched-half branches below, never in the owned/Hold ones
+  // (checked against 7 owned+Aggressive rows, none carry it).
+  const aggressiveSuffix = riskType === "Aggressive" ? ` ${riskType}: keep it small.` : "";
 
-  // Bands checked widest/most-specific first: stretched (>=2) only reads
-  // as a full "Buy" when met===6 (the one confirmed real example); every
-  // other z>=1 case -- including a met===6 symbol that isn't also
-  // stretched, which has no confirmed example either way -- falls through
-  // to "Buy on pullback" rather than silently guessing it's a full "Buy".
-  if (vwapZ >= stretchedZThreshold && isRuleBreaker) {
+  // Bands checked widest/most-specific first. Confirmed via DOCS on
+  // 2026-10-20 (met=3, z=2.41 -> "Half size", not "Buy on pullback") that
+  // stretched (z>=2) resolves to "Buy" only when met===6; otherwise it's
+  // "Half size" with its own stretched-specific wording, not a fall-through
+  // to the ordinary pullback band below. The 2026-10-19 historical
+  // baseline had zero z>=2/met<6 rows at all, so this branch was
+  // previously unconfirmed guesswork; DOCS is the first real data point.
+  if (z >= stretchedZThreshold) {
+    if (isRuleBreaker) {
+      return {
+        action: "Buy",
+        actionKey: "buy",
+        actionWhy: `Stretched above +2σ (${priceStr}). In the backtest these kept rising more often than not; consider a smaller starter position.`,
+      };
+    }
     return {
-      action: "Buy",
-      actionKey: "buy",
-      actionWhy: `Stretched above +2σ (${inputs.vwap6a.toFixed(2)}). In the backtest these kept rising more often than not; consider a smaller starter position.`,
+      action: "Half size",
+      actionKey: "half",
+      actionWhy: `Stretched above +2σ (${priceStr}). In the backtest these kept rising more often than not; consider a smaller starter position. Half size (score ${score}).${aggressiveSuffix}`,
     };
   }
-  if (vwapZ >= buyOnPullbackZBand[0]) {
+  // KNOWN GAP: on 2026-10-20 the real export used this long
+  // "but only {met} of 6 signs" clause for some met<6 pull/half rows
+  // (IOT, ISRG, SHOP, FIGS, ATRC, TSLA, RDDT) but a shorter "(score
+  // {score})." form with no signs-count clause for others (ONON, WRBY) --
+  // met alone doesn't separate the two groups (met=4 appears on both
+  // sides). Neither form affects action/action_key, only actionWhy's
+  // wording, so parity on the fields that matter (action, action_key,
+  // score, met, c1-c6, safety, risk_type) is unaffected; this file keeps
+  // the long form everywhere rather than guess at the real split.
+  if (z >= buyOnPullbackZBand[0]) {
     return {
       action: "Buy on pullback",
       actionKey: "pull",
       actionWhy:
-        `${inputs.vwap6a.toFixed(2)} is 1–2σ above the VWAP, the weakest spot to buy in the backtest. ` +
+        `${priceStr} is 1–2σ above the VWAP, the weakest spot to buy in the backtest. ` +
         `Set a limit order in the zone ${zoneLow.toFixed(2)}–${zoneHigh.toFixed(2)}.` +
-        (isRuleBreaker ? "" : ` Half size: score ${score} but only ${met} of 6 signs, so not a Rule Breaker.`),
+        (isRuleBreaker ? "" : ` Half size: score ${score} but only ${met} of 6 signs, so not a Rule Breaker.`) +
+        aggressiveSuffix,
     };
   }
-  if (vwapZ >= halfSizeZBand[0] && vwapZ < halfSizeZBand[1]) {
+  if (z >= halfSizeZBand[0] && z < halfSizeZBand[1]) {
     return {
       action: "Half size",
       actionKey: "half",
       actionWhy:
-        `${inputs.vwap6a.toFixed(2)} is inside the buy zone ${zoneLow.toFixed(2)}–${zoneHigh.toFixed(2)}.` +
-        (isRuleBreaker ? "" : ` Half size: score ${score} but only ${met} of 6 signs, so not a Rule Breaker.`),
+        `${priceStr} is inside the buy zone ${zoneLow.toFixed(2)}–${zoneHigh.toFixed(2)}.` +
+        (isRuleBreaker ? "" : ` Half size: score ${score} but only ${met} of 6 signs, so not a Rule Breaker.`) +
+        aggressiveSuffix,
     };
   }
   // Fallback for bands not yet confirmed (e.g. z<0 shouldn't reach here
   // given vwapState checks above, but guard rather than silently misclassify).
   throw new Error(
-    `computeAction: unresolved band for ${inputs.symbol} (z=${vwapZ}, met=${met}, vwapState=${vwapState}) -- ` +
+    `computeAction: unresolved band for ${inputs.symbol} (z=${z}, met=${met}, vwapState=${vwapState}) -- ` +
       `see vwap.ts header comment, this combination wasn't in the confirmed baseline`,
   );
 }

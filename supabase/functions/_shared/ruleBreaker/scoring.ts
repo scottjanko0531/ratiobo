@@ -20,7 +20,7 @@ import * as metrics from "./metrics.ts";
 import { crossSectionalPercentile } from "./crossSectionalRank.ts";
 import * as pillars from "./pillars.ts";
 import { computeScreen, computeQgroup, computeWeakPillar, computeRiskType } from "./classify.ts";
-import { computeVwapZ, computeVwapState, computeAction } from "./vwap.ts";
+import { computeVwapZ, computeVwapState, computeAction, NO_VWAP_DATA } from "./vwap.ts";
 import type {
   ComputedRbScore,
   DriverEntry,
@@ -182,7 +182,9 @@ export interface SymbolScoreInput {
   mcapUsd: number | null;
   fxToUsd: number | null;
   // Ascending by week_start, the LAST element is the current/latest week.
-  // Needs at least 8 weeks (computeVwapState's `won` backward scan).
+  // Fewer than 8 usable weeks (or a missing/incomplete latest bar) is
+  // fine -- vwap_state/vwap_z fall back to NO_VWAP_DATA/null for this
+  // symbol rather than requiring a minimum.
   weeklyBars: RbWeeklyBarInput[];
   fool: RbFoolInput | null;
   rating: RbRatingInput | null;
@@ -292,15 +294,14 @@ export function computeUniverseScores(members: SymbolScoreInput[]): ComputedRbSc
     });
     const riskType = computeRiskType(input.raw.rv ?? null);
 
-    const currentBar = input.weeklyBars[input.weeklyBars.length - 1];
-    const close = currentBar.close;
-    const vwap6a = currentBar.vwap6_a;
-    const vwap6sigma = currentBar.vwap6_sigma;
-    if (close == null || vwap6a == null || vwap6sigma == null) {
-      throw new Error(`computeUniverseScores(${input.symbol}): missing weekly-bar inputs for vwap_z`);
-    }
-    const vwapZ = computeVwapZ(close, vwap6a, vwap6sigma);
-    if (vwapZ == null) throw new Error(`computeUniverseScores(${input.symbol}): vwap6_sigma is zero`);
+    // VWAP is computed per-stock and may simply be missing (a newly-added
+    // symbol with under 8 weeks of history, or today's refresh landing a
+    // bar that's missing close/vwap6_a/vwap6_sigma) -- that is a reason to
+    // fall back to NO_VWAP_DATA for THIS symbol, never a reason to throw
+    // and abort the whole universe. Every symbol still gets a full
+    // percentile-based score; removing one would shift everyone else's
+    // rank and break parity with the live artifact.
+    const currentBar = input.weeklyBars[input.weeklyBars.length - 1] as RbWeeklyBarInput | undefined;
     // The oldest weeks can be partial (not enough daily-bar lookback yet to
     // compute a 6-wk VWAP at all) -- drop those entirely rather than
     // requiring the whole raw history to be populated; `computeVwapState`'s
@@ -308,10 +309,16 @@ export function computeUniverseScores(members: SymbolScoreInput[]): ComputedRbSc
     const weeklyBarsForState = input.weeklyBars
       .filter((b) => b.close != null && b.vwap6_a != null)
       .map((b) => ({ close: b.close!, vwap6: b.vwap6_a! }));
-    if (weeklyBarsForState.length < 8) {
-      throw new Error(`computeUniverseScores(${input.symbol}): needs at least 8 weeks of usable weekly-bar history`);
+
+    let vwapZ: number | null = null;
+    let vwapState = NO_VWAP_DATA;
+    if (currentBar?.close != null && currentBar.vwap6_a != null && currentBar.vwap6_sigma != null) {
+      const z = computeVwapZ(currentBar.close, currentBar.vwap6_a, currentBar.vwap6_sigma);
+      if (z != null) {
+        vwapZ = z;
+        vwapState = computeVwapState(weeklyBarsForState);
+      }
     }
-    const vwapState = computeVwapState(weeklyBarsForState);
     const { action, actionKey, actionWhy } = computeAction({
       symbol: input.symbol,
       score,
@@ -322,8 +329,10 @@ export function computeUniverseScores(members: SymbolScoreInput[]): ComputedRbSc
       vwapZ,
       closedOn: input.fool?.closed_on ?? null,
       priorWeekScore: input.priorWeekScore,
-      vwap6a,
-      vwap6sigma,
+      vwap6a: currentBar?.vwap6_a ?? null,
+      vwap6sigma: currentBar?.vwap6_sigma ?? null,
+      price: currentBar?.close ?? null,
+      riskType,
     });
 
     return {
