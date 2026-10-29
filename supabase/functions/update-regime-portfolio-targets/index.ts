@@ -116,7 +116,39 @@ Deno.serve(async (req: Request) => {
       .maybeSingle();
     const prev: SignalState = sigRow ?? { pending_key: null, pending_since: null, confirmed_key: null, confirmed_since: null, active: false };
 
-    const nearMeetsFloor = !!liveNearKey && liveNearConfidence != null && liveNearConfidence >= CONFIDENCE_FLOOR;
+    // Permanent daily record of today's raw reading -- insert-only (on
+    // conflict do nothing), so a second same-day invocation (e.g. a manual
+    // rerun) never overwrites the day's first/official reading. This is
+    // also the smoothing window's own data source, not just an audit log.
+    await sb.from("nearterm_signal_history").upsert(
+      { snapshot_date: todayStr, key: liveNearKey ?? null, confidence: liveNearConfidence ?? null },
+      { onConflict: "snapshot_date", ignoreDuplicates: true },
+    );
+
+    // Trailing 3-day average (today inclusive), restricted to rows whose
+    // key matches today's liveNearKey -- a day a different key was leading
+    // doesn't count toward this key's average, same principle the streak
+    // logic below already uses (prev.pending_key === liveNearKey). Absorbs
+    // single-day noise (same-day commodity/FX price moves feeding the
+    // Inflation Momentum votes) without changing the existing 7-day
+    // confirmation streak, which is already the real trend-confirmation
+    // mechanism -- just previously fed an unsmoothed single-day input.
+    const SMOOTHING_WINDOW_DAYS = 3;
+    let smoothedConfidence: number | null = null;
+    if (liveNearKey) {
+      const windowStart = addDays(todayStr, -(SMOOTHING_WINDOW_DAYS - 1));
+      const { data: histRows } = await sb
+        .from("nearterm_signal_history")
+        .select("confidence")
+        .eq("key", liveNearKey)
+        .gte("snapshot_date", windowStart)
+        .lte("snapshot_date", todayStr)
+        .not("confidence", "is", null);
+      const vals = (histRows ?? []).map((r) => Number(r.confidence));
+      if (vals.length > 0) smoothedConfidence = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+    }
+
+    const nearMeetsFloor = !!liveNearKey && smoothedConfidence != null && smoothedConfidence >= CONFIDENCE_FLOOR;
 
     let pendingKey: string | null;
     let pendingSince: string | null;
@@ -187,8 +219,8 @@ Deno.serve(async (req: Request) => {
       notifRows.push({
         category: "regime_signal", type: "signal_fired", importance: "medium",
         title: `Near-Term signal: ${REGIME_LABELS[pendingKey as string] ?? pendingKey} crossed 60% confidence`,
-        description: `Confidence is ${liveNearConfidence}%. If it holds through ${confirmsOn}, ${portfolioNamesText} will shift to ${REGIME_LABELS[pendingKey as string] ?? pendingKey}.`,
-        metadata: { key: pendingKey, confidence: liveNearConfidence, pending_since: pendingSince, confirms_on: confirmsOn },
+        description: `Today's reading is ${liveNearConfidence}% (${SMOOTHING_WINDOW_DAYS}-day average ${smoothedConfidence}%). If it holds through ${confirmsOn}, ${portfolioNamesText} will shift to ${REGIME_LABELS[pendingKey as string] ?? pendingKey}.`,
+        metadata: { key: pendingKey, confidence: liveNearConfidence, smoothed_confidence: smoothedConfidence, pending_since: pendingSince, confirms_on: confirmsOn },
         dedup_key: `nearterm_signal_fired:${pendingKey}:${pendingSince}`,
       });
     }
@@ -249,6 +281,7 @@ Deno.serve(async (req: Request) => {
     return json({
       structuralKey: structuralKey ?? null,
       liveNearKey: liveNearKey ?? null, liveNearConfidence: liveNearConfidence ?? null,
+      smoothedConfidence, smoothingWindowDays: SMOOTHING_WINDOW_DAYS,
       pendingKey, pendingSince, confirmedKey, confirmedSince, active, fired, newlyConfirmed,
       processed: results.length, results,
     });
