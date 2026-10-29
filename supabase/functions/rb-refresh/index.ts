@@ -144,9 +144,13 @@ Deno.serve(async (req: Request) => {
           liqCV: chart1y.liqCV,
         };
 
+        // rb_fundamentals is append-only (trigger-enforced) -- a same-day
+        // re-run (e.g. recovering from a partial failure) must no-op on a
+        // symbol it already captured today rather than error, so this is
+        // ignoreDuplicates, not a plain overwrite-on-conflict upsert.
         const { error: fErr } = await supabase.from("rb_fundamentals").upsert(
           { symbol: company.symbol, asof: today, raw, fcur: ts.fcur, fx_to_usd: fxToUsd, mcap_usd: mcapUsd },
-          { onConflict: "symbol,asof" },
+          { onConflict: "symbol,asof", ignoreDuplicates: true },
         );
         if (fErr) throw new Error(`rb_fundamentals upsert: ${fErr.message}`);
 
