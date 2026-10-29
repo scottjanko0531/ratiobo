@@ -2236,9 +2236,22 @@ async function updateCurrentRegimeHistory(processedRows: ProcessedRow[]): Promis
       joblessClaimsTrend: claimsTrendRow?.current_value  != null ? Number(claimsTrendRow.current_value)  : null,
     };
 
-    const now = new Date();
-    const q = Math.floor(now.getUTCMonth() / 3);
-    const periodDate = `${now.getUTCFullYear()}-${String(q * 3 + 1).padStart(2, "0")}-01`;
+    // periodDate must be the GDP quarter gdpYoy actually describes, not
+    // wall-clock "now" -- GDPC1 releases lag ~1 month behind the quarter
+    // they report, so during that lag window "now"'s calendar quarter is
+    // ahead of the quarter the current reading is still describing (e.g.
+    // a run on Oct 29 before Q3's advance estimate lands would stamp
+    // "2026-10-01" on what is still Q2's 2.19% reading -- exactly the bug
+    // that produced a mislabeled row this session). gdpRow.metadata.
+    // reference_period is the real FRED observation date for this exact
+    // reading (set in the yoy_quarterly case, same field get-gdp-crossover-
+    // history dates its own rows by), so use that instead of deriving a
+    // date independently.
+    const periodDate = gdpRow.metadata?.reference_period as string | undefined;
+    if (!periodDate) {
+      console.error("[regime_history] gdpRow.metadata.reference_period missing -- skipping to avoid mis-dating this row");
+      return;
+    }
     const r2 = (n: number) => Math.round(n * 100) / 100;
 
     const { nearTerm, mediumTerm } = computeEdgeFwdSignals(rowsForSignal);
