@@ -6,6 +6,7 @@ import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { REGIME_META, GROWTH_MIN_GAP, CPI_MIN_GAP } from "../../../lib/simulatorKeys";
+import { supabase } from "../../../lib/supabase";
 
 // Joint Growth x Inflation quadrant, same mapping used by the Structural
 // Regime drawer on the main Macro page — kept in sync by hand since this is
@@ -165,6 +166,15 @@ function AccuracyCard({ title, windows, showDirectional }) {
 export default function GridModelPage() {
   const [gdpRows, setGdpRows] = useState(null);
   const [cpiRows, setCpiRows] = useState(null);
+  // Forward-looking forecast rows (today onward) use this instead of a
+  // flat structural-only projection -- same precedence
+  // update-regime-portfolio-targets uses to drive the two live
+  // regime-driven portfolios, so the grid's forward forecast agrees with
+  // what actually governs real allocations: structural by default, the
+  // Near-Term override once it's cleared the confidence floor and held
+  // for 7 days. null until loaded; historical rows don't use this at all
+  // (no historical Near-Term confidence data exists to retest against).
+  const [effectiveRegimeKey, setEffectiveRegimeKey] = useState(null);
 
   useEffect(() => {
     Promise.all([
@@ -176,18 +186,38 @@ export default function GridModelPage() {
         setCpiRows(Array.isArray(c) ? c : []);
       })
       .catch(() => { setGdpRows([]); setCpiRows([]); });
+
+    Promise.all([
+      supabase.from("dalio_regime_analysis").select("structural_key").order("analysis_date", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("nearterm_signal_state").select("active,confirmed_key").eq("id", true).maybeSingle(),
+    ])
+      .then(([regimeRes, signalRes]) => {
+        const structuralKey = regimeRes.data?.structural_key ?? null;
+        const active = signalRes.data?.active ?? false;
+        const confirmedKey = signalRes.data?.confirmed_key ?? null;
+        setEffectiveRegimeKey(active && confirmedKey ? confirmedKey : structuralKey);
+      })
+      .catch(() => setEffectiveRegimeKey(null));
   }, []);
 
   const gdpRecon = useMemo(() => (gdpRows ? buildSeriesReconstruction(gdpRows, GROWTH_MIN_GAP, 3, 3, 4) : []), [gdpRows]);
   const cpiRecon = useMemo(() => (cpiRows ? buildSeriesReconstruction(cpiRows, CPI_MIN_GAP, 3, 1, 12) : []), [cpiRows]);
 
-  // Joint regime reconstruction — same 3-case logic (both real / both
-  // Persistence carry-forward / mixed near-side lean) validated on the
-  // Structural Regime drawer, ported here since this route doesn't share
-  // component state with page.jsx. Forward-projects Q+1..Q+4 flat from the
-  // latest issue date, one quarter further than the drawer's Q+1..Q+3 so
-  // the grid's forward columns reach a full 12 months out, matching GDP's
-  // own forward horizon on this page.
+  // Joint regime reconstruction. Both "actual" and "forecast" are lookups
+  // into ONE shared chronological classification of every quarter
+  // (quarterRegime below), not two separately-maintained carry-forward
+  // chains -- that split is what caused a real bug found live: actual's
+  // chain only advanced when a quarter's realized GDP *and* CPI both beat
+  // the PRIOR quarter's forecast by a full dead-band gap simultaneously, a
+  // bar that walking 2+ years of real data never once cleared, so it sat
+  // frozen at a years-old value (showed Disinflationary Boom for Sep 2026
+  // while the authoritative structural_key had read Stagflation every day
+  // since Oct 18). Direct per-quarter classification with persistence
+  // carry-forward -- the same dead-band convention used in
+  // resolveAxisState/detectRegimeKey elsewhere (fetch-macro-data,
+  // get-regime-analysis) -- doesn't have that failure mode: it only ever
+  // needs ONE quarter's own crossover to read a real direction, not a
+  // cross-quarter surprise test.
   const regimeRecon = useMemo(() => {
     if (!gdpRows || !cpiRows || !gdpRows.length) return [];
     const sortedGdp = gdpRows.slice().sort((a, b) => (a.date < b.date ? -1 : 1));
@@ -196,27 +226,46 @@ export default function GridModelPage() {
     const nearSideOf = (gap) => (gap > 0 ? "accelerating" : "decelerating");
     const gdpByDate = new Map(sortedGdp.map((r) => [r.date, r]));
 
+    // Pass 1: classify every quarter once, chronologically, into a single
+    // date -> regimeKey map. A "leaning" read (one axis in its dead band)
+    // is provisional and does NOT become the new carried-forward truth --
+    // mirrors the Macro page's own leaning-quadrant semantics (a lean
+    // isn't a confirmed regime, only a full non-persistence read is).
+    const quarterRegime = new Map();
     let lastConfirmed = null;
-    let latestIssueDate = null, latestForecastKey = null;
+    for (const g of sortedGdp) {
+      const c = cpiByDate.get(g.date);
+      if (!c || g.fast == null || g.slow == null || c.fast == null || c.slow == null) continue;
+      const gGap = g.fast - g.slow, iGap = c.fast - c.slow;
+      const gState = stateOf(gGap, GROWTH_MIN_GAP), iState = stateOf(iGap, CPI_MIN_GAP);
+      let key;
+      if (gState !== "persistence" && iState !== "persistence") {
+        key = regimeQuadrantKey(gState, iState);
+        lastConfirmed = key;
+      } else if (gState === "persistence" && iState === "persistence") {
+        key = lastConfirmed;
+      } else {
+        const gLean = gState === "persistence" ? nearSideOf(gGap) : gState;
+        const iLean = iState === "persistence" ? nearSideOf(iGap) : iState;
+        key = regimeQuadrantKey(gLean, iLean);
+      }
+      quarterRegime.set(g.date, key);
+    }
+
+    // Pass 2: forecastKey for an issuing quarter = quarterRegime at that
+    // quarter's own date ("the regime as of now, projected flat forward"
+    // -- no momentum extrapolation, same philosophy fetch-macro-data
+    // documents for its own forecast log). actualKey for the target
+    // quarter 3 months later = quarterRegime at ITS date, same map, same
+    // method -- gated on the target quarter's raw actuals existing so a
+    // not-yet-released quarter still shows no actual/no hit.
+    let latestIssueDate = null;
     const out = [];
     for (const g of sortedGdp) {
       const c = cpiByDate.get(g.date);
       if (!c || g.fast == null || g.slow == null || c.fast == null || c.slow == null) continue;
-
-      const gGap = g.fast - g.slow, iGap = c.fast - c.slow;
-      const gState = stateOf(gGap, GROWTH_MIN_GAP), iState = stateOf(iGap, CPI_MIN_GAP);
-      let forecastKey;
-      if (gState !== "persistence" && iState !== "persistence") {
-        forecastKey = regimeQuadrantKey(gState, iState);
-      } else if (gState === "persistence" && iState === "persistence") {
-        forecastKey = lastConfirmed;
-      } else {
-        const gLean = gState === "persistence" ? nearSideOf(gGap) : gState;
-        const iLean = iState === "persistence" ? nearSideOf(iGap) : iState;
-        forecastKey = regimeQuadrantKey(gLean, iLean);
-      }
+      const forecastKey = quarterRegime.get(g.date) ?? null;
       latestIssueDate = g.date;
-      latestForecastKey = forecastKey;
 
       const d = new Date(g.date + "T00:00:00Z");
       const targetDate = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 3, 1)).toISOString().slice(0, 10);
@@ -225,29 +274,28 @@ export default function GridModelPage() {
 
       let actualKey = null, hit = null;
       if (gTarget?.actual != null && cTarget?.actual != null) {
-        const gDelta = gTarget.actual - g.fast, iDelta = cTarget.actual - c.fast;
-        const gDir = Math.abs(gDelta) > GROWTH_MIN_GAP ? (gDelta > 0 ? "accelerating" : "decelerating") : "flat";
-        const iDir = Math.abs(iDelta) > CPI_MIN_GAP ? (iDelta > 0 ? "accelerating" : "decelerating") : "flat";
-        if (gDir !== "flat" && iDir !== "flat") {
-          actualKey = regimeQuadrantKey(gDir, iDir);
-          lastConfirmed = actualKey;
-        } else {
-          actualKey = lastConfirmed;
-        }
+        actualKey = quarterRegime.get(targetDate) ?? null;
         hit = forecastKey != null && actualKey != null ? forecastKey === actualKey : null;
       }
       out.push({ date: targetDate, forecastKey, actualKey, hit, forward: false });
     }
-    if (latestIssueDate && latestForecastKey != null) {
+
+    // Forward Q+1..Q+4: prefer effectiveRegimeKey (structural + Near-Term
+    // override, same precedence update-regime-portfolio-targets uses to
+    // drive the live portfolios) over a flat structural-only projection --
+    // falls back to the latest quarter's own classification only if that
+    // hasn't loaded yet.
+    const forwardKey = effectiveRegimeKey ?? (latestIssueDate ? quarterRegime.get(latestIssueDate) ?? null : null);
+    if (latestIssueDate && forwardKey != null) {
       const d = new Date(latestIssueDate + "T00:00:00Z");
       for (const h of [1, 2, 3, 4]) {
         const targetDate = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + h * 3, 1)).toISOString().slice(0, 10);
         if (out.some((o) => o.date === targetDate)) continue;
-        out.push({ date: targetDate, forecastKey: latestForecastKey, actualKey: null, hit: null, forward: true });
+        out.push({ date: targetDate, forecastKey: forwardKey, actualKey: null, hit: null, forward: true });
       }
     }
     return out.filter((r) => r.hit !== null || r.forecastKey != null).sort((a, b) => (a.date < b.date ? -1 : 1));
-  }, [gdpRows, cpiRows]);
+  }, [gdpRows, cpiRows, effectiveRegimeKey]);
 
   const gdpByQuarter = useMemo(() => new Map(gdpRecon.map((r) => [r.date, r])), [gdpRecon]);
   const cpiByMonth = useMemo(() => new Map(cpiRecon.map((r) => [r.date, r])), [cpiRecon]);
