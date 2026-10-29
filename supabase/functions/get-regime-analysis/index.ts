@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { addMonths, isBorderline, estimateConfirmDate } from "../_shared/inflationRegime.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -17,6 +18,16 @@ const REGIME_LABELS: Record<string, string> = {
   rg_ri: "Reflation",
   fg_ri: "Stagflation",
   fg_fi: "Deflationary Bust",
+};
+
+// Bera-Harvey-Hooper inflation-LEVEL states (Regime Tilt Recalibration
+// Phase 1) — distinct from the Dalio quadrants above: this classifies how
+// high inflation is relative to its own trailing 10y history, not its
+// direction, and lags 2 months plus a 3-month confirmation filter.
+const INFL_LEVEL_LABELS: Record<string, string> = {
+  stagflation: "Stagflation",
+  overheating: "Overheating",
+  contained: "Contained",
 };
 
 interface MarketTick { name: string; price: number; changePct: number; }
@@ -836,6 +847,10 @@ async function generateAnalysis(params: {
   yieldCurveState: YieldCurveState;
   credit: CreditIndicator[];
   liquidity: LiquidityIndicator;
+  inflLevelState: string | null; inflCandidateState: string | null;
+  inflCandidateCount: number | null; inflAccelVote: string | null;
+  inflCpiMargin: number | null; inflBorderline: boolean; inflConfirmBy: string | null;
+  inflClassificationMonth: string | null; inflDataMonth: string | null;
   today: string;
   correction?: string; // set on the one-shot retry after a failed consistency check
 }): Promise<string | null> {
@@ -846,7 +861,10 @@ async function generateAnalysis(params: {
       structuralNote, marketNote, fwdNote, nearTermNote,
       gdp, cpi, ppi, t10y2y, lei, breakeven,
       prevGdp, prevCpi, prevPpi, prevLei, prevBe,
-      marketSnapshot, supplyChain, yieldCurveState, credit, liquidity, today, correction,
+      marketSnapshot, supplyChain, yieldCurveState, credit, liquidity,
+      inflLevelState, inflCandidateState, inflCandidateCount, inflAccelVote,
+      inflCpiMargin, inflBorderline, inflConfirmBy, inflClassificationMonth, inflDataMonth,
+      today, correction,
     } = params;
     const todayFormatted = new Date(today + "T00:00:00Z").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
@@ -865,6 +883,14 @@ async function generateAnalysis(params: {
       .map(c => `  ${c.name}: ${c.value != null ? c.value : "n/a"}${c.status ? ` (${c.status.toUpperCase()})` : ""}`)
       .join("\n");
     const anyCreditHealthy = credit.some(c => c.status === "healthy");
+
+    const inflLabel = inflLevelState ? (INFL_LEVEL_LABELS[inflLevelState] ?? inflLevelState) : "not yet classified";
+    const inflCandidateLabel = inflCandidateState ? (INFL_LEVEL_LABELS[inflCandidateState] ?? inflCandidateState) : "n/a";
+    const inflMonthFmt = (m: string | null) => m ? new Date(m + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" }) : "n/a";
+    const inflMarginPts = inflCpiMargin != null ? `${inflCpiMargin >= 0 ? "+" : ""}${(inflCpiMargin * 100).toFixed(2)}pts` : "n/a";
+    const inflConfirmByFmt = inflConfirmBy
+      ? new Date(inflConfirmBy + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+      : null;
 
     const liquidityLine = liquidity.totalCompositeYoy != null
       ? `${liquidity.totalCompositeYoy >= 0 ? "+" : ""}${liquidity.totalCompositeYoy.toFixed(1)}% YoY (z ${liquidity.zscore != null ? liquidity.zscore.toFixed(2) : "n/a"}σ vs. full history) — ${liquidity.direction === "unknown" ? "trend unavailable" : `${liquidity.direction} vs. 6 months ago`}`
@@ -912,6 +938,11 @@ PERSISTENCE — HARD CONSTRAINT: any signal above followed by a bracketed note i
 
 SIGNAL 1 — Structural regime (level-based, 3Y trailing averages):
   ${regimeLabel}${structuralNote}
+
+SIGNAL 1b — Inflation level (Bera-Harvey-Hooper: confirmed vs. a trailing-10y percentile, not direction — a slow-moving conditioning variable, separate from the quadrant above):
+  ${inflMonthFmt(inflDataMonth)} data → ${inflMonthFmt(inflClassificationMonth)} classification: ${inflLabel} (candidate: ${inflCandidateLabel}, ${inflCandidateCount ?? "n/a"} of 3 months) · margin ${inflMarginPts}${inflBorderline ? " (BORDERLINE — do not describe this as a firm reading either way)" : ""} · acceleration vote: ${inflAccelVote ?? "n/a"}
+  ${inflConfirmByFmt ? `Could reach confirmation around ${inflConfirmByFmt} (est.) if the level holds.` : ""}
+  This is informational only for now — do not use it to override or hedge Signal 1's quadrant call.
 
 SIGNAL 2 — Structural momentum (direction of hard data, 15–60 day lag):
   GDP:      ${n(gdp, 2, true)}${delta(gdp, prevGdp)} ${arrow(gdp, prevGdp)}
@@ -1135,7 +1166,7 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const [{ data: macroRows }, marketSnapshot, topNews, mvItem, watchedTopics, supplyChain, yieldCurve, fedOdds, liquidity, { data: bigCycleAudit }] = await Promise.all([
+    const [{ data: macroRows }, marketSnapshot, topNews, mvItem, watchedTopics, supplyChain, yieldCurve, fedOdds, liquidity, { data: bigCycleAudit }, { data: inflationRow }] = await Promise.all([
       sb.from("macro_indicators").select("name,current_value,previous_value,status,metadata"),
       getMarketSnapshot(),
       fetchTopNews(5),
@@ -1156,7 +1187,37 @@ Deno.serve(async (req: Request) => {
         .order("run_at", { ascending: false })
         .limit(1)
         .maybeSingle(),
+      // Regime Tilt Recalibration Phase 1 — Bera-Harvey-Hooper inflation-
+      // level classifier. Written nightly by update-inflation-regime;
+      // informational only this phase (SIGNAL 1b), not yet acted on.
+      sb.from("inflation_regime_history")
+        .select("month, confirmed_state, candidate_state, candidate_count, accel_vote, cpi_yoy, cpi_p75, cpi_margin, ip_yoy, ip_cagr10")
+        .order("month", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
     ]);
+    const inflLevelState = inflationRow?.confirmed_state ?? null;
+    const inflCandidateState = inflationRow?.candidate_state ?? null;
+    const inflCandidateCount = inflationRow?.candidate_count ?? null;
+    const inflAccelVote = inflationRow?.accel_vote ?? null;
+    const inflCpiYoy = inflationRow?.cpi_yoy ?? null;
+    const inflCpiP75 = inflationRow?.cpi_p75 ?? null;
+    const inflCpiMargin = inflationRow?.cpi_margin ?? null;
+    const inflIpYoy = inflationRow?.ip_yoy ?? null;
+    const inflIpCagr10 = inflationRow?.ip_cagr10 ?? null;
+    // Spec §3.5: `month` is the CLASSIFICATION month (data month + 2) —
+    // both must be labeled explicitly so a reading doesn't look a
+    // month or two off from the CPI/IP prints that actually drove it.
+    const inflClassificationMonth = inflationRow?.month ?? null;
+    const inflDataMonth = inflClassificationMonth ? addMonths(inflClassificationMonth.slice(0, 7) + "-01", -2) : null;
+    const inflBorderline = isBorderline(inflCpiMargin);
+    // Only a genuinely pending change gets a confirm-by estimate — a
+    // long-settled streak's candidateCount keeps climbing but isn't
+    // "pending" anything.
+    const inflConfirmBy = inflDataMonth && inflCandidateState && inflCandidateState !== inflLevelState
+      ? estimateConfirmDate(inflDataMonth, inflCandidateCount ?? 0)
+      : null;
+
     const bigCycleArmedCount = bigCycleAudit?.trip_wires
       ? Object.values(bigCycleAudit.trip_wires as Record<string, { armed?: boolean }>).filter((w) => w?.armed).length
       : null;
@@ -1360,6 +1421,8 @@ Deno.serve(async (req: Request) => {
       yieldCurveState: yieldCurve.state,
       credit,
       liquidity,
+      inflLevelState, inflCandidateState, inflCandidateCount, inflAccelVote,
+      inflCpiMargin, inflBorderline, inflConfirmBy, inflClassificationMonth, inflDataMonth,
       today,
     };
 
@@ -1423,6 +1486,19 @@ Deno.serve(async (req: Request) => {
       nearterm_forward_key: nearTermFwdKey,
       nearterm_forward_confidence: nearTermFwdConf,
       market_snapshot: marketSnapshot,
+      infl_level_state: inflLevelState,
+      infl_candidate_state: inflCandidateState,
+      infl_candidate_count: inflCandidateCount,
+      infl_accel_vote: inflAccelVote,
+      infl_cpi_yoy: inflCpiYoy,
+      infl_cpi_p75: inflCpiP75,
+      infl_ip_yoy: inflIpYoy,
+      infl_ip_cagr10: inflIpCagr10,
+      infl_cpi_margin: inflCpiMargin,
+      infl_borderline: inflBorderline,
+      infl_confirm_by: inflConfirmBy,
+      infl_classification_month: inflClassificationMonth,
+      infl_data_month: inflDataMonth,
       generated_at: new Date().toISOString(),
     };
 

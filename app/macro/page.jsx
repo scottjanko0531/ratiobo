@@ -7526,6 +7526,23 @@ function IndirectBidderDrawer({ open, onClose, ind }) {
 }
 
 // ── Regime vs. Market Analysis ────────────────────────────────────────────────
+// Mirrors supabase/functions/get-regime-analysis's INFL_LEVEL_LABELS —
+// Regime Tilt Recalibration Phase 1 (Bera-Harvey-Hooper inflation level).
+const INFL_LEVEL_DISPLAY = { stagflation: "Stagflation", overheating: "Overheating", contained: "Contained" };
+function fmtPctSigned(v) {
+  return v == null ? "n/a" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
+}
+function fmtMarginPts(v) {
+  return v == null ? "n/a" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}pts`;
+}
+function fmtMonth(dateStr, withDay = false) {
+  if (!dateStr) return "n/a";
+  const opts = withDay
+    ? { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }
+    : { month: "short", year: "numeric", timeZone: "UTC" };
+  return new Date(dateStr + "T00:00:00Z").toLocaleDateString("en-US", opts);
+}
+
 function RegimeAnalysisCard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -7632,6 +7649,44 @@ function RegimeAnalysisCard() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Inflation level (Bera-Harvey-Hooper) — Regime Tilt Recalibration
+            Phase 1 + §3.5 follow-ups. Informational only: not yet used
+            anywhere downstream. */}
+        {data.infl_level_state !== undefined && (
+          <div className="border-t border-ink-line pt-4 mt-4">
+            <div className="flex items-center justify-between flex-wrap gap-2 mb-0.5">
+              <p className="label text-[10px]">Inflation Level — Bera-Harvey-Hooper</p>
+              <span className="text-[10px] text-paper-dim/50">
+                {fmtMonth(data.infl_data_month)} data → {fmtMonth(data.infl_classification_month)} classification
+              </span>
+            </div>
+            <div className="flex items-center justify-between flex-wrap gap-2 mb-1.5 mt-1">
+              <span className="text-sm font-semibold text-paper">
+                {INFL_LEVEL_DISPLAY[data.infl_level_state] ?? "Not yet classified"}
+              </span>
+              <span className="text-[11px] text-paper-dim">
+                Candidate: {INFL_LEVEL_DISPLAY[data.infl_candidate_state] ?? "n/a"}, {data.infl_candidate_count ?? "—"} of 3
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-paper-dim/80 mb-1.5">
+              <span>CPI YoY: <span className="num text-paper">{fmtPctSigned(data.infl_cpi_yoy)}</span> vs P75 <span className="num">{fmtPctSigned(data.infl_cpi_p75)}</span></span>
+              <span>IP YoY: <span className="num text-paper">{fmtPctSigned(data.infl_ip_yoy)}</span> vs CAGR10 <span className="num">{fmtPctSigned(data.infl_ip_cagr10)}</span></span>
+              <span>Accel 3/6/9mo vote: <span className="text-paper">{data.infl_accel_vote ?? "n/a"}</span></span>
+              <span>
+                Margin: <span className="num text-paper">{fmtMarginPts(data.infl_cpi_margin)}</span>
+                {data.infl_borderline && (
+                  <span className="ml-1.5 text-[10px] font-semibold text-brass-soft">BORDERLINE</span>
+                )}
+              </span>
+            </div>
+            {data.infl_confirm_by && (
+              <p className="text-[10px] text-paper-dim/60">
+                Could confirm ~{fmtMonth(data.infl_confirm_by, true)} (est.) if CPI stays above the threshold.
+              </p>
+            )}
           </div>
         )}
 

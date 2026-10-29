@@ -52,6 +52,7 @@ const FRED_SERIES: { id: string; label: string }[] = [
   { id: "PCEPILFE", label: "Core PCE price index" },
   { id: "CPIAUCSL", label: "CPI, all urban consumers" },
   { id: "EXPINF1YR", label: "Cleveland Fed 1-year expected inflation" },
+  { id: "INDPRO", label: "Industrial Production Index" },
 ];
 
 type RawRow = { series_id: string; obs_date: string; value: number; source: string; target_quarter?: string };
