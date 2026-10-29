@@ -54,6 +54,7 @@ interface RegimePortfolio {
   id: string; portfolio_name: string;
   current_regime_key: string | null; regime_confirmed_since: string | null;
   pending_regime_key: string | null; pending_regime_since: string | null;
+  regime_auto_shift: boolean;
 }
 
 interface SignalState {
@@ -200,7 +201,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: portfolios } = await sb
       .from("portfolios")
-      .select("id,portfolio_name,current_regime_key,regime_confirmed_since,pending_regime_key,pending_regime_since")
+      .select("id,portfolio_name,current_regime_key,regime_confirmed_since,pending_regime_key,pending_regime_since,regime_auto_shift")
       .eq("strategy_framework", "regime_driven");
     const portfolioNames = (portfolios ?? []).map((p) => (p as RegimePortfolio).portfolio_name);
     const portfolioNamesText = portfolioNames.length
@@ -239,6 +240,12 @@ Deno.serve(async (req: Request) => {
 
     const results: { portfolioId: string; action: string }[] = [];
     const effectiveKey: string | null = active && confirmedKey ? confirmedKey : structuralKey;
+    // Regime Tilt Recalibration Phase 0: per-portfolio notifications for a
+    // held (regime_auto_shift=false) portfolio -- separate from the
+    // signal-level notifRows above since these name a specific portfolio,
+    // not the shared clock. Same upsert+dedup_key pattern, sent once after
+    // the loop.
+    const heldNotifRows: Record<string, unknown>[] = [];
 
     for (const pf of (portfolios ?? []) as RegimePortfolio[]) {
       // Mirror the shared clock onto each portfolio's own columns purely so
@@ -265,6 +272,28 @@ Deno.serve(async (req: Request) => {
       }
 
       const fromKey = pf.current_regime_key;
+
+      if (!pf.regime_auto_shift) {
+        // Held: record what WOULD have happened (applied=false) and notify,
+        // but never touch target_allocations/current_regime_key. The
+        // signal clock above already ran normally -- this only withholds
+        // acting on it for this one portfolio.
+        await sb.from("portfolio_regime_shifts").insert({
+          portfolio_id: pf.id, from_key: fromKey, to_key: effectiveKey,
+          from_label: fromKey ? (REGIME_LABELS[fromKey] ?? fromKey) : null, to_label: REGIME_LABELS[effectiveKey] ?? effectiveKey,
+          applied: false,
+        });
+        heldNotifRows.push({
+          category: "regime_signal", type: "signal_shift_suppressed", importance: "medium",
+          title: `Shift to ${REGIME_LABELS[effectiveKey] ?? effectiveKey} suppressed — auto-shift is off for ${pf.portfolio_name}`,
+          description: `${pf.portfolio_name} would have shifted from ${fromKey ? (REGIME_LABELS[fromKey] ?? fromKey) : "no regime"} to ${REGIME_LABELS[effectiveKey] ?? effectiveKey} today, but auto-shift is paused for this portfolio. Turn it back on to resume.`,
+          metadata: { portfolio_id: pf.id, from_key: fromKey, to_key: effectiveKey },
+          dedup_key: `regime_shift_suppressed:${pf.id}:${effectiveKey}:${todayStr}`,
+        });
+        results.push({ portfolioId: pf.id, action: "held" });
+        continue;
+      }
+
       await sb.from("portfolios").update({
         target_allocations: REGIME_DEFAULT_WEIGHTS[effectiveKey],
         current_regime_key: effectiveKey,
@@ -276,6 +305,10 @@ Deno.serve(async (req: Request) => {
         from_label: fromKey ? (REGIME_LABELS[fromKey] ?? fromKey) : null, to_label: REGIME_LABELS[effectiveKey] ?? effectiveKey,
       });
       results.push({ portfolioId: pf.id, action: fromKey ? "shifted" : "activated" });
+    }
+
+    if (heldNotifRows.length) {
+      await sb.from("notifications").upsert(heldNotifRows, { onConflict: "dedup_key", ignoreDuplicates: true });
     }
 
     return json({

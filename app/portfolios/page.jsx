@@ -1129,9 +1129,30 @@ export default function PortfoliosPage() {
                   const horizon = pf.regime_signal_horizon === "near_term" ? "near_term" : "medium_term";
                   const confirmDays = horizon === "near_term" ? 7 : 30;
                   const horizonLabel = horizon === "near_term" ? "Near-Term Forward Signal (2-3mo)" : "Medium-Term Forward Signal (6-18mo)";
+                  const toggleAutoShift = async () => {
+                    const next = !pf.regime_auto_shift;
+                    const { error } = await supabase.from("portfolios").update({ regime_auto_shift: next }).eq("id", pf.id);
+                    if (error) return;
+                    setViewingPortfolio((prev) => (prev ? { ...prev, regime_auto_shift: next } : prev));
+                    setPortfolios((prev) => prev.map((p) => (p.id === pf.id ? { ...p, regime_auto_shift: next } : p)));
+                  };
                   return (
                   <div className="px-5 py-3 border-b border-ink-line bg-ink/30">
-                    <p className="label text-[10px] mb-1">Regime-Driven Targets <span className="text-paper-dim/50 normal-case">· driven by {horizonLabel}</span></p>
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="label text-[10px]">Regime-Driven Targets <span className="text-paper-dim/50 normal-case">· driven by {horizonLabel}</span></p>
+                      <label className="flex items-center gap-1.5 cursor-pointer shrink-0" title="When off, the daily job keeps tracking the signal but won't change this portfolio's targets until turned back on.">
+                        <input
+                          type="checkbox"
+                          checked={pf.regime_auto_shift ?? true}
+                          onChange={toggleAutoShift}
+                          className="cursor-pointer"
+                        />
+                        <span className="text-[10px] text-paper-dim">Auto-shift</span>
+                      </label>
+                    </div>
+                    {pf.regime_auto_shift === false && (
+                      <p className="text-[10px] text-brass-soft mb-1">Auto-shift is paused — targets won't change until you turn it back on.</p>
+                    )}
                     {pf.current_regime_key ? (
                       <p className="text-xs text-paper-dim leading-relaxed">
                         Currently targeting <span className="text-paper font-medium">{REGIME_META[pf.current_regime_key]?.label ?? pf.current_regime_key}</span> weights
@@ -1150,8 +1171,9 @@ export default function PortfoliosPage() {
                     {regimeShifts.length > 0 && (
                       <div className="mt-2 pt-2 border-t border-ink-line/50 space-y-1">
                         {regimeShifts.slice(0, 5).map((r) => (
-                          <p key={r.id} className="text-[10px] text-paper-dim/70">
+                          <p key={r.id} className={`text-[10px] ${r.applied === false ? "text-paper-dim/40 italic" : "text-paper-dim/70"}`}>
                             {r.shifted_at?.slice(0, 10)} — {r.from_label ? `${r.from_label} → ${r.to_label}` : `Activated at ${r.to_label}`}
+                            {r.applied === false && " (suppressed — auto-shift was off)"}
                           </p>
                         ))}
                       </div>
