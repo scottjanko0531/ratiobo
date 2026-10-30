@@ -2111,6 +2111,23 @@ function QuadrantCard({ indicators, holdings, assetData, bigCycleArmedCount }) {
   let tiltMultiplier = Math.min(growthTiltMult, inflTiltMult);
   if (isTransitional) tiltMultiplier = Math.min(tiltMultiplier, 0.5);
   const tiltTier = tiltMultiplier === 0 ? "baseline" : tiltMultiplier < 1 ? "partial" : "full";
+
+  // Regime Tilt Recalibration Phase 3 §5.3 — labels the Positioning
+  // Signal with the live inflation-level variant ("high-inflation,
+  // decelerating" etc.), reading the same two columns
+  // get-regime-analysis already writes to dalio_regime_analysis.
+  // Declared here, before its first use below, rather than down by the
+  // other effects — it was previously declared after computeSuggestedPcts
+  // already referenced it, which throws "Cannot access before
+  // initialization" on every load.
+  const [inflVariant, setInflVariant] = useState("base");
+  useEffect(() => {
+    supabase.from("dalio_regime_analysis").select("infl_level_state, infl_accel_vote")
+      .order("analysis_date", { ascending: false }).limit(1).maybeSingle()
+      .then(({ data }) => setInflVariant(deriveVariantClient(data?.infl_level_state ?? null, data?.infl_accel_vote ?? null)))
+      .catch(() => setInflVariant("base"));
+  }, []);
+
   const suggestedPcts = regimeKey
     ? computeSuggestedPcts(regimeKey, allocMethod, assetData, tiltMultiplier, inflVariant)
     : {};
@@ -2157,17 +2174,6 @@ function QuadrantCard({ indicators, holdings, assetData, bigCycleArmedCount }) {
       .catch(() => setNearTermSignalState(null));
   }, []);
 
-  // Regime Tilt Recalibration Phase 3 §5.3 — labels the Positioning
-  // Signal with the live inflation-level variant ("high-inflation,
-  // decelerating" etc.), reading the same two columns
-  // get-regime-analysis already writes to dalio_regime_analysis.
-  const [inflVariant, setInflVariant] = useState("base");
-  useEffect(() => {
-    supabase.from("dalio_regime_analysis").select("infl_level_state, infl_accel_vote")
-      .order("analysis_date", { ascending: false }).limit(1).maybeSingle()
-      .then(({ data }) => setInflVariant(deriveVariantClient(data?.infl_level_state ?? null, data?.infl_accel_vote ?? null)))
-      .catch(() => setInflVariant("base"));
-  }, []);
   const exposureMultipliers = useMemo(
     () => Object.fromEntries(Object.entries(resizeSignals).map(([sym, s]) => [sym, Number(s.exposure_multiplier)])),
     [resizeSignals]
