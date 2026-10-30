@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { REGIME_WEIGHT_SETS as SHARED_SETS, getWeightSet, LEGACY_WEIGHTS as SHARED_LEGACY } from "../supabase/functions/_shared/regimeWeights.ts";
-import { REGIME_WEIGHT_SETS as LIB_SETS, getWeightSet as libGetWeightSet, LEGACY_WEIGHTS as LIB_LEGACY } from "../lib/simulatorKeys.js";
+import { REGIME_WEIGHT_SETS as SHARED_SETS, getWeightSet, LEGACY_WEIGHTS as SHARED_LEGACY, applyNbInterimTreatment } from "../supabase/functions/_shared/regimeWeights.ts";
+import { REGIME_WEIGHT_SETS as LIB_SETS, getWeightSet as libGetWeightSet, LEGACY_WEIGHTS as LIB_LEGACY, applyNbInterimTreatment as libApplyNbInterimTreatment } from "../lib/simulatorKeys.js";
 import { deriveVariant } from "../supabase/functions/_shared/regimeShiftRules.ts";
 
 describe("REGIME_WEIGHT_SETS sums to 100", () => {
@@ -93,5 +93,43 @@ describe("LEGACY_WEIGHTS (frozen pre-Phase-2/3 baseline)", () => {
     expect(SHARED_LEGACY.rg_fi).toEqual(getWeightSet("rg_fi", "base"));
     expect(SHARED_LEGACY.rg_ri).toEqual(getWeightSet("rg_ri", "base"));
     expect(SHARED_LEGACY.fg_fi).toEqual(getWeightSet("fg_fi", "base"));
+  });
+});
+
+describe("applyNbInterimTreatment (fg_ri nb -> cash/tip until IEI is held, Scott's decision 2026-10-30)", () => {
+  for (const variant of ["base", "high", "high_accel", "high_decel"] as const) {
+    it(`fg_ri.${variant}: redistributes nb into cash/tip and still sums to 100 when IEI isn't held`, () => {
+      const w = getWeightSet("fg_ri", variant)!;
+      const treated = applyNbInterimTreatment("fg_ri", w, false);
+      expect(treated.nb).toBe(0);
+      const sum = Object.values(treated).reduce((a, b) => a + b, 0);
+      expect(sum).toBe(100);
+      // nb's full amount landed in cash+tip, split as evenly as rounding allows.
+      expect((treated.cash - w.cash) + (treated.tip - w.tip)).toBe(w.nb);
+    });
+  }
+
+  it("no-op once IEI is held, regardless of key", () => {
+    const w = getWeightSet("fg_ri", "base")!;
+    expect(applyNbInterimTreatment("fg_ri", w, true)).toEqual(w);
+  });
+
+  it("no-op for every non-fg_ri key, held or not (rg_fi/fg_fi's nb is unchanged by Phase 3, out of scope)", () => {
+    for (const key of ["rg_fi", "rg_ri", "fg_fi"]) {
+      const w = getWeightSet(key, "base")!;
+      expect(applyNbInterimTreatment(key, w, false)).toEqual(w);
+    }
+  });
+
+  it("no-op when nb is already 0 (e.g. rg_ri's fg_ri-shaped lookalike never happens, but guard anyway)", () => {
+    const w = { eq: 50, nb: 0, cash: 50 };
+    expect(applyNbInterimTreatment("fg_ri", w, false)).toEqual(w);
+  });
+
+  it("lib and shared copies agree", () => {
+    for (const variant of ["base", "high", "high_accel", "high_decel"]) {
+      const w = getWeightSet("fg_ri", variant)!;
+      expect(applyNbInterimTreatment("fg_ri", w, false)).toEqual(libApplyNbInterimTreatment("fg_ri", w, false));
+    }
   });
 });

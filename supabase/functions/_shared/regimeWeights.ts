@@ -71,3 +71,22 @@ export const LEGACY_WEIGHTS: Record<string, WeightSet> = {
 export function getLegacyWeightSet(key: string): WeightSet | undefined {
   return LEGACY_WEIGHTS[key];
 }
+
+// Interim treatment (Scott's decision, 2026-10-30, until Phase 4's nb
+// duration split/IEI ship): D-1 gave fg_ri a new 15-20% nb target --
+// new exposure, since the pre-Phase-3 fg_ri had nb=0. `nb` maps 100%
+// to TLT today (no IEI held), so applying this as-is would buy pure
+// long-duration bonds in Stagflation, the exact duration bet the
+// paper's own evidence argues against. Until a portfolio actually
+// holds IEI, redistribute fg_ri's nb evenly into cash/tip instead.
+// Applied as a post-processing override on top of the D-1 table, not
+// a change to REGIME_WEIGHT_SETS itself — and only for fg_ri: rg_fi/
+// fg_fi's nb targets are unchanged from the pre-Phase-3 rules, not new
+// exposure this phase introduced, so they're out of scope here.
+export function applyNbInterimTreatment(key: string, weights: WeightSet, hasIEI: boolean): WeightSet {
+  if (key !== "fg_ri" || hasIEI) return weights;
+  const nb = weights.nb ?? 0;
+  if (nb <= 0) return weights;
+  const half = Math.round(nb / 2);
+  return { ...weights, nb: 0, cash: (weights.cash ?? 0) + half, tip: (weights.tip ?? 0) + (nb - half) };
+}

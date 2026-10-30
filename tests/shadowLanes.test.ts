@@ -4,7 +4,7 @@ import {
   type LaneState, type ShadowInputs,
 } from "../supabase/functions/_shared/shadowLanes.ts";
 import { capTurnover } from "../supabase/functions/_shared/regimeShiftRules.ts";
-import { getWeightSet, getLegacyWeightSet, LEGACY_WEIGHTS } from "../supabase/functions/_shared/regimeWeights.ts";
+import { getWeightSet, getLegacyWeightSet, applyNbInterimTreatment, LEGACY_WEIGHTS } from "../supabase/functions/_shared/regimeWeights.ts";
 
 function baseState(overrides: Partial<LaneState> = {}): LaneState {
   const fgRi = getWeightSet("fg_ri", "base")!;
@@ -22,6 +22,7 @@ function baseInputs(overrides: Partial<ShadowInputs> = {}): ShadowInputs {
     inflLevelState: "contained", inflAccelVote: null,
     livePortfolio: { current_regime_key: "fg_ri", target_allocations: getWeightSet("fg_ri", "base")! },
     today: new Date("2026-10-30T00:00:00Z"),
+    hasIEI: false,
     ...overrides,
   };
 }
@@ -49,6 +50,10 @@ describe("phase2Lane", () => {
       structuralKeySource: "carry",
       nearActive: true, nearConfirmedKey: "rg_ri", smoothedConfidence: 65,
       today: new Date("2026-10-30T00:00:00Z"), // 9 days after the 10/21 shift
+      // hasIEI: true -- these tests exercise carry/blend/hold mechanics
+      // against the raw D-1 weights; the nb interim treatment overlay
+      // has its own dedicated describe block below.
+      hasIEI: true,
     });
     const result = phase2Lane(inputs, baseState());
     expect(result.blockedReason).toBe("min_hold:2026-11-11");
@@ -63,6 +68,7 @@ describe("phase2Lane", () => {
       structuralKeySource: "carry",
       nearActive: true, nearConfirmedKey: "rg_ri", smoothedConfidence: 65,
       today: new Date("2026-11-11T00:00:00Z"), // exactly 21 days after 10/21
+      hasIEI: true, // raw D-1 weights -- see note above
     });
     const result = phase2Lane(inputs, baseState());
     expect(result.blockedReason).toBeNull();
@@ -230,7 +236,7 @@ describe("legacyLane stays frozen at the pre-Phase-2/3 weights", () => {
 // inflation state (base/high/high_accel/high_decel) correctly.
 describe("phase3Lane vs. phase2Lane", () => {
   it("phase3 picks the high_accel variant on a stagflation+accelerating reading; phase2 stays pinned to base", () => {
-    const inputs = baseInputs({ inflLevelState: "stagflation", inflAccelVote: "accelerating" });
+    const inputs = baseInputs({ inflLevelState: "stagflation", inflAccelVote: "accelerating", hasIEI: true });
 
     const p2 = phase2Lane(inputs, baseState());
     expect(p2.variant).toBe("base");
@@ -260,6 +266,53 @@ describe("phase3Lane vs. phase2Lane", () => {
   });
 });
 
+// fg_ri nb interim treatment (Scott's decision 2026-10-30): both capped
+// lanes (phase2/phase3) must apply it when the lane's portfolio doesn't
+// hold IEI yet, and stop applying it the moment hasIEI flips true --
+// without touching legacy (frozen, already nb=0 for fg_ri) or liveLane
+// (doesn't call getWeightSet at all).
+describe("fg_ri nb interim treatment in the capped lanes", () => {
+  it("phase2 and phase3 both route fg_ri's nb into cash/tip when hasIEI is false", () => {
+    const inputs = baseInputs({ hasIEI: false });
+    const p2 = phase2Lane(inputs, baseState());
+    const p3 = phase3Lane(inputs, baseState());
+    expect(p2.desiredTargets.nb).toBe(0);
+    expect(p3.desiredTargets.nb).toBe(0);
+    expect(p2.desiredTargets).toEqual(applyNbInterimTreatment("fg_ri", getWeightSet("fg_ri", "base")!, false));
+  });
+
+  it("stops redistributing once hasIEI is true -- the real D-1 nb target comes through", () => {
+    const inputs = baseInputs({ hasIEI: true });
+    const p2 = phase2Lane(inputs, baseState());
+    expect(p2.desiredTargets).toEqual(getWeightSet("fg_ri", "base"));
+    expect(p2.desiredTargets.nb).toBeGreaterThan(0);
+  });
+
+  it("is a no-op for a non-fg_ri key regardless of hasIEI", () => {
+    const rgFiState = baseState({ baseKey: "rg_fi", currentTargets: getWeightSet("rg_fi", "base")!, desiredTargets: getWeightSet("rg_fi", "base")! });
+    const inputs = baseInputs({ structuralKey: "rg_fi", hasIEI: false });
+    const p2 = phase2Lane(inputs, rgFiState);
+    expect(p2.desiredTargets).toEqual(getWeightSet("rg_fi", "base"));
+  });
+});
+
+describe("resolveWeightsFor's hasIEI parameter (reseed mechanism)", () => {
+  it("defaults to false (treatment applied) when the caller omits it", () => {
+    expect(resolveWeightsFor("fg_ri", null, 0, "base", {})).toEqual(
+      applyNbInterimTreatment("fg_ri", getWeightSet("fg_ri", "base")!, false),
+    );
+  });
+  it("passes hasIEI through to the near leg of a blend, not just struct", () => {
+    // rg_ri's own nb is already 0, so any nonzero nb in the blend can only
+    // come from the near leg (fg_ri) -- proving the near leg's treatment
+    // is actually gated by hasIEI too, not just the struct leg's.
+    const withoutIEI = resolveWeightsFor("rg_ri", "fg_ri", 0.5, "base", {}, false);
+    const withIEI = resolveWeightsFor("rg_ri", "fg_ri", 0.5, "base", {}, true);
+    expect(withoutIEI.nb).toBe(0);
+    expect(withIEI.nb).toBeGreaterThan(0);
+  });
+});
+
 describe("blendSectorTargets", () => {
   it("lambda=0 or no near rows returns struct unchanged", () => {
     const struct = { XLE: 20, XLF: 80 };
@@ -281,14 +334,16 @@ describe("blendSectorTargets", () => {
 // EXISTING decision-state coordinates against whatever the shared
 // table currently returns, without re-deriving carry/blend/hold.
 describe("resolveWeightsFor (reseed mechanism)", () => {
-  it("struct-only (no blend) returns exactly today's shared base for that key", () => {
-    expect(resolveWeightsFor("fg_ri", null, 0, "base", {})).toEqual(getWeightSet("fg_ri", "base"));
+  it("struct-only (no blend) returns exactly today's shared base for that key (hasIEI=true -- no nb overlay)", () => {
+    expect(resolveWeightsFor("fg_ri", null, 0, "base", {}, true)).toEqual(getWeightSet("fg_ri", "base"));
   });
   it("reflects a shared-table change at the same coordinates (the whole point of reseeding)", () => {
     // fg_ri's base was revised by D-1; resolveWeightsFor must reflect
     // the NEW table, never a stale snapshot -- this is what makes a
     // reseed actually fix a stale row instead of just re-writing it.
-    const reseeded = resolveWeightsFor("fg_ri", null, 0, "base", { eq: 5, intl: 5, em: 0, nb: 0, tip: 20, com: 30, gld: 30, cash: 10 });
+    // hasIEI=true isolates this from the separate nb-overlay behavior,
+    // which has its own describe block below.
+    const reseeded = resolveWeightsFor("fg_ri", null, 0, "base", { eq: 5, intl: 5, em: 0, nb: 0, tip: 20, com: 30, gld: 30, cash: 10 }, true);
     expect(reseeded).toEqual(getWeightSet("fg_ri", "base"));
     expect(reseeded).not.toEqual({ eq: 5, intl: 5, em: 0, nb: 0, tip: 20, com: 30, gld: 30, cash: 10 });
   });

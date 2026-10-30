@@ -118,6 +118,15 @@ Deno.serve(async (req: Request) => {
       const reseedLanes = (url.searchParams.get("lanes")?.split(",").map((s) => s.trim()).filter(Boolean)) ?? Array.from(CAPPED_LANES);
 
       const { data: portfolios } = await sb.from("portfolios").select("id, portfolio_name").eq("strategy_framework", "regime_driven");
+      const { data: ieiRows } = (portfolios ?? []).length
+        ? await sb
+            .from("portfolio_holdings")
+            .select("portfolio_id, holdings!inner(symbol, quantity)")
+            .in("portfolio_id", (portfolios ?? []).map((p) => p.id))
+            .eq("holdings.symbol", "IEI")
+            .gt("holdings.quantity", 0)
+        : { data: [] };
+      const ieiPortfolioIds = new Set((ieiRows ?? []).map((r) => r.portfolio_id as string));
       const reseeded: Record<string, unknown>[] = [];
 
       for (const pf of portfolios ?? []) {
@@ -141,7 +150,7 @@ Deno.serve(async (req: Request) => {
           const lambda = Number(lastRow?.lambda ?? 0);
           const variant = (lastRow?.variant ?? "base") as Variant;
 
-          const newTargets = resolveWeightsFor(baseKey, nearKey, lambda, variant, stateRow.current_targets);
+          const newTargets = resolveWeightsFor(baseKey, nearKey, lambda, variant, stateRow.current_targets, ieiPortfolioIds.has(pf.id));
 
           let sectorTargets: Record<string, number> | null = null;
           if (baseKey && Object.keys(sectorByRegime).length > 0) {
@@ -231,6 +240,18 @@ Deno.serve(async (req: Request) => {
       .from("portfolios")
       .select("id, portfolio_name, current_regime_key, target_allocations, regime_auto_shift, regime_phase3_weights")
       .eq("strategy_framework", "regime_driven");
+
+    // fg_ri nb interim treatment (Scott's decision 2026-10-30, until
+    // Phase 4's IEI ship): gates applyNbInterimTreatment per portfolio.
+    const { data: ieiRows } = (portfolios ?? []).length
+      ? await sb
+          .from("portfolio_holdings")
+          .select("portfolio_id, holdings!inner(symbol, quantity)")
+          .in("portfolio_id", (portfolios ?? []).map((p) => p.id))
+          .eq("holdings.symbol", "IEI")
+          .gt("holdings.quantity", 0)
+      : { data: [] };
+    const ieiPortfolioIds = new Set((ieiRows ?? []).map((r) => r.portfolio_id as string));
 
     const variant = deriveVariant(inflLevelState, inflAccelVote);
     const results: Record<string, unknown>[] = [];
@@ -349,6 +370,7 @@ Deno.serve(async (req: Request) => {
             inflLevelState, inflAccelVote,
             livePortfolio: { current_regime_key: pf.current_regime_key, target_allocations: pf.target_allocations },
             today,
+            hasIEI: ieiPortfolioIds.has(pf.id),
           };
 
           const result = laneFn(inputs, prev);

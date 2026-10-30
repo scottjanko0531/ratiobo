@@ -6,7 +6,7 @@
 // the orchestrator (update-regime-shadow-targets), not inside a lane,
 // since it's identical across every capped lane.
 
-import { getWeightSet, getLegacyWeightSet, WeightSet } from "./regimeWeights.ts";
+import { getWeightSet, getLegacyWeightSet, applyNbInterimTreatment, WeightSet } from "./regimeWeights.ts";
 import {
   computeLambda, blendWeights, resolveBaseKey, canApplyKeyShift, deriveVariant,
   StructuralKeySource, Variant,
@@ -16,7 +16,9 @@ import {
 // whenever a shared weight table a lane reads from changes (even if
 // no lane code itself changed) — no deploy-time git-SHA injection
 // exists in this repo's Edge Function deploys (confirmed with Scott).
-export const RULES_VERSION = "shadow-v3";
+// shadow-v4: fg_ri's nb interim treatment (route to cash/tip until
+// IEI is held, Scott's decision 2026-10-30).
+export const RULES_VERSION = "shadow-v4";
 
 export type Lane = "live" | "legacy" | "phase2" | "phase3";
 export const LANE_IDS: Lane[] = ["live", "legacy", "phase2", "phase3"];
@@ -34,6 +36,12 @@ export interface ShadowInputs {
   inflAccelVote: string | null;
   livePortfolio: { current_regime_key: string | null; target_allocations: WeightSet | null };
   today: Date;
+  // Whether the portfolio currently holds IEI — gates
+  // applyNbInterimTreatment in the capped lanes (phase2/phase3).
+  // legacy/live are unaffected: legacy uses frozen pre-Phase-3
+  // weights (fg_ri.nb=0 there already), live applies the treatment
+  // separately using its own portfolio's holdings.
+  hasIEI: boolean;
 }
 
 export interface LaneState {
@@ -122,9 +130,12 @@ export const legacyLane: LaneFn = (inputs, prev) => {
 // shared weight table changes, without re-deriving carry/blend/hold.
 export function resolveWeightsFor(
   baseKey: string | null, nearKey: string | null, lambda: number, variant: Variant, fallback: WeightSet,
+  hasIEI = false,
 ): WeightSet {
-  const wStruct = baseKey ? (getWeightSet(baseKey, variant) ?? fallback) : fallback;
-  const wNear = nearKey ? (getWeightSet(nearKey, variant) ?? null) : null;
+  const rawStruct = baseKey ? (getWeightSet(baseKey, variant) ?? fallback) : fallback;
+  const wStruct = baseKey ? applyNbInterimTreatment(baseKey, rawStruct, hasIEI) : rawStruct;
+  const rawNear = nearKey ? (getWeightSet(nearKey, variant) ?? null) : null;
+  const wNear = rawNear && nearKey ? applyNbInterimTreatment(nearKey, rawNear, hasIEI) : rawNear;
   return wNear ? blendWeights(wStruct, wNear, lambda) : wStruct;
 }
 
@@ -170,7 +181,7 @@ function computeBlendLane(inputs: ShadowInputs, prev: LaneState, variant: Varian
 
   const keyEventApplied = isKeyLevelEvent && !(blockedReason?.startsWith("min_hold:"));
   const lambda = finalNearKey ? computeLambda(inputs.smoothedConfidence, 0.5) : 0;
-  const desiredTargets = resolveWeightsFor(finalBaseKey, finalNearKey, lambda, variant, prev.currentTargets);
+  const desiredTargets = resolveWeightsFor(finalBaseKey, finalNearKey, lambda, variant, prev.currentTargets, inputs.hasIEI);
 
   return {
     regimeKey: finalBaseKey, nearKey: finalNearKey, lambda, variant,

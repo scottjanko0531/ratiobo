@@ -107,3 +107,36 @@ single-variable test. Defaults `false` for both portfolios. The
 shows what phase3-weights-on would produce) — the live function
 instead records `regime_blend.variant` as the real computed variant
 regardless of the flag, so the value is visible even while gated off.
+
+## `fg_ri` nb interim treatment: route to cash/TIPS until IEI is held (2026-10-30)
+
+D-1's revised `fg_ri` base (above) introduced a new 15-20% `nb`
+target where the pre-Phase-3 table had none. Checked how `nb` maps to
+real holdings before shipping it: 100% TLT today, zero IEI held in
+either regime-driven portfolio — so applying the new base as-is would
+buy a pure long-duration bet in Stagflation, the exact duration
+exposure the paper's own evidence (spec §5.2/§6.3) argues against
+until a shorter-duration instrument (IEI) is actually available to
+split it against. **Decision (Scott):** route `fg_ri`'s `nb` target
+evenly into `cash`/`tip` instead, until a portfolio holds IEI —
+implemented as a small override alongside the existing weight sets,
+not a change to the D-1 numbers themselves. New
+`applyNbInterimTreatment(key, weights, hasIEI)`
+(`_shared/regimeWeights.ts` / `lib/simulatorKeys.js`) is scoped
+strictly to `key === "fg_ri"`: `rg_fi`/`fg_fi`'s `nb` targets are
+unchanged from pre-Phase-3 (not new exposure D-1 introduced), so
+they're out of scope. Wired into every consumer of `getWeightSet` for
+`fg_ri`: `resolveWeightsFor()` (and so `phase2Lane`/`phase3Lane` and
+the `?reseed=true` endpoint) and the live function's own weight
+resolution, each gated per-portfolio by a live `portfolio_holdings` →
+`holdings` (`symbol = 'IEI'`, `quantity > 0`) lookup. Not applied to
+`legacyLane` (frozen at `LEGACY_WEIGHTS`, where `fg_ri.nb` is already
+0) or to the live function's `regime_phase3_weights = false` path
+(same reason). `RULES_VERSION` bumped to `shadow-v4`. Verified live
+2026-10-30: both regime-driven portfolios hold no IEI, so `phase2`/
+`phase3`'s `fg_ri` rows show `nb: 0, cash: 20, tip: 25` (the 20-point
+`nb` split 10/10 into `cash`/`tip` on top of each base's existing
+10/15) rather than `nb: 20`. Revisit once Phase 4 ships an IEI-backed
+short-duration sleeve — at that point `hasIEI` flips true per
+portfolio and this override stops firing on its own, no code change
+needed.

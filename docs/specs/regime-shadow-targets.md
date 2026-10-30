@@ -299,3 +299,13 @@ When Phase 3 is built, it adds the `phase3` lane to the registry as part of that
 - `legacy` was found to be calling the shared (mutable) `getWeightSet`
   — fixed to use a new frozen `LEGACY_WEIGHTS` constant instead, so it
   stays a faithful old-rules baseline across future shared-table edits.
+- `fg_ri`'s new D-1 `nb` target maps 100% to TLT today (no IEI held by
+  either regime-driven portfolio) — per Scott's decision, routed into
+  `cash`/`tip` instead via `applyNbInterimTreatment()` until a
+  portfolio holds IEI; see `regime-tilt-recalibration-decisions.md`.
+  Applied in `resolveWeightsFor()` (so `phase2`/`phase3`/`?reseed=true`
+  all pick it up) and in the live function, each gated by its own
+  per-portfolio `portfolio_holdings` → `holdings` IEI lookup. `legacy`
+  and the `regime_phase3_weights=false` live path are unaffected
+  (already `fg_ri.nb = 0` there). `RULES_VERSION` bumped to
+  `shadow-v4`.

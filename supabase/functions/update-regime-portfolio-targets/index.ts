@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { getWeightSet, getLegacyWeightSet, WeightSet } from "../_shared/regimeWeights.ts";
+import { getWeightSet, getLegacyWeightSet, applyNbInterimTreatment, WeightSet } from "../_shared/regimeWeights.ts";
 import {
   computeLambda, blendWeights, capTurnover, resolveBaseKey, canApplyKeyShift, deriveVariant,
   StructuralKeySource, Variant,
@@ -229,6 +229,18 @@ Deno.serve(async (req: Request) => {
       .from("portfolios")
       .select("id,portfolio_name,current_regime_key,regime_confirmed_since,pending_regime_key,pending_regime_since,regime_auto_shift,regime_phase3_weights,target_allocations,regime_blend")
       .eq("strategy_framework", "regime_driven");
+    // fg_ri nb interim treatment (Scott's decision 2026-10-30, until
+    // Phase 4's IEI ship): gates applyNbInterimTreatment per portfolio.
+    const { data: ieiRows } = (portfolios ?? []).length
+      ? await sb
+          .from("portfolio_holdings")
+          .select("portfolio_id, holdings!inner(symbol, quantity)")
+          .in("portfolio_id", (portfolios ?? []).map((p) => p.id))
+          .eq("holdings.symbol", "IEI")
+          .gt("holdings.quantity", 0)
+      : { data: [] };
+    const ieiPortfolioIds = new Set((ieiRows ?? []).map((r) => r.portfolio_id as string));
+
     const portfolioNames = (portfolios ?? []).map((p) => (p as RegimePortfolio).portfolio_name);
     const portfolioNamesText = portfolioNames.length
       ? portfolioNames.join(" and ")
@@ -346,11 +358,14 @@ Deno.serve(async (req: Request) => {
       // The real computed variant is still stored in regime_blend below
       // either way, so it's visible while gated off, not just once on.
       const lambda = finalNearKey ? computeLambda(smoothedConfidence, LAMBDA_MAX) : 0;
+      const hasIEI = ieiPortfolioIds.has(pf.id);
       const wStruct = pf.regime_phase3_weights
-        ? (getWeightSet(finalBaseKey, computedVariant) ?? {})
+        ? applyNbInterimTreatment(finalBaseKey, getWeightSet(finalBaseKey, computedVariant) ?? {}, hasIEI)
         : (getLegacyWeightSet(finalBaseKey) ?? {});
       const wNear = finalNearKey
-        ? (pf.regime_phase3_weights ? (getWeightSet(finalNearKey, computedVariant) ?? null) : (getLegacyWeightSet(finalNearKey) ?? null))
+        ? (pf.regime_phase3_weights
+            ? applyNbInterimTreatment(finalNearKey, getWeightSet(finalNearKey, computedVariant) ?? {}, hasIEI)
+            : (getLegacyWeightSet(finalNearKey) ?? null))
         : null;
       const wDesired = wNear ? blendWeights(wStruct, wNear, lambda) : wStruct;
       const wCurrent = pf.target_allocations && Object.keys(pf.target_allocations).length > 0 ? pf.target_allocations : wStruct;
