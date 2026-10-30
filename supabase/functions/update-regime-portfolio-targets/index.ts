@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { getWeightSet, WeightSet } from "../_shared/regimeWeights.ts";
+import { getWeightSet, getLegacyWeightSet, WeightSet } from "../_shared/regimeWeights.ts";
 import {
   computeLambda, blendWeights, capTurnover, resolveBaseKey, canApplyKeyShift, deriveVariant,
   StructuralKeySource, Variant,
@@ -67,7 +67,7 @@ interface RegimePortfolio {
   current_regime_key: string | null; regime_confirmed_since: string | null;
   pending_regime_key: string | null; pending_regime_since: string | null;
   regime_auto_shift: boolean;
-  regime_variants_enabled: boolean;
+  regime_phase3_weights: boolean;
   target_allocations: WeightSet | null;
   regime_blend: RegimeBlend | null;
 }
@@ -132,7 +132,7 @@ Deno.serve(async (req: Request) => {
     structuralKeySource = structuralKeySource ?? null;
     // Phase 3 (§5): the real computed variant, independent of whether
     // any given portfolio is actually allowed to USE it — that gate is
-    // per-portfolio (regime_variants_enabled), applied below in the loop.
+    // per-portfolio (regime_phase3_weights), applied below in the loop.
     const computedVariant: Variant = deriveVariant(inflLevelState ?? null, inflAccelVote ?? null);
 
     // ── The Near-Term override's own clock, computed once ──────────────────
@@ -227,7 +227,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: portfolios } = await sb
       .from("portfolios")
-      .select("id,portfolio_name,current_regime_key,regime_confirmed_since,pending_regime_key,pending_regime_since,regime_auto_shift,regime_variants_enabled,target_allocations,regime_blend")
+      .select("id,portfolio_name,current_regime_key,regime_confirmed_since,pending_regime_key,pending_regime_since,regime_auto_shift,regime_phase3_weights,target_allocations,regime_blend")
       .eq("strategy_framework", "regime_driven");
     const portfolioNames = (portfolios ?? []).map((p) => (p as RegimePortfolio).portfolio_name);
     const portfolioNamesText = portfolioNames.length
@@ -337,16 +337,21 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      // Phase 3 (§5): regime_variants_enabled is a second, independent
-      // safety lever from regime_auto_shift — even once a portfolio's
-      // auto-shift is back on, a non-base variant only actually gets
-      // APPLIED here if this portfolio has also opted in. The real
-      // computed variant is still stored in regime_blend below either
-      // way, so it's visible while gated off, not just once enabled.
-      const effectiveVariant: Variant = pf.regime_variants_enabled ? computedVariant : "base";
+      // Phase 3 (§5): regime_phase3_weights is a second, independent
+      // safety lever from regime_auto_shift. With it off, the live job
+      // uses the frozen pre-Phase-3 weight SETS entirely (D-1 changed
+      // fg_ri's base numbers themselves, not just added a high tier),
+      // so re-enabling auto-shift alone tests Phase 2's rules against
+      // the original numbers, not a mix of old rules and new weights.
+      // The real computed variant is still stored in regime_blend below
+      // either way, so it's visible while gated off, not just once on.
       const lambda = finalNearKey ? computeLambda(smoothedConfidence, LAMBDA_MAX) : 0;
-      const wStruct = getWeightSet(finalBaseKey, effectiveVariant) ?? {};
-      const wNear = finalNearKey ? (getWeightSet(finalNearKey, effectiveVariant) ?? null) : null;
+      const wStruct = pf.regime_phase3_weights
+        ? (getWeightSet(finalBaseKey, computedVariant) ?? {})
+        : (getLegacyWeightSet(finalBaseKey) ?? {});
+      const wNear = finalNearKey
+        ? (pf.regime_phase3_weights ? (getWeightSet(finalNearKey, computedVariant) ?? null) : (getLegacyWeightSet(finalNearKey) ?? null))
+        : null;
       const wDesired = wNear ? blendWeights(wStruct, wNear, lambda) : wStruct;
       const wCurrent = pf.target_allocations && Object.keys(pf.target_allocations).length > 0 ? pf.target_allocations : wStruct;
       const wWritten = capTurnover(wCurrent, wDesired, TURNOVER_CAP_POINTS);

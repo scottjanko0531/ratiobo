@@ -3,8 +3,8 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { capTurnover, StructuralKeySource, deriveVariant } from "../_shared/regimeShiftRules.ts";
 import { WeightSet, getWeightSet } from "../_shared/regimeWeights.ts";
 import {
-  LANES, LANE_IDS, CAPPED_LANES, RULES_VERSION, deriveEvent, blendSectorTargets,
-  ShadowInputs, LaneState,
+  LANES, LANE_IDS, CAPPED_LANES, RULES_VERSION, deriveEvent, blendSectorTargets, resolveWeightsFor,
+  ShadowInputs, LaneState, Variant,
 } from "../_shared/shadowLanes.ts";
 
 // Regime Shadow Targets Log (docs/specs/regime-shadow-targets.md).
@@ -100,6 +100,84 @@ Deno.serve(async (req: Request) => {
       return json({ error: "recompute=true is service-role only" }, 403);
     }
 
+    // Standing rule (docs/specs/regime-tilt-recalibration-decisions.md):
+    // whenever a shared weight table a lane reads from changes, every
+    // affected lane reseeds the SAME day rather than logging the
+    // definition change as real turnover. Reseeds the lane's existing
+    // decision-state (base/near key, λ, variant) at whatever the
+    // CURRENT shared table now returns for those same coordinates —
+    // never re-derives the carry/blend/hold decision itself. Defaults
+    // to every capped lane (phase2, phase3 — the two that call the
+    // mutable getWeightSet; legacy is frozen on purpose, see decisions
+    // log, and live doesn't use getWeightSet at all).
+    if (url.searchParams.get("reseed") === "true") {
+      if (callerRole(req) !== "service_role") {
+        return json({ error: "reseed=true is service-role only" }, 403);
+      }
+      const reseedReason = url.searchParams.get("reason") ?? "shared weight table changed, no reason given";
+      const reseedLanes = (url.searchParams.get("lanes")?.split(",").map((s) => s.trim()).filter(Boolean)) ?? Array.from(CAPPED_LANES);
+
+      const { data: portfolios } = await sb.from("portfolios").select("id, portfolio_name").eq("strategy_framework", "regime_driven");
+      const reseeded: Record<string, unknown>[] = [];
+
+      for (const pf of portfolios ?? []) {
+        const { data: sectorRows } = await sb.from("portfolio_sector_targets").select("symbol, target_pct_of_bucket, regime_key").eq("portfolio_id", pf.id);
+        const sectorByRegime = (sectorRows ?? []).reduce((acc: Record<string, Record<string, number>>, r) => {
+          (acc[r.regime_key] ??= {})[r.symbol] = Number(r.target_pct_of_bucket);
+          return acc;
+        }, {});
+
+        for (const lane of reseedLanes) {
+          const { data: stateRow } = await sb.from("regime_shadow_state").select("*").eq("portfolio_id", pf.id).eq("lane", lane).maybeSingle();
+          if (!stateRow) continue; // nothing to reseed -- this lane/portfolio has no state yet
+
+          const { data: lastRow } = await sb.from("regime_shadow_targets")
+            .select("near_key, lambda, variant, blocked_reason")
+            .eq("portfolio_id", pf.id).eq("lane", lane)
+            .order("snapshot_date", { ascending: false }).limit(1).maybeSingle();
+
+          const baseKey: string | null = stateRow.base_key;
+          const nearKey: string | null = lastRow?.near_key ?? null;
+          const lambda = Number(lastRow?.lambda ?? 0);
+          const variant = (lastRow?.variant ?? "base") as Variant;
+
+          const newTargets = resolveWeightsFor(baseKey, nearKey, lambda, variant, stateRow.current_targets);
+
+          let sectorTargets: Record<string, number> | null = null;
+          if (baseKey && Object.keys(sectorByRegime).length > 0) {
+            const structRows = sectorByRegime[baseKey] ?? null;
+            const nearRows = nearKey ? (sectorByRegime[nearKey] ?? null) : null;
+            if (structRows) sectorTargets = blendSectorTargets(structRows, nearRows, lambda);
+          }
+
+          await sb.from("regime_shadow_targets").delete().eq("portfolio_id", pf.id).eq("lane", lane).eq("snapshot_date", todayStr);
+          await sb.from("regime_shadow_targets").insert({
+            snapshot_date: todayStr, portfolio_id: pf.id, lane, rules_version: RULES_VERSION,
+            regime_key: baseKey, near_key: nearKey, lambda, variant,
+            target_allocations: newTargets, sector_targets: sectorTargets,
+            turnover_vs_prev: 0, turnover_uncapped: null,
+            shifted: false, event: "rules_change", blocked_reason: lastRow?.blocked_reason ?? null,
+            inputs: { reseed_reason: reseedReason },
+          });
+          await sb.from("regime_shadow_state").update({
+            current_targets: newTargets, desired_targets: newTargets, current_sector_targets: sectorTargets,
+            updated_at: new Date().toISOString(),
+          }).eq("portfolio_id", pf.id).eq("lane", lane);
+
+          reseeded.push({ portfolioId: pf.id, lane, targets: newTargets });
+        }
+      }
+
+      await sb.from("notifications").insert({
+        category: "regime_signal", type: "shadow_reseed", importance: "low",
+        title: `Shadow lanes reseeded for ${todayStr}: ${reseedLanes.join(", ")}`,
+        description: `Reason: ${reseedReason}`,
+        metadata: { date: todayStr, lanes: reseedLanes, reason: reseedReason },
+      });
+
+      return json({ ok: true, date: todayStr, reseeded: reseeded.length, results: reseeded });
+    }
+
     const { data: regimeRow } = await sb
       .from("dalio_regime_analysis")
       .select("structural_key,structural_key_source,nearterm_forward_key,nearterm_forward_confidence,infl_level_state,infl_accel_vote")
@@ -151,7 +229,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: portfolios } = await sb
       .from("portfolios")
-      .select("id, portfolio_name, current_regime_key, target_allocations, regime_auto_shift, regime_variants_enabled")
+      .select("id, portfolio_name, current_regime_key, target_allocations, regime_auto_shift, regime_phase3_weights")
       .eq("strategy_framework", "regime_driven");
 
     const variant = deriveVariant(inflLevelState, inflAccelVote);
@@ -276,12 +354,12 @@ Deno.serve(async (req: Request) => {
           const result = laneFn(inputs, prev);
 
           // phase3 always computes the real variant regardless of the
-          // live regime_variants_enabled flag (that's the point of the
+          // live regime_phase3_weights flag (that's the point of the
           // comparison) — but notes informationally when the live
           // function would currently be gated off from applying it,
           // unless a more specific reason (e.g. min_hold) already
           // explains this row.
-          const blockedReason = lane === "phase3" && !pf.regime_variants_enabled && result.variant !== "base" && !result.blockedReason
+          const blockedReason = lane === "phase3" && !pf.regime_phase3_weights && result.variant !== "base" && !result.blockedReason
             ? "variants_flag_off"
             : result.blockedReason;
 

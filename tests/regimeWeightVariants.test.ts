@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { REGIME_WEIGHT_SETS as SHARED_SETS, getWeightSet } from "../supabase/functions/_shared/regimeWeights.ts";
-import { REGIME_WEIGHT_SETS as LIB_SETS, getWeightSet as libGetWeightSet } from "../lib/simulatorKeys.js";
+import { REGIME_WEIGHT_SETS as SHARED_SETS, getWeightSet, LEGACY_WEIGHTS as SHARED_LEGACY } from "../supabase/functions/_shared/regimeWeights.ts";
+import { REGIME_WEIGHT_SETS as LIB_SETS, getWeightSet as libGetWeightSet, LEGACY_WEIGHTS as LIB_LEGACY } from "../lib/simulatorKeys.js";
 import { deriveVariant } from "../supabase/functions/_shared/regimeShiftRules.ts";
 
 describe("REGIME_WEIGHT_SETS sums to 100", () => {
@@ -70,5 +70,28 @@ describe("deriveVariant (§3.3)", () => {
   it("overheating/stagflation with a clear vote gets the accel/decel suffix", () => {
     expect(deriveVariant("overheating", "accelerating")).toBe("high_accel");
     expect(deriveVariant("stagflation", "decelerating")).toBe("high_decel");
+  });
+});
+
+describe("LEGACY_WEIGHTS (frozen pre-Phase-2/3 baseline)", () => {
+  it("lib and shared copies agree", () => {
+    expect(Object.keys(SHARED_LEGACY).sort()).toEqual(Object.keys(LIB_LEGACY).sort());
+    for (const key of Object.keys(SHARED_LEGACY)) {
+      expect(SHARED_LEGACY[key], `mismatch for ${key}`).toEqual(LIB_LEGACY[key]);
+    }
+  });
+  it("every set sums to 100", () => {
+    for (const key of Object.keys(SHARED_LEGACY)) {
+      const sum = Object.values(SHARED_LEGACY[key]).reduce((a, b) => a + b, 0);
+      expect(sum, `${key} sums to ${sum}`).toBe(100);
+    }
+  });
+  it("fg_ri's frozen base differs from the current (D-1-revised) shared base -- the whole point of freezing it", () => {
+    expect(SHARED_LEGACY.fg_ri).not.toEqual(getWeightSet("fg_ri", "base"));
+  });
+  it("rg_fi/rg_ri/fg_fi happen to be unchanged by D-1, so they still match the shared base", () => {
+    expect(SHARED_LEGACY.rg_fi).toEqual(getWeightSet("rg_fi", "base"));
+    expect(SHARED_LEGACY.rg_ri).toEqual(getWeightSet("rg_ri", "base"));
+    expect(SHARED_LEGACY.fg_fi).toEqual(getWeightSet("fg_fi", "base"));
   });
 });

@@ -286,3 +286,16 @@ When Phase 3 is built, it adds the `phase3` lane to the registry as part of that
   (`shadowLanes.ts`'s `RULES_VERSION`), confirmed with Scott — no
   deploy-time git-SHA injection exists in this repo's Supabase Edge
   Function deploys.
+- §4.1's `regime_variants_enabled` flag is renamed `regime_phase3_weights`
+  (Phase 3 build) — its real scope covers D-1's whole weight-set
+  revision, not just the high-inflation variant tier.
+- New standing rule (Phase 3 build, see
+  `regime-tilt-recalibration-decisions.md`): when a shared weight
+  table a lane reads from changes, that lane reseeds the same day via
+  `?reseed=true` rather than logging the definition change as real
+  turnover. New `event` code `rules_change`; `regime_shadow_summary`
+  excludes it from `shift_count`/`total_turnover` the same way it
+  already excludes `seed`.
+- `legacy` was found to be calling the shared (mutable) `getWeightSet`
+  — fixed to use a new frozen `LEGACY_WEIGHTS` constant instead, so it
+  stays a faithful old-rules baseline across future shared-table edits.

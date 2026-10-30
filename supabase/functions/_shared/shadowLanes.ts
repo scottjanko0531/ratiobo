@@ -6,17 +6,17 @@
 // the orchestrator (update-regime-shadow-targets), not inside a lane,
 // since it's identical across every capped lane.
 
-import { getWeightSet, WeightSet } from "./regimeWeights.ts";
+import { getWeightSet, getLegacyWeightSet, WeightSet } from "./regimeWeights.ts";
 import {
   computeLambda, blendWeights, resolveBaseKey, canApplyKeyShift, deriveVariant,
   StructuralKeySource, Variant,
 } from "./regimeShiftRules.ts";
 
-// Bumped by hand whenever a lane's underlying logic changes — no
-// deploy-time git-SHA injection exists in this repo's Edge Function
-// deploys (confirmed with Scott). Phase 3 (REGIME_WEIGHT_SETS variants,
-// phase3 lane) bumps this.
-export const RULES_VERSION = "shadow-v2";
+// Bumped by hand whenever a lane's underlying logic changes, OR
+// whenever a shared weight table a lane reads from changes (even if
+// no lane code itself changed) — no deploy-time git-SHA injection
+// exists in this repo's Edge Function deploys (confirmed with Scott).
+export const RULES_VERSION = "shadow-v3";
 
 export type Lane = "live" | "legacy" | "phase2" | "phase3";
 export const LANE_IDS: Lane[] = ["live", "legacy", "phase2", "phase3"];
@@ -98,7 +98,10 @@ export const liveLane: LaneFn = (inputs, prev) => {
 export const legacyLane: LaneFn = (inputs, prev) => {
   const effectiveKey = legacyResolve(inputs.structuralKey, inputs.nearActive, inputs.nearConfirmedKey);
   const regimeKey = effectiveKey ?? prev.baseKey;
-  const desiredTargets = regimeKey ? (getWeightSet(regimeKey, "base") ?? prev.currentTargets) : prev.currentTargets;
+  // Frozen weights, not the shared (mutable) getWeightSet — legacy must
+  // stay a faithful old-rules baseline even after a D-1-style base
+  // revision changes what the shared table returns.
+  const desiredTargets = regimeKey ? (getLegacyWeightSet(regimeKey) ?? prev.currentTargets) : prev.currentTargets;
   const changed = regimeKey !== prev.baseKey;
   return {
     regimeKey, nearKey: null, lambda: 0, variant: "base",
@@ -111,6 +114,19 @@ export const legacyLane: LaneFn = (inputs, prev) => {
     },
   };
 };
+
+// Resolves a lane's desired weights at a given (baseKey, nearKey,
+// lambda, variant) using the CURRENT shared getWeightSet — exported so
+// the orchestrator's "rules_change" reseed operation can recompute a
+// lane's targets at its existing decision-state coordinates after a
+// shared weight table changes, without re-deriving carry/blend/hold.
+export function resolveWeightsFor(
+  baseKey: string | null, nearKey: string | null, lambda: number, variant: Variant, fallback: WeightSet,
+): WeightSet {
+  const wStruct = baseKey ? (getWeightSet(baseKey, variant) ?? fallback) : fallback;
+  const wNear = nearKey ? (getWeightSet(nearKey, variant) ?? null) : null;
+  return wNear ? blendWeights(wStruct, wNear, lambda) : wStruct;
+}
 
 // Shared by phase2Lane (variant fixed at "base") and phase3Lane
 // (variant computed from the real inflation state) — carry rule,
@@ -154,9 +170,7 @@ function computeBlendLane(inputs: ShadowInputs, prev: LaneState, variant: Varian
 
   const keyEventApplied = isKeyLevelEvent && !(blockedReason?.startsWith("min_hold:"));
   const lambda = finalNearKey ? computeLambda(inputs.smoothedConfidence, 0.5) : 0;
-  const wStruct = finalBaseKey ? (getWeightSet(finalBaseKey, variant) ?? prev.currentTargets) : prev.currentTargets;
-  const wNear = finalNearKey ? (getWeightSet(finalNearKey, variant) ?? null) : null;
-  const desiredTargets = wNear ? blendWeights(wStruct, wNear, lambda) : wStruct;
+  const desiredTargets = resolveWeightsFor(finalBaseKey, finalNearKey, lambda, variant, prev.currentTargets);
 
   return {
     regimeKey: finalBaseKey, nearKey: finalNearKey, lambda, variant,
@@ -178,7 +192,7 @@ export const phase2Lane: LaneFn = (inputs, prev) => computeBlendLane(inputs, pre
 
 // Phase 3 §5: same carry/blend/cap/hold rules as phase2, but the
 // variant is the REAL computed one from today's inflation state —
-// ignores the live regime_variants_enabled flag entirely (the
+// ignores the live regime_phase3_weights flag entirely (the
 // orchestrator notes variants_flag_off informationally, but this
 // lane's own computation is never gated by it).
 export const phase3Lane: LaneFn = (inputs, prev) =>

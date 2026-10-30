@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
-  legacyResolve, phase2Lane, phase3Lane, liveLane, deriveEvent, blendSectorTargets,
+  legacyResolve, legacyLane, phase2Lane, phase3Lane, liveLane, deriveEvent, blendSectorTargets, resolveWeightsFor,
   type LaneState, type ShadowInputs,
 } from "../supabase/functions/_shared/shadowLanes.ts";
 import { capTurnover } from "../supabase/functions/_shared/regimeShiftRules.ts";
-import { getWeightSet } from "../supabase/functions/_shared/regimeWeights.ts";
+import { getWeightSet, getLegacyWeightSet, LEGACY_WEIGHTS } from "../supabase/functions/_shared/regimeWeights.ts";
 
 function baseState(overrides: Partial<LaneState> = {}): LaneState {
   const fgRi = getWeightSet("fg_ri", "base")!;
@@ -204,6 +204,27 @@ describe("every regime weight set sums to 100", () => {
   });
 });
 
+// Standing rule (2026-10-30): legacy must stay a faithful old-rules
+// baseline even after a shared-table revision (D-1 changed fg_ri's
+// base). Proves it by construction: fg_ri's frozen legacy weights are
+// NOT equal to the current shared table's fg_ri base -- if someone
+// later "simplified" legacyLane back to calling getWeightSet, this
+// fails the moment the two tables diverge, exactly as they do today.
+describe("legacyLane stays frozen at the pre-Phase-2/3 weights", () => {
+  it("fg_ri's legacy weights differ from the current shared base (proves they're actually independent)", () => {
+    expect(LEGACY_WEIGHTS.fg_ri).not.toEqual(getWeightSet("fg_ri", "base"));
+  });
+
+  it("legacyLane's full swap to fg_ri uses the frozen weights, not the shared table", () => {
+    const inputs = baseInputs({ structuralKey: "fg_ri", nearActive: false, nearConfirmedKey: null });
+    const prev = baseState({ baseKey: "rg_fi", currentTargets: getLegacyWeightSet("rg_fi")!, desiredTargets: getLegacyWeightSet("rg_fi")! });
+    const result = legacyLane(inputs, prev);
+    expect(result.regimeKey).toBe("fg_ri");
+    expect(result.desiredTargets).toEqual(getLegacyWeightSet("fg_ri"));
+    expect(result.desiredTargets).not.toEqual(getWeightSet("fg_ri", "base"));
+  });
+});
+
 // Phase 3 §5: proves the computeBlendLane refactor didn't leak
 // variant-awareness into phase2, and that phase3 picks up the real
 // inflation state (base/high/high_accel/high_decel) correctly.
@@ -252,5 +273,39 @@ describe("blendSectorTargets", () => {
     expect(blended.XLE).toBeCloseTo(10, 6); // 20 + 0.5*(0-20)
     expect(blended.XLF).toBeCloseTo(40, 6); // 80 + 0.5*(0-80)
     expect(blended.XLV).toBeCloseTo(50, 6); // 0 + 0.5*(100-0)
+  });
+});
+
+// Standing rule (2026-10-30, decisions log): the orchestrator's
+// `?reseed=true` calls this to recompute a lane's targets at its
+// EXISTING decision-state coordinates against whatever the shared
+// table currently returns, without re-deriving carry/blend/hold.
+describe("resolveWeightsFor (reseed mechanism)", () => {
+  it("struct-only (no blend) returns exactly today's shared base for that key", () => {
+    expect(resolveWeightsFor("fg_ri", null, 0, "base", {})).toEqual(getWeightSet("fg_ri", "base"));
+  });
+  it("reflects a shared-table change at the same coordinates (the whole point of reseeding)", () => {
+    // fg_ri's base was revised by D-1; resolveWeightsFor must reflect
+    // the NEW table, never a stale snapshot -- this is what makes a
+    // reseed actually fix a stale row instead of just re-writing it.
+    const reseeded = resolveWeightsFor("fg_ri", null, 0, "base", { eq: 5, intl: 5, em: 0, nb: 0, tip: 20, com: 30, gld: 30, cash: 10 });
+    expect(reseeded).toEqual(getWeightSet("fg_ri", "base"));
+    expect(reseeded).not.toEqual({ eq: 5, intl: 5, em: 0, nb: 0, tip: 20, com: 30, gld: 30, cash: 10 });
+  });
+  it("with an active blend, reblends struct+near at the preserved lambda using current weights", () => {
+    const result = resolveWeightsFor("fg_ri", "rg_ri", 0.3, "base", {});
+    const struct = getWeightSet("fg_ri", "base")!;
+    const near = getWeightSet("rg_ri", "base")!;
+    let turnover = 0;
+    for (const k of Object.keys(struct)) turnover += Math.abs((result[k] ?? 0) - (struct[k] ?? 0));
+    // same blend formula blendWeights itself uses -- a non-trivial,
+    // lambda-scaled move toward near, not a no-op or a full swap.
+    expect(turnover).toBeGreaterThan(0);
+    const fullSwapTurnover = Object.keys(struct).reduce((a, k) => a + Math.abs((near[k] ?? 0) - (struct[k] ?? 0)), 0);
+    expect(turnover).toBeLessThan(fullSwapTurnover);
+  });
+  it("falls back to the provided fallback when baseKey is null", () => {
+    const fallback = { eq: 1, cash: 99 };
+    expect(resolveWeightsFor(null, null, 0, "base", fallback)).toEqual(fallback);
   });
 });

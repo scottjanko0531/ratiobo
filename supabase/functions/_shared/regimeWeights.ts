@@ -51,3 +51,23 @@ export function getWeightSet(key: string, variant: string = "base"): WeightSet |
   if (!variants) return undefined;
   return variants[variant] ?? variants.high ?? variants.base;
 }
+
+// Frozen, never changes — the weights as they stood before Phase 2's
+// getWeightSet wrapper and Phase 3's D-1 base revision (identical to
+// the original hand-coded REGIME_DEFAULT_WEIGHTS at commit 6a2ccc7,
+// the same commit legacyResolve() is extracted from). Two consumers:
+// (1) the `legacy` shadow lane, which must stay a faithful old-rules
+// baseline rather than drifting whenever REGIME_WEIGHT_SETS changes;
+// (2) the live function's gate — with regime_phase3_weights off, the
+// live job uses these, not just a forced "base" variant of the new
+// table, since D-1 changed fg_ri's base numbers themselves.
+export const LEGACY_WEIGHTS: Record<string, WeightSet> = {
+  rg_fi: { eq: 35, intl: 15, em: 10, nb: 20, tip: 5, com: 5, gld: 5, cash: 5, ...ALTS },
+  rg_ri: { eq: 20, intl: 10, em: 20, nb: 0, tip: 15, com: 20, gld: 10, cash: 5, ...ALTS },
+  fg_ri: { eq: 5, intl: 5, em: 0, nb: 0, tip: 20, com: 30, gld: 30, cash: 10, ...ALTS },
+  fg_fi: { eq: 5, intl: 5, em: 0, nb: 65, tip: 0, com: 0, gld: 15, cash: 10, ...ALTS },
+};
+
+export function getLegacyWeightSet(key: string): WeightSet | undefined {
+  return LEGACY_WEIGHTS[key];
+}
