@@ -36,6 +36,21 @@ const fmtTradeAmt = (v) => {
 const gainCls = (v) =>
   v == null ? "text-paper-dim" : Number(v) > 0 ? "text-gain" : Number(v) < 0 ? "text-loss" : "text-paper-dim";
 
+// Mirrors supabase/functions/_shared/shadowLanes.ts's blendSectorTargets
+// exactly (a Deno module can't be imported into this bundle) — Regime
+// Tilt Recalibration Phase 2 §4.2 / Shadow Targets Log §4.2.
+function blendSectorTargets(structRows, nearRows, lambda) {
+  if (!nearRows || lambda <= 0) return { ...structRows };
+  const symbols = new Set([...Object.keys(structRows), ...Object.keys(nearRows)]);
+  const blended = {};
+  for (const sym of symbols) {
+    const s = structRows[sym] ?? 0;
+    const n = nearRows[sym] ?? 0;
+    blended[sym] = s + lambda * (n - s);
+  }
+  return blended;
+}
+
 function MonthlyGainTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
   const entry = payload[0]?.payload;
@@ -564,18 +579,12 @@ export default function PortfoliosPage() {
     // tilts follow the same lambda as the sleeve-level blend — a blend
     // of the structural and near-term sector tables, not just the
     // structural one. Missing symbols on either side default to 0.
+    // Mirrors supabase/functions/_shared/shadowLanes.ts's
+    // blendSectorTargets (a Deno module can't be imported into this
+    // bundle) — tests/shadowLanes.test.ts checks the two stay in sync.
     if (blendLambda > 0 && blendNearKey && blendNearKey !== structKey) {
       Promise.all([fetchFor(structKey), fetchFor(blendNearKey)])
-        .then(([structRows, nearRows]) => {
-          const symbols = new Set([...Object.keys(structRows), ...Object.keys(nearRows)]);
-          const blended = {};
-          for (const sym of symbols) {
-            const s = structRows[sym] ?? 0;
-            const n = nearRows[sym] ?? 0;
-            blended[sym] = s + blendLambda * (n - s);
-          }
-          setSectorTargets(blended);
-        })
+        .then(([structRows, nearRows]) => setSectorTargets(blendSectorTargets(structRows, nearRows, blendLambda)))
         .catch(() => setSectorTargets({}));
     } else {
       fetchFor(structKey).then(setSectorTargets).catch(() => setSectorTargets({}));
