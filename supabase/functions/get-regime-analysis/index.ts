@@ -1366,6 +1366,19 @@ Deno.serve(async (req: Request) => {
             : structuralPersistent
               ? leaningQuadrantKey(structuralGrowthAxis, structuralInflAxis)
               : null);
+    // Regime Tilt Recalibration Phase 2 (§4.1) — same precedence as
+    // structuralKeyForPersist above, but naming WHICH branch produced it,
+    // so update-regime-portfolio-targets can block a portfolio's base
+    // from moving on a "carry" (both axes dead-banded) while still
+    // allowing "crossover" (a genuine fresh reading) or "leaning" (one
+    // axis fresh) to move it.
+    const structuralKeySource: "crossover" | "leaning" | "carry" | null = structuralKey
+      ? "crossover"
+      : (structuralGrowthAxis?.persistence && structuralInflAxis?.persistence)
+        ? "carry"
+        : structuralPersistent
+          ? "leaning"
+          : null;
     const marketLabel = marketKey
       ? (REGIME_LABELS[marketKey] ?? marketKey)
       : marketPersistent
@@ -1480,6 +1493,7 @@ Deno.serve(async (req: Request) => {
       alignment: divergence ? "divergent" : "aligned",
       structural_regime: regimeLabel,
       structural_key: structuralKeyForPersist,
+      structural_key_source: structuralKeySource,
       market_regime: marketLabel,
       forward_key: fwdKey,
       forward_confidence: fwdConf,

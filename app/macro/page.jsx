@@ -12,7 +12,7 @@ import {
 } from "recharts";
 import {
   SIMULATOR_KEYS,
-  REGIME_DEFAULT_WEIGHTS,
+  getWeightSet,
   REGIME_META,
   REGIME_RETURNS,
   SUGGESTED_FUNDS,
@@ -304,7 +304,7 @@ function IndicatorCard({ ind, onSave, onClick, note }) {
 // signal is unambiguous") described this gating but it was never actually
 // wired up. See the regime engine follow-up fixes, section C.
 function computeSuggestedPcts(regimeKey, method, assetData, tiltMultiplier = 1) {
-  const dw = REGIME_DEFAULT_WEIGHTS[regimeKey] ?? {};
+  const dw = getWeightSet(regimeKey, "base") ?? {};
 
   if (method === "bw") {
     return Object.fromEntries(

@@ -1,5 +1,10 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { getWeightSet, WeightSet } from "../_shared/regimeWeights.ts";
+import {
+  computeLambda, blendWeights, capTurnover, resolveBaseKey, canApplyKeyShift,
+  StructuralKeySource,
+} from "../_shared/regimeShiftRules.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -22,15 +27,16 @@ const REGIME_LABELS: Record<string, string> = {
   fg_fi: "Deflationary Bust",
 };
 
-// Mirrors lib/simulatorKeys.js's REGIME_DEFAULT_WEIGHTS exactly — the same weights
-// already used to drive the Simulator's per-regime suggestions, now reused to
-// automatically set a regime-driven portfolio's actual target_allocations.
-const REGIME_DEFAULT_WEIGHTS: Record<string, Record<string, number>> = {
-  rg_fi: { eq: 35, intl: 15, em: 10, nb: 20, tip: 5, com: 5, gld: 5, cash: 5, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
-  rg_ri: { eq: 20, intl: 10, em: 20, nb: 0, tip: 15, com: 20, gld: 10, cash: 5, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
-  fg_ri: { eq: 5, intl: 5, em: 0, nb: 0, tip: 20, com: 30, gld: 30, cash: 10, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
-  fg_fi: { eq: 5, intl: 5, em: 0, nb: 65, tip: 0, com: 0, gld: 15, cash: 10, alt_crypto: 0, alt_re: 0, alt_loan: 0, alt_pp: 0, alt_other: 0 },
-};
+// Regime weights now come from _shared/regimeWeights.ts's getWeightSet
+// (Regime Tilt Recalibration Phase 2 §4.0) — the single Deno-side copy,
+// replacing this function's own former hand-copy of REGIME_DEFAULT_WEIGHTS
+// (run-backtest has its own separate copy for a display-only field; see
+// that module's own comment).
+
+// Phase 2 §4.3: caps and holds.
+const TURNOVER_CAP_POINTS = 15; // one-way, per run (D-3)
+const MIN_HOLD_DAYS = 21; // between applied key-level shifts (D-4)
+const LAMBDA_MAX = 0.5; // near-term blend never moves more than halfway (D-2)
 
 // A regime-driven portfolio's allocation is driven by the active STRUCTURAL
 // regime by default (a real, current-conditions read — not a forecast, so
@@ -50,11 +56,19 @@ const NEARTERM_CONFIRMATION_DAYS = 7;
 // allowed to override a live structural read.
 const CONFIDENCE_FLOOR = 60;
 
+interface RegimeBlend {
+  struct_key: string | null; struct_source: StructuralKeySource;
+  variant: "base" | "high"; near_key: string | null;
+  near_conf: number | null; lambda: number;
+}
+
 interface RegimePortfolio {
   id: string; portfolio_name: string;
   current_regime_key: string | null; regime_confirmed_since: string | null;
   pending_regime_key: string | null; pending_regime_since: string | null;
   regime_auto_shift: boolean;
+  target_allocations: WeightSet | null;
+  regime_blend: RegimeBlend | null;
 }
 
 interface SignalState {
@@ -87,12 +101,14 @@ Deno.serve(async (req: Request) => {
     // nearterm_forward_key/nearterm_forward_confidence) exists.
     const { data: todayRegime } = await sb
       .from("dalio_regime_analysis")
-      .select("analysis_date,structural_key,nearterm_forward_key,nearterm_forward_confidence")
+      .select("analysis_date,structural_key,structural_key_source,nearterm_forward_key,nearterm_forward_confidence,infl_level_state")
       .eq("analysis_date", todayStr)
       .maybeSingle();
     let structuralKey = todayRegime?.structural_key as string | null | undefined;
+    let structuralKeySource = todayRegime?.structural_key_source as StructuralKeySource | undefined;
     let liveNearKey = todayRegime?.nearterm_forward_key as string | null | undefined;
     let liveNearConfidence = todayRegime?.nearterm_forward_confidence as number | null | undefined;
+    let inflLevelState = todayRegime?.infl_level_state as string | null | undefined;
     if (structuralKey === undefined) {
       try {
         const res = await fetch(`${SUPABASE_URL}/functions/v1/get-regime-analysis`, {
@@ -102,12 +118,18 @@ Deno.serve(async (req: Request) => {
         if (res.ok) {
           const j = await res.json();
           structuralKey = j?.structural_key ?? null;
+          structuralKeySource = j?.structural_key_source ?? null;
           liveNearKey = j?.nearterm_forward_key ?? null;
           liveNearConfidence = j?.nearterm_forward_confidence ?? null;
+          inflLevelState = j?.infl_level_state ?? null;
         }
       } catch (e) { console.error("[regime-targets] triggering get-regime-analysis:", e); }
     }
     structuralKey = structuralKey ?? null;
+    structuralKeySource = structuralKeySource ?? null;
+    // Phase 3 (§5) will make this actually change which weight set
+    // getWeightSet returns; today it's computed and stored only.
+    const variant: "base" | "high" = (inflLevelState === "overheating" || inflLevelState === "stagflation") ? "high" : "base";
 
     // ── The Near-Term override's own clock, computed once ──────────────────
     const { data: sigRow } = await sb
@@ -201,7 +223,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: portfolios } = await sb
       .from("portfolios")
-      .select("id,portfolio_name,current_regime_key,regime_confirmed_since,pending_regime_key,pending_regime_since,regime_auto_shift")
+      .select("id,portfolio_name,current_regime_key,regime_confirmed_since,pending_regime_key,pending_regime_since,regime_auto_shift,target_allocations,regime_blend")
       .eq("strategy_framework", "regime_driven");
     const portfolioNames = (portfolios ?? []).map((p) => (p as RegimePortfolio).portfolio_name);
     const portfolioNamesText = portfolioNames.length
@@ -239,7 +261,10 @@ Deno.serve(async (req: Request) => {
     }
 
     const results: { portfolioId: string; action: string }[] = [];
-    const effectiveKey: string | null = active && confirmedKey ? confirmedKey : structuralKey;
+    // Near-term's active key for blending purposes (Phase 2 §4.2) — it no
+    // longer fully overrides structural; it's a blend target, only when
+    // active/confirmed AND it differs from whatever the base ends up being.
+    const nearActiveKey: string | null = active && confirmedKey ? confirmedKey : null;
     // Regime Tilt Recalibration Phase 0: per-portfolio notifications for a
     // held (regime_auto_shift=false) portfolio -- separate from the
     // signal-level notifRows above since these name a specific portfolio,
@@ -256,55 +281,130 @@ Deno.serve(async (req: Request) => {
         await sb.from("portfolios").update({ pending_regime_key: pendingKey, pending_regime_since: pendingSince }).eq("id", pf.id);
       }
 
-      if (!effectiveKey) {
-        // Genuinely no structural reading today (missing GDP/CPI data, not
+      const currentBaseKey = pf.current_regime_key;
+      // §4.1: a "carry" source never moves this portfolio's base off
+      // whatever it's already on — only a fresh (crossover/leaning)
+      // reading can.
+      const proposedBaseKey = resolveBaseKey(structuralKey, structuralKeySource, currentBaseKey);
+
+      if (!proposedBaseKey && !nearActiveKey) {
+        // Genuinely no structural reading ever (missing GDP/CPI data, not
         // a dead-band case — get-regime-analysis already falls back to the
-        // last confirmed regime for dead-band days) and no Near-Term
-        // override active — leave current_regime_key untouched rather than
-        // guess.
+        // last confirmed regime for dead-band days), no existing base, and
+        // no Near-Term override active — leave everything untouched rather
+        // than guess.
         results.push({ portfolioId: pf.id, action: "no_structural_signal" });
         continue;
       }
 
-      if (effectiveKey === pf.current_regime_key) {
-        results.push({ portfolioId: pf.id, action: "no_change" });
+      const prevBlend = pf.regime_blend;
+      const prevNearKey = prevBlend?.near_key ?? null;
+      const baseChanging = proposedBaseKey !== null && proposedBaseKey !== currentBaseKey;
+      // Near-term only matters for blending when it differs from the base
+      // it would otherwise be blended against — agreeing with the base is
+      // a no-op for the blend (even though it may still count as the
+      // "agreement exception" below).
+      const nearKeyForThisRun = nearActiveKey && nearActiveKey !== proposedBaseKey ? nearActiveKey : null;
+      const nearChanging = nearKeyForThisRun !== prevNearKey;
+      const isKeyLevelEvent = baseChanging || nearChanging;
+
+      let finalBaseKey = proposedBaseKey ?? currentBaseKey;
+      let finalNearKey = nearKeyForThisRun;
+      let blocked = false;
+
+      if (isKeyLevelEvent) {
+        // §4.3 agreement exception: a genuine crossover and an active
+        // Near-Term signal landing on the SAME key (different from the
+        // current base) is strong enough to bypass the minimum hold.
+        const agreement = structuralKeySource === "crossover"
+          && nearActiveKey != null
+          && structuralKey === nearActiveKey
+          && structuralKey !== currentBaseKey;
+        const allowed = canApplyKeyShift(pf.regime_confirmed_since, today, MIN_HOLD_DAYS, agreement);
+        if (!allowed) {
+          blocked = true;
+          finalBaseKey = currentBaseKey;
+          finalNearKey = prevNearKey;
+        }
+      }
+
+      if (!finalBaseKey) {
+        results.push({ portfolioId: pf.id, action: "no_structural_signal" });
         continue;
       }
 
-      const fromKey = pf.current_regime_key;
+      const lambda = finalNearKey ? computeLambda(smoothedConfidence, LAMBDA_MAX) : 0;
+      const wStruct = getWeightSet(finalBaseKey, variant) ?? {};
+      const wNear = finalNearKey ? (getWeightSet(finalNearKey, variant) ?? null) : null;
+      const wDesired = wNear ? blendWeights(wStruct, wNear, lambda) : wStruct;
+      const wCurrent = pf.target_allocations && Object.keys(pf.target_allocations).length > 0 ? pf.target_allocations : wStruct;
+      const wWritten = capTurnover(wCurrent, wDesired, TURNOVER_CAP_POINTS);
+
+      const newBlend: RegimeBlend = {
+        struct_key: finalBaseKey, struct_source: structuralKeySource,
+        variant, near_key: finalNearKey, near_conf: finalNearKey ? smoothedConfidence : null, lambda,
+      };
+      const keyEventApplied = isKeyLevelEvent && !blocked;
+
+      const nothingToWrite = !keyEventApplied
+        && JSON.stringify(wWritten) === JSON.stringify(wCurrent)
+        && JSON.stringify(newBlend) === JSON.stringify(prevBlend);
+      if (nothingToWrite) {
+        results.push({ portfolioId: pf.id, action: blocked ? "shift_blocked_min_hold" : "no_change" });
+        continue;
+      }
+
+      const fromKey = currentBaseKey;
 
       if (!pf.regime_auto_shift) {
-        // Held: record what WOULD have happened (applied=false) and notify,
-        // but never touch target_allocations/current_regime_key. The
-        // signal clock above already ran normally -- this only withholds
-        // acting on it for this one portfolio.
-        await sb.from("portfolio_regime_shifts").insert({
-          portfolio_id: pf.id, from_key: fromKey, to_key: effectiveKey,
-          from_label: fromKey ? (REGIME_LABELS[fromKey] ?? fromKey) : null, to_label: REGIME_LABELS[effectiveKey] ?? effectiveKey,
-          applied: false,
-        });
-        heldNotifRows.push({
-          category: "regime_signal", type: "signal_shift_suppressed", importance: "medium",
-          title: `Shift to ${REGIME_LABELS[effectiveKey] ?? effectiveKey} suppressed — auto-shift is off for ${pf.portfolio_name}`,
-          description: `${pf.portfolio_name} would have shifted from ${fromKey ? (REGIME_LABELS[fromKey] ?? fromKey) : "no regime"} to ${REGIME_LABELS[effectiveKey] ?? effectiveKey} today, but auto-shift is paused for this portfolio. Turn it back on to resume.`,
-          metadata: { portfolio_id: pf.id, from_key: fromKey, to_key: effectiveKey },
-          dedup_key: `regime_shift_suppressed:${pf.id}:${effectiveKey}:${todayStr}`,
-        });
+        // Held: record what WOULD have happened (applied=false) and notify
+        // for a genuine key-level event only, but never touch
+        // target_allocations/current_regime_key/regime_blend. The signal
+        // clock above already ran normally -- this only withholds acting
+        // on it for this one portfolio.
+        if (keyEventApplied) {
+          // Prefer the blend target as "where we're heading" when one is
+          // active; a near-term deactivation (finalNearKey back to null)
+          // correctly falls back to the base rather than showing null.
+          const toKeyForNotif = finalNearKey ?? finalBaseKey;
+          await sb.from("portfolio_regime_shifts").insert({
+            portfolio_id: pf.id, from_key: fromKey, to_key: toKeyForNotif,
+            from_label: fromKey ? (REGIME_LABELS[fromKey] ?? fromKey) : null,
+            to_label: REGIME_LABELS[toKeyForNotif as string] ?? toKeyForNotif,
+            applied: false,
+          });
+          heldNotifRows.push({
+            category: "regime_signal", type: "signal_shift_suppressed", importance: "medium",
+            title: `Shift to ${REGIME_LABELS[toKeyForNotif as string] ?? toKeyForNotif} suppressed — auto-shift is off for ${pf.portfolio_name}`,
+            description: `${pf.portfolio_name} would have shifted from ${fromKey ? (REGIME_LABELS[fromKey] ?? fromKey) : "no regime"} toward ${REGIME_LABELS[toKeyForNotif as string] ?? toKeyForNotif} today, but auto-shift is paused for this portfolio. Turn it back on to resume.`,
+            metadata: { portfolio_id: pf.id, from_key: fromKey, to_key: toKeyForNotif },
+            dedup_key: `regime_shift_suppressed:${pf.id}:${toKeyForNotif}:${todayStr}`,
+          });
+        }
         results.push({ portfolioId: pf.id, action: "held" });
         continue;
       }
 
-      await sb.from("portfolios").update({
-        target_allocations: REGIME_DEFAULT_WEIGHTS[effectiveKey],
-        current_regime_key: effectiveKey,
-        regime_confirmed_since: todayStr,
+      const updatePayload: Record<string, unknown> = {
+        target_allocations: wWritten,
+        current_regime_key: finalBaseKey,
+        regime_blend: newBlend,
         updated_at: new Date().toISOString(),
-      }).eq("id", pf.id);
-      await sb.from("portfolio_regime_shifts").insert({
-        portfolio_id: pf.id, from_key: fromKey, to_key: effectiveKey,
-        from_label: fromKey ? (REGIME_LABELS[fromKey] ?? fromKey) : null, to_label: REGIME_LABELS[effectiveKey] ?? effectiveKey,
-      });
-      results.push({ portfolioId: pf.id, action: fromKey ? "shifted" : "activated" });
+      };
+      if (keyEventApplied) updatePayload.regime_confirmed_since = todayStr;
+      await sb.from("portfolios").update(updatePayload).eq("id", pf.id);
+
+      if (keyEventApplied) {
+        const toKey = finalNearKey ?? finalBaseKey;
+        await sb.from("portfolio_regime_shifts").insert({
+          portfolio_id: pf.id, from_key: fromKey, to_key: toKey,
+          from_label: fromKey ? (REGIME_LABELS[fromKey] ?? fromKey) : null,
+          to_label: REGIME_LABELS[toKey as string] ?? toKey,
+        });
+        results.push({ portfolioId: pf.id, action: fromKey ? "shifted" : "activated" });
+      } else {
+        results.push({ portfolioId: pf.id, action: blocked ? "shift_blocked_min_hold" : "blend_adjusted" });
+      }
     }
 
     if (heldNotifRows.length) {
@@ -312,7 +412,7 @@ Deno.serve(async (req: Request) => {
     }
 
     return json({
-      structuralKey: structuralKey ?? null,
+      structuralKey: structuralKey ?? null, structuralKeySource: structuralKeySource ?? null, variant,
       liveNearKey: liveNearKey ?? null, liveNearConfidence: liveNearConfidence ?? null,
       smoothedConfidence, smoothingWindowDays: SMOOTHING_WINDOW_DAYS,
       pendingKey, pendingSince, confirmedKey, confirmedSince, active, fired, newlyConfirmed,

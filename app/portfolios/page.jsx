@@ -544,21 +544,43 @@ export default function PortfoliosPage() {
   // portfolio_sector_targets (the common case), so this is safe to always
   // query rather than gating on a specific portfolio name.
   const [sectorTargets, setSectorTargets] = useState({});
+  const blendLambda = viewingPortfolio?.regime_blend?.lambda ?? 0;
+  const blendNearKey = viewingPortfolio?.regime_blend?.near_key ?? null;
   useEffect(() => {
     if (!viewingPortfolio || viewingPortfolio.strategy_framework !== "regime_driven" || !viewingPortfolio.current_regime_key) {
       setSectorTargets({});
       return;
     }
-    supabase
-      .from("portfolio_sector_targets")
-      .select("symbol, target_pct_of_bucket")
-      .eq("portfolio_id", viewingPortfolio.id)
-      .eq("regime_key", viewingPortfolio.current_regime_key)
-      .then(({ data }) => {
-        setSectorTargets(Object.fromEntries((data ?? []).map((r) => [r.symbol, Number(r.target_pct_of_bucket)])));
-      })
-      .catch(() => setSectorTargets({}));
-  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework, viewingPortfolio?.current_regime_key]);
+    const structKey = viewingPortfolio.current_regime_key;
+    const fetchFor = (regimeKey) =>
+      supabase
+        .from("portfolio_sector_targets")
+        .select("symbol, target_pct_of_bucket")
+        .eq("portfolio_id", viewingPortfolio.id)
+        .eq("regime_key", regimeKey)
+        .then(({ data }) => Object.fromEntries((data ?? []).map((r) => [r.symbol, Number(r.target_pct_of_bucket)])));
+
+    // Regime Tilt Recalibration Phase 2 §4.2: Equity Tilting's sector
+    // tilts follow the same lambda as the sleeve-level blend — a blend
+    // of the structural and near-term sector tables, not just the
+    // structural one. Missing symbols on either side default to 0.
+    if (blendLambda > 0 && blendNearKey && blendNearKey !== structKey) {
+      Promise.all([fetchFor(structKey), fetchFor(blendNearKey)])
+        .then(([structRows, nearRows]) => {
+          const symbols = new Set([...Object.keys(structRows), ...Object.keys(nearRows)]);
+          const blended = {};
+          for (const sym of symbols) {
+            const s = structRows[sym] ?? 0;
+            const n = nearRows[sym] ?? 0;
+            blended[sym] = s + blendLambda * (n - s);
+          }
+          setSectorTargets(blended);
+        })
+        .catch(() => setSectorTargets({}));
+    } else {
+      fetchFor(structKey).then(setSectorTargets).catch(() => setSectorTargets({}));
+    }
+  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework, viewingPortfolio?.current_regime_key, blendLambda, blendNearKey]);
 
   // Market Conditions overlay (Phase 6) — latest daily tier/exposure_multiplier
   // row, independent of strategy_framework. Fetched whenever a portfolio is
@@ -1157,6 +1179,12 @@ export default function PortfoliosPage() {
                       <p className="text-xs text-paper-dim leading-relaxed">
                         Currently targeting <span className="text-paper font-medium">{REGIME_META[pf.current_regime_key]?.label ?? pf.current_regime_key}</span> weights
                         {pf.regime_confirmed_since && `, confirmed since ${pf.regime_confirmed_since}`}.
+                        {pf.regime_blend?.lambda > 0 && pf.regime_blend?.near_key && (
+                          <span className="block mt-1 text-paper">
+                            {Math.round(pf.regime_blend.lambda * 100)}% blended toward {REGIME_META[pf.regime_blend.near_key]?.label ?? pf.regime_blend.near_key}
+                            {pf.regime_blend.near_conf != null && ` (near-term ${pf.regime_blend.near_conf}%)`}.
+                          </span>
+                        )}
                         {pf.pending_regime_key && pf.pending_regime_key !== pf.current_regime_key && (
                           <span className="block mt-1 text-brass-soft">
                             Watching a shift to {REGIME_META[pf.pending_regime_key]?.label ?? pf.pending_regime_key} — confirms after {confirmDays} days if it persists (since {pf.pending_regime_since}).
@@ -1171,9 +1199,10 @@ export default function PortfoliosPage() {
                     {regimeShifts.length > 0 && (
                       <div className="mt-2 pt-2 border-t border-ink-line/50 space-y-1">
                         {regimeShifts.slice(0, 5).map((r) => (
-                          <p key={r.id} className={`text-[10px] ${r.applied === false ? "text-paper-dim/40 italic" : "text-paper-dim/70"}`}>
+                          <p key={r.id} className={`text-[10px] ${r.applied === false || r.reverted_at ? "text-paper-dim/40 italic" : "text-paper-dim/70"}`}>
                             {r.shifted_at?.slice(0, 10)} — {r.from_label ? `${r.from_label} → ${r.to_label}` : `Activated at ${r.to_label}`}
                             {r.applied === false && " (suppressed — auto-shift was off)"}
+                            {r.reverted_at && " (reverted — corrected to reflect the Phase 2 rules)"}
                           </p>
                         ))}
                       </div>

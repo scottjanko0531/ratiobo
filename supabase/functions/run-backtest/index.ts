@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { getWeightSet } from "../_shared/regimeWeights.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -172,15 +173,14 @@ const REGIME_LABELS: Record<string, string> = {
   rg_fi: "Disinflationary Boom", rg_ri: "Reflation", fg_ri: "Stagflation", fg_fi: "Deflationary Bust",
 };
 
-// Percent form, asset-class keyed — identical to lib/simulatorKeys.js's
-// REGIME_DEFAULT_WEIGHTS, kept in sync manually. Used for the transparency
-// table the frontend renders, not for the backtest math itself.
-const REGIME_DEFAULT_WEIGHTS_PCT: Record<string, Record<string, number>> = {
-  rg_fi: { eq: 35, intl: 15, em: 10, nb: 20, tip: 5, com: 5, gld: 5, cash: 5 },
-  rg_ri: { eq: 20, intl: 10, em: 20, nb: 0, tip: 15, com: 20, gld: 10, cash: 5 },
-  fg_ri: { eq: 5, intl: 5, em: 0, nb: 0, tip: 20, com: 30, gld: 30, cash: 10 },
-  fg_fi: { eq: 5, intl: 5, em: 0, nb: 65, tip: 0, com: 0, gld: 15, cash: 10 },
-};
+// Percent form, asset-class keyed — used for the transparency table the
+// frontend renders, not for the backtest math itself. Regime Tilt
+// Recalibration Phase 2 (§4.0): now routed through _shared/
+// regimeWeights.ts's getWeightSet instead of this module's own
+// hand-copy, so there's one Deno-side source instead of two. The
+// frontend already filters zero-weight keys (app/backtesting/page.jsx),
+// so getWeightSet's extra alt_* zero entries vs. this constant's
+// previous 8-key shape are harmless.
 
 // Fractional (0-1), ticker-keyed — same 8 tickers bw_modified already backtests
 // with (eq→VTI, intl→VXUS, em→VWO, nb→TLT, tip→SCHP, com→DBC, gld→GLD, cash→SHY),
@@ -515,7 +515,7 @@ Deno.serve(async (req: Request) => {
         until_date: nextSince,
         regime_key: seg.regimeKey,
         regime_label: REGIME_LABELS[seg.regimeKey],
-        weights_pct: REGIME_DEFAULT_WEIGHTS_PCT[seg.regimeKey],
+        weights_pct: getWeightSet(seg.regimeKey, "base"),
       };
     }).filter(r => r.since_date >= windowStart || (r.until_date == null || r.until_date >= windowStart));
 
