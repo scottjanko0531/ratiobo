@@ -47,6 +47,44 @@ function weightsEqual(a: WeightSet, b: WeightSet): boolean {
   return true;
 }
 
+const REGIME_LABELS: Record<string, string> = {
+  rg_fi: "Disinflationary Boom", rg_ri: "Reflation", fg_ri: "Stagflation", fg_fi: "Deflationary Bust",
+};
+const toLabel = (k: string | null) => (k ? (REGIME_LABELS[k] ?? k) : "none");
+
+// §5.4: one notification per lane event (never on no_change).
+function describeShadowEvent(event: string, regimeKey: string | null, nearKey: string | null, lambda: number): string {
+  const lambdaPct = `${Math.round(lambda * 100)}%`;
+  switch (event) {
+    case "seed": return `shadow log seeded at ${toLabel(regimeKey)}`;
+    case "shift_full": return `full swap to ${toLabel(regimeKey)}`;
+    case "base_change": return `base moved to ${toLabel(regimeKey)}`;
+    case "blend_start": return `blend started toward ${toLabel(nearKey)}, λ=${lambdaPct}`;
+    case "blend_change": return `blend target changed to ${toLabel(nearKey)}, λ=${lambdaPct}`;
+    case "blend_end": return `blend ended, back to pure ${toLabel(regimeKey)}`;
+    case "cap_partial": return `turnover-capped move toward ${toLabel(nearKey ?? regimeKey)} continuing`;
+    case "cap_complete": return `turnover-capped move to ${toLabel(nearKey ?? regimeKey)} completed`;
+    case "variant_change": return "variant changed";
+    default: return event;
+  }
+}
+
+// §3.1: service-role only. The gateway already verified the bearer JWT is
+// valid; this just checks WHICH role it carries (anon vs. service_role),
+// decoding the (unsigned-here, already-verified) payload.
+function callerRole(req: Request): string | null {
+  const auth = req.headers.get("Authorization") ?? "";
+  const token = auth.replace(/^Bearer\s+/i, "");
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return payload.role ?? null;
+  } catch {
+    return null;
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -54,6 +92,13 @@ Deno.serve(async (req: Request) => {
     const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
     const today = new Date();
     const todayStr = today.toISOString().slice(0, 10);
+
+    const url = new URL(req.url);
+    const forceRecompute = url.searchParams.get("recompute") === "true";
+    const recomputeReason = url.searchParams.get("reason") ?? "manual recompute requested, no reason given";
+    if (forceRecompute && callerRole(req) !== "service_role") {
+      return json({ error: "recompute=true is service-role only" }, 403);
+    }
 
     const { data: regimeRow } = await sb
       .from("dalio_regime_analysis")
@@ -106,12 +151,13 @@ Deno.serve(async (req: Request) => {
 
     const { data: portfolios } = await sb
       .from("portfolios")
-      .select("id, portfolio_name, current_regime_key, target_allocations")
+      .select("id, portfolio_name, current_regime_key, target_allocations, regime_auto_shift")
       .eq("strategy_framework", "regime_driven");
 
     const variant = deriveVariant(inflLevelState, inflAccelVote);
     const results: Record<string, unknown>[] = [];
     const errorRows: Record<string, unknown>[] = [];
+    const eventNotifRows: Record<string, unknown>[] = [];
 
     for (const pf of portfolios ?? []) {
       const { data: sectorRows } = await sb
@@ -129,12 +175,19 @@ Deno.serve(async (req: Request) => {
           const laneFn = LANES[lane];
           if (!laneFn) continue;
 
-          const { data: prevStateRow } = await sb
-            .from("regime_shadow_state")
-            .select("*")
-            .eq("portfolio_id", pf.id)
-            .eq("lane", lane)
-            .maybeSingle();
+          // §3.1 recompute: delete today's row FIRST, so both the
+          // "last written row" lookup below and the final upsert
+          // naturally land on yesterday's real history, bypassing
+          // whatever regime_shadow_state a same-day run may have
+          // already (possibly wrongly) advanced to.
+          if (forceRecompute) {
+            await sb.from("regime_shadow_targets").delete()
+              .eq("portfolio_id", pf.id).eq("lane", lane).eq("snapshot_date", todayStr);
+          }
+
+          const { data: prevStateRow } = forceRecompute
+            ? { data: null }
+            : await sb.from("regime_shadow_state").select("*").eq("portfolio_id", pf.id).eq("lane", lane).maybeSingle();
 
           let prev: LaneState;
           let prevVariant: "base" | "high" | "high_accel" | "high_decel" = "base";
@@ -158,6 +211,43 @@ Deno.serve(async (req: Request) => {
               prev.nearKey = lastRow.near_key;
               prev.lambda = Number(lastRow.lambda ?? 0);
               prevVariant = lastRow.variant ?? "base";
+            }
+          } else if (forceRecompute) {
+            // Today's row is already deleted above, so this naturally
+            // finds yesterday's (or earlier) real row, if any.
+            const { data: priorRow } = await sb
+              .from("regime_shadow_targets")
+              .select("regime_key, near_key, lambda, variant, target_allocations")
+              .eq("portfolio_id", pf.id).eq("lane", lane)
+              .order("snapshot_date", { ascending: false }).limit(1).maybeSingle();
+            if (priorRow) {
+              const { data: stateRow } = await sb
+                .from("regime_shadow_state")
+                .select("base_confirmed_since, last_shift_date")
+                .eq("portfolio_id", pf.id).eq("lane", lane).maybeSingle();
+              prev = {
+                baseKey: priorRow.regime_key,
+                baseConfirmedSince: stateRow?.base_confirmed_since ?? null,
+                lastShiftDate: stateRow?.last_shift_date ?? null,
+                nearKey: priorRow.near_key, lambda: Number(priorRow.lambda ?? 0),
+                currentTargets: priorRow.target_allocations, desiredTargets: priorRow.target_allocations,
+              };
+              prevVariant = priorRow.variant ?? "base";
+            } else {
+              isFirstRun = true;
+              if (lane === "live") {
+                prev = {
+                  baseKey: pf.current_regime_key, baseConfirmedSince: null, lastShiftDate: null,
+                  nearKey: null, lambda: 0,
+                  currentTargets: pf.target_allocations ?? {}, desiredTargets: pf.target_allocations ?? {},
+                };
+              } else {
+                const seedTargets = getWeightSet(SEED_BASE_KEY, "base") ?? {};
+                prev = {
+                  baseKey: SEED_BASE_KEY, baseConfirmedSince: SEED_BASE_CONFIRMED_SINCE, lastShiftDate: SEED_BASE_CONFIRMED_SINCE,
+                  nearKey: null, lambda: 0, currentTargets: seedTargets, desiredTargets: seedTargets,
+                };
+              }
             }
           } else {
             isFirstRun = true;
@@ -237,6 +327,18 @@ Deno.serve(async (req: Request) => {
             updated_at: new Date().toISOString(),
           }, { onConflict: "portfolio_id,lane" });
 
+          if (event !== "no_change") {
+            const desc = describeShadowEvent(event, result.regimeKey, result.nearKey, result.lambda);
+            const heldNote = pf.regime_auto_shift ? "" : " Live portfolio held.";
+            eventNotifRows.push({
+              category: "regime_signal", type: "shadow_lane_event", importance: "low",
+              title: `Shadow (${lane}): ${desc}`,
+              description: `${pf.portfolio_name} — ${desc}.${heldNote}`,
+              metadata: { portfolio_id: pf.id, lane, event, regime_key: result.regimeKey, near_key: result.nearKey, lambda: result.lambda },
+              dedup_key: `shadow:${lane}:${pf.id}:${event}:${todayStr}`,
+            });
+          }
+
           results.push({ portfolioId: pf.id, lane, event, blockedReason: result.blockedReason });
         } catch (laneErr) {
           const msg = laneErr instanceof Error ? laneErr.message : String(laneErr);
@@ -252,8 +354,69 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    if (forceRecompute) {
+      await sb.from("notifications").insert({
+        category: "regime_signal", type: "shadow_recompute", importance: "low",
+        title: `Shadow targets recomputed for ${todayStr}`,
+        description: `Reason: ${recomputeReason}`,
+        metadata: { date: todayStr, reason: recomputeReason },
+      });
+    }
     if (errorRows.length) {
       await sb.from("notifications").upsert(errorRows, { onConflict: "dedup_key", ignoreDuplicates: true });
+    }
+    if (eventNotifRows.length) {
+      await sb.from("notifications").upsert(eventNotifRows, { onConflict: "dedup_key", ignoreDuplicates: true });
+    }
+
+    // §5.4: divergence crossing — any lane pair going from <10pts apart to
+    // >20, or back, vs. yesterday. One notification per (pair, direction)
+    // when every regime-driven portfolio crosses identically; separate
+    // notifications when they don't.
+    const DIVERGENCE_PAIRS: [string, string][] = [["live", "legacy"], ["live", "phase2"], ["legacy", "phase2"]];
+    const yesterdayStr = new Date(today.getTime() - 86_400_000).toISOString().slice(0, 10);
+    const crossingsByPortfolio: Record<string, { pair: string; direction: "diverged" | "converged" }[]> = {};
+
+    for (const pf of portfolios ?? []) {
+      const { data: todayRows } = await sb.from("regime_shadow_targets").select("lane, target_allocations").eq("portfolio_id", pf.id).eq("snapshot_date", todayStr);
+      const { data: yestRows } = await sb.from("regime_shadow_targets").select("lane, target_allocations").eq("portfolio_id", pf.id).eq("snapshot_date", yesterdayStr);
+      if (!todayRows?.length || !yestRows?.length) continue;
+      const todayByLane = Object.fromEntries(todayRows.map((r) => [r.lane, r.target_allocations]));
+      const yestByLane = Object.fromEntries(yestRows.map((r) => [r.lane, r.target_allocations]));
+      for (const [a, b] of DIVERGENCE_PAIRS) {
+        if (!todayByLane[a] || !todayByLane[b] || !yestByLane[a] || !yestByLane[b]) continue;
+        const todayDist = oneWayTurnover(todayByLane[a], todayByLane[b]);
+        const yestDist = oneWayTurnover(yestByLane[a], yestByLane[b]);
+        if (yestDist < 10 && todayDist > 20) {
+          (crossingsByPortfolio[pf.id] ??= []).push({ pair: `${a}_vs_${b}`, direction: "diverged" });
+        } else if (yestDist > 20 && todayDist < 10) {
+          (crossingsByPortfolio[pf.id] ??= []).push({ pair: `${a}_vs_${b}`, direction: "converged" });
+        }
+      }
+    }
+
+    const grouped: Record<string, string[]> = {};
+    for (const [pfId, events] of Object.entries(crossingsByPortfolio)) {
+      for (const ev of events) (grouped[`${ev.pair}:${ev.direction}`] ??= []).push(pfId);
+    }
+    const allPortfolioIds = (portfolios ?? []).map((p) => p.id);
+    const divergenceNotifRows: Record<string, unknown>[] = [];
+    for (const [key, pfIds] of Object.entries(grouped)) {
+      const [pair, direction] = key.split(":");
+      const allMatch = allPortfolioIds.length > 0 && allPortfolioIds.every((id) => pfIds.includes(id));
+      const names = (portfolios ?? []).filter((p) => pfIds.includes(p.id)).map((p) => p.portfolio_name);
+      const subject = allMatch ? "Both regime-driven portfolios" : names.join(" and ");
+      const pairLabel = pair.replace(/_/g, " ");
+      divergenceNotifRows.push({
+        category: "regime_signal", type: "shadow_divergence", importance: "low",
+        title: `Shadow lanes ${direction}: ${pairLabel}`,
+        description: `${subject}: ${pairLabel} distance ${direction === "diverged" ? "crossed above 20 points" : "fell back below 10 points"} today.`,
+        metadata: { pair, direction, portfolio_ids: pfIds },
+        dedup_key: `shadow_divergence:${pair}:${direction}:${todayStr}`,
+      });
+    }
+    if (divergenceNotifRows.length) {
+      await sb.from("notifications").upsert(divergenceNotifRows, { onConflict: "dedup_key", ignoreDuplicates: true });
     }
 
     return json({ ok: true, date: todayStr, variant, processed: results.length, results });

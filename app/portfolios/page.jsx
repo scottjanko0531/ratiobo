@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import {
   ResponsiveContainer, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  LineChart, Line, Legend,
 } from "recharts";
 import Shell from "../../components/Shell";
 import { supabase } from "../../lib/supabase";
@@ -590,6 +591,61 @@ export default function PortfoliosPage() {
       fetchFor(structKey).then(setSectorTargets).catch(() => setSectorTargets({}));
     }
   }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework, viewingPortfolio?.current_regime_key, blendLambda, blendNearKey]);
+
+  // Regime Shadow Targets Log (docs/specs/regime-shadow-targets.md §5.3)
+  // — read-only comparison panel, never writes anything. shadowSummary
+  // comes from the regime_shadow_summary view (per-lane aggregates);
+  // shadowHistory is the raw last-30-days rows, used both for each
+  // lane's latest event/blocked_reason and the sparkline.
+  const [shadowExpanded, setShadowExpanded] = useState(false);
+  const [shadowSummary, setShadowSummary] = useState([]);
+  const [shadowHistory, setShadowHistory] = useState([]);
+  useEffect(() => {
+    if (!viewingPortfolio || viewingPortfolio.strategy_framework !== "regime_driven") {
+      setShadowSummary([]); setShadowHistory([]);
+      return;
+    }
+    supabase.from("regime_shadow_summary").select("*").eq("portfolio_id", viewingPortfolio.id)
+      .then(({ data }) => setShadowSummary(data ?? []))
+      .catch(() => setShadowSummary([]));
+    const since = new Date();
+    since.setUTCDate(since.getUTCDate() - 30);
+    supabase.from("regime_shadow_targets")
+      .select("snapshot_date, lane, regime_key, near_key, lambda, variant, target_allocations, event, blocked_reason")
+      .eq("portfolio_id", viewingPortfolio.id)
+      .gte("snapshot_date", since.toISOString().slice(0, 10))
+      .order("snapshot_date")
+      .then(({ data }) => setShadowHistory(data ?? []))
+      .catch(() => setShadowHistory([]));
+  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework]);
+
+  const SHADOW_LANE_IDS = ["live", "legacy", "phase2"];
+  const SHADOW_LANE_LABELS = { live: "Live", legacy: "Legacy (pre-Phase 2)", phase2: "Phase 2" };
+  const SHADOW_LANE_COLORS = { live: "#A8ADB8", legacy: "#E0635C", phase2: "#3FB984" };
+
+  const shadowLatestByLane = useMemo(() => {
+    const byLane = {};
+    for (const row of shadowHistory) byLane[row.lane] = row; // ascending order -> last write per lane is the latest date
+    return byLane;
+  }, [shadowHistory]);
+  const shadowSummaryByLane = useMemo(
+    () => Object.fromEntries(shadowSummary.map((s) => [s.lane, s])),
+    [shadowSummary],
+  );
+  const shadowSparkData = useMemo(() => {
+    const dates = [...new Set(shadowHistory.map((r) => r.snapshot_date))].sort();
+    return dates.map((d) => {
+      const point = { date: d.slice(5) };
+      for (const lane of SHADOW_LANE_IDS) {
+        const row = shadowHistory.find((r) => r.snapshot_date === d && r.lane === lane);
+        if (row) {
+          const w = row.target_allocations || {};
+          point[lane] = (w.eq ?? 0) + (w.intl ?? 0) + (w.em ?? 0);
+        }
+      }
+      return point;
+    });
+  }, [shadowHistory]);
 
   // Market Conditions overlay (Phase 6) — latest daily tier/exposure_multiplier
   // row, independent of strategy_framework. Fetched whenever a portfolio is
@@ -1219,6 +1275,99 @@ export default function PortfoliosPage() {
                   </div>
                   );
                 })()}
+
+                {/* Shadow lanes — docs/specs/regime-shadow-targets.md §5.3.
+                    Read-only comparison; never applies a lane's targets. */}
+                {pf.strategy_framework === "regime_driven" && (
+                  <div className="border-b border-ink-line">
+                    <button
+                      type="button"
+                      onClick={() => setShadowExpanded((v) => !v)}
+                      className="w-full flex items-center justify-between px-5 py-3 text-left"
+                    >
+                      <span className="label text-[10px]">Shadow lanes <span className="text-paper-dim/50 normal-case">· side-by-side rule-set comparison, never applied live</span></span>
+                      <span className="text-paper-dim text-xs">{shadowExpanded ? "▾" : "▸"}</span>
+                    </button>
+                    {shadowExpanded && (
+                      <div className="px-5 pb-4 space-y-3">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[11px] whitespace-nowrap">
+                            <thead>
+                              <tr className="text-paper-dim/60 text-left">
+                                <th className="py-1 pr-3">Lane</th>
+                                <th className="pr-3">Regime</th>
+                                <th className="pr-3">λ</th>
+                                <th className="pr-3">Variant</th>
+                                <th className="pr-3 text-right">eq</th>
+                                <th className="pr-3 text-right">intl</th>
+                                <th className="pr-3 text-right">em</th>
+                                <th className="pr-3 text-right">nb</th>
+                                <th className="pr-3 text-right">tip</th>
+                                <th className="pr-3 text-right">com</th>
+                                <th className="pr-3 text-right">gld</th>
+                                <th className="pr-3 text-right">cash</th>
+                                <th className="text-right">Days since shift</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {SHADOW_LANE_IDS.map((lane) => {
+                                const row = shadowLatestByLane[lane];
+                                const summary = shadowSummaryByLane[lane];
+                                const w = row?.target_allocations || {};
+                                return (
+                                  <tr key={lane} className="border-t border-ink-line/50">
+                                    <td className="py-1 pr-3 text-paper">{SHADOW_LANE_LABELS[lane]}</td>
+                                    <td className="pr-3 text-paper-dim">{row?.regime_key ? (REGIME_META[row.regime_key]?.label ?? row.regime_key) : "—"}</td>
+                                    <td className="pr-3 text-paper-dim num">{row?.lambda ? `${Math.round(row.lambda * 100)}%` : "—"}</td>
+                                    <td className="pr-3 text-paper-dim">{row?.variant ?? "—"}</td>
+                                    <td className="pr-3 text-right num text-paper-dim">{w.eq ?? "—"}</td>
+                                    <td className="pr-3 text-right num text-paper-dim">{w.intl ?? "—"}</td>
+                                    <td className="pr-3 text-right num text-paper-dim">{w.em ?? "—"}</td>
+                                    <td className="pr-3 text-right num text-paper-dim">{w.nb ?? "—"}</td>
+                                    <td className="pr-3 text-right num text-paper-dim">{w.tip ?? "—"}</td>
+                                    <td className="pr-3 text-right num text-paper-dim">{w.com ?? "—"}</td>
+                                    <td className="pr-3 text-right num text-paper-dim">{w.gld ?? "—"}</td>
+                                    <td className="pr-3 text-right num text-paper-dim">{w.cash ?? "—"}</td>
+                                    <td className="text-right num text-paper-dim">{summary?.days_since_last_shift ?? "—"}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <div className="space-y-0.5">
+                          {SHADOW_LANE_IDS.map((lane) => {
+                            const row = shadowLatestByLane[lane];
+                            if (!row) return null;
+                            return (
+                              <p key={lane} className="text-[10px] text-paper-dim">
+                                <span className="text-paper">{SHADOW_LANE_LABELS[lane]}:</span> {row.event}
+                                {row.blocked_reason && ` · blocked: ${row.blocked_reason}`}
+                              </p>
+                            );
+                          })}
+                        </div>
+
+                        {shadowSparkData.length > 1 && (
+                          <ResponsiveContainer width="100%" height={120}>
+                            <LineChart data={shadowSparkData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                              <CartesianGrid stroke="#2A3240" strokeDasharray="3 3" vertical={false} />
+                              <XAxis dataKey="date" tick={{ fill: "#A8ADB8", fontSize: 10 }} axisLine={false} tickLine={false} />
+                              <YAxis tick={{ fill: "#A8ADB8", fontSize: 10 }} axisLine={false} tickLine={false} width={32} />
+                              <Tooltip contentStyle={{ background: "#171C26", border: "1px solid #2A3240", fontSize: 11 }} />
+                              <Legend wrapperStyle={{ fontSize: 10 }} />
+                              {SHADOW_LANE_IDS.map((lane) => (
+                                <Line key={lane} type="monotone" dataKey={lane} name={SHADOW_LANE_LABELS[lane]} stroke={SHADOW_LANE_COLORS[lane]} dot={false} strokeWidth={1.5} />
+                              ))}
+                            </LineChart>
+                          </ResponsiveContainer>
+                        )}
+                        <p className="text-[10px] text-paper-dim/50">Growth exposure (eq+intl+em) over the last 30 days, per lane.</p>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Summary metrics */}
                 <div className="grid grid-cols-4 sm:grid-cols-8 gap-px border-b border-ink-line">
