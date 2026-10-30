@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  legacyResolve, phase2Lane, liveLane, deriveVariant, deriveEvent, blendSectorTargets,
+  legacyResolve, phase2Lane, phase3Lane, liveLane, deriveEvent, blendSectorTargets,
   type LaneState, type ShadowInputs,
 } from "../supabase/functions/_shared/shadowLanes.ts";
 import { capTurnover } from "../supabase/functions/_shared/regimeShiftRules.ts";
@@ -40,20 +40,8 @@ describe("legacyResolve", () => {
   });
 });
 
-describe("deriveVariant", () => {
-  it("contained is always base, regardless of accel vote", () => {
-    expect(deriveVariant("contained", "accelerating")).toBe("base");
-    expect(deriveVariant("contained", null)).toBe("base");
-  });
-  it("overheating/stagflation with a mixed vote is plain high", () => {
-    expect(deriveVariant("overheating", "mixed")).toBe("high");
-    expect(deriveVariant("stagflation", null)).toBe("high");
-  });
-  it("overheating/stagflation with a clear vote gets the accel/decel suffix", () => {
-    expect(deriveVariant("overheating", "accelerating")).toBe("high_accel");
-    expect(deriveVariant("stagflation", "decelerating")).toBe("high_decel");
-  });
-});
+// deriveVariant's own test now lives in tests/regimeWeightVariants.test.ts,
+// alongside the REGIME_WEIGHT_SETS it was built for (Phase 3).
 
 describe("phase2Lane", () => {
   it("carry protects the base, and the near-term blend is blocked inside the 21-day hold", () => {
@@ -81,11 +69,13 @@ describe("phase2Lane", () => {
     expect(result.lambda).toBeCloseTo(0.3, 6);
     expect(result.nearKey).toBe("rg_ri");
 
+    // Phase 3's revised fg_ri base (25/5/0/20/15/10/15/10) is closer to
+    // rg_ri's base than the pre-Phase-3 set was, so the 30%-of-the-way
+    // blend is an 11-point one-way move, comfortably under the cap.
     const struct = getWeightSet("fg_ri", "base")!;
     let turnover = 0;
     for (const k of Object.keys(struct)) turnover += Math.abs((result.desiredTargets[k] ?? 0) - (struct[k] ?? 0));
-    expect(turnover / 2).toBeGreaterThanOrEqual(12);
-    expect(turnover / 2).toBeLessThanOrEqual(13);
+    expect(turnover / 2).toBe(11);
 
     // Fits in a single day under the 15-point cap against the lane's
     // own prior current_targets (also the fg_ri set).
@@ -211,6 +201,41 @@ describe("every regime weight set sums to 100", () => {
     const w = getWeightSet(key, "base")!;
     const sum = Object.values(w).reduce((a, b) => a + b, 0);
     expect(sum).toBe(100);
+  });
+});
+
+// Phase 3 §5: proves the computeBlendLane refactor didn't leak
+// variant-awareness into phase2, and that phase3 picks up the real
+// inflation state (base/high/high_accel/high_decel) correctly.
+describe("phase3Lane vs. phase2Lane", () => {
+  it("phase3 picks the high_accel variant on a stagflation+accelerating reading; phase2 stays pinned to base", () => {
+    const inputs = baseInputs({ inflLevelState: "stagflation", inflAccelVote: "accelerating" });
+
+    const p2 = phase2Lane(inputs, baseState());
+    expect(p2.variant).toBe("base");
+    expect(p2.desiredTargets).toEqual(getWeightSet("fg_ri", "base"));
+
+    const p3 = phase3Lane(inputs, baseState());
+    expect(p3.variant).toBe("high_accel");
+    expect(p3.desiredTargets).toEqual(getWeightSet("fg_ri", "high_accel"));
+    expect(p3.desiredTargets).not.toEqual(p2.desiredTargets);
+  });
+
+  it("phase3 falls back to plain high for rg_ri+accelerating (no distinct high_accel set)", () => {
+    const rgRiState = baseState({ baseKey: "rg_ri", currentTargets: getWeightSet("rg_ri", "base")!, desiredTargets: getWeightSet("rg_ri", "base")! });
+    const inputs = baseInputs({ structuralKey: "rg_ri", inflLevelState: "overheating", inflAccelVote: "accelerating" });
+
+    const p3 = phase3Lane(inputs, rgRiState);
+    expect(p3.variant).toBe("high_accel"); // the derived variant itself is still accel-labeled
+    expect(p3.desiredTargets).toEqual(getWeightSet("rg_ri", "high")); // but the weights fall back to plain high
+  });
+
+  it("both lanes agree when inflation is contained (today's live reading)", () => {
+    const inputs = baseInputs({ inflLevelState: "contained", inflAccelVote: null });
+    const p2 = phase2Lane(inputs, baseState());
+    const p3 = phase3Lane(inputs, baseState());
+    expect(p3.variant).toBe("base");
+    expect(p3.desiredTargets).toEqual(p2.desiredTargets);
   });
 });
 

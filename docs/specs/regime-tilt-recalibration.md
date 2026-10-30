@@ -231,11 +231,13 @@ The paper sorts 107 years of US data into three real-time regimes and measures r
   - **This set applies today.** Structural is Stagflation and the paper's state is Contained, so it takes effect as soon as Phase 3 ships.
 - **Trend:** these sets assume no trend sleeve. Phase 5 carves 5–10% for trend out of cash and TIPS in the `high` variants.
 
-### 5.3 Acceptance
+### 5.3 Acceptance (met)
 
 - Every set sums to 100, enforced by a test.
-- `/macro` simulator and Portfolio Actions show the variant in use, e.g. "Reflation · high-inflation · decelerating".
-- Re-run the Phase 2 replay with the variants on and report the differences.
+- `/macro`'s Positioning Signal and `/portfolios`' regime badge show the variant in use, e.g. "high-inflation, decelerating". (Not the standalone `/simulator` page specifically — "the macro simulator" read as the Positioning Signal feature on `/macro` itself, where Portfolio Actions' own variant display already lives per Phase 2.)
+- A literal "re-run the Phase 2 replay" doesn't apply the way it did in v1 — Phase 2's one-off replay was superseded by the Shadow Targets Log. The `phase2` vs. `phase3` shadow lanes now serve as the ongoing live comparison instead; see the Shadow Targets Log spec.
+
+**Shipped 2026-10-30.** D-1 confirmed as tabled (see decisions log). `regime_variants_enabled` (new, default `false` for both portfolios) is a second, independent safety lever from `regime_auto_shift` — the live function computes and stores the real variant in `regime_blend.variant` regardless, but only applies non-base weights once a portfolio opts in. The `phase3` shadow lane always computes the real variant, ignoring that flag (per the Shadow Targets Log spec's `variants_flag_off` code).
 
 ---
 
@@ -338,8 +340,8 @@ Add `bucket = 'nb'` rows for both portfolios:
 1. ~~Phase 0: hold flag.~~ Shipped.
 2. ~~Phase 1: classifier, data, tile, replication.~~ Done.
 3. ~~Phase 1 follow-ups (§3.5): margin, confirm date, labels, Oct 2025 interpolation.~~ Shipped.
-4. **Phase 2:** weight seam, carry rule, blend, turnover cap, minimum hold, Sep–Oct replay. Stop and show the replay.
-5. **Phase 3:** weight variants, then re-run the replay. Stop.
+4. ~~Phase 2: weight seam, carry rule, blend, turnover cap, minimum hold.~~ Shipped (the Shadow Targets Log superseded the one-off replay).
+5. ~~Phase 3: weight variants (D-1), `regime_variants_enabled`.~~ Shipped.
 6. **Phase 4:** per-bucket targets, sectors, duration. Stop.
 7. **Phase 5:** trend sleeve. Stop.
 8. **Phase 6:** validation backtest. Final report.

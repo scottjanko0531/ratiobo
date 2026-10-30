@@ -7,18 +7,22 @@
 // since it's identical across every capped lane.
 
 import { getWeightSet, WeightSet } from "./regimeWeights.ts";
-import { computeLambda, blendWeights, resolveBaseKey, canApplyKeyShift, StructuralKeySource } from "./regimeShiftRules.ts";
+import {
+  computeLambda, blendWeights, resolveBaseKey, canApplyKeyShift, deriveVariant,
+  StructuralKeySource, Variant,
+} from "./regimeShiftRules.ts";
 
 // Bumped by hand whenever a lane's underlying logic changes — no
 // deploy-time git-SHA injection exists in this repo's Edge Function
-// deploys (confirmed with Scott).
-export const RULES_VERSION = "shadow-v1";
+// deploys (confirmed with Scott). Phase 3 (REGIME_WEIGHT_SETS variants,
+// phase3 lane) bumps this.
+export const RULES_VERSION = "shadow-v2";
 
 export type Lane = "live" | "legacy" | "phase2" | "phase3";
-export const LANE_IDS: Lane[] = ["live", "legacy", "phase2"]; // phase3 added by that phase
+export const LANE_IDS: Lane[] = ["live", "legacy", "phase2", "phase3"];
 export const CAPPED_LANES = new Set<Lane>(["phase2", "phase3"]);
 
-export type Variant = "base" | "high" | "high_accel" | "high_decel";
+export type { Variant };
 
 export interface ShadowInputs {
   structuralKey: string | null;
@@ -62,16 +66,6 @@ function addDays(dateStr: string, days: number): string {
   const d = new Date(dateStr + "T00:00:00Z");
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
-}
-
-// §3.3 variant derivation. Only exercised by a future phase3 lane
-// today — legacy/phase2 always report "base" — but built now so the
-// registry needs no schema change when phase3 lands.
-export function deriveVariant(inflLevelState: string | null, accelVote: string | null): Variant {
-  if (inflLevelState !== "overheating" && inflLevelState !== "stagflation") return "base";
-  if (accelVote === "accelerating") return "high_accel";
-  if (accelVote === "decelerating") return "high_decel";
-  return "high"; // mixed vote, or no vote at all
 }
 
 // Extracted verbatim (decision logic only, no Supabase/notification
@@ -118,8 +112,12 @@ export const legacyLane: LaneFn = (inputs, prev) => {
   };
 };
 
-export const phase2Lane: LaneFn = (inputs, prev) => {
-  const variant: Variant = "base"; // Phase 2's own rules never vary by inflation level
+// Shared by phase2Lane (variant fixed at "base") and phase3Lane
+// (variant computed from the real inflation state) — carry rule,
+// blended near-term override, turnover cap (applied by the
+// orchestrator, not here), and minimum hold are identical between the
+// two; only the variant passed to getWeightSet differs.
+function computeBlendLane(inputs: ShadowInputs, prev: LaneState, variant: Variant): LaneResult {
   const today = inputs.today;
   const proposedBaseKey = resolveBaseKey(inputs.structuralKey, inputs.structuralKeySource, prev.baseKey);
   const nearActiveKey = inputs.nearActive ? inputs.nearConfirmedKey : null;
@@ -172,12 +170,25 @@ export const phase2Lane: LaneFn = (inputs, prev) => {
       desiredTargets,
     },
   };
-};
+}
+
+// Phase 2 §4: variant is always "base" — this lane never varies by
+// inflation level.
+export const phase2Lane: LaneFn = (inputs, prev) => computeBlendLane(inputs, prev, "base");
+
+// Phase 3 §5: same carry/blend/cap/hold rules as phase2, but the
+// variant is the REAL computed one from today's inflation state —
+// ignores the live regime_variants_enabled flag entirely (the
+// orchestrator notes variants_flag_off informationally, but this
+// lane's own computation is never gated by it).
+export const phase3Lane: LaneFn = (inputs, prev) =>
+  computeBlendLane(inputs, prev, deriveVariant(inputs.inflLevelState, inputs.inflAccelVote));
 
 export const LANES: Partial<Record<Lane, LaneFn>> = {
   live: liveLane,
   legacy: legacyLane,
   phase2: phase2Lane,
+  phase3: phase3Lane,
 };
 
 // Event derivation, run once per lane per day by the orchestrator (not

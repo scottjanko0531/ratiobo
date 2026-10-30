@@ -37,6 +37,10 @@ const fmtTradeAmt = (v) => {
 const gainCls = (v) =>
   v == null ? "text-paper-dim" : Number(v) > 0 ? "text-gain" : Number(v) < 0 ? "text-loss" : "text-paper-dim";
 
+// Regime Tilt Recalibration Phase 3 §5.3 — "base" renders nothing (the
+// common case); only a non-base variant gets called out.
+const VARIANT_LABELS = { high: "high-inflation", high_accel: "high-inflation, accelerating", high_decel: "high-inflation, decelerating" };
+
 // Mirrors supabase/functions/_shared/shadowLanes.ts's blendSectorTargets
 // exactly (a Deno module can't be imported into this bundle) — Regime
 // Tilt Recalibration Phase 2 §4.2 / Shadow Targets Log §4.2.
@@ -1242,7 +1246,8 @@ export default function PortfoliosPage() {
                     )}
                     {pf.current_regime_key ? (
                       <p className="text-xs text-paper-dim leading-relaxed">
-                        Currently targeting <span className="text-paper font-medium">{REGIME_META[pf.current_regime_key]?.label ?? pf.current_regime_key}</span> weights
+                        Currently targeting <span className="text-paper font-medium">{REGIME_META[pf.current_regime_key]?.label ?? pf.current_regime_key}</span>
+                        {VARIANT_LABELS[pf.regime_blend?.variant] && <> · <span className="text-paper">{VARIANT_LABELS[pf.regime_blend.variant]}</span></>} weights
                         {pf.regime_confirmed_since && `, confirmed since ${pf.regime_confirmed_since}`}.
                         {pf.regime_blend?.lambda > 0 && pf.regime_blend?.near_key && (
                           <span className="block mt-1 text-paper">

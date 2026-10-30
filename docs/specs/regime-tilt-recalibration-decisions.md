@@ -42,3 +42,28 @@ judged out of scope for what the spec itself calls a small follow-up
 phase. Scott confirmed: estimate only, always labeled "est." — not
 tracked as a numbered decision since the spec already sanctioned this
 option directly, but recorded here since it's a real scope choice.
+
+## D-1: high-inflation weight table, approved as tabled (2026-10-30)
+
+The §5.2 table — including `fg_ri` base itself changing (10%eq/60%-
+real-assets → 25/5/0/20/15/10/15/10), not just a new `high` sibling —
+confirmed as-is, no edits. Flagged explicitly before building: since
+`getWeightSet` is one shared function, this change lands on the
+`phase2` shadow lane too, not just `phase3` (by the shadow log's own
+`rules_version` design — confirmed live: the first `phase3` row landed
+with the new `fg_ri` base while `phase2`'s same-day row, already
+written hours earlier under the old weights, stayed stale until the
+next day's run recomputes fresh against a date with no existing row).
+
+## `regime_variants_enabled`: staged-rollout flag (2026-10-30)
+
+Not a numbered decision in the spec, but logged for the same reason
+the Phase 2 safety-gate convention (`regime_auto_shift`) was. A second,
+independent lever: a portfolio can have auto-shift back on (applying
+the carry/blend/cap/hold rules) while still holding high-inflation
+variants off. Defaults `false` for both portfolios. The `phase3` shadow
+lane ignores this flag entirely by design (it always shows what
+variants-on would produce) — the live function instead records
+`regime_blend.variant` as the real computed variant regardless of the
+flag, applying `base` weights only when gated off, so the value is
+visible even while the flag stays off.

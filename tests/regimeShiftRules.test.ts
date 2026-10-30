@@ -6,22 +6,10 @@ import {
   resolveBaseKey,
   canApplyKeyShift,
 } from "../supabase/functions/_shared/regimeShiftRules.ts";
-import { REGIME_DEFAULT_WEIGHTS as SHARED_WEIGHTS, getWeightSet } from "../supabase/functions/_shared/regimeWeights.ts";
-import { REGIME_DEFAULT_WEIGHTS as LIB_WEIGHTS, getWeightSet as libGetWeightSet } from "../lib/simulatorKeys.js";
-
-describe("getWeightSet drift (lib/simulatorKeys.js vs. _shared/regimeWeights.ts)", () => {
-  it("both copies agree on every regime key and bucket", () => {
-    expect(Object.keys(SHARED_WEIGHTS).sort()).toEqual(Object.keys(LIB_WEIGHTS).sort());
-    for (const key of Object.keys(SHARED_WEIGHTS)) {
-      expect(SHARED_WEIGHTS[key], `mismatch for ${key}`).toEqual(LIB_WEIGHTS[key]);
-    }
-  });
-  it("getWeightSet ignores variant (until Phase 3) on both sides", () => {
-    expect(getWeightSet("rg_ri", "high")).toEqual(getWeightSet("rg_ri", "base"));
-    expect(libGetWeightSet("rg_ri", "high")).toEqual(libGetWeightSet("rg_ri", "base"));
-    expect(getWeightSet("rg_ri")).toEqual(libGetWeightSet("rg_ri"));
-  });
-});
+// getWeightSet/REGIME_WEIGHT_SETS drift + fallback-chain tests now live
+// in tests/regimeWeightVariants.test.ts (Phase 3) — variant is no
+// longer a no-op, so the "ignores variant" assertion that used to live
+// here is obsolete.
 
 describe("computeLambda", () => {
   it("matches the spec's own 65% -> 0.30 example", () => {

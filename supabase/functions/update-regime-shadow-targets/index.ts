@@ -1,9 +1,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { capTurnover, StructuralKeySource } from "../_shared/regimeShiftRules.ts";
+import { capTurnover, StructuralKeySource, deriveVariant } from "../_shared/regimeShiftRules.ts";
 import { WeightSet, getWeightSet } from "../_shared/regimeWeights.ts";
 import {
-  LANES, LANE_IDS, CAPPED_LANES, RULES_VERSION, deriveEvent, deriveVariant, blendSectorTargets,
+  LANES, LANE_IDS, CAPPED_LANES, RULES_VERSION, deriveEvent, blendSectorTargets,
   ShadowInputs, LaneState,
 } from "../_shared/shadowLanes.ts";
 
@@ -53,7 +53,7 @@ const REGIME_LABELS: Record<string, string> = {
 const toLabel = (k: string | null) => (k ? (REGIME_LABELS[k] ?? k) : "none");
 
 // §5.4: one notification per lane event (never on no_change).
-function describeShadowEvent(event: string, regimeKey: string | null, nearKey: string | null, lambda: number): string {
+function describeShadowEvent(event: string, regimeKey: string | null, nearKey: string | null, lambda: number, variant?: string): string {
   const lambdaPct = `${Math.round(lambda * 100)}%`;
   switch (event) {
     case "seed": return `shadow log seeded at ${toLabel(regimeKey)}`;
@@ -64,7 +64,7 @@ function describeShadowEvent(event: string, regimeKey: string | null, nearKey: s
     case "blend_end": return `blend ended, back to pure ${toLabel(regimeKey)}`;
     case "cap_partial": return `turnover-capped move toward ${toLabel(nearKey ?? regimeKey)} continuing`;
     case "cap_complete": return `turnover-capped move to ${toLabel(nearKey ?? regimeKey)} completed`;
-    case "variant_change": return "variant changed";
+    case "variant_change": return `variant changed to ${variant ?? "unknown"}`;
     default: return event;
   }
 }
@@ -151,7 +151,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: portfolios } = await sb
       .from("portfolios")
-      .select("id, portfolio_name, current_regime_key, target_allocations, regime_auto_shift")
+      .select("id, portfolio_name, current_regime_key, target_allocations, regime_auto_shift, regime_variants_enabled")
       .eq("strategy_framework", "regime_driven");
 
     const variant = deriveVariant(inflLevelState, inflAccelVote);
@@ -274,6 +274,17 @@ Deno.serve(async (req: Request) => {
           };
 
           const result = laneFn(inputs, prev);
+
+          // phase3 always computes the real variant regardless of the
+          // live regime_variants_enabled flag (that's the point of the
+          // comparison) — but notes informationally when the live
+          // function would currently be gated off from applying it,
+          // unless a more specific reason (e.g. min_hold) already
+          // explains this row.
+          const blockedReason = lane === "phase3" && !pf.regime_variants_enabled && result.variant !== "base" && !result.blockedReason
+            ? "variants_flag_off"
+            : result.blockedReason;
+
           const capped = CAPPED_LANES.has(lane);
           const preCappedTurnover = oneWayTurnover(prev.currentTargets, result.desiredTargets);
           const steppedTargets = capped ? capTurnover(prev.currentTargets, result.desiredTargets, TURNOVER_CAP_POINTS) : result.desiredTargets;
@@ -303,7 +314,7 @@ Deno.serve(async (req: Request) => {
             regime_key: result.regimeKey, near_key: result.nearKey, lambda: result.lambda, variant: result.variant,
             target_allocations: steppedTargets, sector_targets: sectorTargets,
             turnover_vs_prev: turnoverVsPrev, turnover_uncapped: capped ? preCappedTurnover : null,
-            shifted, event, blocked_reason: result.blockedReason,
+            shifted, event, blocked_reason: blockedReason,
             inputs: {
               structural_key: structuralKey, structural_key_source: structuralKeySource,
               nearterm_forward_key: liveNearKey, nearterm_forward_confidence: regimeRow.nearterm_forward_confidence,
@@ -328,7 +339,7 @@ Deno.serve(async (req: Request) => {
           }, { onConflict: "portfolio_id,lane" });
 
           if (event !== "no_change") {
-            const desc = describeShadowEvent(event, result.regimeKey, result.nearKey, result.lambda);
+            const desc = describeShadowEvent(event, result.regimeKey, result.nearKey, result.lambda, result.variant);
             const heldNote = pf.regime_auto_shift ? "" : " Live portfolio held.";
             eventNotifRows.push({
               category: "regime_signal", type: "shadow_lane_event", importance: "low",
@@ -339,7 +350,7 @@ Deno.serve(async (req: Request) => {
             });
           }
 
-          results.push({ portfolioId: pf.id, lane, event, blockedReason: result.blockedReason });
+          results.push({ portfolioId: pf.id, lane, event, blockedReason });
         } catch (laneErr) {
           const msg = laneErr instanceof Error ? laneErr.message : String(laneErr);
           errorRows.push({
@@ -373,7 +384,10 @@ Deno.serve(async (req: Request) => {
     // >20, or back, vs. yesterday. One notification per (pair, direction)
     // when every regime-driven portfolio crosses identically; separate
     // notifications when they don't.
-    const DIVERGENCE_PAIRS: [string, string][] = [["live", "legacy"], ["live", "phase2"], ["legacy", "phase2"]];
+    const DIVERGENCE_PAIRS: [string, string][] = [
+      ["live", "legacy"], ["live", "phase2"], ["legacy", "phase2"],
+      ["live", "phase3"], ["legacy", "phase3"], ["phase2", "phase3"],
+    ];
     const yesterdayStr = new Date(today.getTime() - 86_400_000).toISOString().slice(0, 10);
     const crossingsByPortfolio: Record<string, { pair: string; direction: "diverged" | "converged" }[]> = {};
 

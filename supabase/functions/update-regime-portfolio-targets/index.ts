@@ -2,8 +2,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { getWeightSet, WeightSet } from "../_shared/regimeWeights.ts";
 import {
-  computeLambda, blendWeights, capTurnover, resolveBaseKey, canApplyKeyShift,
-  StructuralKeySource,
+  computeLambda, blendWeights, capTurnover, resolveBaseKey, canApplyKeyShift, deriveVariant,
+  StructuralKeySource, Variant,
 } from "../_shared/regimeShiftRules.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -58,7 +58,7 @@ const CONFIDENCE_FLOOR = 60;
 
 interface RegimeBlend {
   struct_key: string | null; struct_source: StructuralKeySource;
-  variant: "base" | "high"; near_key: string | null;
+  variant: Variant; near_key: string | null;
   near_conf: number | null; lambda: number;
 }
 
@@ -67,6 +67,7 @@ interface RegimePortfolio {
   current_regime_key: string | null; regime_confirmed_since: string | null;
   pending_regime_key: string | null; pending_regime_since: string | null;
   regime_auto_shift: boolean;
+  regime_variants_enabled: boolean;
   target_allocations: WeightSet | null;
   regime_blend: RegimeBlend | null;
 }
@@ -101,7 +102,7 @@ Deno.serve(async (req: Request) => {
     // nearterm_forward_key/nearterm_forward_confidence) exists.
     const { data: todayRegime } = await sb
       .from("dalio_regime_analysis")
-      .select("analysis_date,structural_key,structural_key_source,nearterm_forward_key,nearterm_forward_confidence,infl_level_state")
+      .select("analysis_date,structural_key,structural_key_source,nearterm_forward_key,nearterm_forward_confidence,infl_level_state,infl_accel_vote")
       .eq("analysis_date", todayStr)
       .maybeSingle();
     let structuralKey = todayRegime?.structural_key as string | null | undefined;
@@ -109,6 +110,7 @@ Deno.serve(async (req: Request) => {
     let liveNearKey = todayRegime?.nearterm_forward_key as string | null | undefined;
     let liveNearConfidence = todayRegime?.nearterm_forward_confidence as number | null | undefined;
     let inflLevelState = todayRegime?.infl_level_state as string | null | undefined;
+    let inflAccelVote = todayRegime?.infl_accel_vote as string | null | undefined;
     if (structuralKey === undefined) {
       try {
         const res = await fetch(`${SUPABASE_URL}/functions/v1/get-regime-analysis`, {
@@ -122,14 +124,16 @@ Deno.serve(async (req: Request) => {
           liveNearKey = j?.nearterm_forward_key ?? null;
           liveNearConfidence = j?.nearterm_forward_confidence ?? null;
           inflLevelState = j?.infl_level_state ?? null;
+          inflAccelVote = j?.infl_accel_vote ?? null;
         }
       } catch (e) { console.error("[regime-targets] triggering get-regime-analysis:", e); }
     }
     structuralKey = structuralKey ?? null;
     structuralKeySource = structuralKeySource ?? null;
-    // Phase 3 (§5) will make this actually change which weight set
-    // getWeightSet returns; today it's computed and stored only.
-    const variant: "base" | "high" = (inflLevelState === "overheating" || inflLevelState === "stagflation") ? "high" : "base";
+    // Phase 3 (§5): the real computed variant, independent of whether
+    // any given portfolio is actually allowed to USE it — that gate is
+    // per-portfolio (regime_variants_enabled), applied below in the loop.
+    const computedVariant: Variant = deriveVariant(inflLevelState ?? null, inflAccelVote ?? null);
 
     // ── The Near-Term override's own clock, computed once ──────────────────
     const { data: sigRow } = await sb
@@ -223,7 +227,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: portfolios } = await sb
       .from("portfolios")
-      .select("id,portfolio_name,current_regime_key,regime_confirmed_since,pending_regime_key,pending_regime_since,regime_auto_shift,target_allocations,regime_blend")
+      .select("id,portfolio_name,current_regime_key,regime_confirmed_since,pending_regime_key,pending_regime_since,regime_auto_shift,regime_variants_enabled,target_allocations,regime_blend")
       .eq("strategy_framework", "regime_driven");
     const portfolioNames = (portfolios ?? []).map((p) => (p as RegimePortfolio).portfolio_name);
     const portfolioNamesText = portfolioNames.length
@@ -333,16 +337,23 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // Phase 3 (§5): regime_variants_enabled is a second, independent
+      // safety lever from regime_auto_shift — even once a portfolio's
+      // auto-shift is back on, a non-base variant only actually gets
+      // APPLIED here if this portfolio has also opted in. The real
+      // computed variant is still stored in regime_blend below either
+      // way, so it's visible while gated off, not just once enabled.
+      const effectiveVariant: Variant = pf.regime_variants_enabled ? computedVariant : "base";
       const lambda = finalNearKey ? computeLambda(smoothedConfidence, LAMBDA_MAX) : 0;
-      const wStruct = getWeightSet(finalBaseKey, variant) ?? {};
-      const wNear = finalNearKey ? (getWeightSet(finalNearKey, variant) ?? null) : null;
+      const wStruct = getWeightSet(finalBaseKey, effectiveVariant) ?? {};
+      const wNear = finalNearKey ? (getWeightSet(finalNearKey, effectiveVariant) ?? null) : null;
       const wDesired = wNear ? blendWeights(wStruct, wNear, lambda) : wStruct;
       const wCurrent = pf.target_allocations && Object.keys(pf.target_allocations).length > 0 ? pf.target_allocations : wStruct;
       const wWritten = capTurnover(wCurrent, wDesired, TURNOVER_CAP_POINTS);
 
       const newBlend: RegimeBlend = {
         struct_key: finalBaseKey, struct_source: structuralKeySource,
-        variant, near_key: finalNearKey, near_conf: finalNearKey ? smoothedConfidence : null, lambda,
+        variant: computedVariant, near_key: finalNearKey, near_conf: finalNearKey ? smoothedConfidence : null, lambda,
       };
       const keyEventApplied = isKeyLevelEvent && !blocked;
 
@@ -412,7 +423,7 @@ Deno.serve(async (req: Request) => {
     }
 
     return json({
-      structuralKey: structuralKey ?? null, structuralKeySource: structuralKeySource ?? null, variant,
+      structuralKey: structuralKey ?? null, structuralKeySource: structuralKeySource ?? null, computedVariant,
       liveNearKey: liveNearKey ?? null, liveNearConfidence: liveNearConfidence ?? null,
       smoothedConfidence, smoothingWindowDays: SMOOTHING_WINDOW_DAYS,
       pendingKey, pendingSince, confirmedKey, confirmedSince, active, fired, newlyConfirmed,

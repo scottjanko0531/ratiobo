@@ -7,6 +7,17 @@
 import { WeightSet } from "./regimeWeights.ts";
 
 export type StructuralKeySource = "crossover" | "leaning" | "carry" | null;
+export type Variant = "base" | "high" | "high_accel" | "high_decel";
+
+// §3.3 (Shadow Targets Log spec) / Phase 3 §5 — general-purpose now
+// (the live function needs it too, not just shadow lanes), so it lives
+// here rather than in shadowLanes.ts.
+export function deriveVariant(inflLevelState: string | null, accelVote: string | null): Variant {
+  if (inflLevelState !== "overheating" && inflLevelState !== "stagflation") return "base";
+  if (accelVote === "accelerating") return "high_accel";
+  if (accelVote === "decelerating") return "high_decel";
+  return "high"; // mixed vote, or no vote at all
+}
 
 // §4.2: λ = clamp((smoothedConf - 50) / 50, 0, λ_max). A confidence at
 // or below the 60% floor that still reaches here (shouldn't happen —

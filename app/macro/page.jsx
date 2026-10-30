@@ -303,8 +303,20 @@ function IndicatorCard({ ind, onSave, onClick, note }) {
 // the code's own comment ("regime tilts are overlays... only when the
 // signal is unambiguous") described this gating but it was never actually
 // wired up. See the regime engine follow-up fixes, section C.
-function computeSuggestedPcts(regimeKey, method, assetData, tiltMultiplier = 1) {
-  const dw = getWeightSet(regimeKey, "base") ?? {};
+// Regime Tilt Recalibration Phase 3 §5.3 — mirrors
+// supabase/functions/_shared/regimeShiftRules.ts's deriveVariant
+// exactly (a Deno module can't be imported into this bundle) —
+// tests/regimeWeightVariants.test.ts checks the two stay in sync.
+const VARIANT_LABELS = { base: null, high: "high-inflation", high_accel: "high-inflation, accelerating", high_decel: "high-inflation, decelerating" };
+function deriveVariantClient(inflLevelState, accelVote) {
+  if (inflLevelState !== "overheating" && inflLevelState !== "stagflation") return "base";
+  if (accelVote === "accelerating") return "high_accel";
+  if (accelVote === "decelerating") return "high_decel";
+  return "high";
+}
+
+function computeSuggestedPcts(regimeKey, method, assetData, tiltMultiplier = 1, variant = "base") {
+  const dw = getWeightSet(regimeKey, variant) ?? {};
 
   if (method === "bw") {
     return Object.fromEntries(
@@ -2100,7 +2112,7 @@ function QuadrantCard({ indicators, holdings, assetData, bigCycleArmedCount }) {
   if (isTransitional) tiltMultiplier = Math.min(tiltMultiplier, 0.5);
   const tiltTier = tiltMultiplier === 0 ? "baseline" : tiltMultiplier < 1 ? "partial" : "full";
   const suggestedPcts = regimeKey
-    ? computeSuggestedPcts(regimeKey, allocMethod, assetData, tiltMultiplier)
+    ? computeSuggestedPcts(regimeKey, allocMethod, assetData, tiltMultiplier, inflVariant)
     : {};
 
   const regimeReturns = regimeKey ? (REGIME_RETURNS[regimeKey] ?? {}) : {};
@@ -2143,6 +2155,18 @@ function QuadrantCard({ indicators, holdings, assetData, bigCycleArmedCount }) {
     supabase.from("nearterm_signal_state").select("pending_key, pending_since, confirmed_key, confirmed_since, active").eq("id", true).maybeSingle()
       .then(({ data }) => setNearTermSignalState(data))
       .catch(() => setNearTermSignalState(null));
+  }, []);
+
+  // Regime Tilt Recalibration Phase 3 §5.3 — labels the Positioning
+  // Signal with the live inflation-level variant ("high-inflation,
+  // decelerating" etc.), reading the same two columns
+  // get-regime-analysis already writes to dalio_regime_analysis.
+  const [inflVariant, setInflVariant] = useState("base");
+  useEffect(() => {
+    supabase.from("dalio_regime_analysis").select("infl_level_state, infl_accel_vote")
+      .order("analysis_date", { ascending: false }).limit(1).maybeSingle()
+      .then(({ data }) => setInflVariant(deriveVariantClient(data?.infl_level_state ?? null, data?.infl_accel_vote ?? null)))
+      .catch(() => setInflVariant("base"));
   }, []);
   const exposureMultipliers = useMemo(
     () => Object.fromEntries(Object.entries(resizeSignals).map(([sym, s]) => [sym, Number(s.exposure_multiplier)])),
@@ -2527,7 +2551,9 @@ function QuadrantCard({ indicators, holdings, assetData, bigCycleArmedCount }) {
           <div>
             <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
               <div className="flex items-center gap-3">
-                <p className="label">Positioning Signal — Favored Categories</p>
+                <p className="label">Positioning Signal — Favored Categories
+                  {VARIANT_LABELS[inflVariant] && <span className="text-paper-dim/60 normal-case"> · {VARIANT_LABELS[inflVariant]}</span>}
+                </p>
                 {blendedReturn !== null && (
                   <span className={`text-xs font-medium tabular-nums ${blendedReturn >= 0 ? "text-gain" : "text-loss"}`}>
                     {blendedReturn >= 0 ? "+" : ""}{blendedReturn.toFixed(1)}% exp. return
