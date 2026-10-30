@@ -3,7 +3,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { capTurnover, StructuralKeySource, deriveVariant } from "../_shared/regimeShiftRules.ts";
 import { WeightSet, getWeightSet } from "../_shared/regimeWeights.ts";
 import {
-  LANES, LANE_IDS, CAPPED_LANES, RULES_VERSION, deriveEvent, blendSectorTargets, resolveWeightsFor,
+  LANES, LANE_IDS, CAPPED_LANES, RULES_VERSION, deriveEvent, blendSectorTargets, resolveWeightsFor, resolveLegacyWeightsFor,
   ShadowInputs, LaneState, Variant,
 } from "../_shared/shadowLanes.ts";
 
@@ -150,7 +150,12 @@ Deno.serve(async (req: Request) => {
           const lambda = Number(lastRow?.lambda ?? 0);
           const variant = (lastRow?.variant ?? "base") as Variant;
 
-          const newTargets = resolveWeightsFor(baseKey, nearKey, lambda, variant, stateRow.current_targets, ieiPortfolioIds.has(pf.id));
+          // phase2 mirrors live with regime_phase3_weights=false (frozen
+          // LEGACY_WEIGHTS); every other reseedable lane mirrors the
+          // flag on (current D-1 table + nb interim treatment).
+          const newTargets = lane === "phase2"
+            ? resolveLegacyWeightsFor(baseKey, nearKey, lambda, stateRow.current_targets)
+            : resolveWeightsFor(baseKey, nearKey, lambda, variant, stateRow.current_targets, ieiPortfolioIds.has(pf.id));
 
           let sectorTargets: Record<string, number> | null = null;
           if (baseKey && Object.keys(sectorByRegime).length > 0) {

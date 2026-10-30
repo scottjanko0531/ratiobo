@@ -309,3 +309,15 @@ When Phase 3 is built, it adds the `phase3` lane to the registry as part of that
   and the `regime_phase3_weights=false` live path are unaffected
   (already `fg_ri.nb = 0` there). `RULES_VERSION` bumped to
   `shadow-v4`.
+- `phase2` was found making the same mistake `legacy` was just fixed
+  for: it called the shared (mutable) `getWeightSet` too, differing
+  from `phase3` only by variant — so `phase2`/`phase3` were identical
+  the moment inflation reads "contained" (today's live reading). Fixed
+  with a new `resolveLegacyWeightsFor()` (frozen `LEGACY_WEIGHTS`, no
+  variant, no nb overlay); `phase2` now mirrors the live job with
+  `regime_phase3_weights=false`, `phase3` mirrors it with the flag on
+  — the live function was refactored to call these exact two functions
+  for its own weight resolution, making the equivalence structural
+  rather than coincidental. `RULES_VERSION` bumped to `shadow-v5`. See
+  `regime-tilt-recalibration-decisions.md` for the full fix and the
+  same-day retag it required.

@@ -140,3 +140,51 @@ resolution, each gated per-portfolio by a live `portfolio_holdings` →
 short-duration sleeve — at that point `hasIEI` flips true per
 portfolio and this override stops firing on its own, no code change
 needed.
+
+## Bug fix: `phase2` was calling the mutable `getWeightSet`, not mirroring live's flag-off path (2026-10-30)
+
+Caught before it caused a worse version of the same bug `legacyLane`
+was fixed for above: `phase2Lane` called the shared (mutable)
+`getWeightSet`, same as `phase3Lane`, differing from it only by
+variant — so once D-1 shipped and the live inflation reading sat at
+"contained" (variant `base` for both), `phase2` and `phase3` produced
+IDENTICAL output every day, defeating the entire point of running
+them side by side. The intended meaning of the two lanes is a staged
+comparison — `phase2` = Phase 2's carry/blend/cap/hold mechanics
+alone, against the pre-Phase-3 weight table; `phase3` = the same
+mechanics plus D-1's weight revision — i.e. `phase2` should mirror
+the live job with `regime_phase3_weights = false`, and `phase3` should
+mirror it with the flag on. **Fix:** new `resolveLegacyWeightsFor()`
+(`_shared/shadowLanes.ts`), same shape as `resolveWeightsFor()` but
+reading the frozen `LEGACY_WEIGHTS` table (no variant, no nb interim
+treatment — legacy's `fg_ri.nb` is already 0). `computeBlendLane`
+takes a new `useLegacyWeights` flag; `phase2Lane` passes `true`,
+`phase3Lane` passes `false`. The live function
+(`update-regime-portfolio-targets/index.ts`) was refactored to call
+these exact same two functions for its own `wDesired` — the
+phase2≡live-flag-off and phase3≡live-flag-on equivalence is now a
+structural guarantee (same function call), not a coincidence that
+could silently drift, and `tests/shadowLanes.test.ts`'s "phase2/phase3
+mirror the live job's regime_phase3_weights gate" block pins it
+directly. `RULES_VERSION` bumped to `shadow-v5`.
+
+Today's `phase2`/`phase3` rows (both portfolios) had logged this same
+day's earlier nb-interim-treatment rollout as organic `cap_complete`
+turnover (`turnover_vs_prev = 5`) rather than a `rules_change` — a
+miss of the lane's own standing rule, caught by the same review.
+Retagged directly via SQL (no service-role JWT available to call
+`?reseed=true` in this environment, same workaround used earlier this
+session): `event = rules_change`, `turnover_vs_prev = 0`,
+`rules_version = shadow-v5`, `phase2`'s `target_allocations` moved to
+the frozen legacy `fg_ri` set (`eq:5/intl:5/em:0/nb:0/tip:20/com:30/
+gld:30/cash:10`); `phase3`'s own numbers were already correct
+(`eq:25/intl:5/em:0/nb:0/tip:25/com:10/gld:15/cash:20`) and only
+needed the retag. Verified after: `regime_shadow_divergence.
+phase2_vs_phase3 = 35.0` for both portfolios (not literally "~40" as
+first guessed before working the exact numbers, but the same order of
+magnitude and the right sign — a real, meaningful gap, not noise), and
+`regime_shadow_summary.total_turnover` for both lanes is `NULL` (SQL
+`SUM()` over zero matching rows, since every row either lane has ever
+written is `seed` or `rules_change` — both excluded by the view's
+filter — which is the correct semantic "zero real turnover logged,"
+just not the literal integer `0`).

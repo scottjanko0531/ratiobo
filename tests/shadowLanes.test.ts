@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  legacyResolve, legacyLane, phase2Lane, phase3Lane, liveLane, deriveEvent, blendSectorTargets, resolveWeightsFor,
+  legacyResolve, legacyLane, phase2Lane, phase3Lane, liveLane, deriveEvent, blendSectorTargets, resolveWeightsFor, resolveLegacyWeightsFor,
   type LaneState, type ShadowInputs,
 } from "../supabase/functions/_shared/shadowLanes.ts";
 import { capTurnover } from "../supabase/functions/_shared/regimeShiftRules.ts";
@@ -8,6 +8,21 @@ import { getWeightSet, getLegacyWeightSet, applyNbInterimTreatment, LEGACY_WEIGH
 
 function baseState(overrides: Partial<LaneState> = {}): LaneState {
   const fgRi = getWeightSet("fg_ri", "base")!;
+  return {
+    baseKey: "fg_ri", baseConfirmedSince: "2026-10-21", lastShiftDate: "2026-10-21",
+    nearKey: null, lambda: 0, currentTargets: fgRi, desiredTargets: fgRi,
+    ...overrides,
+  };
+}
+
+// phase2's own weight source is now the frozen legacy table, not the
+// mutable (D-1) one baseState() uses -- tests that call phase2Lane and
+// check its actual desiredTargets numbers (not just regimeKey/
+// blockedReason) need a prev state consistent with that, since
+// phase2's real history would have been seeded from LEGACY_WEIGHTS,
+// not today's D-1 base.
+function legacyBaseState(overrides: Partial<LaneState> = {}): LaneState {
+  const fgRi = getLegacyWeightSet("fg_ri")!;
   return {
     baseKey: "fg_ri", baseConfirmedSince: "2026-10-21", lastShiftDate: "2026-10-21",
     nearKey: null, lambda: 0, currentTargets: fgRi, desiredTargets: fgRi,
@@ -50,17 +65,15 @@ describe("phase2Lane", () => {
       structuralKeySource: "carry",
       nearActive: true, nearConfirmedKey: "rg_ri", smoothedConfidence: 65,
       today: new Date("2026-10-30T00:00:00Z"), // 9 days after the 10/21 shift
-      // hasIEI: true -- these tests exercise carry/blend/hold mechanics
-      // against the raw D-1 weights; the nb interim treatment overlay
-      // has its own dedicated describe block below.
-      hasIEI: true,
     });
-    const result = phase2Lane(inputs, baseState());
+    const result = phase2Lane(inputs, legacyBaseState());
     expect(result.blockedReason).toBe("min_hold:2026-11-11");
     expect(result.regimeKey).toBe("fg_ri");
     expect(result.nearKey).toBeNull();
     expect(result.lambda).toBe(0);
-    expect(result.desiredTargets).toEqual(getWeightSet("fg_ri", "base"));
+    // phase2 mirrors live with regime_phase3_weights=false -- frozen
+    // LEGACY_WEIGHTS, not the current (D-1) shared base.
+    expect(result.desiredTargets).toEqual(getLegacyWeightSet("fg_ri"));
   });
 
   it("once the hold clears, blends toward the near-term key at the confidence-scaled lambda", () => {
@@ -68,24 +81,24 @@ describe("phase2Lane", () => {
       structuralKeySource: "carry",
       nearActive: true, nearConfirmedKey: "rg_ri", smoothedConfidence: 65,
       today: new Date("2026-11-11T00:00:00Z"), // exactly 21 days after 10/21
-      hasIEI: true, // raw D-1 weights -- see note above
     });
-    const result = phase2Lane(inputs, baseState());
+    const result = phase2Lane(inputs, legacyBaseState());
     expect(result.blockedReason).toBeNull();
     expect(result.lambda).toBeCloseTo(0.3, 6);
     expect(result.nearKey).toBe("rg_ri");
 
-    // Phase 3's revised fg_ri base (25/5/0/20/15/10/15/10) is closer to
-    // rg_ri's base than the pre-Phase-3 set was, so the 30%-of-the-way
-    // blend is an 11-point one-way move, comfortably under the cap.
-    const struct = getWeightSet("fg_ri", "base")!;
+    // Legacy fg_ri (5/5/0/0/20/30/30/10) is farther from rg_ri's base
+    // than Phase 3's revised fg_ri is, so the 30%-of-the-way blend is a
+    // bigger one-way move than phase3's equivalent (11pts) -- 13pts,
+    // still comfortably under the cap.
+    const struct = getLegacyWeightSet("fg_ri")!;
     let turnover = 0;
     for (const k of Object.keys(struct)) turnover += Math.abs((result.desiredTargets[k] ?? 0) - (struct[k] ?? 0));
-    expect(turnover / 2).toBe(11);
+    expect(turnover / 2).toBe(13);
 
     // Fits in a single day under the 15-point cap against the lane's
-    // own prior current_targets (also the fg_ri set).
-    const stepped = capTurnover(baseState().currentTargets, result.desiredTargets, 15);
+    // own prior current_targets (also the legacy fg_ri set).
+    const stepped = capTurnover(legacyBaseState().currentTargets, result.desiredTargets, 15);
     expect(stepped).toEqual(result.desiredTargets);
   });
 
@@ -95,7 +108,7 @@ describe("phase2Lane", () => {
       nearActive: true, nearConfirmedKey: "rg_ri", smoothedConfidence: 65,
       today: new Date("2026-10-23T00:00:00Z"), // only 2 days after 10/21
     });
-    const result = phase2Lane(inputs, baseState());
+    const result = phase2Lane(inputs, legacyBaseState());
     expect(result.blockedReason).toBeNull();
     expect(result.regimeKey).toBe("rg_ri"); // base itself moves, agreement exception applied
   });
@@ -105,7 +118,7 @@ describe("phase2Lane", () => {
       structuralKey: "rg_ri", structuralKeySource: "carry", // a carried key that differs from the base
       nearActive: false, nearConfirmedKey: null, smoothedConfidence: null,
     });
-    const result = phase2Lane(inputs, baseState());
+    const result = phase2Lane(inputs, legacyBaseState());
     expect(result.blockedReason).toBe("carry_protected");
     expect(result.regimeKey).toBe("fg_ri"); // base unmoved
   });
@@ -231,16 +244,20 @@ describe("legacyLane stays frozen at the pre-Phase-2/3 weights", () => {
   });
 });
 
-// Phase 3 §5: proves the computeBlendLane refactor didn't leak
-// variant-awareness into phase2, and that phase3 picks up the real
-// inflation state (base/high/high_accel/high_decel) correctly.
+// Phase 3 §5, fixed 2026-10-30 (shadow-v5): phase2 mirrors live with
+// regime_phase3_weights=false (frozen LEGACY_WEIGHTS), phase3 mirrors
+// it with the flag on (current D-1 table + real variant + nb interim
+// treatment). Before this fix both lanes called the same mutable
+// getWeightSet and only ever differed by variant -- indistinguishable
+// under today's "contained" reading, which defeated the point of
+// running them side by side.
 describe("phase3Lane vs. phase2Lane", () => {
-  it("phase3 picks the high_accel variant on a stagflation+accelerating reading; phase2 stays pinned to base", () => {
+  it("phase3 picks the high_accel variant on a stagflation+accelerating reading; phase2 stays pinned to legacy weights", () => {
     const inputs = baseInputs({ inflLevelState: "stagflation", inflAccelVote: "accelerating", hasIEI: true });
 
-    const p2 = phase2Lane(inputs, baseState());
+    const p2 = phase2Lane(inputs, legacyBaseState());
     expect(p2.variant).toBe("base");
-    expect(p2.desiredTargets).toEqual(getWeightSet("fg_ri", "base"));
+    expect(p2.desiredTargets).toEqual(getLegacyWeightSet("fg_ri"));
 
     const p3 = phase3Lane(inputs, baseState());
     expect(p3.variant).toBe("high_accel");
@@ -257,42 +274,46 @@ describe("phase3Lane vs. phase2Lane", () => {
     expect(p3.desiredTargets).toEqual(getWeightSet("rg_ri", "high")); // but the weights fall back to plain high
   });
 
-  it("both lanes agree when inflation is contained (today's live reading)", () => {
-    const inputs = baseInputs({ inflLevelState: "contained", inflAccelVote: null });
-    const p2 = phase2Lane(inputs, baseState());
+  it("the two lanes diverge sharply even when inflation is contained (today's live reading) -- the whole point of the fix", () => {
+    const inputs = baseInputs({ inflLevelState: "contained", inflAccelVote: null, hasIEI: false });
+    const p2 = phase2Lane(inputs, legacyBaseState());
     const p3 = phase3Lane(inputs, baseState());
     expect(p3.variant).toBe("base");
-    expect(p3.desiredTargets).toEqual(p2.desiredTargets);
+    expect(p2.desiredTargets).toEqual(getLegacyWeightSet("fg_ri"));
+    expect(p3.desiredTargets).toEqual(applyNbInterimTreatment("fg_ri", getWeightSet("fg_ri", "base")!, false));
+    expect(p3.desiredTargets).not.toEqual(p2.desiredTargets);
+
+    let turnover = 0;
+    for (const k of Object.keys(p2.desiredTargets)) turnover += Math.abs((p3.desiredTargets[k] ?? 0) - (p2.desiredTargets[k] ?? 0));
+    expect(turnover / 2).toBe(35);
   });
 });
 
-// fg_ri nb interim treatment (Scott's decision 2026-10-30): both capped
-// lanes (phase2/phase3) must apply it when the lane's portfolio doesn't
-// hold IEI yet, and stop applying it the moment hasIEI flips true --
-// without touching legacy (frozen, already nb=0 for fg_ri) or liveLane
-// (doesn't call getWeightSet at all).
-describe("fg_ri nb interim treatment in the capped lanes", () => {
-  it("phase2 and phase3 both route fg_ri's nb into cash/tip when hasIEI is false", () => {
+// fg_ri nb interim treatment (Scott's decision 2026-10-30): only
+// phase3 (and live with regime_phase3_weights=true) ever applies it --
+// phase2 is pinned to the frozen legacy table, where fg_ri.nb is
+// already 0, so hasIEI is irrelevant to it entirely, not just a no-op
+// on a particular key.
+describe("fg_ri nb interim treatment -- phase3 only, phase2 unaffected", () => {
+  it("phase3 routes fg_ri's nb into cash/tip when hasIEI is false", () => {
     const inputs = baseInputs({ hasIEI: false });
-    const p2 = phase2Lane(inputs, baseState());
     const p3 = phase3Lane(inputs, baseState());
-    expect(p2.desiredTargets.nb).toBe(0);
     expect(p3.desiredTargets.nb).toBe(0);
-    expect(p2.desiredTargets).toEqual(applyNbInterimTreatment("fg_ri", getWeightSet("fg_ri", "base")!, false));
+    expect(p3.desiredTargets).toEqual(applyNbInterimTreatment("fg_ri", getWeightSet("fg_ri", "base")!, false));
   });
 
-  it("stops redistributing once hasIEI is true -- the real D-1 nb target comes through", () => {
+  it("phase3 stops redistributing once hasIEI is true -- the real D-1 nb target comes through", () => {
     const inputs = baseInputs({ hasIEI: true });
-    const p2 = phase2Lane(inputs, baseState());
-    expect(p2.desiredTargets).toEqual(getWeightSet("fg_ri", "base"));
-    expect(p2.desiredTargets.nb).toBeGreaterThan(0);
+    const p3 = phase3Lane(inputs, baseState());
+    expect(p3.desiredTargets).toEqual(getWeightSet("fg_ri", "base"));
+    expect(p3.desiredTargets.nb).toBeGreaterThan(0);
   });
 
-  it("is a no-op for a non-fg_ri key regardless of hasIEI", () => {
-    const rgFiState = baseState({ baseKey: "rg_fi", currentTargets: getWeightSet("rg_fi", "base")!, desiredTargets: getWeightSet("rg_fi", "base")! });
-    const inputs = baseInputs({ structuralKey: "rg_fi", hasIEI: false });
-    const p2 = phase2Lane(inputs, rgFiState);
-    expect(p2.desiredTargets).toEqual(getWeightSet("rg_fi", "base"));
+  it("phase2's output is identical regardless of hasIEI -- it never reads the mutable table or the treatment at all", () => {
+    const withoutIEI = phase2Lane(baseInputs({ hasIEI: false }), legacyBaseState());
+    const withIEI = phase2Lane(baseInputs({ hasIEI: true }), legacyBaseState());
+    expect(withoutIEI.desiredTargets).toEqual(withIEI.desiredTargets);
+    expect(withoutIEI.desiredTargets).toEqual(getLegacyWeightSet("fg_ri"));
   });
 });
 
@@ -310,6 +331,41 @@ describe("resolveWeightsFor's hasIEI parameter (reseed mechanism)", () => {
     const withIEI = resolveWeightsFor("rg_ri", "fg_ri", 0.5, "base", {}, true);
     expect(withoutIEI.nb).toBe(0);
     expect(withIEI.nb).toBeGreaterThan(0);
+  });
+});
+
+// Direct statement of the invariant Scott asked for (2026-10-30 fix):
+// phase2's weights must equal what the live job computes with
+// regime_phase3_weights=false, and phase3's must equal what it
+// computes with the flag on. update-regime-portfolio-targets/index.ts
+// now literally calls resolveLegacyWeightsFor/resolveWeightsFor for
+// its wDesired, the same two functions phase2Lane/phase3Lane call via
+// computeBlendLane -- so this is a structural guarantee, not a
+// coincidence this test could silently stop catching.
+describe("phase2/phase3 mirror the live job's regime_phase3_weights gate", () => {
+  it("phase2 equals the live computation with the flag off (resolveLegacyWeightsFor)", () => {
+    const inputs = baseInputs({
+      structuralKeySource: "carry",
+      nearActive: true, nearConfirmedKey: "rg_ri", smoothedConfidence: 65,
+      today: new Date("2026-11-11T00:00:00Z"),
+    });
+    const prev = legacyBaseState();
+    const p2 = phase2Lane(inputs, prev);
+    const liveFlagOff = resolveLegacyWeightsFor(p2.regimeKey, p2.nearKey, p2.lambda, prev.currentTargets);
+    expect(p2.desiredTargets).toEqual(liveFlagOff);
+  });
+
+  it("phase3 equals the live computation with the flag on (resolveWeightsFor)", () => {
+    const inputs = baseInputs({
+      structuralKeySource: "carry",
+      nearActive: true, nearConfirmedKey: "rg_ri", smoothedConfidence: 65,
+      today: new Date("2026-11-11T00:00:00Z"),
+      hasIEI: false,
+    });
+    const prev = baseState();
+    const p3 = phase3Lane(inputs, prev);
+    const liveFlagOn = resolveWeightsFor(p3.regimeKey, p3.nearKey, p3.lambda, p3.variant, prev.currentTargets, false);
+    expect(p3.desiredTargets).toEqual(liveFlagOn);
   });
 });
 
@@ -362,5 +418,30 @@ describe("resolveWeightsFor (reseed mechanism)", () => {
   it("falls back to the provided fallback when baseKey is null", () => {
     const fallback = { eq: 1, cash: 99 };
     expect(resolveWeightsFor(null, null, 0, "base", fallback)).toEqual(fallback);
+  });
+});
+
+// resolveLegacyWeightsFor is what the orchestrator's `?reseed=true`
+// now calls for the phase2 lane specifically (2026-10-30 fix) --
+// same shape as resolveWeightsFor above, but against the frozen table.
+describe("resolveLegacyWeightsFor (phase2's reseed mechanism)", () => {
+  it("struct-only (no blend) returns the frozen legacy base for that key, never the current shared one", () => {
+    const result = resolveLegacyWeightsFor("fg_ri", null, 0, {});
+    expect(result).toEqual(getLegacyWeightSet("fg_ri"));
+    expect(result).not.toEqual(getWeightSet("fg_ri", "base"));
+  });
+  it("blends struct+near at the preserved lambda using the legacy table on both legs", () => {
+    const result = resolveLegacyWeightsFor("fg_ri", "rg_ri", 0.3, {});
+    const struct = getLegacyWeightSet("fg_ri")!;
+    const near = getLegacyWeightSet("rg_ri")!;
+    let turnover = 0;
+    for (const k of Object.keys(struct)) turnover += Math.abs((result[k] ?? 0) - (struct[k] ?? 0));
+    expect(turnover).toBeGreaterThan(0);
+    const fullSwapTurnover = Object.keys(struct).reduce((a, k) => a + Math.abs((near[k] ?? 0) - (struct[k] ?? 0)), 0);
+    expect(turnover).toBeLessThan(fullSwapTurnover);
+  });
+  it("falls back to the provided fallback when baseKey is null", () => {
+    const fallback = { eq: 1, cash: 99 };
+    expect(resolveLegacyWeightsFor(null, null, 0, fallback)).toEqual(fallback);
   });
 });

@@ -18,7 +18,13 @@ import {
 // exists in this repo's Edge Function deploys (confirmed with Scott).
 // shadow-v4: fg_ri's nb interim treatment (route to cash/tip until
 // IEI is held, Scott's decision 2026-10-30).
-export const RULES_VERSION = "shadow-v4";
+// shadow-v5: phase2 now mirrors the live job with
+// regime_phase3_weights=false (frozen LEGACY_WEIGHTS) instead of the
+// current (D-1) weight table — phase2 and phase3 previously used the
+// identical mutable table and only ever differed by variant, so they
+// were indistinguishable under today's "contained" inflation reading.
+// See the fix below.
+export const RULES_VERSION = "shadow-v5";
 
 export type Lane = "live" | "legacy" | "phase2" | "phase3";
 export const LANE_IDS: Lane[] = ["live", "legacy", "phase2", "phase3"];
@@ -139,12 +145,30 @@ export function resolveWeightsFor(
   return wNear ? blendWeights(wStruct, wNear, lambda) : wStruct;
 }
 
-// Shared by phase2Lane (variant fixed at "base") and phase3Lane
-// (variant computed from the real inflation state) — carry rule,
-// blended near-term override, turnover cap (applied by the
-// orchestrator, not here), and minimum hold are identical between the
-// two; only the variant passed to getWeightSet differs.
-function computeBlendLane(inputs: ShadowInputs, prev: LaneState, variant: Variant): LaneResult {
+// Same shape as resolveWeightsFor, but reads the frozen LEGACY_WEIGHTS
+// table (via getLegacyWeightSet) instead of the mutable shared table —
+// no variant (legacy never had the concept) and no nb interim
+// treatment (legacy's fg_ri.nb is already 0). This is the exact weight
+// source the live function uses when regime_phase3_weights=false, so
+// phase2Lane calling this (below) is what makes phase2 a faithful
+// "Phase 2 rules, pre-Phase-3 weights" baseline rather than drifting
+// onto D-1's revised numbers the moment they ship.
+export function resolveLegacyWeightsFor(
+  baseKey: string | null, nearKey: string | null, lambda: number, fallback: WeightSet,
+): WeightSet {
+  const wStruct = baseKey ? (getLegacyWeightSet(baseKey) ?? fallback) : fallback;
+  const wNear = nearKey ? (getLegacyWeightSet(nearKey) ?? null) : null;
+  return wNear ? blendWeights(wStruct, wNear, lambda) : wStruct;
+}
+
+// Shared by phase2Lane (frozen legacy weights, variant fixed "base")
+// and phase3Lane (current D-1 weight table, real computed variant) —
+// carry rule, blended near-term override, turnover cap (applied by
+// the orchestrator, not here), and minimum hold are identical between
+// the two; only the weight SOURCE differs, mirroring the live
+// function's own regime_phase3_weights gate exactly (useLegacyWeights
+// true <-> live with the flag off; false <-> live with it on).
+function computeBlendLane(inputs: ShadowInputs, prev: LaneState, variant: Variant, useLegacyWeights: boolean): LaneResult {
   const today = inputs.today;
   const proposedBaseKey = resolveBaseKey(inputs.structuralKey, inputs.structuralKeySource, prev.baseKey);
   const nearActiveKey = inputs.nearActive ? inputs.nearConfirmedKey : null;
@@ -181,7 +205,9 @@ function computeBlendLane(inputs: ShadowInputs, prev: LaneState, variant: Varian
 
   const keyEventApplied = isKeyLevelEvent && !(blockedReason?.startsWith("min_hold:"));
   const lambda = finalNearKey ? computeLambda(inputs.smoothedConfidence, 0.5) : 0;
-  const desiredTargets = resolveWeightsFor(finalBaseKey, finalNearKey, lambda, variant, prev.currentTargets, inputs.hasIEI);
+  const desiredTargets = useLegacyWeights
+    ? resolveLegacyWeightsFor(finalBaseKey, finalNearKey, lambda, prev.currentTargets)
+    : resolveWeightsFor(finalBaseKey, finalNearKey, lambda, variant, prev.currentTargets, inputs.hasIEI);
 
   return {
     regimeKey: finalBaseKey, nearKey: finalNearKey, lambda, variant,
@@ -198,16 +224,23 @@ function computeBlendLane(inputs: ShadowInputs, prev: LaneState, variant: Varian
 }
 
 // Phase 2 §4: variant is always "base" — this lane never varies by
-// inflation level.
-export const phase2Lane: LaneFn = (inputs, prev) => computeBlendLane(inputs, prev, "base");
+// inflation level. Mirrors the live job with regime_phase3_weights=
+// false: Phase 2's carry/blend/cap/hold mechanics, but the frozen
+// pre-Phase-3 weight table (LEGACY_WEIGHTS), not the current D-1-
+// revised one. This is what makes phase2 a clean "Phase 2 rules alone"
+// baseline that phase3 then adds the D-1 weight revision on top of,
+// rather than the two being identical whenever variant happens to be
+// "base" (as they were before this fix — see RULES_VERSION shadow-v5).
+export const phase2Lane: LaneFn = (inputs, prev) => computeBlendLane(inputs, prev, "base", true);
 
 // Phase 3 §5: same carry/blend/cap/hold rules as phase2, but the
-// variant is the REAL computed one from today's inflation state —
-// ignores the live regime_phase3_weights flag entirely (the
-// orchestrator notes variants_flag_off informationally, but this
-// lane's own computation is never gated by it).
+// weight source is the CURRENT shared table (D-1) at the REAL computed
+// variant from today's inflation state — mirrors the live job with
+// regime_phase3_weights=true, ignoring that flag's actual value
+// entirely (the orchestrator notes variants_flag_off informationally,
+// but this lane's own computation is never gated by it).
 export const phase3Lane: LaneFn = (inputs, prev) =>
-  computeBlendLane(inputs, prev, deriveVariant(inputs.inflLevelState, inputs.inflAccelVote));
+  computeBlendLane(inputs, prev, deriveVariant(inputs.inflLevelState, inputs.inflAccelVote), false);
 
 export const LANES: Partial<Record<Lane, LaneFn>> = {
   live: liveLane,

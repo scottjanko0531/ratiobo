@@ -2,9 +2,10 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { getWeightSet, getLegacyWeightSet, applyNbInterimTreatment, WeightSet } from "../_shared/regimeWeights.ts";
 import {
-  computeLambda, blendWeights, capTurnover, resolveBaseKey, canApplyKeyShift, deriveVariant,
+  computeLambda, capTurnover, resolveBaseKey, canApplyKeyShift, deriveVariant,
   StructuralKeySource, Variant,
 } from "../_shared/regimeShiftRules.ts";
+import { resolveWeightsFor, resolveLegacyWeightsFor } from "../_shared/shadowLanes.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -357,17 +358,19 @@ Deno.serve(async (req: Request) => {
       // the original numbers, not a mix of old rules and new weights.
       // The real computed variant is still stored in regime_blend below
       // either way, so it's visible while gated off, not just once on.
+      // Calls the exact same resolveWeightsFor/resolveLegacyWeightsFor
+      // the phase3/phase2 shadow lanes call (_shared/shadowLanes.ts) —
+      // this flag's two settings are, by construction, what those two
+      // lanes exist to mirror; tests/shadowLanes.test.ts pins that
+      // equivalence directly.
       const lambda = finalNearKey ? computeLambda(smoothedConfidence, LAMBDA_MAX) : 0;
       const hasIEI = ieiPortfolioIds.has(pf.id);
       const wStruct = pf.regime_phase3_weights
         ? applyNbInterimTreatment(finalBaseKey, getWeightSet(finalBaseKey, computedVariant) ?? {}, hasIEI)
         : (getLegacyWeightSet(finalBaseKey) ?? {});
-      const wNear = finalNearKey
-        ? (pf.regime_phase3_weights
-            ? applyNbInterimTreatment(finalNearKey, getWeightSet(finalNearKey, computedVariant) ?? {}, hasIEI)
-            : (getLegacyWeightSet(finalNearKey) ?? null))
-        : null;
-      const wDesired = wNear ? blendWeights(wStruct, wNear, lambda) : wStruct;
+      const wDesired = pf.regime_phase3_weights
+        ? resolveWeightsFor(finalBaseKey, finalNearKey, lambda, computedVariant, wStruct, hasIEI)
+        : resolveLegacyWeightsFor(finalBaseKey, finalNearKey, lambda, wStruct);
       const wCurrent = pf.target_allocations && Object.keys(pf.target_allocations).length > 0 ? pf.target_allocations : wStruct;
       const wWritten = capTurnover(wCurrent, wDesired, TURNOVER_CAP_POINTS);
 
