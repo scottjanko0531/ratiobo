@@ -302,3 +302,69 @@ Bond Lens's own sleeve math already governs which Treasury duration
 is held, so a separate nb-bucket override would either be redundant
 with or fight Bond Lens, not complement it. Revisit only if a future
 portfolio runs this framework with Bond Lens off.
+
+## Bug fix: Phase 4 had the same base-variant leak as Phase 3's D-1 weights (2026-10-31)
+
+Caught by Scott, not by review: the Phase 4 migration
+(`regime_tilt_phase4_d5_sector_tables`) deleted `fg_ri`'s existing
+`variant = 'base'` sector row outright and replaced it with D-5's new
+9-symbol table (including `XLP`) — the exact same mistake
+`legacyLane`/`phase2Lane` were fixed for above, just one layer down:
+`resolveSectorRows()` read that same mutable `(regime_key, variant)`
+table for **every** lane, so `legacy`/`live`/`phase2`/`phase3` all
+picked up `XLP` regardless of `regime_phase4_sectors`, even though the
+spec's own intent (confirmed by Scott) is that nothing changes unless
+that flag is on. Verified live before fixing: all four non-`phase4`
+lanes' same-day rows showed `XLP: 15` in `sector_targets`.
+
+**Fix.** `portfolio_sector_targets` gets a new axis, not an overload
+of `variant`: `table_version text` (`'v1'` | `'d5'`), unique key now
+`(portfolio_id, bucket, symbol, regime_key, variant, table_version)`.
+`'v1'` is restored to the exact pre-D-5 `fg_ri` table (`XLE 24 / XLV
+16 / XLB 13 / XLF 10 / XLK 10 / XLC 9 / XLI 9 / XLY 9`, from migration
+`20260912_portfolio_sector_targets.sql`) and copied as the frozen
+`'v1'` row for every other regime key too; `'d5'` keeps D-5's full
+variant-aware table (including the `fg_ri` revision and the new
+`rg_ri`/`high` row-set). New `resolveLegacySectorRows(sectorTable,
+regimeKey)` (`_shared/shadowLanes.ts`) reads `v1`/`base` only — no
+variant concept, mirrors `resolveLegacyWeightsFor()` exactly.
+`resolveSectorRows()` is now scoped strictly to `d5`. New
+`sectorRowsFor(lane, ...)` dispatcher in
+`update-regime-shadow-targets/index.ts`: `phase4` always resolves
+`d5`; `live` follows `regime_phase4_sectors` (on → `d5`, off → `v1`,
+via `resolveLegacySectorRows`); `legacy`/`phase2`/`phase3` always
+resolve `v1`, full stop, regardless of the flag. The
+`"sectors_flag_off"` informational tag no longer requires
+`variant !== "base"` the way `variants_flag_off` does — D-5 revised
+`fg_ri`'s `base` row itself, so `v1` and `d5` disagree even at
+`variant = "base"`, unlike the weights case. `RULES_VERSION` bumped to
+`shadow-v7`.
+
+**Standing test**, explicitly requested to catch this whole class of
+bug going forward, not just this one instance:
+`PHASE_FLAG_INVARIANTS` in `tests/shadowLanes.test.ts` asserts, for
+every phase-gate flag on record (`regime_phase3_weights`,
+`regime_phase4_sectors`), that flag-off output is byte-identical to
+the previous phase's lane, and flag-on is byte-identical to the new
+phase's lane — generalized so a future Phase 5 flag gets the same
+guarantee by adding one array entry, not a new bespoke test block.
+
+**Same-day retag.** The scheduled run earlier today had already
+written `live`/`phase2`/`phase3`'s rows for 2026-10-31 (All Weather
+With Equity Tilting) with the leaked `d5` `fg_ri` table (`XLP`
+included). After deploying the fix, re-invoking the function left
+those three rows untouched (the main loop's upsert skips an existing
+`(snapshot_date, portfolio_id, lane)` row rather than overwriting it)
+— so retagged directly via SQL (no service-role JWT in this
+environment, same workaround as every prior same-day correction this
+phase): `sector_targets` set back to the frozen `v1` 8-symbol table,
+`rules_version = shadow-v7`, `event = rules_change`,
+`turnover_vs_prev = 0` (already 0 for all three — sector tables have
+never factored into turnover). `regime_shadow_state.
+current_sector_targets` updated to match for the same three lanes.
+`phase4`'s row was already correct (it's the one lane meant to show
+`d5`) and only needed its `rules_version` stamp bumped. Verified after:
+only `phase4` shows `XLP` in today's `sector_targets` for this
+portfolio; `legacy`/`live`/`phase2`/`phase3` all show the restored
+8-symbol `v1` table. The other regime-driven portfolio has no sector
+tilt rows at all, so it was unaffected throughout.

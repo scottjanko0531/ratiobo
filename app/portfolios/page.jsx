@@ -566,12 +566,19 @@ export default function PortfoliosPage() {
   const [sectorTargets, setSectorTargets] = useState({});
   const blendLambda = viewingPortfolio?.regime_blend?.lambda ?? 0;
   const blendNearKey = viewingPortfolio?.regime_blend?.near_key ?? null;
-  // Regime Tilt Recalibration Phase 4 §6.1: with regime_phase4_sectors
-  // off (default), the live sector table must equal the phase3 lane's --
-  // i.e. always the "base" variant, exactly as before Phase 4 existed.
-  // Only with the flag on does this follow the portfolio's own real
-  // computed variant (regime_blend.variant, already stored regardless
-  // of the flag per Phase 3).
+  // Regime Tilt Recalibration Phase 4 fix (2026-10-31): `variant` was
+  // being overloaded to also mean "pre-D-5 vs D-5 table" -- D-5
+  // revised fg_ri's own base row, so every lane reading "base" leaked
+  // the new (XLP-included) table regardless of regime_phase4_sectors,
+  // the same base-variant leak Phase 3's D-1 weights had before the
+  // phase2 fix. `table_version` is a separate axis now: with the flag
+  // off, this ALWAYS reads the frozen `v1` table (no variant concept,
+  // exactly as before Phase 4 existed -- byte-identical to the
+  // phase2/phase3 shadow lanes' own sector lookup). Only with the flag
+  // on does it read `d5`, following the portfolio's own real computed
+  // variant (regime_blend.variant, already stored regardless of the
+  // flag per Phase 3).
+  const sectorTableVersion = viewingPortfolio?.regime_phase4_sectors ? "d5" : "v1";
   const effectiveSectorVariant = viewingPortfolio?.regime_phase4_sectors
     ? (viewingPortfolio?.regime_blend?.variant ?? "base")
     : "base";
@@ -581,11 +588,14 @@ export default function PortfoliosPage() {
       return;
     }
     const structKey = viewingPortfolio.current_regime_key;
+    const tableVersion = sectorTableVersion;
     const variant = effectiveSectorVariant;
     // §6.1's lookup: exact (regime_key, variant) first, else fall back
     // to (regime_key, "base") -- a regime/variant pair with no row of
     // its own (e.g. rg_fi, which never got Phase 4 sector tables)
-    // reuses the base table rather than coming back empty.
+    // reuses the base table rather than coming back empty. Always
+    // scoped to a single table_version -- v1's "base" never falls back
+    // into d5 or vice versa.
     const fetchFor = (regimeKey) =>
       supabase
         .from("portfolio_sector_targets")
@@ -593,6 +603,7 @@ export default function PortfoliosPage() {
         .eq("portfolio_id", viewingPortfolio.id)
         .eq("bucket", "eq")
         .eq("regime_key", regimeKey)
+        .eq("table_version", tableVersion)
         .in("variant", variant === "base" ? ["base"] : [variant, "base"])
         .then(({ data }) => {
           const rows = data ?? [];
@@ -615,7 +626,7 @@ export default function PortfoliosPage() {
     } else {
       fetchFor(structKey).then(setSectorTargets).catch(() => setSectorTargets({}));
     }
-  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework, viewingPortfolio?.current_regime_key, blendLambda, blendNearKey, effectiveSectorVariant]);
+  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework, viewingPortfolio?.current_regime_key, blendLambda, blendNearKey, sectorTableVersion, effectiveSectorVariant]);
 
   // Regime Shadow Targets Log (docs/specs/regime-shadow-targets.md §5.3)
   // — read-only comparison panel, never writes anything. shadowSummary
@@ -636,7 +647,7 @@ export default function PortfoliosPage() {
     const since = new Date();
     since.setUTCDate(since.getUTCDate() - 30);
     supabase.from("regime_shadow_targets")
-      .select("snapshot_date, lane, regime_key, near_key, lambda, variant, target_allocations, event, blocked_reason")
+      .select("snapshot_date, lane, regime_key, near_key, lambda, variant, target_allocations, sector_targets, event, blocked_reason")
       .eq("portfolio_id", viewingPortfolio.id)
       .gte("snapshot_date", since.toISOString().slice(0, 10))
       .order("snapshot_date")
@@ -644,9 +655,9 @@ export default function PortfoliosPage() {
       .catch(() => setShadowHistory([]));
   }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework]);
 
-  const SHADOW_LANE_IDS = ["live", "legacy", "phase2"];
-  const SHADOW_LANE_LABELS = { live: "Live", legacy: "Legacy (pre-Phase 2)", phase2: "Phase 2" };
-  const SHADOW_LANE_COLORS = { live: "#A8ADB8", legacy: "#E0635C", phase2: "#3FB984" };
+  const SHADOW_LANE_IDS = ["live", "legacy", "phase2", "phase3", "phase4"];
+  const SHADOW_LANE_LABELS = { live: "Live", legacy: "Legacy (pre-Phase 2)", phase2: "Phase 2", phase3: "Phase 3", phase4: "Phase 4" };
+  const SHADOW_LANE_COLORS = { live: "#A8ADB8", legacy: "#E0635C", phase2: "#3FB984", phase3: "#4C9FE0", phase4: "#C77DE0" };
 
   const shadowLatestByLane = useMemo(() => {
     const byLane = {};
@@ -657,6 +668,20 @@ export default function PortfoliosPage() {
     () => Object.fromEntries(shadowSummary.map((s) => [s.lane, s])),
     [shadowSummary],
   );
+  // Phase 4 §6.1 fix: a dedicated sector-targets comparison, since
+  // phase4 is now the only lane whose sector table can ever differ
+  // from the others (legacy/phase2/phase3 are all pinned to the frozen
+  // v1 table; live follows regime_phase4_sectors). Symbol columns are
+  // the union across every lane's latest sector_targets, so a symbol
+  // that's only in phase4's d5 table (e.g. XLP) still gets its own
+  // column rather than silently not appearing.
+  const shadowSectorSymbols = useMemo(() => {
+    const syms = new Set();
+    for (const lane of SHADOW_LANE_IDS) {
+      for (const sym of Object.keys(shadowLatestByLane[lane]?.sector_targets || {})) syms.add(sym);
+    }
+    return [...syms].sort();
+  }, [shadowLatestByLane]);
   const shadowSparkData = useMemo(() => {
     const dates = [...new Set(shadowHistory.map((r) => r.snapshot_date))].sort();
     return dates.map((d) => {
@@ -1361,6 +1386,41 @@ export default function PortfoliosPage() {
                             </tbody>
                           </table>
                         </div>
+
+                        {shadowSectorSymbols.length > 0 && (
+                          <div className="overflow-x-auto">
+                            <p className="text-[10px] text-paper-dim/60 mb-1">
+                              Sector targets (% of eq) <span className="text-paper-dim/40">· legacy/phase2/phase3 pinned to the frozen pre-D-5 table; phase4 is the only lane reading the new variant-aware one</span>
+                            </p>
+                            <table className="w-full text-[11px] whitespace-nowrap">
+                              <thead>
+                                <tr className="text-paper-dim/60 text-left">
+                                  <th className="py-1 pr-3">Lane</th>
+                                  {shadowSectorSymbols.map((sym) => (
+                                    <th key={sym} className="pr-3 text-right">{sym}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {SHADOW_LANE_IDS.map((lane) => {
+                                  const row = shadowLatestByLane[lane];
+                                  const sectors = row?.sector_targets || {};
+                                  if (!row || Object.keys(sectors).length === 0) return null;
+                                  return (
+                                    <tr key={lane} className="border-t border-ink-line/50">
+                                      <td className="py-1 pr-3 text-paper">{SHADOW_LANE_LABELS[lane]}</td>
+                                      {shadowSectorSymbols.map((sym) => (
+                                        <td key={sym} className={`pr-3 text-right num ${sym === "XLP" && sectors[sym] != null ? "text-brass-soft" : "text-paper-dim"}`}>
+                                          {sectors[sym] ?? "—"}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
 
                         <div className="space-y-0.5">
                           {SHADOW_LANE_IDS.map((lane) => {

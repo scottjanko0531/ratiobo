@@ -27,7 +27,13 @@ import {
 // shadow-v6: Phase 4 §6.1/§6.2 — phase4 lane added (phase3's exact
 // asset-level mechanics plus the new bucket/variant-aware equity
 // sector tables, decision D-5).
-export const RULES_VERSION = "shadow-v6";
+// shadow-v7: fixed the base-variant leak in shadow-v6 — phase4's D-5
+// fg_ri base table was readable by every lane regardless of
+// regime_phase4_sectors. legacy/phase2/phase3 now read the frozen
+// `table_version='v1'` table (resolveLegacySectorRows); only phase4
+// (always) and live (when the flag is on) read `d5`
+// (resolveSectorRows).
+export const RULES_VERSION = "shadow-v7";
 
 export type Lane = "live" | "legacy" | "phase2" | "phase3" | "phase4";
 export const LANE_IDS: Lane[] = ["live", "legacy", "phase2", "phase3", "phase4"];
@@ -300,21 +306,42 @@ export function deriveEvent(opts: {
   return "no_change";
 }
 
-// Phase 4 §6.1: "Resolve the lookup: first (regime_key, variant), then
-// fall back to (regime_key, 'base')." `sectorTable` is keyed
-// regime_key -> variant -> symbol -> target_pct_of_bucket, built by
+// Phase 4 fix (2026-10-31): `variant` was being overloaded to also mean
+// "old vs new table" — D-5's fg_ri numbers (XLP included) replaced the
+// base row outright, so every lane reading "base" leaked the new table
+// regardless of regime_phase4_sectors, the same base-variant leak
+// Phase 3's D-1 weights had before the phase2 fix. `table_version` is
+// now a separate axis ('v1' = frozen pre-D-5, no variant concept,
+// mirrors LEGACY_WEIGHTS; 'd5' = the new variant-aware table, mirrors
+// REGIME_WEIGHT_SETS) — `sectorTable` is keyed regime_key ->
+// table_version -> variant -> symbol -> target_pct_of_bucket, built by
 // the orchestrator from portfolio_sector_targets (bucket='eq' rows
-// only). Returns null when the portfolio has no sector rows at all
-// for this regime_key (the common case — only Equity Tilting has any).
+// only).
+export type SectorTable = Record<string, Record<string, Record<string, Record<string, number>>>>;
+
+// d5: "Resolve the lookup: first (regime_key, variant), then fall back
+// to (regime_key, 'base')" (spec §6.1), scoped to the d5 table only.
+// Mirrors resolveWeightsFor's role — the live-flag-on / phase4 side.
 export function resolveSectorRows(
-  sectorTable: Record<string, Record<string, Record<string, number>>>,
+  sectorTable: SectorTable,
   regimeKey: string | null,
   variant: Variant,
 ): Record<string, number> | null {
   if (!regimeKey) return null;
-  const byVariant = sectorTable[regimeKey];
+  const byVariant = sectorTable[regimeKey]?.d5;
   if (!byVariant) return null;
   return byVariant[variant] ?? byVariant.base ?? null;
+}
+
+// v1: frozen, no variant concept (mirrors getLegacyWeightSet) — the
+// live-flag-off / phase2 / phase3 / legacy side. Returns null, never a
+// d5 row, when the portfolio has no v1 sector rows for this regime_key.
+export function resolveLegacySectorRows(
+  sectorTable: SectorTable,
+  regimeKey: string | null,
+): Record<string, number> | null {
+  if (!regimeKey) return null;
+  return sectorTable[regimeKey]?.v1?.base ?? null;
 }
 
 // §4.2/§5.3: Equity Tilting's sector tilts follow the same λ as the

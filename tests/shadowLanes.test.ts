@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
-  legacyResolve, legacyLane, phase2Lane, phase3Lane, phase4Lane, liveLane, deriveEvent, blendSectorTargets, resolveSectorRows,
+  legacyResolve, legacyLane, phase2Lane, phase3Lane, phase4Lane, liveLane, deriveEvent, blendSectorTargets,
+  resolveSectorRows, resolveLegacySectorRows,
   resolveWeightsFor, resolveLegacyWeightsFor,
-  type LaneState, type ShadowInputs,
+  type LaneState, type ShadowInputs, type SectorTable,
 } from "../supabase/functions/_shared/shadowLanes.ts";
 import { capTurnover } from "../supabase/functions/_shared/regimeShiftRules.ts";
 import { getWeightSet, getLegacyWeightSet, applyNbInterimTreatment, LEGACY_WEIGHTS } from "../supabase/functions/_shared/regimeWeights.ts";
@@ -447,39 +448,88 @@ describe("resolveLegacyWeightsFor (phase2's reseed mechanism)", () => {
   });
 });
 
-// Regime Tilt Recalibration Phase 4 §6.1, decision D-5 (as tabled,
-// 2026-10-31) -- the same fixture the real portfolio_sector_targets
-// migration loaded, so these tests exercise the real numbers rather
-// than placeholders.
-const D5_SECTOR_TABLE: Record<string, Record<string, Record<string, number>>> = {
+// Regime Tilt Recalibration Phase 4 §6.1, fixed 2026-10-31 -- the same
+// fixture the real portfolio_sector_targets migration loaded (both
+// table_versions), so these tests exercise the real numbers rather
+// than placeholders. `v1` (frozen, pre-D-5, no variant concept -- only
+// ever a `base` row) is a SEPARATE, complete table from `d5`
+// (variant-aware) for every regime_key -- this is the whole point of
+// the fix: `v1.fg_ri.base` is the ORIGINAL 8-symbol table (no XLP),
+// while `d5.fg_ri.base` is D-5's revised 9-symbol table (XLP
+// included) -- they differ even though both resolve at variant="base".
+const SECTOR_TABLE: SectorTable = {
   fg_ri: {
-    base: { XLV: 18, XLP: 15, XLE: 15, XLF: 11, XLY: 10, XLB: 9, XLK: 9, XLI: 8, XLC: 5 },
-    high: { XLV: 18, XLP: 15, XLE: 15, XLF: 11, XLY: 10, XLB: 9, XLK: 9, XLI: 8, XLC: 5 },
+    v1: { base: { XLE: 24, XLV: 16, XLB: 13, XLF: 10, XLK: 10, XLC: 9, XLI: 9, XLY: 9 } },
+    d5: {
+      base: { XLV: 18, XLP: 15, XLE: 15, XLF: 11, XLY: 10, XLB: 9, XLK: 9, XLI: 8, XLC: 5 },
+      high: { XLV: 18, XLP: 15, XLE: 15, XLF: 11, XLY: 10, XLB: 9, XLK: 9, XLI: 8, XLC: 5 },
+    },
   },
   rg_ri: {
-    base: { XLB: 13, XLC: 8, XLE: 18, XLF: 16, XLI: 15, XLK: 12, XLV: 7, XLY: 11 },
-    high: { XLE: 22, XLI: 16, XLK: 15, XLF: 15, XLY: 10, XLB: 9, XLV: 7, XLC: 6 },
+    v1: { base: { XLB: 13, XLC: 8, XLE: 18, XLF: 16, XLI: 15, XLK: 12, XLV: 7, XLY: 11 } },
+    d5: {
+      base: { XLB: 13, XLC: 8, XLE: 18, XLF: 16, XLI: 15, XLK: 12, XLV: 7, XLY: 11 }, // unchanged by D-5, duplicated into d5
+      high: { XLE: 22, XLI: 16, XLK: 15, XLF: 15, XLY: 10, XLB: 9, XLV: 7, XLC: 6 },
+    },
   },
 };
 
-describe("resolveSectorRows (§6.1 lookup: exact (regime_key, variant), else fall back to (regime_key, 'base'))", () => {
+describe("resolveSectorRows (d5, §6.1 lookup: exact (regime_key, variant), else fall back to (regime_key, 'base'))", () => {
   it("returns the exact variant row when one exists (rg_ri/high differs from rg_ri/base)", () => {
-    const high = resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", "high");
-    const base = resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", "base");
-    expect(high).toEqual(D5_SECTOR_TABLE.rg_ri.high);
+    const high = resolveSectorRows(SECTOR_TABLE, "rg_ri", "high");
+    const base = resolveSectorRows(SECTOR_TABLE, "rg_ri", "base");
+    expect(high).toEqual(SECTOR_TABLE.rg_ri.d5.high);
     expect(high).not.toEqual(base);
   });
 
   it("falls back to base when the regime_key has no row for that variant (e.g. rg_fi, never given Phase 4 tables)", () => {
-    expect(resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", "high_accel")).toEqual(D5_SECTOR_TABLE.rg_ri.base);
+    expect(resolveSectorRows(SECTOR_TABLE, "rg_ri", "high_accel")).toEqual(SECTOR_TABLE.rg_ri.d5.base);
   });
 
   it("returns null for a regime_key with no sector rows at all", () => {
-    expect(resolveSectorRows(D5_SECTOR_TABLE, "fg_fi", "base")).toBeNull();
+    expect(resolveSectorRows(SECTOR_TABLE, "fg_fi", "base")).toBeNull();
   });
 
   it("returns null when regimeKey itself is null", () => {
-    expect(resolveSectorRows(D5_SECTOR_TABLE, null, "base")).toBeNull();
+    expect(resolveSectorRows(SECTOR_TABLE, null, "base")).toBeNull();
+  });
+
+  it("never reads v1, even when d5 is entirely missing for a regime_key", () => {
+    const tableWithOnlyV1: SectorTable = { fg_fi: { v1: { base: { XLU: 100 } } } };
+    expect(resolveSectorRows(tableWithOnlyV1, "fg_fi", "base")).toBeNull();
+  });
+});
+
+// resolveLegacySectorRows mirrors resolveLegacyWeightsFor exactly --
+// frozen, no variant concept, and (critically) NOT the same data d5
+// returns even at variant="base". This is the actual bug fix: before
+// it, "variant" was overloaded to also mean "which table", so D-5's
+// revision of fg_ri's own base row leaked into every lane's base
+// lookup regardless of regime_phase4_sectors.
+describe("resolveLegacySectorRows (v1, frozen pre-D-5 table)", () => {
+  it("returns the frozen v1 row, never a d5 row", () => {
+    const result = resolveLegacySectorRows(SECTOR_TABLE, "fg_ri");
+    expect(result).toEqual(SECTOR_TABLE.fg_ri.v1.base);
+    expect(result).not.toEqual(SECTOR_TABLE.fg_ri.d5.base);
+  });
+
+  it("fg_ri's v1 table has no XLP -- that's D-5-only", () => {
+    expect(resolveLegacySectorRows(SECTOR_TABLE, "fg_ri")?.XLP).toBeUndefined();
+    expect(resolveSectorRows(SECTOR_TABLE, "fg_ri", "base")?.XLP).toBe(15);
+  });
+
+  it("ignores variant entirely -- there is no v1 concept of one", () => {
+    // Same call regardless of what variant the caller is tracking;
+    // resolveLegacySectorRows simply doesn't take one.
+    expect(resolveLegacySectorRows(SECTOR_TABLE, "rg_ri")).toEqual(SECTOR_TABLE.rg_ri.v1.base);
+  });
+
+  it("returns null for a regime_key with no v1 rows at all", () => {
+    expect(resolveLegacySectorRows(SECTOR_TABLE, "fg_fi")).toBeNull();
+  });
+
+  it("returns null when regimeKey is null", () => {
+    expect(resolveLegacySectorRows(SECTOR_TABLE, null)).toBeNull();
   });
 });
 
@@ -498,30 +548,62 @@ describe("phase4Lane (asset-level mechanics identical to phase3Lane)", () => {
   });
 });
 
-// Direct parallel to "phase2/phase3 mirror the live job's
-// regime_phase3_weights gate" above, for Phase 4's own flag
-// (2026-10-31): with regime_phase4_sectors off, the live portfolio's
-// sector display (app/portfolios/page.jsx) is pinned to variant
-// "base" -- exactly resolveSectorRows(table, regimeKey, "base"). With
-// it on, it follows the lane's real computed variant. Both are tested
-// here at the resolveSectorRows level, since that's the one shared
-// function both the orchestrator (phase4's row) and the live page's
-// local mirror are meant to agree with structurally.
-describe("resolveSectorRows mirrors the live page's regime_phase4_sectors gate", () => {
-  it("flag off -> always 'base', regardless of the real computed variant", () => {
-    const realVariant = "high";
-    const liveFlagOff = resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", "base");
-    expect(liveFlagOff).toEqual(D5_SECTOR_TABLE.rg_ri.base);
-    // Proves "base" isn't accidentally equal to the real variant here --
-    // this fixture is deliberately chosen so the two differ.
-    expect(resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", realVariant)).not.toEqual(liveFlagOff);
+// The invariant Scott asked for directly (2026-10-31 fix): phase3's
+// sector output (resolveLegacySectorRows / v1) must equal what live
+// computes with regime_phase4_sectors off; phase4's (resolveSectorRows
+// / d5) must equal what live computes with the flag on. Mirrors the
+// weight-level "phase2/phase3 mirror the live job's regime_phase3_weights
+// gate" block above -- the orchestrator's `sectorRowsFor()` helper
+// (update-regime-shadow-targets/index.ts) literally dispatches to
+// these same two functions per lane, so this is structural, not
+// coincidental.
+describe("phase3/phase4 mirror the live job's regime_phase4_sectors gate", () => {
+  it("phase3 (and legacy, phase2) equal the live computation with the flag off (resolveLegacySectorRows)", () => {
+    expect(resolveLegacySectorRows(SECTOR_TABLE, "fg_ri")).toEqual(SECTOR_TABLE.fg_ri.v1.base);
   });
 
-  it("flag on -> follows the real computed variant (falling back to base only when that variant has no row of its own)", () => {
-    expect(resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", "high")).toEqual(D5_SECTOR_TABLE.rg_ri.high);
-    // fg_ri/high is identical to fg_ri/base per D-5 ("both proposed"),
-    // so no visible difference there -- confirms the lookup still
-    // resolves the exact row rather than silently falling back.
-    expect(resolveSectorRows(D5_SECTOR_TABLE, "fg_ri", "high")).toEqual(D5_SECTOR_TABLE.fg_ri.high);
+  it("phase4 equals the live computation with the flag on (resolveSectorRows)", () => {
+    expect(resolveSectorRows(SECTOR_TABLE, "fg_ri", "base")).toEqual(SECTOR_TABLE.fg_ri.d5.base);
   });
+
+  it("the two differ even at variant=base -- the actual leak this fixes", () => {
+    const flagOff = resolveLegacySectorRows(SECTOR_TABLE, "fg_ri");
+    const flagOn = resolveSectorRows(SECTOR_TABLE, "fg_ri", "base");
+    expect(flagOff).not.toEqual(flagOn);
+  });
+});
+
+// Standing rule (2026-10-31, Scott): for every phase-introducing flag,
+// flag-off output must be byte-identical to the PREVIOUS phase's lane.
+// This single pattern would have caught both the Phase 3 D-1 base leak
+// (phase2 briefly called the mutable getWeightSet before the first
+// fix) and this Phase 4 sector leak (every lane briefly read D-5's
+// revised fg_ri base regardless of regime_phase4_sectors). Add one
+// entry here per future phase flag -- same shape, new resolver pair.
+describe("standing rule: flag-off output equals the previous phase's lane", () => {
+  const PHASE_FLAG_INVARIANTS: { flag: string; off: () => unknown; previousPhaseLane: () => unknown; on: () => unknown; newPhaseLane: () => unknown }[] = [
+    {
+      flag: "regime_phase3_weights",
+      off: () => resolveLegacyWeightsFor("fg_ri", null, 0, {}),
+      previousPhaseLane: () => phase2Lane(baseInputs(), legacyBaseState()).desiredTargets,
+      on: () => resolveWeightsFor("fg_ri", null, 0, "base", {}, true),
+      newPhaseLane: () => phase3Lane(baseInputs({ hasIEI: true }), baseState()).desiredTargets,
+    },
+    {
+      flag: "regime_phase4_sectors",
+      off: () => resolveLegacySectorRows(SECTOR_TABLE, "fg_ri"),
+      previousPhaseLane: () => resolveLegacySectorRows(SECTOR_TABLE, "fg_ri"), // phase3's sector source is v1, same function
+      on: () => resolveSectorRows(SECTOR_TABLE, "fg_ri", "base"),
+      newPhaseLane: () => resolveSectorRows(SECTOR_TABLE, "fg_ri", "base"), // phase4's sector source is d5, same function
+    },
+  ];
+
+  for (const c of PHASE_FLAG_INVARIANTS) {
+    it(`${c.flag}: flag-off equals the previous phase's lane`, () => {
+      expect(c.off()).toEqual(c.previousPhaseLane());
+    });
+    it(`${c.flag}: flag-on equals the new phase's lane`, () => {
+      expect(c.on()).toEqual(c.newPhaseLane());
+    });
+  }
 });
