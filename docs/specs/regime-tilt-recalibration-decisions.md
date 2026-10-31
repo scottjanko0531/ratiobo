@@ -188,3 +188,117 @@ magnitude and the right sign — a real, meaningful gap, not noise), and
 written is `seed` or `rules_change` — both excluded by the view's
 filter — which is the correct semantic "zero real turnover logged,"
 just not the literal integer `0`).
+
+## Phase 4 §6.1/§6.2 shipped, shadow-only (2026-10-31)
+
+Scope for this build: the sector-table half of Phase 4 only. §6.3
+(nominal-bond duration by regime) is explicitly **not** built — see
+its own entry below — and nothing here changes live behavior by
+default; every new code path is gated off (`regime_phase4_sectors`
+defaults `false`) or confined to the shadow log.
+
+**§6.1 schema.** `portfolio_sector_targets` generalized exactly as
+spec'd: added `bucket text not null default 'eq'` and
+`variant text not null default 'base'`; unique key now
+`(portfolio_id, bucket, symbol, regime_key, variant)`. Lookup order is
+`(regime_key, variant)` first, falling back to `(regime_key, 'base')`
+— `resolveSectorRows()` (`_shared/shadowLanes.ts`), the Deno-side
+implementation; `app/portfolios/page.jsx`'s client fetch mirrors the
+same fallback locally (a Deno module can't be imported into that
+bundle).
+
+**§6.2 / D-5, as tabled.** For the one portfolio that has ever used
+sector tilts (All Weather With Equity Tilting): Stagflation (`fg_ri`)
+**base and high both** get the new 9-symbol table (`XLV 18 / XLP 15 /
+XLE 15 / XLF 11 / XLY 10 / XLB 9 / XLK 9 / XLI 8 / XLC 5`) — this
+replaced the pre-D-5 base table outright, not just added a sibling.
+Reflation (`rg_ri`) **high** is new (`XLE 22 / XLI 16 / XLK 15 / XLF
+15 / XLY 10 / XLB 9 / XLV 7 / XLC 6`); `rg_ri`/base and every `rg_fi`/
+`fg_fi` row are untouched. XLP is a new symbol with no holding yet —
+`computeAllocationDeltas()` (`lib/simulatorKeys.js`) now returns a
+separate `unheldSectorTargets` list (sector-tilt symbols with a
+nonzero target and literally no linked holding, distinct from the
+existing bucket-level `buyRows`) and `app/portfolios/page.jsx` renders
+them in Portfolio Actions labeled "unheld target," so XLP's 15% don't
+just silently vanish from the eq bucket's visible allocation.
+
+**`phase4` shadow lane.** Asset-level mechanics are identical to
+`phase3Lane` — same carry/blend/cap/hold, same D-1 table, same nb
+interim treatment — so `phase4Lane` literally **is** `phase3Lane`;
+Phase 4 only changes which sector table the orchestrator reads
+(variant-aware via `resolveSectorRows`, vs. every other lane's
+base-only slice). Seeded from `phase3`'s own current state on its
+first-ever run (not the generic `SEED_BASE_KEY` constant) — "phase4 =
+phase3 + the new sector tables" means it should start exactly where
+phase3 already is — tagged `event = rules_change`, `turnover_vs_prev
+= 0`, `turnover_uncapped = null`, mirroring the reseed convention
+even though this is a first appearance, not a recompute. `LANE_IDS`/
+`CAPPED_LANES` extended; `RULES_VERSION` bumped to `shadow-v6`.
+
+**`regime_phase4_sectors` flag**, default `false` for both
+portfolios, same pattern as `regime_auto_shift`/`regime_phase3_weights`.
+Unlike those two, there is no server-side "live sector target" to
+gate in an edge function — sector tilts have always been a pure
+client-side blend in `app/portfolios/page.jsx`, with no
+`portfolios`-table column storing them. The gate lives there instead:
+with the flag off, the page's sector fetch is pinned to variant
+`"base"` regardless of the portfolio's real `regime_blend.variant`
+(byte-identical to `phase3`'s own always-base sector lookup); with it
+on, it follows the real variant. `phase4` always computes the real
+variant-aware table regardless of the flag (mirrors `phase3`'s
+`variants_flag_off` convention) — tagged `blocked_reason =
+"sectors_flag_off"` informationally when the flag is off and the real
+variant isn't `base` and nothing more specific already explains the
+row.
+
+**Invariant tests** (`tests/shadowLanes.test.ts`), matching the
+phase2/phase3 ones: `resolveSectorRows` exact-variant vs.
+fall-back-to-base behavior, `phase4Lane === phase3Lane` identity, and
+`resolveSectorRows(..., "base")` vs. `resolveSectorRows(...,
+realVariant)` standing in for the live page's flag off/on split
+(there's no shared Deno function to assert equality against directly,
+since the gate itself is a client-side `.jsx` branch, not an edge
+function — the pure-function-level assertion is the closest
+equivalent this codebase's no-Supabase-mocking testing convention
+allows).
+
+**Same-day staleness, same failure mode as the nb-interim-treatment
+incident:** the scheduled run earlier today had already written
+`live`/`phase2`/`phase3`'s rows for 2026-10-31 under the pre-D-5
+8-symbol table before this migration shipped. Retagged directly via
+SQL (same reason as before — no service-role JWT in this
+environment): `sector_targets` refreshed to the new 9-symbol set,
+`rules_version` bumped to `shadow-v6`, and `event` set to
+`rules_change` for `phase2`/`phase3` (the two lanes the reseed
+mechanism actually covers — `live` got its `sector_targets` value
+refreshed too since leaving it stale serves no purpose, but its
+`event` was left alone, since `live` was never part of the reseedable
+lane set to begin with). `turnover_vs_prev` was already 0 for all
+three and needed no change — sector tables were never part of the
+turnover calculation, only asset weights are, so this was a stale
+*display* value, never a phantom-turnover risk.
+
+**`regime_shadow_summary` turnover coalesce fix.** `total_turnover`
+and `max_single_day_turnover` were `NULL` (not `0`) for any lane whose
+every row so far is `seed`/`rules_change` (both excluded by the
+view's own `FILTER`) — correct in meaning, wrong in type. Both
+aggregates now `coalesce(..., 0)`.
+
+## §6.3 (nb duration by regime) explicitly skipped — Bond Lens governs duration instead
+
+Both regime-driven portfolios already have `use_bond_lens_overlay =
+true`, which per the spec's own §6.3 caveat means Bond Lens governs
+duration and the `nb` bucket rows should be skipped entirely — so
+this phase does not add them, and does not touch
+`applyNbInterimTreatment()` (Scott's 2026-10-30 decision) or its
+`cash`/`tip` routing, which stays exactly as shipped.
+
+**Decision (Scott, 2026-10-31):** the eventual fix for `nb`'s
+duration exposure is **"add IEI as a Bond Lens eligible instrument
+when Scott buys it,"** not a `bucket = 'nb'` row set in
+`portfolio_sector_targets`. D-6 (§6.3's own decision) is effectively
+superseded for both current regime-driven portfolios by this —
+Bond Lens's own sleeve math already governs which Treasury duration
+is held, so a separate nb-bucket override would either be redundant
+with or fight Bond Lens, not complement it. Revisit only if a future
+portfolio runs this framework with Bond Lens off.

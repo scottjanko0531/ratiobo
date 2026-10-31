@@ -342,7 +342,9 @@ Add `bucket = 'nb'` rows for both portfolios:
 3. ~~Phase 1 follow-ups (§3.5): margin, confirm date, labels, Oct 2025 interpolation.~~ Shipped.
 4. ~~Phase 2: weight seam, carry rule, blend, turnover cap, minimum hold.~~ Shipped (the Shadow Targets Log superseded the one-off replay).
 5. ~~Phase 3: weight variants (D-1), `regime_phase3_weights`.~~ Shipped.
-6. **Phase 4:** per-bucket targets, sectors, duration. Stop.
+6. ~~Phase 4 §6.1/§6.2: sector tables (D-5), `regime_phase4_sectors`.~~ Shipped 2026-10-31,
+   shadow-only. §6.3 (duration) explicitly skipped — see decisions log; both
+   regime-driven portfolios run Bond Lens, which governs duration instead.
 7. **Phase 5:** trend sleeve. Stop.
 8. **Phase 6:** validation backtest. Final report.
 

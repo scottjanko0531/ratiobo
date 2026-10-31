@@ -566,19 +566,40 @@ export default function PortfoliosPage() {
   const [sectorTargets, setSectorTargets] = useState({});
   const blendLambda = viewingPortfolio?.regime_blend?.lambda ?? 0;
   const blendNearKey = viewingPortfolio?.regime_blend?.near_key ?? null;
+  // Regime Tilt Recalibration Phase 4 §6.1: with regime_phase4_sectors
+  // off (default), the live sector table must equal the phase3 lane's --
+  // i.e. always the "base" variant, exactly as before Phase 4 existed.
+  // Only with the flag on does this follow the portfolio's own real
+  // computed variant (regime_blend.variant, already stored regardless
+  // of the flag per Phase 3).
+  const effectiveSectorVariant = viewingPortfolio?.regime_phase4_sectors
+    ? (viewingPortfolio?.regime_blend?.variant ?? "base")
+    : "base";
   useEffect(() => {
     if (!viewingPortfolio || viewingPortfolio.strategy_framework !== "regime_driven" || !viewingPortfolio.current_regime_key) {
       setSectorTargets({});
       return;
     }
     const structKey = viewingPortfolio.current_regime_key;
+    const variant = effectiveSectorVariant;
+    // §6.1's lookup: exact (regime_key, variant) first, else fall back
+    // to (regime_key, "base") -- a regime/variant pair with no row of
+    // its own (e.g. rg_fi, which never got Phase 4 sector tables)
+    // reuses the base table rather than coming back empty.
     const fetchFor = (regimeKey) =>
       supabase
         .from("portfolio_sector_targets")
-        .select("symbol, target_pct_of_bucket")
+        .select("symbol, target_pct_of_bucket, variant")
         .eq("portfolio_id", viewingPortfolio.id)
+        .eq("bucket", "eq")
         .eq("regime_key", regimeKey)
-        .then(({ data }) => Object.fromEntries((data ?? []).map((r) => [r.symbol, Number(r.target_pct_of_bucket)])));
+        .in("variant", variant === "base" ? ["base"] : [variant, "base"])
+        .then(({ data }) => {
+          const rows = data ?? [];
+          const exact = rows.filter((r) => r.variant === variant);
+          const chosen = exact.length > 0 ? exact : rows.filter((r) => r.variant === "base");
+          return Object.fromEntries(chosen.map((r) => [r.symbol, Number(r.target_pct_of_bucket)]));
+        });
 
     // Regime Tilt Recalibration Phase 2 §4.2: Equity Tilting's sector
     // tilts follow the same lambda as the sleeve-level blend — a blend
@@ -594,7 +615,7 @@ export default function PortfoliosPage() {
     } else {
       fetchFor(structKey).then(setSectorTargets).catch(() => setSectorTargets({}));
     }
-  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework, viewingPortfolio?.current_regime_key, blendLambda, blendNearKey]);
+  }, [viewingPortfolio?.id, viewingPortfolio?.strategy_framework, viewingPortfolio?.current_regime_key, blendLambda, blendNearKey, effectiveSectorVariant]);
 
   // Regime Shadow Targets Log (docs/specs/regime-shadow-targets.md §5.3)
   // — read-only comparison panel, never writes anything. shadowSummary
@@ -1851,7 +1872,7 @@ export default function PortfoliosPage() {
                     ? { ...sectorTargets, ...bondLensSectorTargetsForPortfolioActions }
                     : sectorTargets;
 
-                  const { actionRows, buyRows: rawBuyRows } = computeAllocationDeltas(
+                  const { actionRows, buyRows: rawBuyRows, unheldSectorTargets } = computeAllocationDeltas(
                     hs, effectiveTargets,
                     { illiquidKeys: ILLIQUID_KEYS, exposureMultipliers: portfolioActionsMultipliers, sectorTargets: sectorTargetsWithBondLens, includeZeroValueHoldings: true }
                   );
@@ -1861,7 +1882,7 @@ export default function PortfoliosPage() {
                   // bucket like Gold now surfaces as its own actionRow via
                   // GLDM instead), so avgMultFor(r.key) would always be 1.
                   const buyRows = rawBuyRows.filter((r) => r.targetPct >= 0.05);
-                  if (actionRows.length === 0 && buyRows.length === 0) return null;
+                  if (actionRows.length === 0 && buyRows.length === 0 && unheldSectorTargets.length === 0) return null;
                   return (
                     <div className="px-5 py-4 border-b border-ink-line">
                       <p className="label mb-3">Portfolio Actions</p>
@@ -1982,6 +2003,22 @@ export default function PortfoliosPage() {
                                 <span className="num text-paper-dim text-right">0.0%</span>
                                 <span className="text-gain font-medium">Add ${r.targetVal < 1000 ? r.targetVal.toFixed(0) : (r.targetVal / 1000).toFixed(1) + "k"}</span>
                                 <span className="num text-right text-gain">{r.targetPct.toFixed(1)}%</span>
+                              </div>
+                            ))}
+                          </>
+                        )}
+                        {unheldSectorTargets.length > 0 && (
+                          <>
+                            <div className="px-3 py-1.5 bg-ink-soft/30 border-b border-ink-line text-[10px] text-paper-dim font-medium">
+                              Sector targets — not yet held
+                            </div>
+                            {unheldSectorTargets.map((r) => (
+                              <div key={r.symbol} className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-3 px-3 py-2 border-b border-ink-line/50 last:border-0 items-center">
+                                <span className="font-medium text-paper truncate">{r.symbol}</span>
+                                <span className="num text-paper-dim text-right">—</span>
+                                <span className="num text-paper-dim text-right">0.0%</span>
+                                <span className="text-paper-dim font-medium">unheld target</span>
+                                <span className="num text-right text-paper-dim">{r.targetPct.toFixed(1)}%</span>
                               </div>
                             ))}
                           </>

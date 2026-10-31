@@ -321,3 +321,18 @@ When Phase 3 is built, it adds the `phase3` lane to the registry as part of that
   rather than coincidental. `RULES_VERSION` bumped to `shadow-v5`. See
   `regime-tilt-recalibration-decisions.md` for the full fix and the
   same-day retag it required.
+- Phase 4 §6.1/§6.2 (2026-10-31, shadow-only): a `phase4` lane was
+  added — asset-level mechanics identical to `phase3` (`phase4Lane IS
+  phase3Lane`), seeded from `phase3`'s own current state on its
+  first-ever row (`event=rules_change`, not `seed`) rather than the
+  generic `SEED_BASE_KEY`. The only thing Phase 4 adds is a
+  bucket/variant-aware `portfolio_sector_targets` lookup
+  (`resolveSectorRows()`, exact `(regime_key, variant)` then fallback
+  to `(regime_key, "base")`) — every other lane keeps the pre-Phase-4
+  base-only slice. `RULES_VERSION` bumped to `shadow-v6`. Full details,
+  the `regime_phase4_sectors` gate (which lives in
+  `app/portfolios/page.jsx`'s client fetch, not an edge function —
+  sector tilts have never had a server-side column), and the same-day
+  sector-table staleness retag are in
+  `regime-tilt-recalibration-decisions.md`. §6.3 (duration) was
+  explicitly not built this phase.

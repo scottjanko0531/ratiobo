@@ -24,11 +24,14 @@ import {
 // identical mutable table and only ever differed by variant, so they
 // were indistinguishable under today's "contained" inflation reading.
 // See the fix below.
-export const RULES_VERSION = "shadow-v5";
+// shadow-v6: Phase 4 §6.1/§6.2 — phase4 lane added (phase3's exact
+// asset-level mechanics plus the new bucket/variant-aware equity
+// sector tables, decision D-5).
+export const RULES_VERSION = "shadow-v6";
 
-export type Lane = "live" | "legacy" | "phase2" | "phase3";
-export const LANE_IDS: Lane[] = ["live", "legacy", "phase2", "phase3"];
-export const CAPPED_LANES = new Set<Lane>(["phase2", "phase3"]);
+export type Lane = "live" | "legacy" | "phase2" | "phase3" | "phase4";
+export const LANE_IDS: Lane[] = ["live", "legacy", "phase2", "phase3", "phase4"];
+export const CAPPED_LANES = new Set<Lane>(["phase2", "phase3", "phase4"]);
 
 export type { Variant };
 
@@ -242,11 +245,21 @@ export const phase2Lane: LaneFn = (inputs, prev) => computeBlendLane(inputs, pre
 export const phase3Lane: LaneFn = (inputs, prev) =>
   computeBlendLane(inputs, prev, deriveVariant(inputs.inflLevelState, inputs.inflAccelVote), false);
 
+// Phase 4 §6.1/§6.2: "phase3 + the new sector tables." Identical
+// asset-level mechanics to phase3Lane — same carry/blend/cap/hold,
+// same D-1 weight table, same nb interim treatment — so this lane IS
+// phase3Lane; the only difference Phase 4 introduces is which sector-
+// target table the orchestrator looks up when writing this lane's row
+// (resolveSectorRows below, variant-aware, vs. phase3's base-only
+// lookup). No separate weight-level logic needed.
+export const phase4Lane: LaneFn = phase3Lane;
+
 export const LANES: Partial<Record<Lane, LaneFn>> = {
   live: liveLane,
   legacy: legacyLane,
   phase2: phase2Lane,
   phase3: phase3Lane,
+  phase4: phase4Lane,
 };
 
 // Event derivation, run once per lane per day by the orchestrator (not
@@ -285,6 +298,23 @@ export function deriveEvent(opts: {
     return reachedDesired ? "cap_complete" : "cap_partial";
   }
   return "no_change";
+}
+
+// Phase 4 §6.1: "Resolve the lookup: first (regime_key, variant), then
+// fall back to (regime_key, 'base')." `sectorTable` is keyed
+// regime_key -> variant -> symbol -> target_pct_of_bucket, built by
+// the orchestrator from portfolio_sector_targets (bucket='eq' rows
+// only). Returns null when the portfolio has no sector rows at all
+// for this regime_key (the common case — only Equity Tilting has any).
+export function resolveSectorRows(
+  sectorTable: Record<string, Record<string, Record<string, number>>>,
+  regimeKey: string | null,
+  variant: Variant,
+): Record<string, number> | null {
+  if (!regimeKey) return null;
+  const byVariant = sectorTable[regimeKey];
+  if (!byVariant) return null;
+  return byVariant[variant] ?? byVariant.base ?? null;
 }
 
 // §4.2/§5.3: Equity Tilting's sector tilts follow the same λ as the

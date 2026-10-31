@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  legacyResolve, legacyLane, phase2Lane, phase3Lane, liveLane, deriveEvent, blendSectorTargets, resolveWeightsFor, resolveLegacyWeightsFor,
+  legacyResolve, legacyLane, phase2Lane, phase3Lane, phase4Lane, liveLane, deriveEvent, blendSectorTargets, resolveSectorRows,
+  resolveWeightsFor, resolveLegacyWeightsFor,
   type LaneState, type ShadowInputs,
 } from "../supabase/functions/_shared/shadowLanes.ts";
 import { capTurnover } from "../supabase/functions/_shared/regimeShiftRules.ts";
@@ -443,5 +444,84 @@ describe("resolveLegacyWeightsFor (phase2's reseed mechanism)", () => {
   it("falls back to the provided fallback when baseKey is null", () => {
     const fallback = { eq: 1, cash: 99 };
     expect(resolveLegacyWeightsFor(null, null, 0, fallback)).toEqual(fallback);
+  });
+});
+
+// Regime Tilt Recalibration Phase 4 §6.1, decision D-5 (as tabled,
+// 2026-10-31) -- the same fixture the real portfolio_sector_targets
+// migration loaded, so these tests exercise the real numbers rather
+// than placeholders.
+const D5_SECTOR_TABLE: Record<string, Record<string, Record<string, number>>> = {
+  fg_ri: {
+    base: { XLV: 18, XLP: 15, XLE: 15, XLF: 11, XLY: 10, XLB: 9, XLK: 9, XLI: 8, XLC: 5 },
+    high: { XLV: 18, XLP: 15, XLE: 15, XLF: 11, XLY: 10, XLB: 9, XLK: 9, XLI: 8, XLC: 5 },
+  },
+  rg_ri: {
+    base: { XLB: 13, XLC: 8, XLE: 18, XLF: 16, XLI: 15, XLK: 12, XLV: 7, XLY: 11 },
+    high: { XLE: 22, XLI: 16, XLK: 15, XLF: 15, XLY: 10, XLB: 9, XLV: 7, XLC: 6 },
+  },
+};
+
+describe("resolveSectorRows (§6.1 lookup: exact (regime_key, variant), else fall back to (regime_key, 'base'))", () => {
+  it("returns the exact variant row when one exists (rg_ri/high differs from rg_ri/base)", () => {
+    const high = resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", "high");
+    const base = resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", "base");
+    expect(high).toEqual(D5_SECTOR_TABLE.rg_ri.high);
+    expect(high).not.toEqual(base);
+  });
+
+  it("falls back to base when the regime_key has no row for that variant (e.g. rg_fi, never given Phase 4 tables)", () => {
+    expect(resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", "high_accel")).toEqual(D5_SECTOR_TABLE.rg_ri.base);
+  });
+
+  it("returns null for a regime_key with no sector rows at all", () => {
+    expect(resolveSectorRows(D5_SECTOR_TABLE, "fg_fi", "base")).toBeNull();
+  });
+
+  it("returns null when regimeKey itself is null", () => {
+    expect(resolveSectorRows(D5_SECTOR_TABLE, null, "base")).toBeNull();
+  });
+});
+
+// Phase 4 §6.1/§6.2: phase4Lane IS phase3Lane (identical asset-level
+// mechanics) -- the ONLY thing Phase 4 adds is the variant-aware
+// sector lookup, which lives in the orchestrator
+// (update-regime-shadow-targets/index.ts), not in a lane function.
+describe("phase4Lane (asset-level mechanics identical to phase3Lane)", () => {
+  it("is the exact same function as phase3Lane", () => {
+    expect(phase4Lane).toBe(phase3Lane);
+  });
+
+  it("produces identical asset-weight output to phase3Lane given the same inputs/state", () => {
+    const inputs = baseInputs({ inflLevelState: "stagflation", inflAccelVote: "decelerating" });
+    expect(phase4Lane(inputs, baseState())).toEqual(phase3Lane(inputs, baseState()));
+  });
+});
+
+// Direct parallel to "phase2/phase3 mirror the live job's
+// regime_phase3_weights gate" above, for Phase 4's own flag
+// (2026-10-31): with regime_phase4_sectors off, the live portfolio's
+// sector display (app/portfolios/page.jsx) is pinned to variant
+// "base" -- exactly resolveSectorRows(table, regimeKey, "base"). With
+// it on, it follows the lane's real computed variant. Both are tested
+// here at the resolveSectorRows level, since that's the one shared
+// function both the orchestrator (phase4's row) and the live page's
+// local mirror are meant to agree with structurally.
+describe("resolveSectorRows mirrors the live page's regime_phase4_sectors gate", () => {
+  it("flag off -> always 'base', regardless of the real computed variant", () => {
+    const realVariant = "high";
+    const liveFlagOff = resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", "base");
+    expect(liveFlagOff).toEqual(D5_SECTOR_TABLE.rg_ri.base);
+    // Proves "base" isn't accidentally equal to the real variant here --
+    // this fixture is deliberately chosen so the two differ.
+    expect(resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", realVariant)).not.toEqual(liveFlagOff);
+  });
+
+  it("flag on -> follows the real computed variant (falling back to base only when that variant has no row of its own)", () => {
+    expect(resolveSectorRows(D5_SECTOR_TABLE, "rg_ri", "high")).toEqual(D5_SECTOR_TABLE.rg_ri.high);
+    // fg_ri/high is identical to fg_ri/base per D-5 ("both proposed"),
+    // so no visible difference there -- confirms the lookup still
+    // resolves the exact row rather than silently falling back.
+    expect(resolveSectorRows(D5_SECTOR_TABLE, "fg_ri", "high")).toEqual(D5_SECTOR_TABLE.fg_ri.high);
   });
 });

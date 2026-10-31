@@ -4,7 +4,7 @@ import { capTurnover, StructuralKeySource, deriveVariant } from "../_shared/regi
 import { WeightSet, getWeightSet } from "../_shared/regimeWeights.ts";
 import {
   LANES, LANE_IDS, CAPPED_LANES, RULES_VERSION, deriveEvent, blendSectorTargets, resolveWeightsFor, resolveLegacyWeightsFor,
-  ShadowInputs, LaneState, Variant,
+  resolveSectorRows, ShadowInputs, LaneState, Variant,
 } from "../_shared/shadowLanes.ts";
 
 // Regime Shadow Targets Log (docs/specs/regime-shadow-targets.md).
@@ -47,6 +47,22 @@ function weightsEqual(a: WeightSet, b: WeightSet): boolean {
   return true;
 }
 
+// Regime Tilt Recalibration Phase 4 §6.1: portfolio_sector_targets is
+// now keyed (bucket, regime_key, variant, symbol). Every lane except
+// phase4 reads only the "eq"/"base" slice (identical to pre-Phase-4
+// behavior); phase4 is the only consumer of the variant-aware table,
+// via resolveSectorRows's (regime_key, variant) -> (regime_key, "base")
+// fallback (_shared/shadowLanes.ts).
+function buildSectorByRegimeVariant(
+  rows: { regime_key: string; variant: string; symbol: string; target_pct_of_bucket: number | string }[],
+): Record<string, Record<string, Record<string, number>>> {
+  const acc: Record<string, Record<string, Record<string, number>>> = {};
+  for (const r of rows) {
+    ((acc[r.regime_key] ??= {})[r.variant] ??= {})[r.symbol] = Number(r.target_pct_of_bucket);
+  }
+  return acc;
+}
+
 const REGIME_LABELS: Record<string, string> = {
   rg_fi: "Disinflationary Boom", rg_ri: "Reflation", fg_ri: "Stagflation", fg_fi: "Deflationary Bust",
 };
@@ -65,6 +81,7 @@ function describeShadowEvent(event: string, regimeKey: string | null, nearKey: s
     case "cap_partial": return `turnover-capped move toward ${toLabel(nearKey ?? regimeKey)} continuing`;
     case "cap_complete": return `turnover-capped move to ${toLabel(nearKey ?? regimeKey)} completed`;
     case "variant_change": return `variant changed to ${variant ?? "unknown"}`;
+    case "rules_change": return `rules changed — targets recomputed at ${toLabel(regimeKey)}, no organic move`;
     default: return event;
   }
 }
@@ -130,11 +147,9 @@ Deno.serve(async (req: Request) => {
       const reseeded: Record<string, unknown>[] = [];
 
       for (const pf of portfolios ?? []) {
-        const { data: sectorRows } = await sb.from("portfolio_sector_targets").select("symbol, target_pct_of_bucket, regime_key").eq("portfolio_id", pf.id);
-        const sectorByRegime = (sectorRows ?? []).reduce((acc: Record<string, Record<string, number>>, r) => {
-          (acc[r.regime_key] ??= {})[r.symbol] = Number(r.target_pct_of_bucket);
-          return acc;
-        }, {});
+        const { data: sectorRows } = await sb.from("portfolio_sector_targets")
+          .select("symbol, target_pct_of_bucket, regime_key, variant").eq("portfolio_id", pf.id).eq("bucket", "eq");
+        const sectorByRegimeVariant = buildSectorByRegimeVariant(sectorRows ?? []);
 
         for (const lane of reseedLanes) {
           const { data: stateRow } = await sb.from("regime_shadow_state").select("*").eq("portfolio_id", pf.id).eq("lane", lane).maybeSingle();
@@ -157,10 +172,11 @@ Deno.serve(async (req: Request) => {
             ? resolveLegacyWeightsFor(baseKey, nearKey, lambda, stateRow.current_targets)
             : resolveWeightsFor(baseKey, nearKey, lambda, variant, stateRow.current_targets, ieiPortfolioIds.has(pf.id));
 
+          const sectorVariant: Variant = lane === "phase4" ? variant : "base";
           let sectorTargets: Record<string, number> | null = null;
-          if (baseKey && Object.keys(sectorByRegime).length > 0) {
-            const structRows = sectorByRegime[baseKey] ?? null;
-            const nearRows = nearKey ? (sectorByRegime[nearKey] ?? null) : null;
+          if (baseKey && Object.keys(sectorByRegimeVariant).length > 0) {
+            const structRows = resolveSectorRows(sectorByRegimeVariant, baseKey, sectorVariant);
+            const nearRows = nearKey ? resolveSectorRows(sectorByRegimeVariant, nearKey, sectorVariant) : null;
             if (structRows) sectorTargets = blendSectorTargets(structRows, nearRows, lambda);
           }
 
@@ -243,7 +259,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: portfolios } = await sb
       .from("portfolios")
-      .select("id, portfolio_name, current_regime_key, target_allocations, regime_auto_shift, regime_phase3_weights")
+      .select("id, portfolio_name, current_regime_key, target_allocations, regime_auto_shift, regime_phase3_weights, regime_phase4_sectors")
       .eq("strategy_framework", "regime_driven");
 
     // fg_ri nb interim treatment (Scott's decision 2026-10-30, until
@@ -266,13 +282,11 @@ Deno.serve(async (req: Request) => {
     for (const pf of portfolios ?? []) {
       const { data: sectorRows } = await sb
         .from("portfolio_sector_targets")
-        .select("symbol, target_pct_of_bucket, regime_key")
-        .eq("portfolio_id", pf.id);
-      const sectorByRegime = (sectorRows ?? []).reduce((acc: Record<string, Record<string, number>>, r) => {
-        (acc[r.regime_key] ??= {})[r.symbol] = Number(r.target_pct_of_bucket);
-        return acc;
-      }, {});
-      const hasSectorTargets = Object.keys(sectorByRegime).length > 0;
+        .select("symbol, target_pct_of_bucket, regime_key, variant")
+        .eq("portfolio_id", pf.id)
+        .eq("bucket", "eq");
+      const sectorByRegimeVariant = buildSectorByRegimeVariant(sectorRows ?? []);
+      const hasSectorTargets = Object.keys(sectorByRegimeVariant).length > 0;
 
       for (const lane of LANE_IDS) {
         try {
@@ -293,10 +307,48 @@ Deno.serve(async (req: Request) => {
             ? { data: null }
             : await sb.from("regime_shadow_state").select("*").eq("portfolio_id", pf.id).eq("lane", lane).maybeSingle();
 
+          // Phase 4 §6.2: phase4's very first-ever row is seeded from
+          // phase3's CURRENT state (this same run, already upserted a
+          // few iterations ago since LANE_IDS orders phase3 before
+          // phase4) rather than the generic SEED_BASE_KEY constant --
+          // "phase4 = phase3 + the new sector tables," so it should
+          // start exactly where phase3 already is, not re-seed from
+          // scratch. Fetched up front so the branch below can assign
+          // `prev` directly, same single if/else chain as every other
+          // lane. Tagged rules_change below (not "seed"), since it's a
+          // definitional inheritance, not a fresh baseline.
+          let phase3SeedState: { baseKey: string | null; baseConfirmedSince: string | null; lastShiftDate: string | null; nearKey: string | null; lambda: number; currentTargets: WeightSet; desiredTargets: WeightSet; variant: Variant } | null = null;
+          if (!prevStateRow && lane === "phase4") {
+            const { data: p3State } = await sb.from("regime_shadow_state").select("*").eq("portfolio_id", pf.id).eq("lane", "phase3").maybeSingle();
+            if (p3State) {
+              const { data: p3LastRow } = await sb.from("regime_shadow_targets")
+                .select("near_key, lambda, variant")
+                .eq("portfolio_id", pf.id).eq("lane", "phase3")
+                .order("snapshot_date", { ascending: false }).limit(1).maybeSingle();
+              phase3SeedState = {
+                baseKey: p3State.base_key, baseConfirmedSince: p3State.base_confirmed_since,
+                lastShiftDate: p3State.last_shift_date,
+                nearKey: p3LastRow?.near_key ?? null, lambda: Number(p3LastRow?.lambda ?? 0),
+                currentTargets: p3State.current_targets, desiredTargets: p3State.desired_targets,
+                variant: (p3LastRow?.variant ?? "base") as Variant,
+              };
+            }
+          }
+          const seededFromPhase3 = phase3SeedState !== null;
+
           let prev: LaneState;
           let prevVariant: "base" | "high" | "high_accel" | "high_decel" = "base";
           let isFirstRun = false;
-          if (prevStateRow) {
+          if (phase3SeedState) {
+            prev = {
+              baseKey: phase3SeedState.baseKey, baseConfirmedSince: phase3SeedState.baseConfirmedSince,
+              lastShiftDate: phase3SeedState.lastShiftDate,
+              nearKey: phase3SeedState.nearKey, lambda: phase3SeedState.lambda,
+              currentTargets: phase3SeedState.currentTargets, desiredTargets: phase3SeedState.desiredTargets,
+            };
+            prevVariant = phase3SeedState.variant;
+            isFirstRun = true;
+          } else if (prevStateRow) {
             prev = {
               baseKey: prevStateRow.base_key, baseConfirmedSince: prevStateRow.base_confirmed_since,
               lastShiftDate: prevStateRow.last_shift_date,
@@ -385,18 +437,27 @@ Deno.serve(async (req: Request) => {
           // comparison) — but notes informationally when the live
           // function would currently be gated off from applying it,
           // unless a more specific reason (e.g. min_hold) already
-          // explains this row.
+          // explains this row. phase4 mirrors the same convention for
+          // regime_phase4_sectors: its sector table is always the real
+          // variant-aware one regardless of the flag, but a non-base
+          // variant with the flag off gets the same informational note
+          // (the live portfolio's own sector display would still be
+          // pinned to "base" — see app/portfolios/page.jsx).
           const blockedReason = lane === "phase3" && !pf.regime_phase3_weights && result.variant !== "base" && !result.blockedReason
             ? "variants_flag_off"
+            : lane === "phase4" && !pf.regime_phase4_sectors && result.variant !== "base" && !result.blockedReason
+            ? "sectors_flag_off"
             : result.blockedReason;
 
           const capped = CAPPED_LANES.has(lane);
           const preCappedTurnover = oneWayTurnover(prev.currentTargets, result.desiredTargets);
           const steppedTargets = capped ? capTurnover(prev.currentTargets, result.desiredTargets, TURNOVER_CAP_POINTS) : result.desiredTargets;
           const reachedDesired = weightsEqual(steppedTargets, result.desiredTargets);
-          const turnoverVsPrev = oneWayTurnover(prev.currentTargets, steppedTargets);
+          const turnoverVsPrev = seededFromPhase3 ? 0 : oneWayTurnover(prev.currentTargets, steppedTargets);
 
-          const event = isFirstRun && weightsEqual(steppedTargets, prev.currentTargets) && result.regimeKey === prev.baseKey && !result.nearKey
+          const event = seededFromPhase3
+            ? "rules_change"
+            : isFirstRun && weightsEqual(steppedTargets, prev.currentTargets) && result.regimeKey === prev.baseKey && !result.nearKey
             ? "seed"
             : deriveEvent({
                 lane, capped,
@@ -405,12 +466,15 @@ Deno.serve(async (req: Request) => {
                 prevVariant, nextVariant: result.variant,
                 preCappedTurnover, reachedDesired,
               });
-          const shifted = result.regimeKey !== prev.baseKey || result.nearKey !== prev.nearKey || result.lambda !== prev.lambda || result.variant !== prevVariant;
+          const shifted = !seededFromPhase3 && (result.regimeKey !== prev.baseKey || result.nearKey !== prev.nearKey || result.lambda !== prev.lambda || result.variant !== prevVariant);
 
+          // phase4 is the only lane that reads the variant-aware sector
+          // table; every other lane keeps the pre-Phase-4 "base" slice.
+          const sectorVariant: Variant = lane === "phase4" ? result.variant : "base";
           let sectorTargets: Record<string, number> | null = null;
           if (hasSectorTargets && result.regimeKey) {
-            const structRows = sectorByRegime[result.regimeKey] ?? null;
-            const nearRows = result.nearKey ? (sectorByRegime[result.nearKey] ?? null) : null;
+            const structRows = resolveSectorRows(sectorByRegimeVariant, result.regimeKey, sectorVariant);
+            const nearRows = result.nearKey ? resolveSectorRows(sectorByRegimeVariant, result.nearKey, sectorVariant) : null;
             if (structRows) sectorTargets = blendSectorTargets(structRows, nearRows, result.lambda);
           }
 
@@ -418,7 +482,7 @@ Deno.serve(async (req: Request) => {
             snapshot_date: todayStr, portfolio_id: pf.id, lane, rules_version: RULES_VERSION,
             regime_key: result.regimeKey, near_key: result.nearKey, lambda: result.lambda, variant: result.variant,
             target_allocations: steppedTargets, sector_targets: sectorTargets,
-            turnover_vs_prev: turnoverVsPrev, turnover_uncapped: capped ? preCappedTurnover : null,
+            turnover_vs_prev: turnoverVsPrev, turnover_uncapped: seededFromPhase3 ? null : (capped ? preCappedTurnover : null),
             shifted, event, blocked_reason: blockedReason,
             inputs: {
               structural_key: structuralKey, structural_key_source: structuralKeySource,
