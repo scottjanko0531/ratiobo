@@ -96,6 +96,72 @@ function describeShadowEvent(event: string, regimeKey: string | null, nearKey: s
   }
 }
 
+// Nightly staleness guard (added 2026-11-11, after the fetch-macro-data
+// and update-regime-portfolio-targets 401 incidents): pg_cron's own
+// "succeeded" status only confirms the HTTP request was QUEUED, not that
+// the target function actually ran — that gap is exactly how both 401s
+// went unnoticed for days/weeks. The shadow job runs nightly regardless
+// of whether anything else succeeded, making it the natural place to
+// check the REAL downstream state. Checks three things: (1) the
+// near-term signal clock hasn't gone stale, (2) its own history is still
+// being written daily, (3) the two upstream jobs this pipeline depends on
+// (update-regime-portfolio-targets, update-inflation-regime) actually
+// completed successfully and recently — read from rb_job_runs, which
+// those two functions now write to themselves on every invocation
+// (ok or error) specifically so this check has a real signal to read;
+// net._http_response/http_request_queue were tried first and rejected —
+// pg_net clears http_request_queue within seconds of dispatch and prunes
+// _http_response after ~6 hours, so neither can be reliably joined back
+// to a specific function days (or even hours, for an overnight job) later.
+// Never throws — a failure here must never affect the shadow job's own
+// real work.
+const STALENESS_THRESHOLD_MS = 36 * 60 * 60 * 1000;
+
+async function runStalenessCheck(sb: ReturnType<typeof createClient>, todayStr: string): Promise<void> {
+  try {
+    const problems: string[] = [];
+    const ageHours = (iso: string) => ((Date.now() - new Date(iso).getTime()) / 3_600_000).toFixed(1);
+
+    const { data: stateRow } = await sb.from("nearterm_signal_state").select("updated_at").eq("id", true).maybeSingle();
+    if (!stateRow?.updated_at) {
+      problems.push("nearterm_signal_state.updated_at is null");
+    } else if (Date.now() - new Date(stateRow.updated_at).getTime() > STALENESS_THRESHOLD_MS) {
+      problems.push(`nearterm_signal_state.updated_at is ${ageHours(stateRow.updated_at)}h old`);
+    }
+
+    const { data: histRow } = await sb.from("nearterm_signal_history").select("snapshot_date").order("snapshot_date", { ascending: false }).limit(1).maybeSingle();
+    if (!histRow?.snapshot_date) {
+      problems.push("nearterm_signal_history has no rows at all");
+    } else if (Date.now() - new Date(histRow.snapshot_date + "T00:00:00Z").getTime() > STALENESS_THRESHOLD_MS) {
+      problems.push(`latest nearterm_signal_history date (${histRow.snapshot_date}) is ${ageHours(histRow.snapshot_date + "T00:00:00Z")}h old`);
+    }
+
+    for (const jobName of ["update-regime-portfolio-targets", "update-inflation-regime"]) {
+      const { data: runRow } = await sb.from("rb_job_runs").select("status, finished_at")
+        .eq("job_name", jobName).order("started_at", { ascending: false }).limit(1).maybeSingle();
+      if (!runRow) {
+        problems.push(`${jobName}: no job-run record found`);
+      } else if (runRow.status !== "ok") {
+        problems.push(`${jobName}: last run status was "${runRow.status}"`);
+      } else if (Date.now() - new Date(runRow.finished_at).getTime() > STALENESS_THRESHOLD_MS) {
+        problems.push(`${jobName}: last successful run is ${ageHours(runRow.finished_at)}h old`);
+      }
+    }
+
+    if (problems.length) {
+      await sb.from("notifications").upsert({
+        category: "regime_signal", type: "staleness_alert", importance: "high",
+        title: `Regime pipeline staleness check failed (${todayStr})`,
+        description: problems.join("; "),
+        metadata: { date: todayStr, problems },
+        dedup_key: `staleness_alert:${todayStr}`,
+      }, { onConflict: "dedup_key", ignoreDuplicates: true });
+    }
+  } catch (e) {
+    console.error("[shadow-targets] staleness check itself failed:", e);
+  }
+}
+
 // §3.1: service-role only. The gateway already verified the bearer JWT is
 // valid; this just checks WHICH role it carries (anon vs. service_role),
 // decoding the (unsigned-here, already-verified) payload.
@@ -119,6 +185,8 @@ Deno.serve(async (req: Request) => {
     const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
     const today = new Date();
     const todayStr = today.toISOString().slice(0, 10);
+
+    await runStalenessCheck(sb, todayStr);
 
     const url = new URL(req.url);
     const forceRecompute = url.searchParams.get("recompute") === "true";

@@ -23,9 +23,31 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
 
+// Real completion status, written to the same generic job-run log every
+// other scheduled job already uses (rb_job_runs — not rb-specific despite
+// the name; scr_* backfills log here too). pg_cron's own "succeeded" only
+// confirms the HTTP request was queued, not that this function actually
+// ran to completion — this function hit a bare "job startup timeout" on
+// 2026-11-10 (same night as a Disk I/O exhaustion incident) that pg_cron
+// itself never surfaced as a failure. Fire-and-forget: a logging failure
+// must never affect this function's real response.
+async function logJobRun(
+  sb: ReturnType<typeof createClient>, startedAt: Date, status: "ok" | "error", detail: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await sb.from("rb_job_runs").insert({
+      job_name: "update-inflation-regime", started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(), status, detail,
+    });
+  } catch {
+    // never let logging break the real response
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
 
+  const jobStartedAt = new Date();
   const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
   // PostgREST enforces its own server-side max-rows cap regardless of a
@@ -79,8 +101,11 @@ Deno.serve(async (req: Request) => {
     }
 
     const latest = rows[rows.length - 1] ?? null;
+    await logJobRun(sb, jobStartedAt, "ok", { monthsComputed: rows.length, latestMonth: latest?.month ?? null });
     return json({ ok: true, monthsComputed: rows.length, latest });
   } catch (err) {
-    return json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    const msg = err instanceof Error ? err.message : String(err);
+    await logJobRun(sb, jobStartedAt, "error", { message: msg });
+    return json({ ok: false, error: msg }, 500);
   }
 });

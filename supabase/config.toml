@@ -1,0 +1,126 @@
+project_id = "xuutmtfrpaxrzhwwokpk"
+
+# Per-function verify_jwt pins for every edge function invoked by a pg_cron
+# job. This file didn't exist before 2026-11-11 -- every function's verify_jwt
+# setting lived only as live state on the project, set ad hoc at whatever
+# value the last deploy tool happened to default to. That silence caused two
+# confirmed incidents found the same day: fetch-macro-data and
+# update-regime-portfolio-targets both have verify_jwt=true but their cron
+# jobs send no Authorization header, so every scheduled run 401'd (since
+# ~Oct 30 for the regime-targets job) while pg_cron itself still reported
+# "succeeded" (it only confirms the HTTP request was queued, not that the
+# function accepted it). A deploy tool that doesn't explicitly pass
+# verify_jwt (the Supabase MCP tool defaults it to true) can silently flip a
+# false-pinned function back to true on its next redeploy and reintroduce
+# this exact failure mode -- this file is the checked-in guard against that.
+#
+# Convention: verify_jwt=true means the matching cron.job command must
+# include an Authorization: Bearer <anon-key> header (see any of the
+# true-pinned jobs below for the pattern); verify_jwt=false means the
+# function implements its own gating (or needs none) and the cron can POST
+# with no auth header at all.
+
+[functions.sync-market-data]
+verify_jwt = false
+
+[functions.fetch-macro-data]
+verify_jwt = true
+
+[functions.refresh-asset-returns]
+verify_jwt = false
+
+[functions.fetch-cofer-data]
+verify_jwt = false
+
+[functions.daily-brief]
+verify_jwt = false
+
+[functions.scrape-lei]
+verify_jwt = false
+
+[functions.scrape-ism]
+verify_jwt = false
+
+[functions.update-supply-chain-risk]
+verify_jwt = false
+
+[functions.update-china-watch]
+verify_jwt = false
+
+[functions.update-big-cycle-metrics]
+verify_jwt = false
+
+[functions.ingest-liquidity-data]
+verify_jwt = false
+
+[functions.analyze-portfolio-health]
+verify_jwt = false
+
+[functions.update-regime-portfolio-targets]
+verify_jwt = true
+
+[functions.update-soma-holdings]
+verify_jwt = false
+
+[functions.update-tic-holdings]
+verify_jwt = false
+
+[functions.ingest-convenience-yield]
+verify_jwt = false
+
+[functions.ingest-foreign-custody]
+verify_jwt = false
+
+[functions.ingest-auction-results]
+verify_jwt = false
+
+[functions.compute-market-correlations]
+verify_jwt = false
+
+[functions.compute-gauge7]
+verify_jwt = false
+
+[functions.sync-asset-price-history]
+verify_jwt = false
+
+[functions.compute-asset-resize-signals]
+verify_jwt = false
+
+[functions.update-big-cycle-paradigm-metrics]
+verify_jwt = false
+
+[functions.compute-capex-cycle]
+verify_jwt = true
+
+[functions.market-conditions-ingest]
+verify_jwt = false
+
+[functions.market-conditions-compute]
+verify_jwt = false
+
+[functions.bond-lens-ingest]
+verify_jwt = true
+
+[functions.bond-lens-compute]
+verify_jwt = true
+
+[functions.bond-lens-phase-e-rerun]
+verify_jwt = true
+
+[functions.market-conditions-macro-ingest]
+verify_jwt = false
+
+[functions.rb-compute]
+verify_jwt = true
+
+[functions.sync-alpaca-account]
+verify_jwt = true
+
+[functions.rb-refresh]
+verify_jwt = true
+
+[functions.update-inflation-regime]
+verify_jwt = true
+
+[functions.update-regime-shadow-targets]
+verify_jwt = true

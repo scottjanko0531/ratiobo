@@ -214,6 +214,15 @@ function computeBlendLane(inputs: ShadowInputs, prev: LaneState, variant: Varian
 
   const keyEventApplied = isKeyLevelEvent && !(blockedReason?.startsWith("min_hold:"));
   const lambda = finalNearKey ? computeLambda(inputs.smoothedConfidence, 0.5) : 0;
+  // computeLambda silently returns 0 for a null smoothedConfidence -- that
+  // previously read as a legitimate lambda=0 blend (and, on the day
+  // near-term first activates, deriveEvent would label it "blend_start"),
+  // indistinguishable from a real, intentional zero. Surface the missing
+  // input explicitly instead so a blend that never actually computed isn't
+  // reported as one that started.
+  if (finalNearKey && inputs.smoothedConfidence == null && blockedReason == null) {
+    blockedReason = "no_smoothed_conf";
+  }
   const desiredTargets = useLegacyWeights
     ? resolveLegacyWeightsFor(finalBaseKey, finalNearKey, lambda, prev.currentTargets)
     : resolveWeightsFor(finalBaseKey, finalNearKey, lambda, variant, prev.currentTargets, inputs.hasIEI);

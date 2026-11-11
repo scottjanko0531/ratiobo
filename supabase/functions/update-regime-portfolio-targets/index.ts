@@ -19,6 +19,27 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
 
+// Real completion status, written to the same generic job-run log every
+// other scheduled job already uses (rb_job_runs — not rb-specific despite
+// the name; scr_* backfills log here too). pg_cron's own "succeeded" only
+// confirms the HTTP request was queued, not that this function actually
+// accepted it — that gap is exactly how this function's own 401s (missing
+// cron Authorization header, fixed 2026-11-11) went unnoticed since
+// ~Oct 30. Fire-and-forget: a logging failure must never affect this
+// function's real response.
+async function logJobRun(
+  sb: ReturnType<typeof createClient>, startedAt: Date, status: "ok" | "error", detail: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await sb.from("rb_job_runs").insert({
+      job_name: "update-regime-portfolio-targets", started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(), status, detail,
+    });
+  } catch {
+    // never let logging break the real response
+  }
+}
+
 // Same mapping as get-regime-analysis.ts / app/macro/page.jsx's REGIME_META — the
 // canonical Dalio four-quadrant labels used everywhere else the regime is displayed.
 const REGIME_LABELS: Record<string, string> = {
@@ -93,9 +114,10 @@ function addDays(dateStr: string, days: number): string {
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
+  const jobStartedAt = new Date();
   try {
     const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-    const today = new Date();
+    const today = jobStartedAt;
     const todayStr = today.toISOString().slice(0, 10);
 
     // This can run before a human has visited /macro today — ensure Clio's
@@ -445,6 +467,7 @@ Deno.serve(async (req: Request) => {
       await sb.from("notifications").upsert(heldNotifRows, { onConflict: "dedup_key", ignoreDuplicates: true });
     }
 
+    await logJobRun(sb, jobStartedAt, "ok", { date: todayStr, processed: results.length, active, fired });
     return json({
       structuralKey: structuralKey ?? null, structuralKeySource: structuralKeySource ?? null, computedVariant,
       liveNearKey: liveNearKey ?? null, liveNearConfidence: liveNearConfidence ?? null,
@@ -453,6 +476,8 @@ Deno.serve(async (req: Request) => {
       processed: results.length, results,
     });
   } catch (e) {
-    return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    const msg = e instanceof Error ? e.message : String(e);
+    await logJobRun(createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY), jobStartedAt, "error", { message: msg });
+    return json({ error: msg }, 500);
   }
 });
