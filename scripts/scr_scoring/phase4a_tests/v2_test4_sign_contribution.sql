@@ -109,7 +109,7 @@ with universe_a as (
          filt.f as filt
   from scr_scores a
   cross join (values ('all'), ('excl_review')) as filt(f)
-  where a.as_of_date <= '2023-12-31'
+  where a.as_of_date >= '2017-01-01' and a.as_of_date <= '2023-12-31'
     and a.profile_version in ('a_v1_hist','a_v1_hist_rd','a_v1_hist_qqq_gate','a_v1_hist_ff12')
     and (filt.f = 'all' or a.needs_review = false)
     and a.sign1 is not null and a.sign2 is not null and a.sign3 is not null and a.sign6 is not null
@@ -171,7 +171,7 @@ with universe_b as (
          filt.f as filt
   from scr_scores a
   cross join (values ('all'), ('excl_review')) as filt(f)
-  where a.as_of_date <= '2023-12-31' and a.profile_version = 'b_v1'
+  where a.as_of_date >= '2017-01-01' and a.as_of_date <= '2023-12-31' and a.profile_version = 'b_v1'
     and (filt.f = 'all' or a.needs_review = false)
     and a.factor_fcf_yield is not null and a.factor_size is not null and a.factor_price_book is not null
     and a.factor_trailing_pe is not null and a.factor_drawdown_recovery is not null

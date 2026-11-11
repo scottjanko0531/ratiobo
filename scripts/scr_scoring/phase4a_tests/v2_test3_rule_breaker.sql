@@ -12,7 +12,7 @@ with universe as (
          filt.f as filt
   from scr_scores a
   cross join (values ('all'), ('excl_review')) as filt(f)
-  where a.as_of_date <= '2023-12-31'
+  where a.as_of_date >= '2017-01-01' and a.as_of_date <= '2023-12-31'
     and a.profile_version in ('a_v1_hist','a_v1_hist_rd','a_v1_hist_qqq_gate','a_v1_hist_ff12','b_v1')
     and (filt.f = 'all' or a.needs_review = false)
 ),

@@ -24,7 +24,7 @@ with universe as (
               when as_of_date <= '2023-12-31' then 'validation'
               else 'holdout' end as period
   from scr_scores
-  where as_of_date <= '2023-12-31'
+  where as_of_date >= '2017-01-01' and as_of_date <= '2023-12-31'
     and profile_version in ('a_v1_hist','a_v1_hist_rd','a_v1_hist_qqq_gate','a_v1_hist_ff12','b_v1')
 ),
 ranked as (
