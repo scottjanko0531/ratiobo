@@ -33,7 +33,20 @@ import {
 // `table_version='v1'` table (resolveLegacySectorRows); only phase4
 // (always) and live (when the flag is on) read `d5`
 // (resolveSectorRows).
-export const RULES_VERSION = "shadow-v7";
+// shadow-v8: a null smoothedConfidence while near-term is active no
+// longer silently produces lambda=0 indistinguishable from a real
+// blend_start event -- computeBlendLane now sets
+// blocked_reason='no_smoothed_conf' for that case.
+// shadow-v9 (2026-11-11): baseConfirmedSince/lastShiftDate are now
+// denormalized onto every regime_shadow_targets row and read from the
+// lane's OWN last row everywhere -- not from regime_shadow_state, which
+// a same-day forceRecompute could read AFTER a real same-day invocation
+// had already advanced it, desyncing against near_key/lambda still
+// pulled from yesterday's row. Found when phase2/phase3's min_hold
+// clock jumped from a real, long-standing "clears 2026-11-11" to a
+// bogus "clears 2026-12-02" purely from re-running recompute the same
+// day the real clearance happened. No lane logic itself changed.
+export const RULES_VERSION = "shadow-v9";
 
 export type Lane = "live" | "legacy" | "phase2" | "phase3" | "phase4";
 export const LANE_IDS: Lane[] = ["live", "legacy", "phase2", "phase3", "phase4"];

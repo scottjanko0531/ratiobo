@@ -234,7 +234,7 @@ Deno.serve(async (req: Request) => {
           if (!stateRow) continue; // nothing to reseed -- this lane/portfolio has no state yet
 
           const { data: lastRow } = await sb.from("regime_shadow_targets")
-            .select("near_key, lambda, variant, blocked_reason")
+            .select("near_key, lambda, variant, blocked_reason, base_confirmed_since, last_shift_date")
             .eq("portfolio_id", pf.id).eq("lane", lane)
             .order("snapshot_date", { ascending: false }).limit(1).maybeSingle();
 
@@ -261,6 +261,11 @@ Deno.serve(async (req: Request) => {
           await sb.from("regime_shadow_targets").insert({
             snapshot_date: todayStr, portfolio_id: pf.id, lane, rules_version: RULES_VERSION,
             regime_key: baseKey, near_key: nearKey, lambda, variant,
+            // Reseed never changes the key-level decision, only the weight
+            // table it reads from -- carry the lane's own clock forward
+            // unchanged, from its own last row (not regime_shadow_state).
+            base_confirmed_since: lastRow?.base_confirmed_since ?? null,
+            last_shift_date: lastRow?.last_shift_date ?? null,
             target_allocations: newTargets, sector_targets: sectorTargets,
             turnover_vs_prev: 0, turnover_uncapped: null,
             shifted: false, event: "rules_change", blocked_reason: lastRow?.blocked_reason ?? null,
@@ -329,7 +334,8 @@ Deno.serve(async (req: Request) => {
         .eq("key", liveNearKey)
         .gte("snapshot_date", windowStart.toISOString().slice(0, 10))
         .lte("snapshot_date", todayStr)
-        .not("confidence", "is", null);
+        .not("confidence", "is", null)
+        .eq("stale_inputs", false);
       const vals = (histRows ?? []).map((r) => Number(r.confidence));
       if (vals.length > 0) smoothedConfidence = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
     }
@@ -398,13 +404,18 @@ Deno.serve(async (req: Request) => {
           if (!prevStateRow && lane === "phase4") {
             const { data: p3State } = await sb.from("regime_shadow_state").select("*").eq("portfolio_id", pf.id).eq("lane", "phase3").maybeSingle();
             if (p3State) {
+              // baseConfirmedSince/lastShiftDate come from phase3's own last
+              // row too, not p3State (regime_shadow_state) -- same
+              // same-day-desync risk as the forceRecompute path above, just
+              // for phase4's one-time seed-from-phase3 moment instead.
               const { data: p3LastRow } = await sb.from("regime_shadow_targets")
-                .select("near_key, lambda, variant")
+                .select("near_key, lambda, variant, base_confirmed_since, last_shift_date")
                 .eq("portfolio_id", pf.id).eq("lane", "phase3")
                 .order("snapshot_date", { ascending: false }).limit(1).maybeSingle();
               phase3SeedState = {
-                baseKey: p3State.base_key, baseConfirmedSince: p3State.base_confirmed_since,
-                lastShiftDate: p3State.last_shift_date,
+                baseKey: p3State.base_key,
+                baseConfirmedSince: p3LastRow?.base_confirmed_since ?? p3State.base_confirmed_since,
+                lastShiftDate: p3LastRow?.last_shift_date ?? p3State.last_shift_date,
                 nearKey: p3LastRow?.near_key ?? null, lambda: Number(p3LastRow?.lambda ?? 0),
                 currentTargets: p3State.current_targets, desiredTargets: p3State.desired_targets,
                 variant: (p3LastRow?.variant ?? "base") as Variant,
@@ -432,36 +443,55 @@ Deno.serve(async (req: Request) => {
               nearKey: null, lambda: 0, // reconstructed from regime_shadow_targets below; regime_shadow_state doesn't track near/lambda/variant
               currentTargets: prevStateRow.current_targets, desiredTargets: prevStateRow.desired_targets,
             };
-            // near_key/lambda/variant carry forward via the last written
-            // targets row, since regime_shadow_state only tracks base/
-            // current/desired targets.
+            // near_key/lambda/variant/baseConfirmedSince/lastShiftDate carry
+            // forward via the last written targets row, NOT regime_shadow_state
+            // (which only tracks base/current/desired targets, and -- found
+            // 2026-11-11 -- is unsafe to read for baseConfirmedSince/
+            // lastShiftDate specifically: a same-day forceRecompute can run
+            // AFTER a real same-day invocation already advanced
+            // regime_shadow_state, producing a prev that mixes today's
+            // already-advanced confirmedSince with yesterday's near_key/
+            // lambda from this same lookup -- a real desync, not merely
+            // theoretical, that manifested as min_hold being computed from
+            // TODAY instead of the lane's actual last real shift. Each
+            // lane's own row history is now self-contained and immune to
+            // this: regardless of what else ran today, "yesterday's row"
+            // means yesterday's row, for every field.
             const { data: lastRow } = await sb
               .from("regime_shadow_targets")
-              .select("near_key, lambda, variant")
+              .select("near_key, lambda, variant, base_confirmed_since, last_shift_date")
               .eq("portfolio_id", pf.id).eq("lane", lane)
               .order("snapshot_date", { ascending: false }).limit(1).maybeSingle();
             if (lastRow) {
               prev.nearKey = lastRow.near_key;
               prev.lambda = Number(lastRow.lambda ?? 0);
               prevVariant = lastRow.variant ?? "base";
+              prev.baseConfirmedSince = lastRow.base_confirmed_since ?? prev.baseConfirmedSince;
+              prev.lastShiftDate = lastRow.last_shift_date ?? prev.lastShiftDate;
             }
           } else if (forceRecompute) {
             // Today's row is already deleted above, so this naturally
             // finds yesterday's (or earlier) real row, if any.
             const { data: priorRow } = await sb
               .from("regime_shadow_targets")
-              .select("regime_key, near_key, lambda, variant, target_allocations")
+              .select("regime_key, near_key, lambda, variant, target_allocations, base_confirmed_since, last_shift_date")
               .eq("portfolio_id", pf.id).eq("lane", lane)
               .order("snapshot_date", { ascending: false }).limit(1).maybeSingle();
             if (priorRow) {
-              const { data: stateRow } = await sb
-                .from("regime_shadow_state")
-                .select("base_confirmed_since, last_shift_date")
-                .eq("portfolio_id", pf.id).eq("lane", lane).maybeSingle();
+              // baseConfirmedSince/lastShiftDate come from THIS SAME prior
+              // row, not regime_shadow_state -- found 2026-11-11: reading
+              // regime_shadow_state here let a same-day forceRecompute pick
+              // up whatever a real same-day invocation had ALREADY advanced
+              // it to (e.g. this morning's cron run), while near_key/lambda
+              // still came from yesterday via priorRow -- a genuine
+              // same-day time-desync, not a copy from live portfolio state
+              // (the two coincidentally landing on the same date was what
+              // made it look that way). One row, one point in time, for
+              // every field now.
               prev = {
                 baseKey: priorRow.regime_key,
-                baseConfirmedSince: stateRow?.base_confirmed_since ?? null,
-                lastShiftDate: stateRow?.last_shift_date ?? null,
+                baseConfirmedSince: priorRow.base_confirmed_since ?? null,
+                lastShiftDate: priorRow.last_shift_date ?? null,
                 nearKey: priorRow.near_key, lambda: Number(priorRow.lambda ?? 0),
                 currentTargets: priorRow.target_allocations, desiredTargets: priorRow.target_allocations,
               };
@@ -561,6 +591,7 @@ Deno.serve(async (req: Request) => {
           const row = {
             snapshot_date: todayStr, portfolio_id: pf.id, lane, rules_version: RULES_VERSION,
             regime_key: result.regimeKey, near_key: result.nearKey, lambda: result.lambda, variant: result.variant,
+            base_confirmed_since: result.nextState.baseConfirmedSince, last_shift_date: result.nextState.lastShiftDate,
             target_allocations: steppedTargets, sector_targets: sectorTargets,
             turnover_vs_prev: turnoverVsPrev, turnover_uncapped: seededFromPhase3 ? null : (capped ? preCappedTurnover : null),
             shifted, event, blocked_reason: blockedReason,

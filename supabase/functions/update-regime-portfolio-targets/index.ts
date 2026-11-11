@@ -193,7 +193,8 @@ Deno.serve(async (req: Request) => {
         .eq("key", liveNearKey)
         .gte("snapshot_date", windowStart)
         .lte("snapshot_date", todayStr)
-        .not("confidence", "is", null);
+        .not("confidence", "is", null)
+        .eq("stale_inputs", false);
       const vals = (histRows ?? []).map((r) => Number(r.confidence));
       if (vals.length > 0) smoothedConfidence = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
     }
