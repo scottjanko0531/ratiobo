@@ -82,6 +82,34 @@ describe("capTurnover", () => {
     }
     expect(cur).toEqual(desired);
   });
+
+  // Real case, 2026-11-11: four keys tied for the largest move (a/b/c/d:
+  // 0->10, scale 15/40=0.375 lands every one of them on 3.75, which all
+  // round the SAME way to 4) push the post-scale sum to 101, and pushing
+  // that -1 remainder into cash (85->84) realizes 16pts of one-way
+  // turnover against the 15pt cap -- the live and phase2 lanes both
+  // actually logged this. Confirms the fix brings it back to exactly 15,
+  // not just under.
+  it("pulls a post-rounding overshoot back down to the cap (real 16pt case)", () => {
+    const cur = { a: 0, b: 0, c: 0, d: 0, cash: 100 };
+    const desired = { a: 10, b: 10, c: 10, d: 10, cash: 60 };
+    const stepped = capTurnover(cur, desired, 15);
+
+    let turnover = 0;
+    for (const k of new Set([...Object.keys(cur), ...Object.keys(stepped)])) {
+      turnover += Math.abs((stepped[k] ?? 0) - (cur[k] ?? 0));
+    }
+    expect(turnover / 2).toBe(15);
+
+    // Still sums to 100 after the pull-back.
+    const sum = Object.values(stepped).reduce((s, v) => s + v, 0);
+    expect(sum).toBe(100);
+
+    // Deterministic: the pull-back takes the first tied biggest mover (a,
+    // sorted-key order) back one point, and gives it to cash (the
+    // biggest under-mover) rather than redistributing it anywhere else.
+    expect(stepped).toEqual({ a: 3, b: 4, c: 4, d: 4, cash: 85 });
+  });
 });
 
 describe("resolveBaseKey", () => {

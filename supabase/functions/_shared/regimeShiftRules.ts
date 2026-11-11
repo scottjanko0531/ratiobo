@@ -69,6 +69,36 @@ export function capTurnover(current: WeightSet, desired: WeightSet, maxPoints = 
   }
   const sum = keys.reduce((a, k) => a + stepped[k], 0);
   stepped.cash = (stepped.cash ?? 0) + (100 - sum);
+
+  // Scaling to the cap and then rounding each key independently (plus the
+  // remainder-push above, needed to keep the set summing to 100) can
+  // realize MORE one-way turnover than maxPoints allows -- confirmed real
+  // on 2026-11-11 (16pts realized against a 15pt cap). Re-measure the
+  // ACTUAL turnover of the final stepped values and, if still over,
+  // transfer whole points from the single biggest over-mover to the
+  // single biggest under-mover -- sum-preserving by construction, and
+  // both deltas shrink toward `current` by one point each, so this always
+  // makes progress -- until within budget. Sorted key order breaks ties
+  // deterministically. Whatever doesn't get applied this run simply
+  // remains as next run's gap between current and desired, same as the
+  // scale-based cap above already relies on.
+  const sortedKeys = [...keys].sort();
+  let totalMovement = sortedKeys.reduce((a, k) => a + Math.abs((stepped[k] ?? 0) - (current[k] ?? 0)), 0);
+  const maxTotalMovement = maxPoints * 2;
+  while (totalMovement > maxTotalMovement) {
+    let maxKey: string | null = null, maxDelta = 0;
+    let minKey: string | null = null, minDelta = 0;
+    for (const k of sortedKeys) {
+      const d = (stepped[k] ?? 0) - (current[k] ?? 0);
+      if (d > maxDelta) { maxDelta = d; maxKey = k; }
+      if (d < minDelta) { minDelta = d; minKey = k; }
+    }
+    if (!maxKey || !minKey) break; // no progress possible -- shouldn't happen given sum(deltas)=0
+    stepped[maxKey] = (stepped[maxKey] ?? 0) - 1;
+    stepped[minKey] = (stepped[minKey] ?? 0) + 1;
+    totalMovement -= 2;
+  }
+
   return stepped;
 }
 
