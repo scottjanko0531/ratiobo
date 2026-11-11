@@ -228,7 +228,30 @@ function parseYahooChart(
   if (!price || price <= 0) {
     return { error: `${assetType}: ${symbol} — no price in meta (got ${price ?? "null"})` };
   }
-  const prevClose = meta?.chartPreviousClose ?? meta?.previousClose;
+
+  // meta.chartPreviousClose is NOT yesterday's close -- it's the close from
+  // before the FIRST day of the requested range (range=5d here, so ~5
+  // trading days back), confirmed directly against Yahoo's live response
+  // (NVDA on 2026-11-11: chartPreviousClose=200.13, the 2026-11-04 close,
+  // while the true previous trading day's close was 168.89 on 2026-11-10).
+  // Using it as a "24h change" silently computed a multi-day change
+  // mislabeled as one day. The chart's own daily close series is reliable
+  // instead: find whether the series' last bar is today (by timestamp),
+  // then take the last non-null close strictly before that bar.
+  const indicators = result[0].indicators as Record<string, unknown> | undefined;
+  const quote = (indicators?.quote as Record<string, unknown>[] | undefined)?.[0];
+  const closes = (quote?.close as (number | null)[] | undefined) ?? [];
+  const timestamps = (result[0].timestamp as number[] | undefined) ?? [];
+  const lastTs = timestamps[timestamps.length - 1];
+  const lastIsToday = lastTs != null &&
+    new Date(lastTs * 1000).toISOString().slice(0, 10) === now.slice(0, 10);
+  const searchFrom = lastIsToday ? closes.length - 2 : closes.length - 1;
+
+  let prevClose: number | null = null;
+  for (let i = searchFrom; i >= 0; i--) {
+    if (closes[i] != null && (closes[i] as number) > 0) { prevClose = closes[i] as number; break; }
+  }
+
   const changePct = prevClose && prevClose > 0
     ? Math.round(((price - prevClose) / prevClose) * 10000) / 100
     : null;
