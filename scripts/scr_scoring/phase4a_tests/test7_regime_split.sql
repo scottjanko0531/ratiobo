@@ -1,0 +1,35 @@
+-- TEST 7 (trial_id=12): Regime Split
+-- Pre-registration: scr_trials.id=12
+--
+-- Uses the same (profile_version, period, as_of_date, spread_1m, mkt_rf, smb, hml,
+-- trailing12_mkt_rf) panel produced by test6_ff3_factor_check.sql's Step 1 query
+-- (both "all" and "excl_review" filter variants).
+--
+-- Regime classification: bull if trailing12_mkt_rf > 0, bear if < 0; rows with a null
+-- trailing12_mkt_rf (first 11 months of the development period, which lack a full
+-- trailing 12-month window) are excluded from this test only, per pre-registration.
+--
+-- Within each (profile_version, period, filt, regime) cell:
+--   gross_mean_spread = mean(spread_1m)
+--   nw_se, gross_t_stat = Newey-West HAC mean/t-stat with lag=0 (pre-registered
+--     simplification: within-regime subsamples are not necessarily contiguous, so the
+--     standard overlapping-horizon lag rule does not cleanly apply)
+--   cost_bps_per_side = 10 (a_v1_hist, a_v1_hist_rd, a_v1_hist_qqq_gate) or 25 (b_v1)
+--   net_mean_spread = gross_mean_spread - 4*(cost_bps_per_side/10000)  -- 4-sided
+--     long-short spread cost model, consistent with Test 2
+--   net_t_stat = net_mean_spread / nw_se
+--
+-- Implemented in Python (pandas) directly on the panel pulled by test6's query:
+--
+--   dfr = df.dropna(subset=['trailing12_mkt_rf']).copy()
+--   dfr['regime'] = np.where(dfr['trailing12_mkt_rf'] > 0, 'bull', 'bear')
+--   for prof, period, regime in groups:
+--       vals = sub['spread_1m'].values
+--       n = len(vals); m = vals.mean(); se = vals.std(ddof=1)/sqrt(n); t = m/se
+--
+-- (lag=0 Newey-West collapses to the ordinary standard error of the mean, which is
+-- what the snippet above computes directly rather than calling nw_mean_test.)
+--
+-- Net values and net_t_stat (gross_mean_spread - 4*cost_bps/10000, divided by the same
+-- nw_se) were computed when building the INSERT statements for scr_results(trial_id=12,
+-- result_key='regime_split_spread', ...).
