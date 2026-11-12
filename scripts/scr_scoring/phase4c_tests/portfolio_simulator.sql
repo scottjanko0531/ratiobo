@@ -43,7 +43,8 @@ create or replace function scr_sim_portfolio(
   p_cost_bps numeric,
   p_gated boolean,
   p_start date,
-  p_end date
+  p_end date,
+  p_excl_review boolean default false
 ) returns table (
   as_of_date date,
   is_rebalance boolean,
@@ -139,6 +140,7 @@ begin
         with ranked as (
           select ss.company_id, ntile(5) over (order by ss.score) as q
           from scr_scores ss where ss.profile_version = p_profile and ss.as_of_date = v_dates[v_i]
+            and (not p_excl_review or ss.needs_review = false)
         ),
         top as (select company_id from ranked where q = 5),
         n as (select count(*) as c from top)
