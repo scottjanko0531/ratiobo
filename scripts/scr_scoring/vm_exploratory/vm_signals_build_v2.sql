@@ -1,0 +1,35 @@
+-- Exploratory value+momentum test (AQR "Value and Momentum Everywhere"
+-- style), signal build. Supersedes vm_signals_build.sql (materialized-only,
+-- left NULL for the ~102k broad_liquid company-months outside existing
+-- scr_metric_ttm_asof/scr_anchors_asof coverage). This version combines
+-- the materialized lookup (where covered) with the validated corrected
+-- ad-hoc path (ttm_adhoc_build_v2.sql, 0.56%-1.92% mismatch vs. ground
+-- truth) for the rest, as Scott directed.
+--
+-- Produces four scr_scores profile_versions: vm_value (V), vm_momentum
+-- (M), vm_combo (VM), vm_combo_ind (VM-ind) -- pre-registered in scr_trials
+-- (ids 35-38) BEFORE this script was run, labeled EXPLORATORY.
+--
+-- Pipeline (each step run as a real indexed table -- chained CTEs over
+-- this cardinality time out, confirmed repeatedly this session):
+-- 1. ttm_adhoc_build_v2.sql -- ad-hoc TTM for uncovered company-months.
+-- 2. scr_vm_metric_all -- unified (company_id, as_of_date, metric,
+--    value_now, source) combining materialized (span-guarded) + ad-hoc.
+-- 3. scr_vm_raw_value -- book/price, earnings yield, cash-flow yield,
+--    EBITDA/EV ratios + ff12 industry tag, per company-month.
+-- 4. scr_vm_value_composite -- avg of percentile ranks (>=2 of 4 required,
+--    universe-wide), using this codebase's standard midpoint-rank formula.
+-- 5. scr_vm_value_composite_ind -- same, but each ratio ranked within FF12
+--    industry (fallback to universe-wide rank under 8 peers).
+-- 6. scr_vm_mom_m1 / scr_vm_mom_y1 -- price at t-1mo / t-1yr per company-
+--    month (built as two separate single-LATERAL passes, ~6-7min each --
+--    the combined two-LATERAL version timed out past the 8min statement
+--    timeout on the full 196,466-row broad_liquid population).
+-- 7. scr_vm_raw_momentum / scr_vm_momentum_pct -- 12-1 return + percentile.
+-- 8. Final scr_scores inserts: sign1=value (or momentum for M),
+--    sign2=momentum (combo profiles only), composite=the score used for
+--    the simulator's quintile ranking.
+--
+-- Coverage: vm_value 153,700 scored company-months, vm_momentum 184,546,
+-- vm_combo/vm_combo_ind 150,395 each (intersection of value+momentum
+-- availability), out of 196,466 total broad_liquid company-months.
