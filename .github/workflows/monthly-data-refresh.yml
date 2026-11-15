@@ -1,0 +1,114 @@
+name: Monthly data refresh — prices, fundamentals, corporate actions, universe, scoring
+
+# Runs on the first business day after each month-end (the 1st at 12:00
+# UTC covers this for every month except when the 1st itself is a
+# weekend -- accepted as close enough for a monthly cadence; workflow_dispatch
+# lets Scott re-run by hand for an exact date). Same pattern as
+# bond-lens-acm-refresh.yml: checkout + direct Node/psql execution,
+# authenticated via repo secrets -- pg_cron can't invoke these Node
+# scripts directly (it can only POST to an HTTP endpoint), so this stays
+# in GitHub Actions rather than becoming an edge function.
+#
+# Required GitHub secrets (repo settings -> Secrets and variables ->
+# Actions), none of which this workflow can set itself:
+#   NEXT_PUBLIC_SUPABASE_URL      - project URL
+#   SUPABASE_SERVICE_ROLE_KEY     - service-role key (bypasses RLS, same
+#                                   key used by every edge function)
+#   SCR_INGEST_KEY                - the scr-ingest edge function's own
+#                                   x-ingest-key auth, matching .env.local
+#   ALPACA_API_KEY_ID             - Alpaca market data
+#   ALPACA_API_SECRET_KEY
+#   SUPABASE_DB_URL               - direct Postgres connection string
+#                                   (Supabase dashboard -> Project Settings
+#                                   -> Database -> Connection string ->
+#                                   "URI", session-mode pooler is fine).
+#                                   Needed only for the scoring step,
+#                                   which runs the existing committed
+#                                   a_v1_hist_ff12.sql/b_v1_materialized.sql
+#                                   scripts via psql -- these already use
+#                                   :start_date/:end_date psql variables,
+#                                   so they run unmodified.
+on:
+  schedule:
+    - cron: "0 12 1 * *"
+  workflow_dispatch:
+    inputs:
+      as_of_date:
+        description: "Month-end date to score (YYYY-MM-DD). Defaults to today if omitted."
+        required: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Resolve as-of date
+        id: date
+        run: |
+          VALUE="${{ github.event.inputs.as_of_date }}"
+          if [ -z "$VALUE" ]; then VALUE=$(date -u +%Y-%m-%d); fi
+          echo "value=$VALUE" >> "$GITHUB_OUTPUT"
+      - name: Write .env.local for the existing loaders (unmodified -- they read this file, not process.env)
+        run: |
+          cat > .env.local <<EOF
+          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SCR_INGEST_KEY=${{ secrets.SCR_INGEST_KEY }}
+          ALPACA_API_KEY_ID=${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY=${{ secrets.ALPACA_API_SECRET_KEY }}
+          EOF
+      - run: npm install @supabase/supabase-js
+      - name: Log job start
+        run: |
+          curl -s -X POST "${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}/rest/v1/rb_job_runs" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_name\":\"monthly-data-refresh\",\"status\":\"running\",\"detail\":{\"as_of_date\":\"${{ steps.date.outputs.value }}\"}}"
+      - name: Refresh company list from live scr_securities
+        run: node scripts/backfill/refresh_companies_list.mjs
+      - name: Update prices (Alpaca)
+        run: node scripts/backfill/load_prices.mjs
+      - name: Update corporate actions (Alpaca)
+        run: node scripts/backfill/load_corporate_actions.mjs
+      - name: Update fundamentals (SEC companyconcept, incremental)
+        run: node scripts/backfill/load_fundamentals.mjs
+      - name: Gate on scr_scoring_preflight()
+        run: |
+          RESULT=$(curl -s -X POST "${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}/rest/v1/rpc/scr_scoring_preflight" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" -d '{}')
+          echo "preflight: $RESULT"
+          OK=$(echo "$RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d)[0]?.ok===true?'true':'false')}catch{console.log('false')}})")
+          if [ "$OK" != "true" ]; then echo "preflight failed, aborting before any scoring writes"; exit 1; fi
+      - name: Rebuild universe membership (a_growth, profile_b, broad_liquid)
+        run: |
+          for STRATEGY in a_growth profile_b broad_liquid; do
+            curl -s -X POST "${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}/rest/v1/rpc/scr_rebuild_universe_membership" \
+              -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"p_from\":\"${{ steps.date.outputs.value }}\",\"p_to\":\"${{ steps.date.outputs.value }}\"}"
+          done
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Score a_v1_hist (feeds a_v1_hist_ff12)
+        run: psql "${{ secrets.SUPABASE_DB_URL }}" -v start_date="'${{ steps.date.outputs.value }}'" -v end_date="'${{ steps.date.outputs.value }}'" -f scripts/scr_scoring/a_v1_hist_materialized.sql
+      - name: Score a_v1_hist_ff12
+        run: psql "${{ secrets.SUPABASE_DB_URL }}" -v start_date="'${{ steps.date.outputs.value }}'" -v end_date="'${{ steps.date.outputs.value }}'" -f scripts/scr_scoring/a_v1_hist_ff12.sql
+      - name: Score b_v1
+        run: psql "${{ secrets.SUPABASE_DB_URL }}" -v start_date="'${{ steps.date.outputs.value }}'" -v end_date="'${{ steps.date.outputs.value }}'" -f scripts/scr_scoring/b_v1_materialized.sql
+      - name: Score vm_combo_ind (VM-ind)
+        run: psql "${{ secrets.SUPABASE_DB_URL }}" -v as_of_date="'${{ steps.date.outputs.value }}'" -f scripts/scr_scoring/vm_signals_monthly.sql
+      - name: Log job finish
+        if: always()
+        run: |
+          curl -s -X POST "${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}/rest/v1/rb_job_runs" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_name\":\"monthly-data-refresh\",\"status\":\"${{ job.status }}\",\"detail\":{\"as_of_date\":\"${{ steps.date.outputs.value }}\"}}"
