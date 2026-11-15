@@ -13,3 +13,8 @@
 *.pem
 npm-debug.log*
 .vercel
+
+# one-time backfill scratch output (progress trackers, resolved indices) --
+# ~197MB of generated intermediate JSON, not source. The loader scripts
+# themselves (scripts/backfill/*.mjs) are committed; this directory isn't.
+scripts/backfill/data/
