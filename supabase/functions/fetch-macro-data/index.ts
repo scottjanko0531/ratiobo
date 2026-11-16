@@ -299,7 +299,7 @@ const INDICATORS: Indicator[] = [
     name: "Effective Rate vs. Nominal Growth (r_eff − g)",
     layer: 1, layer_name: "Long-term Debt Cycle",
     description: "Trailing-12-month net interest outlays (Treasury MTS) divided by average debt held by the public over the same period, minus nominal GDP growth — the actual blended cost of outstanding federal debt vs. the growth of the nominal tax base, as opposed to the marginal cost captured by the 10Y-yield-based spread above.",
-    fred_series_id: null, unit: "%", data_source: "computed", sort_order: 4.5,
+    fred_series_id: null, unit: "%", data_source: "computed", sort_order: 4,
     series: "DGS10", series2: "GDP", type: "effective_rate_minus_nominal_yoy",
     statusFn: v => v < 0 ? "healthy" : v <= 1.0 ? "watch" : "danger",
   },

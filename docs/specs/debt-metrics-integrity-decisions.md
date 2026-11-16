@@ -428,3 +428,88 @@ Shadow-gating not required (Phase 0 found no portfolio consumer). The
 `big_cycle_stage_notes` one-time note is the equivalent safeguard for the
 two narrative/prompt consumers, per the coordinator's explicit
 instruction — drafted above, not yet live.
+
+### Deployed (2026-11-16) — live verification
+
+Scott approved. Deployed via `supabase functions deploy` (CLI, not the
+MCP `deploy_edge_function` tool — avoids reading this repo's largest file,
+`fetch-macro-data/index.ts` at 3200 lines, fully into context just to
+redeploy it unchanged elsewhere). Preserved `verify_jwt` exactly per the
+live settings confirmed before deploying (fetch-macro-data=true,
+update-big-cycle-metrics=false, generate-debt-cycle-brief=false,
+detect-macro-events=false — the latter two aren't pinned in
+`supabase/config.toml` since that file only tracks pg_cron-invoked
+functions; confirmed their live setting directly via `list_edge_functions`
+first) — all four confirmed unchanged after deploy.
+
+**Caught one real bug before it reached the live cron**: the first
+`fetch-macro-data` deploy 500'd — `sort_order: 4.5` on the new r_eff
+indicator against a `smallint` column (`"invalid input syntax for type
+smallint: \"4.5\""`). Fixed to `sort_order: 4` (ties with "Rate vs. GDP
+Growth Spread" — harmless, both Layer-1 cards render adjacent), redeployed,
+reran clean.
+
+**Live verification, in order:**
+
+1. Ran `fetch-macro-data` directly (`curl` with an `Authorization: Bearer`
+   anon-key header, matching its `verify_jwt=true` pin): `{"updated":73,
+   "skipped":3,...}`. The 3 skipped are pre-existing stale indicators
+   unrelated to this work (Core CPI, CPI, Real Fed Funds Rate — last
+   fetched 2026-10-29, a separate standing issue, not touched here).
+   Confirmed live: "Rate vs. GDP Growth Spread" = **-0.768** (healthy,
+   was +3.034/danger); "Effective Rate vs. Nominal Growth (r_eff − g)" =
+   **-2.491** (healthy, new), with `metadata.r_eff = 3.376` and
+   `metadata.convergence_gap = 1.724` — exact matches to the hand-calc
+   above.
+2. Ran `update-big-cycle-metrics`: response's `debtCycleStage` = exactly
+   the predicted before→after — `stage: "MP1"`, `rGreaterG: false`,
+   `debtServiceStrained: true`, `fedPrintingRising/mp2Gate/
+   mp3AuctionDemandWeak/mp3SomaAbsorbing: false`, `rawInputs.
+   effectiveRateGrowthSpread: -2.491` present and wired. Trip-wires:
+   3 unarmed, `fiscal_dominance_confirmed` armed since 2026-02-20 — a
+   pre-existing state, confirmed unaffected by this change (no
+   `rateGrowthSpread` reference in that trip-wire's logic).
+3. `select label, is_current from big_cycle_stages ...`: confirms
+   `is_current` flipped live — `MP1 (strained)` → `false`, `MP1` →
+   `true`. Matches the Phase 0 correction (§1c) that this write happens
+   automatically on the classifier run, not behind `apply-macro-event`'s
+   human gate.
+4. `big_cycle_metrics` `debt_sustainability_gauge` key: **unchanged**,
+   still `1.867` / "Elevated Risk" — confirms the code-read finding that
+   this gauge has no `rateGrowthSpread` dependency.
+5. Called `generate-debt-cycle-brief?refresh=true` live: narrative opens
+   with *"Current stage is MP1, reclassified this run from MP1
+   (strained) following a methodology correction to r−g measurement on
+   2026-11-16. The prior definition compared nominal yield to real
+   growth and overstated strain... The stage shift reflects definition
+   precision, not improving fundamentals."* — the note surfaced exactly
+   as designed, in the LLM's own words, not silently dropped.
+6. Called `detect-macro-events` live: found 3 genuinely new real-world
+   events (a Fitch sovereign-outlook warning, Fed hike signaling, debt-
+   ceiling timeline reporting) — all three with `suggested_stage: null`.
+   Confirms the methodology-note safeguard worked: the scanner did not
+   mistake the stage's own MP1 (strained)→MP1 recalculation for a
+   reportable market event.
+7. `DebtCyclePositionCheck.jsx` was not driven through a browser (no UI
+   test harness in this pass), but the exact data it reads was verified
+   directly: the latest `big_cycle_stage_audit_log` row has `conditions.
+   rGreaterG: false` and `raw_inputs.effectiveRateGrowthSpread: -2.491`,
+   matching the component's `CONDITION_ROWS` keys and the new
+   `effectiveRateGrowthSpread` row's `metFn` exactly; `big_cycle_stage_
+   notes` has the inserted note as its only/latest row, matching the
+   component's `loadStageNote()` query (`order by created_at desc limit
+   1`). The component logic was fully read during implementation and
+   matches this data shape with no transformation gaps.
+8. Backfill: spot-checked 3 of the 124 `macro_snapshots` rows
+   (2026-06-25, 2026-09-01, 2026-11-13) against **freshly re-pulled**
+   FRED `DGS10`/`GDP` values (not reusing the earlier `/tmp` files) —
+   all three reproduce the stored value exactly by hand. The 2026-11-16
+   row shows `-0.768` (not the backfill's `-0.7676`) because step 1's
+   live `fetch-macro-data` run overwrote today's row on top of the
+   backfill — expected (today's date is always the live cron's own
+   write), not a backfill defect; both round to -0.77.
+9. Full test suite: 678/678 passing, 37/37 files; `npx next build`
+   clean.
+
+All mandatory-gate items confirmed live, not just by code read. Nothing
+outstanding from Phase 1.
