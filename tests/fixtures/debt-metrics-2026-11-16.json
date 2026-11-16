@@ -1,0 +1,55 @@
+{
+  "_comment": "Pulled live from macro_indicators / big_cycle_metrics / big_cycle_stages on 2026-11-16, per Phase 0 of docs/specs/debt-metrics-integrity.md. All values matched the spec's own snapshot list (see decisions log) except where noted.",
+  "pulled_at": "2026-11-16",
+  "source": "macro_indicators, big_cycle_metrics, big_cycle_stages (live query, not hand-typed)",
+  "macro_indicators": {
+    "total_debt_to_gdp_pct": 256.5,
+    "federal_debt_to_tax_revenue_x": 7.303,
+    "interest_expense_pct_gdp": 4.026,
+    "interest_expense_pct_federal_revenue": 24.593,
+    "rate_vs_gdp_growth_spread_current_definition": 3.034,
+    "dgs10_latest_pct": 5.1,
+    "real_gdp_growth_yoy_pct": 2.066,
+    "real_fed_funds_pct": 0.033,
+    "fed_balance_sheet_pct_gdp": 20.475,
+    "usd_share_fx_reserves_pct": 56.7,
+    "indirect_bidder_share_card_pct": 57.55,
+    "treasury_bid_to_cover": 2.53,
+    "treasury_convenience_yield_10y_bp": -45.86,
+    "foreign_official_custody_52w_change_billions": -221.218,
+    "foreign_official_share_ust_yoy_delta_pts": -2.13
+  },
+  "big_cycle_metrics": {
+    "debt_added_trailing_30d_billions": 264.6276188675781,
+    "deficit_pct_gdp_current_definition": 5.7527,
+    "debt_tax_revenue_multiple_x": 7.303,
+    "total_debt_to_gdp_all_sectors_pct": 256.5,
+    "debt_sustainability_gauge_1": 1.867
+  },
+  "debt_to_penny_live_2026_11_12": {
+    "tot_pub_debt_out_amt": 40608506856903.25,
+    "debt_held_public_amt": 32824386143424.80,
+    "note": "tot_pub_debt_out_amt = $40.61T, exact match to the spec's gross-debt snapshot figure."
+  },
+  "big_cycle_stages_current": {
+    "debt_cycle_label": "MP1 (strained)",
+    "debt_cycle_description": "Elevated deficits at full employment",
+    "other_concurrent_cycles_is_current_true": [
+      "Peak, contested (internal order/power)",
+      "Bad Financial Conditions + Conflict (external/geopolitical)"
+    ]
+  },
+  "classifier_conditions_live": {
+    "debtServiceStrained": true,
+    "rGreaterG_under_current_flawed_definition": true,
+    "fedPrintingRising": false,
+    "mp2Gate": false,
+    "mp3AuctionDemandWeak": false,
+    "mp3SomaAbsorbing": false
+  },
+  "discrepancies_vs_spec_snapshot": [
+    "indirect_bidder 'Position Check' 59.3% value not independently re-derived in Phase 0 -- the classifier's own trailing-6 pooled average (classifyDebtCycleStageV2's indirectBidderAvg6) wasn't recomputed from raw auction series within Phase 0's time budget; accepted the spec's stated 59.3 at face value since mp3AuctionDemandWeak's live false reading (needs >=57.5 to be true-safe) is consistent with it.",
+    "'gross debt $40.61T' is not itself a macro_indicators/big_cycle_metrics card -- confirmed instead directly from Treasury's debt_to_penny API (tot_pub_debt_out_amt), exact match.",
+    "trip-wire 'armed since 2026-02-20' date was not located in a dedicated persistence table within Phase 0's time budget -- no trip_wire-named table exists; likely computed on read or logged in big_cycle_event_scans/big_cycle_events. Flagged for whoever implements Phase 4b (the new fiscal_dominance_confirmed trip-wire) to locate precisely."
+  ]
+}
