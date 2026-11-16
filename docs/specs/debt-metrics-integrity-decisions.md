@@ -731,3 +731,70 @@ annual z-score composite; trip-wires don't reference
 
 Test suite: 684/684 passing (38 files, +6 new in `debtMetrics.test.ts`);
 `npx next build` clean.
+
+### Deployed (2026-11-16) — live verification
+
+Scott approved. Deployed `fetch-macro-data` and `update-big-cycle-metrics`
+via `supabase functions deploy` (CLI), preserving `verify_jwt` exactly
+(confirmed before and after: `fetch-macro-data=true`,
+`update-big-cycle-metrics=false`).
+
+**A real schema blocker caught live, not shipped silently**: the "Debt
+Burden" `refresh_method` UPDATE (`manual` → `api_macro_xref`) hit
+`big_cycle_determinants_refresh_method_check`, which only allowed
+`api_fred`/`api_imf`/`api_cofer`/`manual` — `api_macro_xref` was never a
+legal value on this table, even though its sibling `big_cycle_metrics`
+table already uses it extensively. The whole two-statement batch
+(including the unrelated "Debt Added" label rename) rolled back together
+on the first error — confirmed via a follow-up `SELECT` that the label
+hadn't changed either. Fixed with a small additive migration
+(`20261116_allow_api_macro_xref_on_big_cycle_determinants.sql`) widening
+the constraint to match `big_cycle_metrics`'s convention, then re-ran
+both UPDATEs successfully.
+
+**Live verification, in order:**
+
+1. Ran `fetch-macro-data`: `{"updated":73,"skipped":3,...}` — same 3
+   pre-existing stale indicators as Phase 1 (unrelated). Confirmed live:
+   "Interest Expense % of Federal Revenue" = **19.821%** (watch, was
+   24.6%/danger), metadata `nipa_pct_revenue: 24.6`; "Interest Expense %
+   GDP" = **3.301%** (watch, was 4.0%/danger), metadata `nipa_pct_gdp: 4`;
+   "Federal Debt / Tax Revenue" = 7.303x (unchanged headline) with
+   `metadata.debt_quarter: "2026-04-01"`, `fyfr_fiscal_year_end:
+   "2026-09-30"` (same FY — vintage assertion passed), and
+   `debt_held_public_vs_trailing12_receipts: 6.115` — all exact matches
+   to the hand-calc above. No `errors` key in the response — the
+   period-mismatch assertion did not fire on the real data path.
+2. Ran `update-big-cycle-metrics`: `debtCycleStage.conditions.
+   debtServiceStrained: false` (confirmed flipped), every other
+   condition unchanged (`rGreaterG/fedPrintingRising/mp2Gate/
+   mp3AuctionDemandWeak/mp3SomaAbsorbing` all `false`) → strainedCount
+   0 by inspection. `stage: "MP1"` — unchanged, exactly as predicted.
+   `debtBurdenText` in the response: `"256.5% total nonfinancial
+   debt/GDP (101.8% federal debt held by the public/GDP); 6.6%
+   deficit/GDP"` — exact match to the predicted text. Trip-wires
+   unchanged (`fiscal_dominance_confirmed` still armed since
+   2026-02-20, a pre-existing unrelated state).
+3. `big_cycle_stage_audit_log` latest row confirms the same
+   `debtServiceStrained: false` and `interestExpenseRevenuePct: 19.821`
+   persisted, not just present in the one-off response.
+4. `big_cycle_metrics`: `deficit_pct_gdp` = **6.5525...%** (displayed
+   6.6%), note includes the full MTS-window/GDP-window breakdown and the
+   CBO-gap explanation — matches the hand-calc exactly.
+   `debt_added_period`: label now **"Debt Added (Trailing 12 Months)"**,
+   value **$+2,466B** (2025-11-13 → 2026-11-13), note includes the 30-day
+   secondary figure (**$+287B**, 2026-10-14 → 2026-11-13) with the
+   "seasonal, Oct/Apr swings..." text — exactly per spec.
+5. `big_cycle_determinants` "Debt Burden": `reading_text` and
+   `refresh_method` ('api_macro_xref') both confirmed live after the
+   constraint fix and retry.
+6. Period-mismatch assertion: confirmed it did NOT fire on the real
+   "Interest Expense % of Federal Revenue" run (metadata carries
+   `basis`/`nipa_note`/window fields, no `period_mismatch` key) — the
+   intentional-misalignment throw path is already covered by
+   `tests/debtMetrics.test.ts`'s dedicated test, run again here only to
+   confirm normal operation stays clean, not re-tested against
+   intentionally bad dates in production.
+
+All mandatory-gate items and all five of the coordinator's specific
+verification asks confirmed live. Nothing outstanding from Phase 2.
