@@ -513,3 +513,221 @@ reran clean.
 
 All mandatory-gate items confirmed live, not just by code read. Nothing
 outstanding from Phase 1.
+
+## Phase 2 (2026-11-16)
+
+Built and committed per §3 Phase 2. Nothing deployed yet — same two-step
+gate as Phase 1. The two interest cards ("Interest Expense % GDP" and
+"Interest Expense % of Federal Revenue") can move the debt-cycle stage a
+second time (on top of Phase 1's rGreaterG flip), since `debtServiceStrained`
+reads straight off the revenue card's `current_value` — see the before/after
+table below.
+
+### A near-miss, caught before it shipped: MTS Table 1's duplicate-group trap
+
+Building the shared trailing-12 helper (`_shared/mtsFiscalData.ts`), my
+first-pass script summed MTS Table 1 by `classification_desc` alone
+(e.g. "November") and got a trailing-12 receipts figure of **$10,680B** —
+almost exactly double a plausible number. Root cause: every MTS Table 1
+report carries TWO groups under the same report `record_date` — the
+current fiscal year's actual months (`sequence_number_cd` starting
+`"2."`) AND the *prior* fiscal year's same-named calendar months, shown
+for year-over-year comparison (`sequence_number_cd` starting `"1."`).
+Both groups can be labeled with the identical `classification_desc`
+("November," "February," ...) for a given report, with completely
+different dollar values. A naive "match this month's own name" filter
+sums both groups.
+
+Fixed by requiring `sequence_number_cd.startsWith("2.")` in addition to
+the month-name match — confirmed by hand against the live API (see the
+raw November 2025 example: line_code 170/seq "2.2" = $336.0B is the real
+November 2025 actual; line_code 30/seq "1.2" = $301.8B turned out to be
+November **2024**, the prior-FY comparison row, shown under the same
+`classification_desc`). Re-ran with the fix: trailing-12 receipts
+**$5,367.776B**, deficit **$2,112.242B** — both within ~$0.1B of Phase
+0's original figures (confirming Phase 0's hand-pull, done differently,
+happened to avoid this trap). Added a regression test
+(`tests/debtMetrics.test.ts`, "MTS Table 1 trailing-12 deficit —
+current-vs-prior-FY duplicate-group trap") with a mocked API response
+carrying both groups, asserting only the `"2."` group is summed. MTS
+Table 9 (net interest) has no such duplication — confirmed by direct
+query — so `fetchMtsNetInterestTrailing12` doesn't need the guard.
+
+### 2a: Deficit % GDP
+
+Primary: trailing-12-month MTS deficit ÷ trailing-4-quarter nominal GDP
+(sum of each quarter's SAAR ÷ 4). Fallback: `FYFSGDA188S`, now labeled
+`FY<year> (annual)` in `note_suffix` so its vintage is visible whenever
+the live calc fails and this fires.
+
+```
+Deficit trailing-12 (Nov 2025-Oct 2026, MTS table 1):  $2,112.242B
+Nominal GDP trailing-4Q (sum of 4 SAAR quarters ÷ 4):   $32,235.466B
+Deficit % GDP = 2,112.242 / 32,235.466 * 100         =  6.553%
+```
+
+**Gap vs. CBO's 6.2% (FY2026, MBR Nov 9 2026): 0.353pts.** Re-confirmed
+the Phase 0 explanation with the now-properly-deduped numbers: the MTS
+trailing-12 window (Nov 2025-Oct 2026) is shifted one month forward of
+CBO's FY2026 window (Oct 2025-Sep 2026) — it drops Oct 2025 (deficit
+$284.35B, pulled fresh from the Oct 2025 report's own current-year-group
+row) and picks up Oct 2026 (deficit $404.06B), a swing of +$119.71B ≈
++0.371pts of GDP. That alone slightly over-explains the observed
+0.353pt gap — consistent with (not a new finding beyond) Phase 0's own
+"timing shift" explanation, just reconfirmed on corrected data. Not a
+data error.
+
+### 2b: Interest basis — the critical before/after number
+
+**`debtServiceStrained` (> 20% checkpoint) flips from TRUE to FALSE.**
+
+```
+Net interest trailing-12 (MTS table 9, Nov 2025-Oct 2026):  $1,063.959B
+Federal receipts trailing-12 (MTS table 1, SAME window):    $5,367.776B
+Net interest / receipts = 1,063.959 / 5,367.776 * 100     =  19.821%
+                                                    (was 24.593% NIPA)
+```
+
+19.821% is under the 20% line — `debtServiceStrained` goes from `true` to
+`false`. Also recomputed net interest / GDP for the "Interest Expense %
+GDP" card: `1,063.959 / 32,235.466 * 100 = 3.301%` (was 4.026% NIPA) —
+a status downgrade from "danger" to "watch" under that card's unchanged
+`<2 healthy / <4 watch / else danger` thresholds (NIPA's 4.026 was just
+over the danger line; net interest's 3.301 is comfortably inside watch).
+
+Both cards' headline switched to the net-interest/MTS basis; the old
+NIPA-basis calc (`A091RC1Q027SBEA`/GDP or /FYFR) moves to
+`metadata.nipa_pct_gdp` / `metadata.nipa_pct_revenue`, rendered as a
+second line on the card (`app/macro/page.jsx` `IndicatorCard`) labeled
+"NIPA basis ... incl. imputed pension interest," not hidden. Dalio's 20%
+checkpoint in `classifyDebtCycleStageV2` needed **no classifier code
+change** — `debtServiceStrained` reads `rawInputs.interestExpenseRevenuePct`,
+itself sourced from `macro_indicators` "Interest Expense % of Federal
+Revenue" `current_value` via `computeMacroCrossRefUpdates`'s existing
+name-based lookup, so swapping that card's underlying calculation
+basis is sufficient — confirmed by re-reading `updateDebtCycleStage()`'s
+wiring, not assumed.
+
+**Period-alignment assertion** (`assertPeriodAligned` in
+`_shared/mtsFiscalData.ts`): both `interest_net_revenue_pct`'s current and
+previous windows are checked to share the same `[windowStart, windowEnd]`
+before the ratio is computed; throws `period mismatch: ...` otherwise.
+Tested two ways: (1) `tests/debtMetrics.test.ts` calls it directly with
+intentionally misaligned windows and confirms the throw (and the pass
+case with aligned windows); (2) the `interest_net_revenue_pct` case in
+`fetch-macro-data/index.ts` catches that specific error locally (string-
+matched on `"period mismatch"`, so a genuine network/fetch failure isn't
+mislabeled) and returns a row with `metadata.period_mismatch = true`
+instead of silently skipping the refresh — `app/macro/page.jsx`'s
+`IndicatorCard` renders "Period mismatch — numerator/denominator cover
+different windows" in place of the number whenever that flag is set, per
+the spec's literal "the card shows 'period mismatch'" requirement (a bare
+skip-and-log would only have been visible in the function's own JSON
+response, not on the dashboard).
+
+### 2c: Federal Debt / Tax Revenue — vintage assertion + drawer
+
+Kept `GFDEBTN / FYFR`. Added an assertion: FYFR's fiscal year (from its
+own `observation_date`, which FRED dates at the FY's own Sep 30 close)
+must equal or immediately precede GFDEBTN's quarter's fiscal year
+(federal FY starts Oct 1). Currently: GFDEBTN latest = **2026-04-01** (Q2
+2026, FY2026 — FRED's quarterly federal-debt series is 1-2 quarters
+stale relative to today by its own normal publication cadence, a
+structural lag, not a new finding); FYFR latest = **2026-09-30** (FY2026).
+Same FY — assertion passes. (If GFDEBTN ever advances to a Q4 2026 or
+later reading before FYFR catches up, the FYs would differ by one and
+the assertion would still pass per the spec's "matches or immediately
+precedes" wording; it would only throw on a 2+ FY gap, which would mean
+one of the two series has gone genuinely stale.)
+
+Drawer addition: debt held by the public ÷ trailing-12 receipts (MTS) —
+the measure that pairs with Phase 1b's r_eff, as the spec asks:
+
+```
+Debt held by the public (2026-11-13, debt_to_penny): $32,825.322B
+Receipts trailing-12 (MTS table 1):                   $5,367.776B
+Ratio = 32,825.322 / 5,367.776                      =  6.115x
+```
+
+(For contrast, the existing gross-debt-based headline, GFDEBTN/FYFR, is
+**7.303x** — the two numbers measure different things on purpose: gross
+debt includes ~$7.8T of intragovernmental holdings the held-by-public
+figure excludes.)
+
+### 2d: Debt Added — trailing-12 headline
+
+Headline switched from trailing-30-day to trailing-12-month change; the
+30-day figure moved into `note_suffix` as a secondary line tagged
+"seasonal." Both now pulled via `fetchDebtAddedTrailing(days)`
+(`_shared/mtsFiscalData.ts`), which filters `debt_to_penny` by
+`record_date` (`lte`/`gte` the target cutoff), not a fixed row count —
+so a run of market holidays can never silently shrink the window the way
+the old `page[size]=22` approach could.
+
+**Pending at deploy** (not yet written — live-visible, held for the
+gate): `big_cycle_metrics` row `debt_added_period`'s static `label`
+column currently reads "Debt Added (Trailing 30 Days)" — needs updating
+to "Debt Added (Trailing 12 Months)" to match the new headline. This is
+a one-time `UPDATE ... SET label = ...` alongside the refresh_method
+change below, not a code change (the update loop only ever touches
+`value_numeric`/`value_display`/`status`/`note`/`last_updated`, never
+`label`).
+
+### 2e: Debt Burden determinant
+
+Built live from three figures (per spec): total nonfinancial debt/GDP
+(existing `debt_to_gdp` cross-ref, all sectors), federal debt **held by
+the public** /GDP (new — was gross federal debt/GDP, a materially
+different and larger number), and the 2a deficit %GDP figure.
+
+```
+Total nonfinancial debt/GDP (unchanged, all-sector):        256.5%
+Federal debt HELD BY THE PUBLIC / trailing-4Q nominal GDP:
+  32,825.322 / 32,235.466 * 100                         =   101.83%
+  (old reading_text used GROSS federal debt/GDP: 40,616.678 /
+   32,235.466 * 100 = 126.0%, close to the old hardcoded "124.6%" —
+   the public/gross distinction is the real, intentional change here)
+Deficit % GDP (2a, same run):                                6.553%
+```
+
+New `reading_text` (built live in `update-big-cycle-metrics/index.ts`,
+not hardcoded): `"256.5% total nonfinancial debt/GDP (101.8% federal
+debt held by the public/GDP); 6.6% deficit/GDP"` — replacing the old
+manually-typed `"254.5% total nonfinancial debt/GDP (124.6% federal
+debt/GDP); 5.8% deficit/GDP"`. Every number in the new string is now
+traceable to a live card.
+
+**Pending at deploy** (not yet written — live-visible, held for the
+gate): `big_cycle_determinants` row "Debt Burden"'s `refresh_method`
+column, currently `'manual'`, needs `UPDATE ... SET refresh_method =
+'api_macro_xref'` — a labeling/metadata correctness fix per spec 2e, not
+a gate on the write itself (the new code writes `reading_text`
+unconditionally once deployed, regardless of this column's value).
+
+### Mandatory before-deploy report (rollout-order rule, §4)
+
+Nothing below has been deployed. All Phase 2 work is committed to code
+only; the two pending DB writes above (the `label` rename and the
+`refresh_method` change) are also held.
+
+| | Before (live today) | After (once deployed) |
+|---|---|---|
+| `debtServiceStrained` | **true** (24.593% NIPA, > 20%) | **false** (19.821% net-interest/receipts, < 20%) |
+| `rGreaterG` | false (already flipped in Phase 1) | false (unchanged) |
+| `fedPrintingRising` / `mp2Gate` / `mp3AuctionDemandWeak` / `mp3SomaAbsorbing` | all false | unchanged |
+| `strainedCount` | 1 | **0** |
+| **Stage** | `MP1` | `MP1` (no additional flip — Phase 1 already moved it off "MP1 (strained)"; dropping strainedCount from 1 to 0 doesn't cross a threshold a second time) |
+| "Interest Expense % of Federal Revenue" card | 24.6% NIPA (danger) | 19.8% net interest (watch) |
+| "Interest Expense % GDP" card | 4.0% NIPA (danger) | 3.3% net interest (watch) |
+| "Deficit % GDP" (`deficit_pct_gdp`) | 5.8% (FYFSGDA188S annual) | 6.6% (MTS trailing-12/GDP4Q, primary) |
+| "Federal Debt / Tax Revenue" card | 7.30x, no vintage label | 7.30x (unchanged headline) + vintage label + 6.12x held-by-public drawer figure |
+| "Debt Added" card | $+265B trailing-30-day headline | trailing-12-month headline (new figure, 30-day moves to note as secondary/seasonal) |
+| "Debt Burden" determinant | manual, "124.6% federal debt/GDP" (gross) | live, "101.8% federal debt held by the public/GDP" |
+
+Debt Sustainability gauge and all four trip-wires: **unaffected** —
+confirmed by code read (same reasoning as Phase 1: gauge is a separate
+annual z-score composite; trip-wires don't reference
+`interestExpenseRevenuePct`/`rateGrowthSpread`).
+
+Test suite: 684/684 passing (38 files, +6 new in `debtMetrics.test.ts`);
+`npx next build` clean.

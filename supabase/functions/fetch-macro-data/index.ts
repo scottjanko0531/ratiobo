@@ -1,6 +1,14 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import * as XLSX from "npm:xlsx";
+import {
+  fetchMtsTable1Trailing12,
+  fetchMtsNetInterestTrailing12,
+  fetchTrailingNominalGdp4Q,
+  fetchDebtHeldPublicLatest,
+  assertPeriodAligned,
+} from "../_shared/mtsFiscalData.ts";
+import { findYearAgo, yoyPair } from "../_shared/yoyMath.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -74,31 +82,8 @@ async function fetchYahooTicker(ticker: string, range: string): Promise<{ date: 
 const fetchYahooGold   = (range: string) => fetchYahooTicker("GC=F", range);
 const fetchYahooSilver = (range: string) => fetchYahooTicker("SI=F", range);
 
-function findYearAgo(
-  obs: { date: string; value: number }[],
-  refDate: string
-): { date: string; value: number } | undefined {
-  const d = new Date(refDate);
-  const targetYear  = d.getUTCFullYear() - 1;
-  const targetMonth = d.getUTCMonth();
-  return obs.find((o) => {
-    const od = new Date(o.date);
-    return od.getUTCFullYear() === targetYear && od.getUTCMonth() === targetMonth;
-  });
-}
-
-function yoyPair(
-  obs: { date: string; value: number }[]
-): { current: number; previous: number } | null {
-  if (obs.length < 2) return null;
-  const ya0 = findYearAgo(obs, obs[0].date);
-  const ya1 = findYearAgo(obs, obs[1].date);
-  if (!ya0 || !ya1) return null;
-  return {
-    current:  (obs[0].value / ya0.value - 1) * 100,
-    previous: (obs[1].value / ya1.value - 1) * 100,
-  };
-}
+// findYearAgo / yoyPair live in _shared/yoyMath.ts (Vitest-importable; this
+// file's module-scope Deno.env.get(...)! calls aren't).
 
 async function fetchFredAnnual(seriesId: string): Promise<{ year: number; value: number }[]> {
   const url = `${FRED}?series_id=${seriesId}&api_key=${apiKey}&frequency=a&aggregation_method=avg&sort_order=asc&file_type=json&limit=200`;
@@ -215,8 +200,8 @@ interface Indicator {
     | "treasurydirect"
     | "supabase_debt_cycle"
     | "debt_tax_ratio"
-    | "interest_gdp_pct"
-    | "interest_revenue_pct"
+    | "interest_net_gdp_pct"
+    | "interest_net_revenue_pct"
     | "level_minus_yoy_quarterly"
     | "level_minus_nominal_yoy_quarterly"
     | "effective_rate_minus_nominal_yoy"
@@ -272,17 +257,17 @@ const INDICATORS: Indicator[] = [
   {
     name: "Interest Expense % GDP",
     layer: 1, layer_name: "Long-term Debt Cycle",
-    description: "Federal interest payments as % of GDP — debt service burden",
+    description: "Net interest outlays (Treasury MTS, trailing 12 months) as % of trailing-4-quarter nominal GDP — debt service burden on a cash/budget basis. NIPA basis (incl. imputed pension interest) shown in the drawer.",
     fred_series_id: null, unit: "%", data_source: "computed", sort_order: 3,
-    series: "A091RC1Q027SBEA", series2: "GDP", type: "interest_gdp_pct",
+    series: "A091RC1Q027SBEA", series2: "GDP", type: "interest_net_gdp_pct",
     statusFn: v => v < 2 ? "healthy" : v < 4 ? "watch" : "danger",
   },
   {
     name: "Interest Expense % of Federal Revenue",
     layer: 1, layer_name: "Long-term Debt Cycle",
-    description: "Federal interest payments as % of federal tax receipts — Dalio's classic debt-service-relative-to-revenue test (\"plaque in the circulatory system\"): how much of what the government collects is already spoken for by servicing debt already issued, before a dollar of new borrowing.",
+    description: "Net interest outlays (Treasury MTS, trailing 12 months) as % of trailing-12-month federal receipts (MTS) — Dalio's classic debt-service-relative-to-revenue test (\"plaque in the circulatory system\") on the net-interest basis he quotes the ~20% checkpoint against. NIPA basis (incl. imputed pension interest) shown in the drawer.",
     fred_series_id: null, unit: "%", data_source: "computed", sort_order: 8,
-    series: "A091RC1Q027SBEA", series2: "FYFR", type: "interest_revenue_pct",
+    series: "A091RC1Q027SBEA", series2: "FYFR", type: "interest_net_revenue_pct",
     statusFn: v => v < 10 ? "healthy" : v < 20 ? "watch" : "danger",
   },
   {
@@ -1188,24 +1173,107 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         break;
       }
       case "debt_tax_ratio": {
-        const [debt, tax] = await Promise.all([fetchFred(ind.series!, 2), fetchFred(ind.series2!, 2)]);
-        if (debt.length < 2 || tax.length < 2) return null;
-        current = debt[0] / tax[0]; previous = debt[1] / tax[1];
+        // Phase 2c: assert FYFR's fiscal year matches or immediately precedes
+        // the debt quarter's fiscal year (federal FY starts Oct 1, so a
+        // calendar date's FY = year+1 if month >= Oct, else year) — GFDEBTN
+        // is quarterly and lags FRED's publication schedule by 1-2 quarters,
+        // so this assertion is about internal consistency between the two
+        // series, not freshness against "today."
+        const fyOf = (dateStr: string) => {
+          const d = new Date(dateStr + "T00:00:00Z");
+          const m = d.getUTCMonth(); // 0-indexed; >= 9 means Oct/Nov/Dec
+          return d.getUTCFullYear() + (m >= 9 ? 1 : 0);
+        };
+        const [debtObs, taxObs] = await Promise.all([fetchFredObs(ind.series!, 2), fetchFredObs(ind.series2!, 2)]);
+        if (debtObs.length < 2 || taxObs.length < 2) return null;
+        const debtFy = fyOf(debtObs[0].date);
+        const taxFy = fyOf(taxObs[0].date);
+        if (taxFy !== debtFy && taxFy !== debtFy - 1) {
+          throw new Error(`debt_tax_ratio: FYFR fiscal year ${taxFy} (as of ${taxObs[0].date}) doesn't match or immediately precede the debt quarter's fiscal year ${debtFy} (as of ${debtObs[0].date})`);
+        }
+        current = debtObs[0].value / taxObs[0].value; previous = debtObs[1].value / taxObs[1].value;
+        try {
+          const [debtPublic, mtsTrailing12] = await Promise.all([
+            fetchDebtHeldPublicLatest(),
+            fetchMtsTable1Trailing12(),
+          ]);
+          metadata = {
+            debt_quarter: debtObs[0].date, fyfr_fiscal_year_end: taxObs[0].date,
+            debt_held_public_vs_trailing12_receipts: Math.round((debtPublic.heldByPublicB / mtsTrailing12.receiptsB) * 1000) / 1000,
+            debt_held_public_b: Math.round(debtPublic.heldByPublicB * 10) / 10,
+            trailing12_receipts_b: Math.round(mtsTrailing12.receiptsB * 10) / 10,
+          };
+        } catch (e) { console.error("[debt_tax_ratio] drawer metadata:", e); }
         break;
       }
-      case "interest_gdp_pct": {
-        const [interest, gdp] = await Promise.all([fetchFred(ind.series!, 2), fetchFred(ind.series2!, 2)]);
-        if (interest.length < 2 || gdp.length < 2) return null;
-        current = interest[0] / gdp[0] * 100; previous = interest[1] / gdp[1] * 100;
+      case "interest_net_gdp_pct": {
+        // Headline: net interest (MTS trailing-12) / trailing-4-quarter
+        // nominal GDP. NIPA basis (incl. imputed pension interest, the old
+        // headline) moves to metadata — Phase 2b.
+        const [netInterest, gdp4q] = await Promise.all([
+          fetchMtsNetInterestTrailing12(),
+          fetchTrailingNominalGdp4Q(apiKey),
+        ]);
+        current = (netInterest.netInterestB / gdp4q.gdpB) * 100;
+        // "Previous": same calc one month earlier.
+        const prevAsOf = new Date(); prevAsOf.setUTCMonth(prevAsOf.getUTCMonth() - 1);
+        const [netInterestPrev, gdp4qPrev] = await Promise.all([
+          fetchMtsNetInterestTrailing12(prevAsOf),
+          fetchTrailingNominalGdp4Q(apiKey, prevAsOf),
+        ]);
+        previous = (netInterestPrev.netInterestB / gdp4qPrev.gdpB) * 100;
+        const [nipaInterest, nipaGdp] = await Promise.all([fetchFred(ind.series!, 1), fetchFred(ind.series2!, 1)]);
+        metadata = {
+          basis: "net_interest_mts_trailing12",
+          nipa_pct_gdp: nipaInterest.length && nipaGdp.length ? Math.round((nipaInterest[0] / nipaGdp[0]) * 1000) / 10 : null,
+          nipa_note: "NIPA basis (incl. imputed pension interest)",
+          window_start: netInterest.windowStart, window_end: netInterest.windowEnd,
+        };
         break;
       }
-      case "interest_revenue_pct": {
-        // A091RC1Q027SBEA is Billions $ (SAAR, quarterly); FYFR is Millions $
-        // (annual) — same mismatch debt_tax_ratio's GFDEBTN/FYFR pair avoids by
-        // both already being in Millions. Scale interest to Millions first.
-        const [interest, revenue] = await Promise.all([fetchFred(ind.series!, 2), fetchFred(ind.series2!, 2)]);
-        if (interest.length < 2 || revenue.length < 2) return null;
-        current = (interest[0] * 1000) / revenue[0] * 100; previous = (interest[1] * 1000) / revenue[1] * 100;
+      case "interest_net_revenue_pct": {
+        // Headline: net interest (MTS trailing-12) / federal receipts (MTS
+        // trailing-12, SAME window) — Dalio's 20% checkpoint now compares
+        // against this, not the NIPA figure. Period-alignment assertion:
+        // both sides must cover the exact same trailing-12-month window. By
+        // construction (both windows anchored to the same findLatestPublished
+        // MonthEnd call) these should never actually diverge — but if the
+        // shared module's logic ever changes and they do, this must be
+        // visible on the card itself (per spec), not just a skipped refresh.
+        try {
+          const [netInterest, receipts] = await Promise.all([
+            fetchMtsNetInterestTrailing12(),
+            fetchMtsTable1Trailing12(),
+          ]);
+          assertPeriodAligned([
+            { label: "net interest", windowStart: netInterest.windowStart, windowEnd: netInterest.windowEnd },
+            { label: "receipts", windowStart: receipts.windowStart, windowEnd: receipts.windowEnd },
+          ]);
+          current = (netInterest.netInterestB / receipts.receiptsB) * 100;
+          const prevAsOf = new Date(); prevAsOf.setUTCMonth(prevAsOf.getUTCMonth() - 1);
+          const [netInterestPrev, receiptsPrev] = await Promise.all([
+            fetchMtsNetInterestTrailing12(prevAsOf),
+            fetchMtsTable1Trailing12(prevAsOf),
+          ]);
+          assertPeriodAligned([
+            { label: "net interest (prev)", windowStart: netInterestPrev.windowStart, windowEnd: netInterestPrev.windowEnd },
+            { label: "receipts (prev)", windowStart: receiptsPrev.windowStart, windowEnd: receiptsPrev.windowEnd },
+          ]);
+          previous = (netInterestPrev.netInterestB / receiptsPrev.receiptsB) * 100;
+          const [nipaInterest, nipaRevenue] = await Promise.all([fetchFred(ind.series!, 1), fetchFred(ind.series2!, 1)]);
+          metadata = {
+            basis: "net_interest_mts_trailing12",
+            nipa_pct_revenue: nipaInterest.length && nipaRevenue.length ? Math.round(((nipaInterest[0] * 1000) / nipaRevenue[0]) * 1000) / 10 : null,
+            nipa_note: "NIPA basis (incl. imputed pension interest)",
+            window_start: netInterest.windowStart, window_end: netInterest.windowEnd,
+          };
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!msg.startsWith("period mismatch")) throw e; // a genuine fetch/network failure, not a mismatch — let the outer catch skip this refresh normally
+          console.error("[interest_net_revenue_pct] period mismatch:", msg);
+          current = 0; previous = 0;
+          metadata = { period_mismatch: true, period_mismatch_detail: msg };
+        }
         break;
       }
       case "level_minus_yoy_quarterly": {

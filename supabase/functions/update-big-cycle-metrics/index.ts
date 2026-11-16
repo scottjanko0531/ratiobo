@@ -9,6 +9,12 @@ import {
   evalFiscalDominanceConfirmed,
   TripWireResult,
 } from "../_shared/debtCycleTripWires.ts";
+import {
+  fetchMtsTable1Trailing12,
+  fetchTrailingNominalGdp4Q,
+  fetchDebtHeldPublicLatest,
+  fetchDebtAddedTrailing,
+} from "../_shared/mtsFiscalData.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -79,16 +85,35 @@ async function computeFredUpdates(): Promise<FredUpdatesResult> {
     updates.push({ key: "fed_funds_rate", value_numeric: fedFundsUpper.value, value_display: pct1(fedFundsUpper.value) });
   }
 
-  const deficit = await fredLatest("FYFSGDA188S");
-  if (deficit) {
-    const mag = Math.abs(deficit.value);
+  // Phase 2a (debt-metrics-integrity spec): primary = trailing-12-month MTS
+  // deficit ÷ trailing-4-quarter nominal GDP (FRED GDP SAAR, summed/4 per
+  // quarter — see fetchTrailingNominalGdp4Q); only falls back to
+  // FYFSGDA188S (a stale, signed annual-FY series) if the live Treasury/FRED
+  // pull fails, and labels that fallback explicitly so its age is visible.
+  try {
+    const [mtsDeficit, gdp4q] = await Promise.all([fetchMtsTable1Trailing12(), fetchTrailingNominalGdp4Q(FRED_KEY)]);
+    const mag = (mtsDeficit.deficitB / gdp4q.gdpB) * 100;
     deficitAbs = mag;
     updates.push({
       key: "deficit_pct_gdp", value_numeric: mag, value_display: pct1(mag),
-      note_suffix: `Federal deficit as % of GDP (annual). FRED series is signed; displayed here as positive magnitude.`,
+      note_suffix: `Trailing-12-month MTS deficit ($${mtsDeficit.deficitB.toFixed(0)}B, ${mtsDeficit.windowStart} to ${mtsDeficit.windowEnd}) ÷ trailing-4-quarter nominal GDP ($${gdp4q.gdpB.toFixed(0)}B, sum of each quarter's SAAR value ÷ 4). CBO's FY2026 figure (Oct 2025-Sep 2026) runs about 0.3-0.4pts lower — this window is shifted one month forward (drops Oct 2025, picks up Oct 2026), a timing difference, not a data error.`,
       status: mag > 6 ? "bad" : mag > 3 ? "warn" : "good",
       status_label: mag > 6 ? "Wide" : mag > 3 ? "Structural" : "Contained",
     });
+  } catch (e) {
+    console.error("[deficit_pct_gdp] MTS/GDP primary calc failed, falling back to FYFSGDA188S:", e);
+    const deficit = await fredLatest("FYFSGDA188S");
+    if (deficit) {
+      const mag = Math.abs(deficit.value);
+      const fy = new Date(deficit.date).getUTCFullYear();
+      deficitAbs = mag;
+      updates.push({
+        key: "deficit_pct_gdp", value_numeric: mag, value_display: pct1(mag),
+        note_suffix: `FY${fy} (annual) — fallback figure; the live MTS trailing-12/GDP calculation failed this run. FRED series is signed; displayed here as positive magnitude.`,
+        status: mag > 6 ? "bad" : mag > 3 ? "warn" : "good",
+        status_label: mag > 6 ? "Wide" : mag > 3 ? "Structural" : "Contained",
+      });
+    }
   }
 
   const top1 = await fredLatest("WFRBST01134");
@@ -353,25 +378,26 @@ async function computeThreatsAgainstCongressUpdate(sb: ReturnType<typeof createC
   return null;
 }
 
+// Phase 2d (debt-metrics-integrity spec): headline is now the trailing-12-
+// month change (was trailing-30-day); the 30-day figure moves into the note
+// as a secondary line flagged seasonal. Both pulled by date filter, not a
+// fixed row count, so a run of market holidays never silently shrinks the
+// window (fetchDebtAddedTrailing filters debt_to_penny by record_date).
 async function computeTreasuryUpdate(): Promise<Update | null> {
   try {
-    // Treasury publishes on business days only — 22 records ≈ one calendar month.
-    const url = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/debt_to_penny?sort=-record_date&page[size]=22";
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const j = await res.json();
-    const rows = (j.data ?? []) as { record_date: string; tot_pub_debt_out_amt: string }[];
-    if (rows.length < 2) return null;
-    const latest = parseFloat(rows[0].tot_pub_debt_out_amt);
-    const monthAgo = parseFloat(rows[rows.length - 1].tot_pub_debt_out_amt);
-    if (isNaN(latest) || isNaN(monthAgo)) return null;
-    const added = latest - monthAgo;
-    const addedB = added / 1e9;
+    const [trailing12mo, trailing30d] = await Promise.all([
+      fetchDebtAddedTrailing(365),
+      fetchDebtAddedTrailing(30),
+    ]);
     return {
-      key: "debt_added_period", value_numeric: addedB, value_display: `$${addedB >= 0 ? "+" : ""}${addedB.toFixed(0)}B`,
-      note_suffix: `${rows[rows.length - 1].record_date} → ${rows[0].record_date}. Total debt: $${(latest / 1e12).toFixed(2)}T.`,
+      key: "debt_added_period", value_numeric: trailing12mo.addedB,
+      value_display: `$${trailing12mo.addedB >= 0 ? "+" : ""}${trailing12mo.addedB.toFixed(0)}B`,
+      note_suffix: `${trailing12mo.startDate} → ${trailing12mo.endDate} (trailing 12 months). ` +
+        `Trailing 30 days: $${trailing30d.addedB >= 0 ? "+" : ""}${trailing30d.addedB.toFixed(0)}B ` +
+        `(${trailing30d.startDate} → ${trailing30d.endDate}) — seasonal, Oct/Apr swings are tax- and ` +
+        `fiscal-year-timing driven. Total debt: $${(trailing12mo.endB / 1000).toFixed(2)}T.`,
     };
-  } catch { return null; }
+  } catch (e) { console.error("[debt_added_period]:", e); return null; }
 }
 
 async function computeImfUpdate(): Promise<Update | null> {
@@ -921,7 +947,30 @@ Deno.serve(async (req: Request) => {
       }).eq("name", determinantName);
     }
 
-    return json({ updated, skipped, total: allUpdates.length, debtCycleStage: stageResult, tripWires, timestamp: now });
+    // Phase 2e: "Debt Burden" determinant — was refresh_method 'manual' with
+    // a hand-typed reading_text ("124.6% federal debt/GDP" — gross debt, not
+    // debt HELD BY THE PUBLIC, the figure that actually represents external
+    // repayment burden). Built live from three already-computed figures:
+    // total nonfinancial debt/GDP (all sectors), federal debt held by the
+    // public/GDP, and the 2a deficit %GDP figure. Requires the DB's
+    // big_cycle_determinants.refresh_method for this row to be switched to
+    // 'api_macro_xref' (held for deploy approval along with everything else
+    // live-visible — see decisions log).
+    let debtBurdenText: string | null = null;
+    try {
+      const totalDebtGdp = allUpdates.find((x) => x.key === "debt_to_gdp");
+      const deficitPctGdp = allUpdates.find((x) => x.key === "deficit_pct_gdp");
+      const [debtPublic, gdp4q] = await Promise.all([fetchDebtHeldPublicLatest(), fetchTrailingNominalGdp4Q(FRED_KEY)]);
+      const debtPublicGdpPct = (debtPublic.heldByPublicB / gdp4q.gdpB) * 100;
+      if (totalDebtGdp && deficitPctGdp) {
+        debtBurdenText = `${totalDebtGdp.value_display} total nonfinancial debt/GDP (${debtPublicGdpPct.toFixed(1)}% federal debt held by the public/GDP); ${deficitPctGdp.value_display} deficit/GDP`;
+      }
+    } catch (e) { console.error("[big-cycle] Debt Burden determinant:", e); }
+    if (debtBurdenText) {
+      await sb.from("big_cycle_determinants").update({ reading_text: debtBurdenText }).eq("name", "Debt Burden");
+    }
+
+    return json({ updated, skipped, total: allUpdates.length, debtCycleStage: stageResult, tripWires, debtBurdenText, timestamp: now });
   } catch (e) {
     return json({ error: String(e) }, 500);
   }

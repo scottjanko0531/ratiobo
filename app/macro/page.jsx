@@ -252,7 +252,11 @@ function IndicatorCard({ ind, onSave, onClick, note }) {
         </div>
       </div>
       <div className="flex items-baseline gap-2">
-        {ind.current_value != null ? (
+        {ind.metadata?.period_mismatch ? (
+          <p className="text-loss text-sm italic" title={ind.metadata.period_mismatch_detail ?? undefined}>
+            Period mismatch — numerator/denominator cover different windows
+          </p>
+        ) : ind.current_value != null ? (
           <>
             <p className="num text-xl">{formatValue(ind.current_value, ind.unit)}</p>
             <ChangeArrow change={ind.change_value} unit={ind.unit} />
@@ -283,6 +287,27 @@ function IndicatorCard({ ind, onSave, onClick, note }) {
           </span>
           <span className="text-[10px] text-paper-dim/50">10yr</span>
         </div>
+      )}
+      {(ind.metadata?.nipa_pct_gdp != null || ind.metadata?.nipa_pct_revenue != null) && (
+        <p className="text-paper-dim text-xs">
+          NIPA basis <span className="num text-paper">{(ind.metadata.nipa_pct_gdp ?? ind.metadata.nipa_pct_revenue).toFixed(1)}%</span>
+          <span className="mx-1 opacity-40">·</span>
+          {ind.metadata.nipa_note ?? "incl. imputed pension interest"}
+        </p>
+      )}
+      {ind.metadata?.r_eff != null && (
+        <p className="text-paper-dim text-xs">
+          r_eff <span className="num text-paper">{ind.metadata.r_eff.toFixed(2)}%</span>
+          <span className="mx-1 opacity-40">·</span>
+          10Y − r_eff <span className="num text-paper">{ind.metadata.convergence_gap >= 0 ? "+" : ""}{Number(ind.metadata.convergence_gap).toFixed(2)}pts</span>
+        </p>
+      )}
+      {ind.metadata?.debt_held_public_vs_trailing12_receipts != null && (
+        <p className="text-paper-dim text-xs">
+          Debt (public) / trailing-12 receipts <span className="num text-paper">{Number(ind.metadata.debt_held_public_vs_trailing12_receipts).toFixed(2)}x</span>
+          <span className="mx-1 opacity-40">·</span>
+          vintage: debt {ind.metadata.debt_quarter}, FYFR FY end {ind.metadata.fyfr_fiscal_year_end}
+        </p>
       )}
       <p className="text-paper-dim text-xs leading-snug line-clamp-2">{ind.description}</p>
     </div>
