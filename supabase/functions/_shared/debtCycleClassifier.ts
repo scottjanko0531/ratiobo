@@ -19,7 +19,8 @@ export interface WeeklyPoint {
 export interface ClassifierInput {
   fedFundsMid: number;
   interestExpenseRevenuePct: number;
-  rateGrowthSpread: number; // r - g
+  rateGrowthSpread: number; // r - g (DGS10 minus nominal GDP YoY; see debt-metrics-integrity spec Phase 1a)
+  effectiveRateGrowthSpread: number | null; // r_eff - g; informational only, not a gate (Phase 1b)
   debtToTaxRevenueX: number | null; // informational only, not a gate
   walclPctGdpSeries: WeeklyPoint[]; // most-recent-first
   indirectBidderShareSeries: WeeklyPoint[]; // trailing auctions, most-recent-first
@@ -158,6 +159,7 @@ export function classifyDebtCycleStageV2(input: ClassifierInput): ClassifierResu
       fedFundsMid: input.fedFundsMid,
       interestExpenseRevenuePct: input.interestExpenseRevenuePct,
       rateGrowthSpread: input.rateGrowthSpread,
+      effectiveRateGrowthSpread: input.effectiveRateGrowthSpread,
       debtToTaxRevenueX: input.debtToTaxRevenueX,
       indirectBidderShareAvg6: indirectBidderAvg6,
       bidToCoverAvg6: bidToCoverAvg6,

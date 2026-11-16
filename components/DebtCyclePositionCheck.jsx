@@ -17,7 +17,14 @@ const STAGE_META = {
 
 const CONDITION_ROWS = [
   { key: "debtServiceStrained", label: "Debt service strained", detail: (r) => r?.interestExpenseRevenuePct != null ? `Interest expense ${r.interestExpenseRevenuePct.toFixed(1)}% of revenue (> 20% threshold)` : null },
-  { key: "rGreaterG", label: "r > g", detail: (r) => r?.rateGrowthSpread != null ? `10Y yield minus real GDP growth = ${r.rateGrowthSpread >= 0 ? "+" : ""}${r.rateGrowthSpread.toFixed(2)}pts` : null },
+  { key: "rGreaterG", label: "r > g", detail: (r) => r?.rateGrowthSpread != null ? `10Y yield minus nominal GDP growth = ${r.rateGrowthSpread >= 0 ? "+" : ""}${r.rateGrowthSpread.toFixed(2)}pts` : null },
+  {
+    key: "effectiveRateGrowthSpread", label: "r_eff > g (informational)",
+    // Not one of classifyDebtCycleStageV2's gates — rawInputs-only, so there's
+    // no boolean in `conditions` to read; derive the ✓/✗ from the sign here.
+    metFn: (r) => r?.effectiveRateGrowthSpread != null && r.effectiveRateGrowthSpread > 0,
+    detail: (r) => r?.effectiveRateGrowthSpread != null ? `Blended effective rate on outstanding debt minus nominal GDP growth = ${r.effectiveRateGrowthSpread >= 0 ? "+" : ""}${r.effectiveRateGrowthSpread.toFixed(2)}pts — not a stage gate` : null,
+  },
   { key: "fedPrintingRising", label: "Fed printing rising", detail: () => "Fed Balance Sheet % GDP in a sustained multi-week uptrend" },
   { key: "mp2Gate", label: "MP2 gate", detail: () => "Near-zero fed funds AND Fed printing rising, together" },
   { key: "mp3AuctionDemandWeak", label: "Auction demand weak", detail: (r) => r?.indirectBidderShareAvg6 != null ? `Trailing-6 indirect bidder share ${r.indirectBidderShareAvg6.toFixed(1)}%` : null },
@@ -52,6 +59,7 @@ function fmtDateTime(d) {
 
 export default function DebtCyclePositionCheck({ metrics }) {
   const [audit, setAudit] = useState(null);
+  const [stageNote, setStageNote] = useState(null);
   const [firedCount, setFiredCount] = useState(0);
   const [openWireKey, setOpenWireKey] = useState(null);
   const [holdings, setHoldings] = useState([]);
@@ -67,6 +75,16 @@ export default function DebtCyclePositionCheck({ metrics }) {
       .limit(1)
       .maybeSingle();
     setAudit(data ?? null);
+  }
+
+  async function loadStageNote() {
+    const { data } = await supabase
+      .from("big_cycle_stage_notes")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    setStageNote(data ?? null);
   }
 
   async function loadFiredCount() {
@@ -107,6 +125,7 @@ export default function DebtCyclePositionCheck({ metrics }) {
 
   useEffect(() => {
     loadAudit();
+    loadStageNote();
     loadFiredCount();
     loadHoldings();
     loadBrief(false);
@@ -139,6 +158,12 @@ export default function DebtCyclePositionCheck({ metrics }) {
         )}
       </div>
 
+      {stageNote && (
+        <div className="mb-4 p-3 rounded-lg border border-brass/30 bg-brass/5 text-xs text-paper-dim">
+          {stageNote.note}
+        </div>
+      )}
+
       {!audit ? (
         <p className="text-paper-dim text-sm">No stage data yet — click "Refresh Now" above to run the classifier.</p>
       ) : (
@@ -148,7 +173,7 @@ export default function DebtCyclePositionCheck({ metrics }) {
             <p className="label text-[10px] mb-2">Conditions Driving This Stage</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
               {CONDITION_ROWS.map((c) => {
-                const met = Boolean(conditions[c.key]);
+                const met = c.metFn ? c.metFn(rawInputs) : Boolean(conditions[c.key]);
                 const detail = c.detail(rawInputs);
                 return (
                   <div key={c.key} className="flex items-start gap-2 text-xs">

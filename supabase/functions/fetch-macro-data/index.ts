@@ -111,6 +111,37 @@ async function fetchFredAnnual(seriesId: string): Promise<{ year: number; value:
     .filter((o) => !isNaN(o.value));
 }
 
+const FISCAL_DATA = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service";
+
+// MTS Table 9 ("Summary of Receipts by Source and Outlays by Function"),
+// classification_desc = "Net Interest" (budget-function net interest,
+// line_code_nbr 320) — NOT FRED's FYOINT, which runs materially higher
+// (a different, broader NIPA-adjacent concept; see
+// docs/specs/debt-metrics-integrity-decisions.md Phase 0). Returns monthly
+// rows, most recent first.
+async function fetchMtsNetInterestMonthly(limit: number): Promise<{ date: string; value: number }[]> {
+  const url = `${FISCAL_DATA}/v1/accounting/mts/mts_table_9?filter=line_code_nbr:eq:320&sort=-record_date&page[size]=${limit}&fields=record_date,current_month_rcpt_outly_amt`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`MTS table 9 net interest: HTTP ${res.status}`);
+  const j = await res.json();
+  return (j.data as { record_date: string; current_month_rcpt_outly_amt: string }[])
+    .map((r) => ({ date: r.record_date, value: parseFloat(r.current_month_rcpt_outly_amt) }))
+    .filter((r) => !isNaN(r.value));
+}
+
+// Daily debt held by the public, most recent first — more precise than
+// FRED's quarterly FYGFDPUN for a trailing-12-month average (see Phase 0
+// decisions log).
+async function fetchDebtHeldPublicDaily(limit: number): Promise<{ date: string; value: number }[]> {
+  const url = `${FISCAL_DATA}/v2/accounting/od/debt_to_penny?sort=-record_date&page[size]=${limit}&fields=record_date,debt_held_public_amt`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`debt_to_penny: HTTP ${res.status}`);
+  const j = await res.json();
+  return (j.data as { record_date: string; debt_held_public_amt: string }[])
+    .map((r) => ({ date: r.record_date, value: parseFloat(r.debt_held_public_amt) }))
+    .filter((r) => !isNaN(r.value));
+}
+
 // GDP & Inflation Regime Metrics spec, G1/I1 "Level — Hi vs. Low" — z-score
 // of the current YoY reading against a FIXED calendar reference window
 // (2015-01 through 2019-12, pre-COVID), not a rolling N-periods-back
@@ -187,6 +218,8 @@ interface Indicator {
     | "interest_gdp_pct"
     | "interest_revenue_pct"
     | "level_minus_yoy_quarterly"
+    | "level_minus_nominal_yoy_quarterly"
+    | "effective_rate_minus_nominal_yoy"
     | "level_minus_yoy_monthly"
     | "walcl_pct_gdp"
     | "m2_minus_gdp"
@@ -255,10 +288,20 @@ const INDICATORS: Indicator[] = [
   {
     name: "Rate vs. GDP Growth Spread",
     layer: 1, layer_name: "Long-term Debt Cycle",
-    description: "10Y Treasury yield minus real GDP growth (r−g) — debt sustainability signal",
+    description: "10Y Treasury yield minus nominal GDP growth (r−g) — the marginal cost of new federal borrowing vs. the growth of the nominal tax base. Positive means newly issued debt compounds faster than the economy.",
     fred_series_id: null, unit: "%", data_source: "computed", sort_order: 4,
-    series: "DGS10", series2: "GDPC1", type: "level_minus_yoy_quarterly",
-    statusFn: v => v < 0 ? "healthy" : v < 2 ? "watch" : "danger",
+    series: "DGS10", series2: "GDP", type: "level_minus_nominal_yoy_quarterly",
+    // Thresholds are a starting point, not calibrated (logged in Phase 1
+    // decisions log per spec rule 6).
+    statusFn: v => v < 0 ? "healthy" : v <= 1.0 ? "watch" : "danger",
+  },
+  {
+    name: "Effective Rate vs. Nominal Growth (r_eff − g)",
+    layer: 1, layer_name: "Long-term Debt Cycle",
+    description: "Trailing-12-month net interest outlays (Treasury MTS) divided by average debt held by the public over the same period, minus nominal GDP growth — the actual blended cost of outstanding federal debt vs. the growth of the nominal tax base, as opposed to the marginal cost captured by the 10Y-yield-based spread above.",
+    fred_series_id: null, unit: "%", data_source: "computed", sort_order: 4.5,
+    series: "DGS10", series2: "GDP", type: "effective_rate_minus_nominal_yoy",
+    statusFn: v => v < 0 ? "healthy" : v <= 1.0 ? "watch" : "danger",
   },
   {
     name: "Real Fed Funds Rate",
@@ -1171,6 +1214,61 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const gdpYoy = yoyPair(gdpObs);
         if (!gdpYoy) return null;
         current = levels[0] - gdpYoy.current; previous = levels[1] - gdpYoy.previous;
+        break;
+      }
+      case "level_minus_nominal_yoy_quarterly": {
+        // Same mechanics as level_minus_yoy_quarterly, but against nominal
+        // GDP (series2 = "GDP") rather than real GDP (GDPC1) — kept as its
+        // own type rather than silently repointing the existing one, since
+        // other indicators still use level_minus_yoy_quarterly's real-GDP
+        // semantics (grepped first; see Phase 1 decisions log).
+        const [levels, gdpObs] = await Promise.all([fetchFred(ind.series!, 2), fetchFredObs(ind.series2!, 8)]);
+        if (levels.length < 2) return null;
+        const gdpYoy = yoyPair(gdpObs);
+        if (!gdpYoy) return null;
+        current = levels[0] - gdpYoy.current; previous = levels[1] - gdpYoy.previous;
+        metadata = { reference_period: gdpObs[0].date };
+        break;
+      }
+      case "effective_rate_minus_nominal_yoy": {
+        // r_eff = trailing-12mo net interest (MTS table 9, line 320) ÷
+        // trailing-12mo average debt held by the public (debt_to_penny,
+        // daily). g = nominal GDP YoY. "Previous" shifts both trailing-12
+        // windows back one month for a month-over-month change_value.
+        const [netInterest, debtDaily, gdpObs, dgs10] = await Promise.all([
+          fetchMtsNetInterestMonthly(14),
+          fetchDebtHeldPublicDaily(400),
+          fetchFredObs(ind.series2!, 8),
+          fetchFred(ind.series!, 2),
+        ]);
+        if (netInterest.length < 13 || debtDaily.length < 300 || dgs10.length < 1) return null;
+        const gdpYoy = yoyPair(gdpObs);
+        if (!gdpYoy) return null;
+
+        const sum = (arr: number[]) => arr.reduce((s, v) => s + v, 0);
+        const netInterest12moCurrent = sum(netInterest.slice(0, 12).map((o) => o.value));
+        const netInterest12moPrevious = sum(netInterest.slice(1, 13).map((o) => o.value));
+
+        // netInterest[0].date is the latest closed month-end (e.g.
+        // 2026-10-31); debtDaily is sorted desc by record_date.
+        const currentWindowStart = addMonths(netInterest[0].date, -11);
+        const previousWindowStart = addMonths(netInterest[1].date, -11);
+        const debtCurrentWindow = debtDaily.filter((o) => o.date >= currentWindowStart && o.date <= netInterest[0].date);
+        const debtPreviousWindow = debtDaily.filter((o) => o.date >= previousWindowStart && o.date <= netInterest[1].date);
+        if (debtCurrentWindow.length === 0 || debtPreviousWindow.length === 0) return null;
+        const debtAvgCurrent = sum(debtCurrentWindow.map((o) => o.value)) / debtCurrentWindow.length;
+        const debtAvgPrevious = sum(debtPreviousWindow.map((o) => o.value)) / debtPreviousWindow.length;
+
+        const rEffCurrent = (netInterest12moCurrent / debtAvgCurrent) * 100;
+        const rEffPrevious = (netInterest12moPrevious / debtAvgPrevious) * 100;
+
+        current = rEffCurrent - gdpYoy.current;
+        previous = rEffPrevious - gdpYoy.previous;
+        metadata = {
+          r_eff: Math.round(rEffCurrent * 1000) / 1000,
+          convergence_gap: Math.round((dgs10[0] - rEffCurrent) * 1000) / 1000,
+          reference_period: netInterest[0].date,
+        };
         break;
       }
       case "level_minus_yoy_monthly": {

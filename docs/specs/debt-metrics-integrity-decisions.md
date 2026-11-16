@@ -105,10 +105,25 @@ Grepped the whole repo (not assumed from naming). Real consumers:
    its own separate Claude prompt (scanning for new macro events). A
    **second, distinct LLM-prompt consumer**, also not one of the four
    things Scott named by name.
-4. **`supabase/functions/apply-macro-event/index.ts`** — the only writer
-   of `big_cycle_stages.is_current` found; explicitly gated "always
-   behind an explicit human confirm click" (comment in the file itself)
-   — not an automated feed.
+4. **`supabase/functions/apply-macro-event/index.ts`** — explicitly gated
+   "always behind an explicit human confirm click" (comment in the file
+   itself) — not an automated feed.
+   **Correction (Phase 1, 2026-11-16):** this is NOT the only writer of
+   `big_cycle_stages.is_current` — that was a Phase 0 recon miss.
+   `supabase/functions/update-big-cycle-metrics/index.ts`
+   (`updateDebtCycleStage()`, lines ~752-755) **also** writes
+   `big_cycle_stages.is_current` automatically, every run, from the
+   classifier's own computed `result.stage` — no human gate. This is the
+   normal automatic classifier→stage pipeline; `apply-macro-event` is a
+   *separate*, additional path for a human-confirmed real-world event to
+   override the stage directly. Net effect for Phase 1's rollout: once
+   the corrected `fetch-macro-data` is deployed, the next scheduled
+   `update-big-cycle-metrics` run will automatically flip the
+   live-displayed stage — it does not wait for a manual confirm. This
+   doesn't change Phase 1's shadow-gating decision (still not required,
+   since no portfolio consumer reads the stage), but it does mean the
+   stage change ships on the next cron tick after `fetch-macro-data`
+   deploys, not on some separate human action.
 5. **`app/big-cycle/page.jsx`** — renders the stage list, display only.
 
 **Confirmed NOT a consumer, despite surface-level grep hits:**
@@ -227,3 +242,189 @@ healthy).
 
 **This is a correction, not an improvement in fundamentals** — exactly
 the framing the spec asks Phase 1c's Position Check note to carry.
+
+## Phase 1 (2026-11-16)
+
+### 1a: historical backfill vintage-cutover rule (judgment call, per spec rule 6)
+
+The live cron (`case "level_minus_yoy_quarterly"`, and its new sibling
+below) has no explicit vintage-locking — on any given day it just asks
+FRED for "the latest available value" of each series. To backfill
+`macro_snapshots` under the new definition without fabricating a
+different methodology than the live code actually runs, I replicated
+that same "latest available as of that day" rule for each of the 124
+existing `snapshot_date` rows (2026-06-25 through 2026-11-16, pulled
+exactly from the DB — not a synthesized continuous range; the existing
+gaps, e.g. no row 2026-10-30 through 2026-11-10, are a separate
+pre-existing cron-staleness pattern, not something this backfill should
+paper over):
+
+- **DGS10**: as-of lookup — the latest FRED daily observation on or
+  before the snapshot date (matches `fetchFred`'s own "most recent
+  non-null" behavior).
+- **Nominal GDP YoY**: FRED's `GDP` series publishes quarterly, with the
+  advance estimate for quarter *Q* available roughly a month after *Q*
+  closes (BEA's publication calendar: last business day of the month
+  following quarter-end). I used fixed cutover dates — Q1 2026
+  (2026-01-01) "available" from 2026-04-30; Q2 2026 (2026-04-01) from
+  2026-07-30; Q3 2026 (2026-07-01) from 2026-10-30 — to decide which GDP
+  print each snapshot date would have seen as "latest," then computed
+  YoY against the same quarter one year prior. This is an approximation
+  of BEA's real calendar (which varies by a few days year to year), not
+  the exact publication dates — logged as a judgment call per rule 6,
+  not treated as more precise than it is.
+- Computed for all 124 dates with **zero gaps** — no FRED/Treasury data
+  missing for any date in range, well short of the "TTM/forward-return
+  gap" caliber the coordinator flagged as a stop condition.
+- Result: value starts at **−1.348** (2026-06-25) and ends at **−0.7676**
+  (2026-11-16) — the 2026-11-16 value exactly matches the Phase 0
+  hand-projection above (3 decimal rounding aside). Every one of the 124
+  backfilled values is negative → `status = "healthy"` throughout the
+  entire history. No sign flips, no mixed-definition rows once written
+  (old rows are being overwritten in place under the new definition per
+  rule 2.2, not appended alongside old values).
+
+### 1a: new type vs. parameterizing the existing one (judgment call)
+
+Added a new type `level_minus_nominal_yoy_quarterly` rather than
+repointing `level_minus_yoy_quarterly`'s `series2`. Grepped first per the
+spec's own instruction: `level_minus_yoy_quarterly` is used exactly once
+in `fetch-macro-data/index.ts` today (only by "Rate vs. GDP Growth
+Spread" itself), so repointing it would have been safe in practice — but
+a new type keeps the real-GDP-YoY and nominal-GDP-YoY code paths
+textually distinct for any future indicator that wants the real-GDP
+version, and keeps the diff self-documenting (new case literally says
+"nominal" in its name and comment) rather than relying on a reader
+noticing `series2` changed from `GDPC1` to `GDP` on an unrelated-looking
+generic type. Status thresholds changed from the old `< 0 / < 2 /
+else` to the spec's own `< 0 healthy / 0 to +1.0 watch / > +1.0 danger` —
+logged per spec rule 6 as "a starting point, not calibrated."
+
+### 1b: Effective Rate vs. Nominal Growth (r_eff − g)
+
+New type `effective_rate_minus_nominal_yoy` and two new fetch helpers
+(`fetchMtsNetInterestMonthly`, `fetchDebtHeldPublicDaily`) added to
+`fetch-macro-data/index.ts`, reusing the exact MTS table 9 /
+`debt_to_penny` sources validated in Phase 0 (not FRED's `FYOINT`).
+Live-computed (not yet deployed) via direct API pulls, cross-checked by
+hand in Python against the same math the new TS case runs:
+
+```
+Net interest, trailing-12 (Nov 2025-Oct 2026, MTS table 9 line 320): $1,063.96B
+  (exact match to the Phase 0 figure)
+Avg debt held by public, trailing-12 (debt_to_penny daily, 250 obs):   $31.51T
+r_eff = 1,063.96 / 31,511.63 * 100                                   = 3.376%
+g (nominal GDP YoY, Q3 2026 vintage, same as 1a)                      = 5.8676%
+r_eff - g = 3.376 - 5.8676                                           = -2.491
+DGS10 (2026-11-12) - r_eff = 5.10 - 3.376 (convergence gap)          = +1.724
+```
+
+Matches the spec's own expectation (`r_eff ≈ 3.3-3.5%`, `r_eff - g ≈
+-1.5 to -2`, landing slightly more negative at full daily precision —
+consistent with, not contradicting, the rough guess). `r_eff` and the
+convergence gap are stored in the indicator's `metadata` column (per
+spec: "show r_eff ... in the card metadata/drawer"), not as separate
+cards. "Previous" (for `change_value`) shifts both trailing-12 windows
+back one month (13 months of net-interest/debt data fetched, 12 used for
+"current," months 2-13 for "previous") — a judgment call since the spec
+doesn't specify a month-over-month convention for a trailing-12 metric;
+chosen to match how every other `change_value` in this file already
+works (latest vs. one period back), not a novel convention.
+
+### 1c: wiring, test, and the one-time note
+
+Added `effectiveRateGrowthSpread: number | null` to
+`ClassifierInput`/`rawInputs` in `debtCycleClassifier.ts` — informational
+only, not read by any `if`/gate in `classifyDebtCycleStageV2`. Wired in
+`update-big-cycle-metrics/index.ts`'s `updateDebtCycleStage()` by adding
+"Effective Rate vs. Nominal Growth (r_eff − g)" to the existing
+`macro_indicators` lookup (one more name in an `.in(...)` list already
+there for `rateGrowthSpread`/`debtToTaxRevenueX` — no new query).
+
+**Correction to Phase 0's consumer list** (logged above, under the Phase
+0 section, where the original finding lives): `update-big-cycle-metrics`
+itself automatically writes `big_cycle_stages.is_current` every run from
+the classifier's output — `apply-macro-event` is a separate, additional
+human-gated override path, not the only writer. This means the stage
+flip ships on the next scheduled classifier run after `fetch-macro-data`
+deploys, not on a separate manual action.
+
+**One-time note storage**: created `big_cycle_stage_notes` (migration
+`20261116_big_cycle_stage_notes.sql`, RLS-locked per `CLAUDE.md`
+convention) rather than reusing a `big_cycle_metrics` row — that table's
+rows are rendered as live dashboard metric cards with numeric
+value/status, and a note-only row with no numeric value risked an odd
+display for a case I hadn't audited; a dedicated table (explicitly
+allowed by the spec: "big_cycle_metrics (or a notes table)") avoids that
+risk entirely. Wired into `DebtCyclePositionCheck.jsx` (renders the
+latest row as a banner above the conditions checklist),
+`generate-debt-cycle-brief/index.ts` (passed into the prompt as a
+`methodologyNote`, with an instruction not to read it as improved
+fundamentals), and `detect-macro-events/index.ts` (same note appended to
+its stage-context line, told explicitly not to treat it as a real-world
+event). **Not yet inserted into the live table** — holding the actual
+`INSERT` until after the mandatory before-deploy report below, since
+inserting the note is itself a live-visible change tied to the same
+rollout as the stage flip.
+
+Exact note text (drafted, not yet written):
+
+> Stage recalculated after r−g methodology fix on 2026-11-16; previous
+> definition compared nominal yield to real growth, overstating the
+> strain reading. This is a correction, not a change in underlying
+> fundamentals.
+
+Test file (`tests/debtCycleClassifier.test.ts`): added
+`effectiveRateGrowthSpread: null` to all 4 existing fixtures (field is
+non-optional on `ClassifierInput`, so this was required for the file to
+compile; `null` preserves old behavior exactly since the field is
+informational-only) and added a new test asserting the 2026-11-16
+fixture resolves to `MP1`, not `MP1 (strained)`, under the corrected
+`rateGrowthSpread`. All 9 tests in the file pass; full suite (678 tests,
+37 files) passes; `npx next build` is clean.
+
+### 1d: copy fixes
+
+Two hardcoded "real GDP growth" strings found and fixed to "nominal GDP
+growth" (both describe `rateGrowthSpread`, which 1a changed to be
+nominal-GDP-based): `components/DebtCyclePositionCheck.jsx`'s `r > g`
+condition-row detail string, and `generate-debt-cycle-brief/index.ts`'s
+`conditionLines` prompt text. Checked `app/big-cycle/page.jsx`'s stage
+definitions and `lib/dalioBenchmarks.js` for similar hardcoding — the
+former already says generically "the interest rate exceeds GDP growth (r
+> g)" without specifying real/nominal (no change needed, already
+accurate under either definition); the latter has no r-g benchmark at
+all. No literal "unsustainable trajectory" string exists anywhere in the
+repo (grepped) — the spec's own example was illustrative, not a literal
+quote to find.
+
+### Mandatory before-deploy report (rollout-order rule, §4)
+
+Nothing below has been deployed. `fetch-macro-data`,
+`update-big-cycle-metrics`, `generate-debt-cycle-brief`, and
+`detect-macro-events` are all edited locally only; the `macro_snapshots`
+backfill has not been written; the `big_cycle_stage_notes` row has not
+been inserted. The only live DB change so far is the new, empty
+`big_cycle_stage_notes` table (DDL only, no data, not read by anything
+deployed yet — zero behavior change).
+
+| | Before (live today) | After (once deployed) |
+|---|---|---|
+| **Stage** | `MP1 (strained)` | `MP1` |
+| `debtServiceStrained` | true | true (unchanged) |
+| `rGreaterG` | true | **false** (flips) |
+| `fedPrintingRising` | false | false (unchanged) |
+| `mp2Gate` | false | false (unchanged) |
+| `mp3AuctionDemandWeak` | false | false (unchanged) |
+| `mp3SomaAbsorbing` | false | false (unchanged) |
+| `strainedCount` | 2 | 1 |
+| "Rate vs. GDP Growth Spread" card | +3.034% (danger) | −0.7676% (healthy) |
+| "Effective Rate vs. Nominal Growth" card | does not exist | −2.491% (healthy), new |
+| **Debt Sustainability gauge** (`debt_sustainability_gauge_1`, 1.867) | unaffected — confirmed by code read: sourced from a separate annual debt-to-GDP/debt-to-income z-score composite (`computeGauge1`-style block, update-big-cycle-metrics ~line 663), no `rateGrowthSpread` input anywhere in that path | unaffected |
+| **Trip-wires** (`mp2_onset_watch`, `auction_demand_deterioration`, `dollar_divergence_widening`, `fiscal_dominance_confirmed`) | unaffected — confirmed by grep: none of the four reference `rateGrowthSpread`/`rGreaterG` in `debtCycleTripWires.ts` | unaffected |
+| `macro_snapshots` history (124 rows) | old (flawed) real-GDP-YoY-based values | backfilled under corrected definition, all 124 negative/"healthy" |
+
+Shadow-gating not required (Phase 0 found no portfolio consumer). The
+`big_cycle_stage_notes` one-time note is the equivalent safeguard for the
+two narrative/prompt consumers, per the coordinator's explicit
+instruction — drafted above, not yet live.

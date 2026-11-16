@@ -58,17 +58,18 @@ async function generateBrief(params: {
   tripWiresFiredThisWeek: { label: string; firedAt: string }[];
   portfolioGapLines: string[];
   correction?: string;
+  methodologyNote?: string | null;
 }): Promise<string | null> {
   if (!ANTHROPIC_KEY) return null;
   try {
     const {
       stage, previousStage, conditions, trendConfidence,
-      benchmarkLines, tripWiresArmed, tripWiresFiredThisWeek, portfolioGapLines, correction,
+      benchmarkLines, tripWiresArmed, tripWiresFiredThisWeek, portfolioGapLines, correction, methodologyNote,
     } = params;
 
     const conditionLines = [
       `Debt service strained (interest expense > 20% of federal revenue): ${conditions.debtServiceStrained ? "TRUE" : "false"}`,
-      `r > g (10Y yield exceeds real GDP growth): ${conditions.rGreaterG ? "TRUE" : "false"}`,
+      `r > g (10Y yield exceeds nominal GDP growth): ${conditions.rGreaterG ? "TRUE" : "false"}`,
       `Fed printing rising (Fed Balance Sheet % GDP in a sustained uptrend): ${conditions.fedPrintingRising ? "TRUE" : "false"}`,
       `MP2 gate (near-zero rates AND Fed printing rising): ${conditions.mp2Gate ? "TRUE" : "false"}`,
       `MP3 auction demand weak (indirect bidder share or bid-to-cover trailing average weak): ${conditions.mp3AuctionDemandWeak ? "TRUE" : "false"}`,
@@ -78,6 +79,7 @@ async function generateBrief(params: {
     const prompt = `You are Clio, macro analyst at RatioBo, writing the "Debt Cycle Position Check" — a sibling panel to your existing Clio Musings regime analysis, but scoped specifically to Ray Dalio's Big Debt Cycle framework (MP1 / MP1 (strained) / MP2 / MP3). Write direct, sharp analysis — no hedging language, no fluff, under 350 words total. No markdown headers, no bold, no title line.
 ${correction ? `\nCORRECTION REQUIRED — your previous draft was flagged for these factual/consistency problems; fix all of them in this rewrite:\n${correction}\n` : ""}
 HARD CONSTRAINT: the stage below is a computed, auditable classification, not your own judgment call. State it exactly as given and never contradict it or hedge it into a different stage. If trendConfidence is "low" or "unknown", say so explicitly rather than presenting the read with unwarranted certainty.
+${methodologyNote ? `\nMETHODOLOGY NOTE (mention this plainly if the stage changed from the prior run — this is a definition correction, not evidence that fundamentals improved): ${methodologyNote}\n` : ""}
 
 CURRENT STAGE: ${stage}${previousStage && previousStage !== stage ? ` (changed from ${previousStage} this run)` : ""}
 Trend confidence: ${trendConfidence}
@@ -239,6 +241,13 @@ Deno.serve(async (req: Request) => {
       `${b.label}: live ${metricDisplayByKey.get(b.metricKey) ?? "n/a"} vs. Dalio's ~${b.value}${b.unit}`
     );
 
+    const { data: stageNoteRow } = await sb
+      .from("big_cycle_stage_notes")
+      .select("note")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
     const { data: holdingsRows } = await sb
       .from("holdings_valued")
       .select("simulator_key, asset_type, current_value");
@@ -257,6 +266,7 @@ Deno.serve(async (req: Request) => {
       tripWiresArmed,
       tripWiresFiredThisWeek,
       portfolioGapLines,
+      methodologyNote: stageNoteRow?.note ?? null,
     };
 
     const narrativeFirstPass = await generateBrief(briefParams);

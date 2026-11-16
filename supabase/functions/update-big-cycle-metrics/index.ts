@@ -720,7 +720,7 @@ async function updateDebtCycleStage(
 
     const [{ data: macroRows }, { data: walclSnaps }, { data: somaSnaps }, { data: auctionRows }] = await Promise.all([
       sb.from("macro_indicators").select("name, current_value")
-        .in("name", ["Interest Expense % of Federal Revenue", "Rate vs. GDP Growth Spread", "Federal Debt / Tax Revenue"]),
+        .in("name", ["Interest Expense % of Federal Revenue", "Rate vs. GDP Growth Spread", "Federal Debt / Tax Revenue", "Effective Rate vs. Nominal Growth (r_eff − g)"]),
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "Fed Balance Sheet % GDP").order("snapshot_date", { ascending: false }).limit(60),
       sb.from("macro_snapshots").select("snapshot_date, value")
@@ -736,12 +736,14 @@ async function updateDebtCycleStage(
     const interestExpenseRevenuePct = byName.get("Interest Expense % of Federal Revenue");
     const rateGrowthSpread = byName.get("Rate vs. GDP Growth Spread");
     const debtToTaxRevenueX = byName.get("Federal Debt / Tax Revenue") ?? null;
+    const effectiveRateGrowthSpread = byName.get("Effective Rate vs. Nominal Growth (r_eff − g)") ?? null;
     if (interestExpenseRevenuePct == null || rateGrowthSpread == null) return null;
 
     const result = classifyDebtCycleStageV2({
       fedFundsMid,
       interestExpenseRevenuePct,
       rateGrowthSpread,
+      effectiveRateGrowthSpread,
       debtToTaxRevenueX,
       walclPctGdpSeries: toWeeklyPointSeries(walclSnaps, "snapshot_date", "value"),
       indirectBidderShareSeries: toWeeklyPointSeries(auctionRows, "auction_date", "indirect_share_pct"),

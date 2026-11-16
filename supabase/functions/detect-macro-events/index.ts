@@ -46,16 +46,24 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
 
-function buildPrompt(currentStage: { label: string; description: string } | null, seenUrls: string[]): string {
+function buildPrompt(
+  currentStage: { label: string; description: string } | null,
+  seenUrls: string[],
+  methodologyNote?: string | null,
+): string {
   const stageLine = currentStage
     ? `The debt cycle's current stage is assessed as "${currentStage.label}": ${currentStage.description}`
     : `The debt cycle's current stage is not currently set.`;
+  const noteLine = methodologyNote
+    ? `\nNOTE: ${methodologyNote} Do not treat this as a real-world event or evidence of improving fundamentals — it is a measurement-definition fix, not a policy or market event.`
+    : "";
   const seenLine = seenUrls.length
     ? `\nAlready-reported events (do NOT re-report these URLs, even if you find follow-up coverage of the same event):\n${seenUrls.map((u) => `- ${u}`).join("\n")}`
     : "";
   return `You are scanning for discrete US federal policy events that materially bear on the debt cycle stage in Dalio's "Principles for Navigating Big Debt Crises" framework (stages: MP1 — rate policy; "MP1 (strained)" — fiscal dominance building; MP2 — QE / zero-rate balance-sheet expansion; MP3 — monetary-fiscal coordination / debt monetization).
 
 ${stageLine}
+${noteLine}
 ${seenLine}
 
 Use web search to check for genuinely new, material Federal Reserve or US Treasury policy news from roughly the last 10 days — for example: yield curve control, a new QE or QT program, direct debt monetization, debt ceiling action, a major fiscal package, capital controls, a sovereign credit rating action, or an emergency rate move. Ignore routine commentary, forecasts, or speculation about what the Fed "might" do — only report events that have actually happened or been formally announced.
@@ -122,6 +130,13 @@ Deno.serve(async (req: Request) => {
       .eq("is_current", true)
       .maybeSingle();
 
+    const { data: stageNoteRow } = await sb
+      .from("big_cycle_stage_notes")
+      .select("note")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const { data: seen } = await sb
       .from("big_cycle_events")
@@ -130,7 +145,7 @@ Deno.serve(async (req: Request) => {
       .not("source_url", "is", null);
     const seenUrls = new Set((seen ?? []).map((r: { source_url: string }) => r.source_url));
 
-    const prompt = buildPrompt(stageRow as { label: string; description: string } | null, [...seenUrls]);
+    const prompt = buildPrompt(stageRow as { label: string; description: string } | null, [...seenUrls], stageNoteRow?.note ?? null);
     const found = await runClaude(prompt);
 
     if (found === null) {
