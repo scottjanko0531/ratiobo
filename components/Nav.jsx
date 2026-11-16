@@ -20,6 +20,7 @@ const links = [
   { href: "/bond-lens", label: "Bond Lens" },
   { href: "/simulator", label: "Simulator" },
   { href: "/backtesting", label: "Backtesting" },
+  { href: "/forward-test", label: "Forward Test" },
   { href: "/planning", label: "Planning" },
   { href: "/transactions", label: "Transactions" },
   { href: "/documents", label: "Documents" },
