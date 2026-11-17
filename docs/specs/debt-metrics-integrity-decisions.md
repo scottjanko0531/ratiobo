@@ -964,3 +964,114 @@ Test suite: 684/684 passing (unchanged — no new indicator-specific
 Vitest coverage this phase, since these three cases are live-data-only
 edge-function logic with no pure-function extraction candidate the way
 the MTS trailing-12 math was in Phase 2); `npx next build` clean.
+
+### Deployed (2026-11-17) — live verification
+
+Scott approved. Deployed `fetch-macro-data` and `update-big-cycle-metrics`
+via `supabase functions deploy` (CLI), `verify_jwt` confirmed unchanged
+before and after (`fetch-macro-data=true`, `update-big-cycle-metrics=false`).
+
+**A second migration blocker, found live:** the gold-rename migration's
+plain two-statement `UPDATE` approach failed —
+`macro_snapshots.indicator_name` carries a **non-deferrable** foreign key
+to `macro_indicators.name` (`ON DELETE CASCADE`, no `ON UPDATE CASCADE`;
+a natural-key FK, unusual but real). Renaming either table first breaks
+the FK against the other. Tried making the constraint deferrable
+mid-transaction (`ALTER TABLE ... ALTER CONSTRAINT ... DEFERRABLE`) —
+that itself failed live (`cannot ALTER TABLE because it has pending
+trigger events`). Worked around by inserting a new `macro_indicators` row
+under the new name (copying every other column), repointing all 115
+`macro_snapshots` rows at it, then deleting the old row — confirmed first
+via `pg_constraint` that `macro_indicators.id` isn't referenced by any
+other table, so a new `id` for this row is safe. Updated the committed
+migration file to match what actually worked (the original file's
+`ALTER CONSTRAINT` plan is not what's live).
+
+**Live verification, in order:**
+
+1. **Gold cards**: ran `fetch-macro-data` — "Gold Price (YoY)" live under
+   the new name, real data (−5.4%, healthy). New "Central Bank Gold
+   Purchases (4Q, tonnes)" card live: 691t (2026, flagged `is_actual:
+   false`), z-score +0.79 vs. full history, status healthy (z ≤ 1).
+2. **Gold Price (3M Avg) — the actual bug fix confirmed**: live at 3M
+   avg **$4,231.74** vs. prior-3M avg **$4,560.71** (spot $3,873.90 in the
+   subtitle) — the level alone (`$4,231`) would have read **DANGER**
+   under the old `<2000/<3000/else` thresholds despite gold actively
+   *falling* (3M avg down ~7.2% from the prior 3M avg). Under the new
+   trend-based thresholds this correctly reads **healthy** (trend ≤ 0%).
+   This is the precise failure mode the spec's acceptance criterion
+   ("gold no longer reads DANGER while falling") names — confirmed live,
+   not just by code read.
+3. **Treasury Convenience Yield (10Y)**: live metadata carries
+   `avg_1y_bp: -47.84`, `avg_3y_bp: -50.3`; current `-45.48` → delta vs.
+   1y avg = `+2.36bp`, correctly "healthy" per the `<-15/-15 to -5/else`
+   thresholds. Big Cycle cross-ref (`convenience_yield_10y`) confirmed
+   live with the new label: `status_label: "Improving"` (was "Subsidy
+   inverted"/"Privilege intact") — the old labels no longer appear
+   anywhere (re-grepped after deploy).
+4. **Gauge 7 — re-run and diffed, not assumed:** pre-deploy
+   `dalio_gauge_readings.gauge7 = 0.3154`. Called `compute-gauge7`
+   directly post-deploy: returned `0.3154` — **bit-identical**, and the
+   re-write to `dalio_gauge_readings` confirms the same. Matches the
+   Phase 3 prediction exactly (compute-gauge7 never reads
+   `macro_indicators` for this input).
+5. **Classifier/stage unaffected**: ran `update-big-cycle-metrics` —
+   `debtCycleStage` identical to the post-Phase-2 state (`MP1`,
+   `debtServiceStrained: false`, all `rawInputs` unchanged) — confirms
+   Phase 3 touched no classifier input, as designed.
+6. **Stance-write success, confirmed directly, not inferred from the
+   migration applying cleanly:** inserted a real test row into
+   `macro_snapshots` with `status = 'accommodative'` — succeeded (the
+   exact failure mode the constraint-widening was meant to prevent).
+   Deleted it immediately after (a 1999-01-01 placeholder date, chosen
+   so it could never be mistaken for real data; confirmed deleted).
+
+**Real Fed Funds Rate stance — code confirmed correct, but blocked live
+by an unrelated, pre-existing bug surfaced during this check (not caused
+by Phase 3, not fixed here):** this card has been silently stuck since
+**2026-10-29** (`last_fetched_at` unchanged across two `fetch-macro-data`
+runs tonight, both otherwise clean). Root cause, confirmed by pulling
+FRED's own public `fredgraph.csv` directly (no API key): **`CPIAUCSL` has
+a genuine gap at `2025-10-01`** (blank value, confirmed present even via
+FRED's unauthenticated endpoint — not a fetch/auth issue on our side).
+`findYearAgo`/`yoyPair` (the Phase-2-extracted, Phase-2-unit-tested
+date-matching helpers) correctly *refuse* to pair Oct 2026 CPI against a
+missing Oct 2025 row rather than silently mismatch — exactly the
+behavior the Phase 2 gap test was written to enforce — but `yoyPair`'s
+current contract is all-or-nothing (if the newer of the two obs can't be
+paired, it returns `null` for both), so the whole card goes stale rather
+than at least advancing on the older, still-pairable observation. This
+will keep blocking until either FRED backfills the Oct 2025 gap or
+November 2026 CPI publishes (pairs against Nov 2025, which exists).
+**Hand-verified the stance logic is correct independent of this block:**
+the frozen value `0.033` in the DB is itself FEDFUNDS(Sept 2026, 3.75) −
+CPI-YoY(Sept 2026 vs Sept 2025, confirmed 3.717% from real FRED data) =
+`0.033` — reproducing exactly what's stored, confirming the last
+successful run's arithmetic. Under the new stance thresholds (`<0
+accommodative / 0–1.5 neutral / >1.5 restrictive`), `0.033` maps to
+**neutral** — correct. The card's live `status` column still reads
+`"healthy"` only because the row has never successfully re-run under the
+new code (not because the new code produced `"healthy"`); it will read
+`"neutral"` automatically the next time this card successfully refreshes,
+with no further code change needed. Flagging this pre-existing bug for
+separate follow-up — not fixing it here, since it's outside Phase 3's
+scope and a fix to `yoyPair`'s all-or-nothing contract would affect every
+other indicator that depends on it (~15+ cards), which deserves its own
+review, not a rushed fix during a deploy-verification pass.
+
+### Mandatory-gate and coordinator-specific items: status
+
+| Item | Status |
+|---|---|
+| Gold Price (YoY) renders live, new name, real data | ✅ confirmed |
+| Central Bank Gold Purchases (4Q, tonnes) live, z-scored | ✅ confirmed |
+| Gold Price (3M Avg) trend-based, not stuck on DANGER while falling | ✅ confirmed — the actual bug, live |
+| Real Fed Funds stance label live in API/UI | ⚠️ code confirmed correct by hand-calc; card itself blocked live by a newly-surfaced, pre-existing, unrelated FRED CPI gap (not a Phase 3 defect) |
+| Convenience yield change-based status; Big Cycle new labels | ✅ confirmed |
+| Gauge 7 unchanged, diffed not assumed | ✅ confirmed bit-identical (0.3154 → 0.3154) |
+| New stance status writes succeed in `macro_snapshots` | ✅ confirmed via a real insert/delete, not just migration success |
+
+Everything in Phase 3's own scope is deployed and verified. One item
+(Real Fed Funds' live display) surfaced a genuine, separate, pre-existing
+data-gap bug rather than confirming cleanly — reported rather than
+papered over, per the standing "stop and report, don't guess" rule.
