@@ -114,7 +114,6 @@ export function evalStockBondCorrPositive(
 
 export interface FiscalDominanceDailyRow {
   date: string;
-  netInterestPctReceipts: number | null; // condition 1 — Phase 2b net-interest basis
   realFedFunds: number | null; // condition 2
   cpiYoy: number | null; // condition 4
 }
@@ -122,33 +121,40 @@ export interface FiscalDominanceDailyRow {
 // NEW "fiscal-dominance regime confirmed" (Phase 4b) — not the same test as
 // the renamed TW4 above. Arms only when ALL of these hold simultaneously
 // for >= `minDays` CONSECUTIVE calendar days, ending today:
-//   1. net interest / receipts > 20% (Phase 2b basis)
+//   1. net interest / receipts debt-service-strained gate is armed (v2
+//      Phase 3c — the SAME hysteresis gate state as the classifier's
+//      debtServiceStrained condition, not a separate raw >20 check)
 //   2. real fed funds <= 0
 //   3. the Fed is easing, OR Fed BS %GDP is sustained-rising, OR SOMA
 //      long-duration is sustained-positive
 //   4. CPI YoY > 3%
 //
-// Condition 3 is evaluated as a CURRENT state (today), not re-derived at
-// each of the trailing `minDays` — isSustainedRising/isSustainedPositive are
-// themselves already multi-week-window trend tests, and no other trip-wire
-// in this file re-runs a trend test at every historical day either (TW1
-// evaluates WALCL's trend as a current snapshot the same way). Conditions
-// 1/2/4 are the actual persistence check, since each is a simple per-day
-// threshold on an already-daily series.
+// Conditions 1 and 3 are both evaluated as a CURRENT state (today), not
+// re-derived at each of the trailing `minDays`: condition 3 because
+// isSustainedRising/isSustainedPositive are themselves already
+// multi-week-window trend tests (no other trip-wire in this file re-runs a
+// trend test at every historical day either — TW1 evaluates WALCL's trend
+// as a current snapshot the same way); condition 1 because it is itself
+// now a persistence-gated hysteresis read (v2 Phase 3b) — re-deriving a
+// second, independent persistence check on top of an already-persistent
+// gate would double-count the same requirement, not add a new one. Only
+// conditions 2/4 are the per-day persistence check below, since each is a
+// simple raw threshold on an already-daily series with no gating of its
+// own.
 //
 // `dailyRows` must be sorted descending by date and date-joined across the
-// three source series (a day only counts toward the streak if ALL THREE
-// have a value — a day missing even one series' data breaks the streak
-// rather than silently skipping it, so a real gap can't be papered over).
+// two source series (a day only counts toward the streak if BOTH have a
+// value — a day missing even one series' data breaks the streak rather
+// than silently skipping it, so a real gap can't be papered over).
 export function evalFiscalDominanceConfirmed(
   dailyRows: FiscalDominanceDailyRow[],
   condition3Now: boolean,
+  debtServiceStrainedNow: boolean,
   minDays = 60,
 ): TripWireResult {
   let streak = 0;
   for (const r of dailyRows) {
     if (
-      r.netInterestPctReceipts != null && r.netInterestPctReceipts > 20 &&
       r.realFedFunds != null && r.realFedFunds <= 0 &&
       r.cpiYoy != null && r.cpiYoy > 3
     ) {
@@ -156,15 +162,15 @@ export function evalFiscalDominanceConfirmed(
     } else break;
   }
   const streakHolds = streak >= minDays;
-  const armed = streakHolds && condition3Now;
+  const armed = streakHolds && condition3Now && debtServiceStrainedNow;
   const sinceDate = armed ? dailyRows[streak - 1]?.date ?? null : null;
   return {
     armed,
     sinceDate,
     values: {
       streakDays: streak,
+      condition1DebtServiceStrained: debtServiceStrainedNow ? 1 : 0,
       condition3: condition3Now ? 1 : 0,
-      netInterestPctReceiptsLatest: dailyRows[0]?.netInterestPctReceipts ?? null,
       realFedFundsLatest: dailyRows[0]?.realFedFunds ?? null,
       cpiYoyLatest: dailyRows[0]?.cpiYoy ?? null,
     },

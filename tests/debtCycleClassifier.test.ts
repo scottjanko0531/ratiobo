@@ -6,10 +6,23 @@ import {
   type ClassifierInput,
   type WeeklyPoint,
 } from "../supabase/functions/_shared/debtCycleClassifier.ts";
+import type { HysteresisGateResult } from "../supabase/functions/_shared/hysteresisGate.ts";
 
 // indirectBidderShareAvg6 is precomputed by the caller (Phase 4a — see
 // _shared/indirectBidder.ts) rather than a series the classifier averages
 // itself, so these fixtures just supply the pre-averaged number directly.
+
+// v2 Phase 3: debtServiceStrainedGate is also precomputed by the caller
+// (_shared/hysteresisGate.ts) rather than derived by the classifier itself
+// — this helper builds a confirmed (non-bootstrap) gate result consistent
+// with whatever raw interestExpenseRevenuePct the fixture also supplies,
+// since the classifier only reads gate.armed, not the raw value, for its
+// own debtServiceStrained condition. Dedicated hysteresis-mechanics tests
+// (persistence, dead band, disarm, insufficient history) live in
+// tests/hysteresisGate.test.ts, not duplicated here.
+function gate(armed: boolean, overrides: Partial<HysteresisGateResult> = {}): HysteresisGateResult {
+  return { armed, insufficientHistory: false, monthsAvailable: 3, latest: armed ? 21 : 19, ...overrides };
+}
 
 // Builds a most-recent-first WeeklyPoint series from a plain array of values,
 // spaced one week apart ending today.
@@ -27,6 +40,7 @@ describe("classifyDebtCycleStageV2", () => {
     const input: ClassifierInput = {
       fedFundsMid: 3.625,
       interestExpenseRevenuePct: 23.8,
+      debtServiceStrainedGate: gate(true, { latest: 23.8 }),
       rateGrowthSpread: 2.548,
       effectiveRateGrowthSpread: null,
       debtToTaxRevenueX: 7.46,
@@ -49,6 +63,7 @@ describe("classifyDebtCycleStageV2", () => {
     const input: ClassifierInput = {
       fedFundsMid: 0.1,
       interestExpenseRevenuePct: 15,
+      debtServiceStrainedGate: gate(false, { latest: 15 }),
       rateGrowthSpread: -0.5,
       effectiveRateGrowthSpread: null,
       debtToTaxRevenueX: 6,
@@ -69,6 +84,7 @@ describe("classifyDebtCycleStageV2", () => {
     const input: ClassifierInput = {
       fedFundsMid: 0.1,
       interestExpenseRevenuePct: 25,
+      debtServiceStrainedGate: gate(true, { latest: 25 }),
       rateGrowthSpread: 1.5,
       effectiveRateGrowthSpread: null,
       debtToTaxRevenueX: 8,
@@ -107,6 +123,7 @@ describe("classifyDebtCycleStageV2", () => {
     const input: ClassifierInput = {
       fedFundsMid: 3.875,
       interestExpenseRevenuePct: 24.593,
+      debtServiceStrainedGate: gate(true, { latest: 24.593 }),
       rateGrowthSpread: -0.7676,
       effectiveRateGrowthSpread: -2.491,
       debtToTaxRevenueX: 7.303,
@@ -142,7 +159,8 @@ describe("classifyDebtCycleStageV2", () => {
   // is under test.
   describe("mp3AuctionDemandWeak / the z <= -1.5 boundary (v2 Phase 1)", () => {
     const baseInput: Omit<ClassifierInput, "indirectBidderShareZ"> = {
-      fedFundsMid: 0.1, interestExpenseRevenuePct: 15, rateGrowthSpread: -0.5,
+      fedFundsMid: 0.1, interestExpenseRevenuePct: 15, debtServiceStrainedGate: gate(false, { latest: 15 }),
+      rateGrowthSpread: -0.5,
       effectiveRateGrowthSpread: null, debtToTaxRevenueX: null,
       walclPctGdpSeries: series([20, 20, 20, 20, 20, 20, 20, 20]),
       indirectBidderShareAvg6: 50, // informational only now; not part of the gate
@@ -171,10 +189,59 @@ describe("classifyDebtCycleStageV2", () => {
     });
   });
 
+  // v2 Phase 3b: debtServiceStrained reads the caller-supplied hysteresis
+  // gate's armed state directly, not a fresh raw interestExpenseRevenuePct
+  // > 20 check — and rawInputs must carry both the raw value and the gate's
+  // insufficientHistory/monthsAvailable so the Position Check can explain
+  // "why" (3d), not just "what."
+  describe("debtServiceStrained reads the gate, not a fresh raw check (v2 Phase 3b)", () => {
+    const baseInput: Omit<ClassifierInput, "debtServiceStrainedGate" | "interestExpenseRevenuePct"> = {
+      fedFundsMid: 0.1, rateGrowthSpread: -0.5,
+      effectiveRateGrowthSpread: null, debtToTaxRevenueX: null,
+      walclPctGdpSeries: series([20, 20, 20, 20, 20, 20, 20, 20]),
+      indirectBidderShareAvg6: 50, indirectBidderShareZ: 0,
+      bidToCoverSeries: series([2.6, 2.6, 2.6, 2.6, 2.6, 2.6]),
+      somaLongDurationDeltaSeries: series([0, 0, 0, 0, 0, 0, 0, 0]),
+    };
+
+    it("a raw value above 20 with the gate OFF (not yet persistent) reads debtServiceStrained=false", () => {
+      // The exact kind of case the whole gate exists to prevent: 20.7% is
+      // above the old bare >20 threshold, but the gate says it hasn't held
+      // for persistMonths yet.
+      const result = classifyDebtCycleStageV2({
+        ...baseInput, interestExpenseRevenuePct: 20.7,
+        debtServiceStrainedGate: { armed: false, insufficientHistory: false, monthsAvailable: 3, latest: 20.7 },
+      });
+      expect(result.conditions.debtServiceStrained).toBe(false);
+    });
+
+    it("a raw value below 20 with the gate ON (persisted from an earlier high read) reads debtServiceStrained=true", () => {
+      const result = classifyDebtCycleStageV2({
+        ...baseInput, interestExpenseRevenuePct: 19.8,
+        debtServiceStrainedGate: { armed: true, insufficientHistory: false, monthsAvailable: 3, latest: 19.8 },
+      });
+      expect(result.conditions.debtServiceStrained).toBe(true);
+    });
+
+    it("rawInputs carries both the raw value and the gate's insufficientHistory/monthsAvailable", () => {
+      const result = classifyDebtCycleStageV2({
+        ...baseInput, interestExpenseRevenuePct: 19.821,
+        debtServiceStrainedGate: { armed: false, insufficientHistory: true, monthsAvailable: 1, latest: 19.821 },
+      });
+      expect(result.rawInputs.interestExpenseRevenuePct).toBe(19.821);
+      expect(result.rawInputs.debtServiceStrainedGateInsufficientHistory).toBe(1);
+      expect(result.rawInputs.debtServiceStrainedGateMonthsAvailable).toBe(1);
+      expect(result.conditions.debtServiceStrained).toBe(false);
+    });
+  });
+
   it("thin data never silently promotes the stage", () => {
     const input: ClassifierInput = {
       fedFundsMid: 0.1,
       interestExpenseRevenuePct: 25,
+      // Thematically consistent with this test's "thin data" point: the
+      // gate itself hasn't seen enough history yet either.
+      debtServiceStrainedGate: { armed: false, insufficientHistory: true, monthsAvailable: 0, latest: null },
       rateGrowthSpread: 1.5,
       effectiveRateGrowthSpread: null,
       debtToTaxRevenueX: null,

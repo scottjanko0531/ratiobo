@@ -113,35 +113,48 @@ describe("evalStockBondCorrPositive", () => {
 // Phase 4b: the NEW fiscal_dominance_confirmed. Arms only when conditions
 // 1/2/4 have ALL held simultaneously for >= 60 consecutive days AND
 // condition 3 holds today.
-describe("evalFiscalDominanceConfirmed (Phase 4b)", () => {
+// v2 Phase 3c: condition 1 (net interest/receipts) is no longer a per-day
+// raw >20 check on its own history -- it's wired to the SAME
+// debtServiceStrained hysteresis gate state the classifier computes
+// (_shared/hysteresisGate.ts), passed in here as debtServiceStrainedNow,
+// the same way condition 3 is already a current-only read rather than a
+// per-day one. The per-day streak below now only covers conditions 2/4.
+describe("evalFiscalDominanceConfirmed (Phase 4b, v2 Phase 3c rewiring)", () => {
   function buildDailyRows(n: number, overrides: Partial<FiscalDominanceDailyRow> = {}): FiscalDominanceDailyRow[] {
     return Array.from({ length: n }, (_, i) => ({
       date: daysAgo(i),
-      netInterestPctReceipts: 22,
       realFedFunds: -0.5,
       cpiYoy: 3.5,
       ...overrides,
     }));
   }
 
-  it("armed: all four conditions held for 65 consecutive days (synthetic — live data is unarmed right now)", () => {
+  it("armed: conditions 2/4 held for 65 consecutive days, condition 3 true today, and the debt-service-strained gate armed (synthetic — live data is unarmed right now)", () => {
     const rows = buildDailyRows(65);
-    const result = evalFiscalDominanceConfirmed(rows, true, 60);
+    const result = evalFiscalDominanceConfirmed(rows, true, true, 60);
     expect(result.armed).toBe(true);
     expect(result.values.streakDays).toBe(65);
     expect(result.sinceDate).toBe(daysAgo(64));
   });
 
-  it("not armed: condition 3 (Fed posture) is false today even though 1/2/4 have held 65 days", () => {
+  it("not armed: condition 3 (Fed posture) is false today even though 2/4 have held 65 days and the gate is armed", () => {
     const rows = buildDailyRows(65);
-    const result = evalFiscalDominanceConfirmed(rows, false, 60);
+    const result = evalFiscalDominanceConfirmed(rows, false, true, 60);
     expect(result.armed).toBe(false);
     expect(result.values.streakDays).toBe(65);
   });
 
-  it("not armed: the 1/2/4 streak is only 59 days, one short of the 60-day minimum", () => {
+  it("not armed: condition 1 — the debt-service-strained gate reads OFF today even though 2/4 have held 65 days and condition 3 is true, proving condition 1 actually gates the result rather than always passing now", () => {
+    const rows = buildDailyRows(65);
+    const result = evalFiscalDominanceConfirmed(rows, true, false, 60);
+    expect(result.armed).toBe(false);
+    expect(result.values.streakDays).toBe(65);
+    expect(result.values.condition1DebtServiceStrained).toBe(0);
+  });
+
+  it("not armed: the 2/4 streak is only 59 days, one short of the 60-day minimum", () => {
     const rows = buildDailyRows(59);
-    const result = evalFiscalDominanceConfirmed(rows, true, 60);
+    const result = evalFiscalDominanceConfirmed(rows, true, true, 60);
     expect(result.armed).toBe(false);
     expect(result.values.streakDays).toBe(59);
   });
@@ -149,26 +162,22 @@ describe("evalFiscalDominanceConfirmed (Phase 4b)", () => {
   it("not armed: real fed funds goes positive partway through an otherwise-qualifying window, breaking the streak", () => {
     const rows = buildDailyRows(65);
     rows[10].realFedFunds = 0.3; // breaks the streak 10 days back from today
-    const result = evalFiscalDominanceConfirmed(rows, true, 60);
+    const result = evalFiscalDominanceConfirmed(rows, true, true, 60);
     expect(result.armed).toBe(false);
     expect(result.values.streakDays).toBe(10);
   });
 
-  it("not armed: a day missing even one of the three series breaks the streak rather than being skipped", () => {
+  it("not armed: a day missing even one of the two series breaks the streak rather than being skipped", () => {
     const rows = buildDailyRows(65);
     rows[5].cpiYoy = null;
-    const result = evalFiscalDominanceConfirmed(rows, true, 60);
+    const result = evalFiscalDominanceConfirmed(rows, true, true, 60);
     expect(result.armed).toBe(false);
     expect(result.values.streakDays).toBe(5);
   });
 
-  it("live reality right now: condition 1's Phase-2b-basis history is only 1 day old, so the streak can't reach 60 regardless of the other three conditions", () => {
-    // Confirmed in the Phase 4 decisions log: "Interest Expense % of Federal
-    // Revenue" only carries valid net-interest-basis daily history from the
-    // Phase 2 deploy date onward.
-    const rows = buildDailyRows(1);
-    const result = evalFiscalDominanceConfirmed(rows, true, 60);
+  it("live reality right now: the debt-service-strained gate reads not-armed (v2 Phase 3 bootstrap — see hysteresisGate.test.ts), so this trip-wire can't arm regardless of conditions 2/3/4", () => {
+    const rows = buildDailyRows(65);
+    const result = evalFiscalDominanceConfirmed(rows, true, false, 60);
     expect(result.armed).toBe(false);
-    expect(result.values.streakDays).toBe(1);
   });
 });

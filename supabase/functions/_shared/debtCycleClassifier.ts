@@ -12,6 +12,7 @@
 // which only resolves to "MP1 (strained)" under a >0 reading).
 
 import { indirectBidderIsWeak } from "./statusThresholds.ts";
+import { HysteresisGateResult } from "./hysteresisGate.ts";
 
 export interface WeeklyPoint {
   date: string;
@@ -20,7 +21,13 @@ export interface WeeklyPoint {
 
 export interface ClassifierInput {
   fedFundsMid: number;
-  interestExpenseRevenuePct: number;
+  interestExpenseRevenuePct: number; // raw latest reading -- informational only now (shown in the Position Check detail text); the actual gate is debtServiceStrainedGate below (v2 Phase 3)
+  // v2 Phase 3: hysteresis gate on net-interest/receipts, computed by the
+  // caller via _shared/hysteresisGate.ts against DEBT_SERVICE_STRAINED_GATE
+  // (_shared/statusThresholds.ts) -- the ONE threshold source also used by
+  // the fiscal-dominance trip-wire's condition 1 (Phase 3c), so a single
+  // month crossing 20% can't flip the stage on its own.
+  debtServiceStrainedGate: HysteresisGateResult;
   rateGrowthSpread: number; // r - g (DGS10 minus nominal GDP YoY; see debt-metrics-integrity spec Phase 1a)
   effectiveRateGrowthSpread: number | null; // r_eff - g; informational only, not a gate (Phase 1b)
   debtToTaxRevenueX: number | null; // informational only, not a gate
@@ -127,7 +134,7 @@ export function trailingAverage(series: WeeklyPoint[], n = 6): number | null {
 }
 
 export function classifyDebtCycleStageV2(input: ClassifierInput): ClassifierResult {
-  const debtServiceStrained = input.interestExpenseRevenuePct > 20;
+  const debtServiceStrained = input.debtServiceStrainedGate.armed;
   const rGreaterG = input.rateGrowthSpread > 0;
 
   const walclTrend = isSustainedRising(input.walclPctGdpSeries);
@@ -181,6 +188,11 @@ export function classifyDebtCycleStageV2(input: ClassifierInput): ClassifierResu
       indirectBidderShareAvg6: indirectBidderAvg6,
       indirectBidderShareZ: indirectBidderZ,
       bidToCoverAvg6: bidToCoverAvg6,
+      // v2 Phase 3b: rawInputs records BOTH the raw value (above) and the
+      // gate state, so the Position Check can show e.g. "19.8% (gate: off,
+      // needs >20.5% for 2 months)" instead of just the boolean.
+      debtServiceStrainedGateInsufficientHistory: input.debtServiceStrainedGate.insufficientHistory ? 1 : 0,
+      debtServiceStrainedGateMonthsAvailable: input.debtServiceStrainedGate.monthsAvailable,
     },
   };
 }

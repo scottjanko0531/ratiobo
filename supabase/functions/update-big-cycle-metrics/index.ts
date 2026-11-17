@@ -18,7 +18,17 @@ import {
   fetchDebtAddedTrailing,
 } from "../_shared/mtsFiscalData.ts";
 import { computeIndirectBidderSnapshot, computeIndirectBidderFullSeries, zScoreOf, evalAuctionDemandDeterioration, AuctionRow } from "../_shared/indirectBidder.ts";
-import { INDIRECT_BIDDER_THRESHOLDS } from "../_shared/statusThresholds.ts";
+import { INDIRECT_BIDDER_THRESHOLDS, DEBT_SERVICE_STRAINED_GATE } from "../_shared/statusThresholds.ts";
+import { hysteresisGate } from "../_shared/hysteresisGate.ts";
+
+// v1 Phase 2b switched "Interest Expense % of Federal Revenue" from NIPA to
+// Treasury MTS net-interest basis. Confirmed live (v2 Phase 3 investigation,
+// see docs/specs/debt-metrics-integrity-decisions.md): macro_snapshots for
+// this indicator reads ~23.8-24.6 (NIPA) through 2026-11-15, then drops to
+// 19.821 (MTS) starting 2026-11-16 -- a different metric, not a real
+// 4.8-point move, so pre-cutover rows must never feed the v2 Phase 3
+// hysteresis gate alongside post-cutover ones.
+const MTS_NET_INTEREST_BASIS_CUTOVER = "2026-11-16";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -761,7 +771,7 @@ async function updateDebtCycleStage(
   try {
     if (fedFundsMid == null) return null;
 
-    const [{ data: macroRows }, { data: walclSnaps }, { data: somaSnaps }, { data: auctionRows }] = await Promise.all([
+    const [{ data: macroRows }, { data: walclSnaps }, { data: somaSnaps }, { data: auctionRows }, { data: interestExpenseSnaps }] = await Promise.all([
       sb.from("macro_indicators").select("name, current_value")
         .in("name", ["Interest Expense % of Federal Revenue", "Rate vs. GDP Growth Spread", "Federal Debt / Tax Revenue", "Effective Rate vs. Nominal Growth (r_eff − g)"]),
       sb.from("macro_snapshots").select("snapshot_date, value")
@@ -778,10 +788,21 @@ async function updateDebtCycleStage(
       // this metric's own full history, same basis as the macro card.
       sb.from("treasury_auction_results").select("auction_date, security_term, indirect_share_pct, bid_to_cover_ratio")
         .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(1000),
+      // v2 Phase 3b: history for the debt-service-strained hysteresis gate.
+      // Filtered to MTS_NET_INTEREST_BASIS_CUTOVER onward -- pre-cutover
+      // rows are the old NIPA-basis definition and must not feed this gate.
+      sb.from("macro_snapshots").select("snapshot_date, value")
+        .eq("indicator_name", "Interest Expense % of Federal Revenue")
+        .gte("snapshot_date", MTS_NET_INTEREST_BASIS_CUTOVER)
+        .order("snapshot_date", { ascending: false }).limit(400),
     ]);
 
     const byName = new Map((macroRows ?? []).map((r: { name: string; current_value: number }) => [r.name, Number(r.current_value)]));
     const interestExpenseRevenuePct = byName.get("Interest Expense % of Federal Revenue");
+    const debtServiceStrainedGate = hysteresisGate(
+      toWeeklyPointSeries(interestExpenseSnaps, "snapshot_date", "value"),
+      DEBT_SERVICE_STRAINED_GATE,
+    );
     const rateGrowthSpread = byName.get("Rate vs. GDP Growth Spread");
     const debtToTaxRevenueX = byName.get("Federal Debt / Tax Revenue") ?? null;
     const effectiveRateGrowthSpread = byName.get("Effective Rate vs. Nominal Growth (r_eff − g)") ?? null;
@@ -797,6 +818,7 @@ async function updateDebtCycleStage(
     const result = classifyDebtCycleStageV2({
       fedFundsMid,
       interestExpenseRevenuePct,
+      debtServiceStrainedGate,
       rateGrowthSpread,
       effectiveRateGrowthSpread,
       debtToTaxRevenueX,
@@ -861,12 +883,12 @@ async function fetchFedEasingNow(): Promise<boolean> {
 }
 
 async function evaluateTripWires(
-  sb: ReturnType<typeof createClient>, fedPrintingRisingNow: boolean, somaAbsorbingNow: boolean,
+  sb: ReturnType<typeof createClient>, fedPrintingRisingNow: boolean, somaAbsorbingNow: boolean, debtServiceStrainedNow: boolean,
 ): Promise<Record<string, TripWireResult>> {
   try {
     const [
       { data: walclSnaps }, { data: cpiRow }, { data: auctionRows }, { data: t30ySnaps }, { data: dxyRow },
-      { data: sbCorrRows }, fedEasingNow, { data: interestRevSnaps }, { data: realFedFundsSnaps },
+      { data: sbCorrRows }, fedEasingNow, { data: realFedFundsSnaps },
       { data: cpiYoySnaps }, { data: paradigmARow },
     ] = await Promise.all([
       sb.from("macro_snapshots").select("snapshot_date, value")
@@ -891,15 +913,12 @@ async function evaluateTripWires(
       sb.from("stock_bond_correlation").select("obs_date, corr_90d")
         .not("corr_90d", "is", null).order("obs_date", { ascending: false }).limit(5000),
       fetchFedEasingNow(),
-      // Phase 4b conditions 1/2/4, each already a daily macro_snapshots
-      // history. "Interest Expense % of Federal Revenue" only carries valid
-      // Phase-2b (net-interest-basis) history from 2026-11-17 onward —
-      // earlier rows are the old NIPA-basis definition (rule 2.2: never mix
-      // definitions in one series), so the persistence streak below can't
-      // exceed a few days yet regardless of actual fiscal conditions. See
-      // the Phase 4 decisions log.
-      sb.from("macro_snapshots").select("snapshot_date, value")
-        .eq("indicator_name", "Interest Expense % of Federal Revenue").order("snapshot_date", { ascending: false }).limit(400),
+      // Phase 4b conditions 2/4, each already a daily macro_snapshots
+      // history. Condition 1 (net interest/receipts) is no longer evaluated
+      // per-day here — v2 Phase 3c wires it to the SAME debtServiceStrained
+      // hysteresis gate state the classifier computes (passed in as
+      // debtServiceStrainedNow), the same way condition 3 is already a
+      // current-only read rather than a per-day one.
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "Real Fed Funds Rate").order("snapshot_date", { ascending: false }).limit(400),
       sb.from("macro_snapshots").select("snapshot_date, value")
@@ -914,24 +933,22 @@ async function evaluateTripWires(
       obs_date: r.obs_date, corr_90d: Number(r.corr_90d),
     }));
 
-    // Date-join conditions 1/2/4 into one daily series — a day only counts
-    // if ALL THREE have a value that day (see evalFiscalDominanceConfirmed's
+    // Date-join conditions 2/4 into one daily series — a day only counts
+    // if BOTH have a value that day (see evalFiscalDominanceConfirmed's
     // own doc comment for why a partial day breaks the streak rather than
     // being skipped).
     const byDate = (rows: { snapshot_date: string; value: number }[] | null) =>
       new Map((rows ?? []).map((r) => [r.snapshot_date, Number(r.value)]));
-    const interestByDate = byDate(interestRevSnaps);
     const fedFundsByDate = byDate(realFedFundsSnaps);
     const cpiByDate = byDate(cpiYoySnaps);
-    const allDates = [...new Set([...interestByDate.keys(), ...fedFundsByDate.keys(), ...cpiByDate.keys()])].sort().reverse();
+    const allDates = [...new Set([...fedFundsByDate.keys(), ...cpiByDate.keys()])].sort().reverse();
     const fiscalDominanceDailyRows: FiscalDominanceDailyRow[] = allDates.map((date) => ({
       date,
-      netInterestPctReceipts: interestByDate.get(date) ?? null,
       realFedFunds: fedFundsByDate.get(date) ?? null,
       cpiYoy: cpiByDate.get(date) ?? null,
     }));
     const condition3Now = fedEasingNow || fedPrintingRisingNow || somaAbsorbingNow;
-    const fiscalDominanceResult = evalFiscalDominanceConfirmed(fiscalDominanceDailyRows, condition3Now, 60);
+    const fiscalDominanceResult = evalFiscalDominanceConfirmed(fiscalDominanceDailyRows, condition3Now, debtServiceStrainedNow, 60);
 
     // Cross-check against Paradigm A (Phase 4b) — a reporting requirement,
     // not a gate: the new trip-wire can still arm even if A disagrees, this
@@ -990,6 +1007,7 @@ Deno.serve(async (req: Request) => {
       sb,
       stageResult?.conditions.fedPrintingRising ?? false,
       stageResult?.conditions.mp3SomaAbsorbing ?? false,
+      stageResult?.conditions.debtServiceStrained ?? false,
     );
 
     if (stageResult) {

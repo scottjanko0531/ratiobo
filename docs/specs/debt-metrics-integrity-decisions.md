@@ -2004,3 +2004,193 @@ either fixed or explicitly logged as intentional with a stated reason).
 migration file, and this log entry are committed; the live page will
 show the new wording only after deploy, which is reported separately
 per the standing gate.
+
+### Phase 3: hysteresis on the 20% debt-service gate
+
+**Investigation: insufficient history for the 2-month persistence rule
+(the primary finding, per the coordinator's explicit ask).** Queried
+`macro_snapshots` for "Interest Expense % of Federal Revenue" across its
+full history. Confirmed a hard basis break: ~23.8-24.6 (NIPA basis)
+every day from 2026-08-21 through 2026-11-15, then **19.821** (MTS
+basis, v1 Phase 2b) starting **2026-11-16** — one day earlier than an
+existing code comment claimed ("...from 2026-11-17 onward"); fixed that
+comment too while rewiring this code, since I was touching it anyway and
+the live data is the ground truth. Filtering to the MTS-basis era only
+(`>= 2026-11-16`) leaves exactly two snapshot rows — 2026-11-16 and
+2026-11-17, both 19.821 — which `dedupeConsecutive` correctly collapses
+to **one** distinct reading. `persistMonths = 2` can never be evaluated
+from one reading; this is not a corner case, it is the live state today.
+
+**Decision: yes, this needs an explicit bootstrap/insufficient-history
+state, distinct from "off."** Reasoning:
+- Mixing the pre-cutover NIPA values into the gate's series was ruled
+  out immediately — those values (23.8-24.6) are a different metric,
+  not a real multi-month strained reading, and would have armed the
+  gate on stale-basis data on day one. The caller (`updateDebtCycleStage`)
+  filters the query to `>= MTS_NET_INTEREST_BASIS_CUTOVER` so the gate
+  itself never sees mixed-basis data.
+- A silent "not enough data yet, so off" would be indistinguishable from
+  a real, confirmed "off" read — exactly the ambiguity rule 7's
+  disarm-path requirement exists to prevent on the arm side too: a
+  caller (or a reader of the Position Check) can't tell "confirmed
+  not-strained" apart from "we don't actually know yet." Both the
+  classifier's `rawInputs` and the Position Check detail text must
+  surface `insufficientHistory` explicitly (3b/3d below).
+- The fallback itself compares the single latest reading against the
+  STRICTER `on` bound only (never the looser `off` bound) — a thin
+  series shouldn't be able to arm on a single noisy print, but it also
+  shouldn't take two readings' worth of confirmation just to report
+  "not strained" when the one reading we have is nowhere near the line.
+  `hysteresisGate.test.ts` pins this directly: a single 19.821 reading
+  (today's live value — above `off`=19.5, below `on`=20.5, i.e. in the
+  dead band) reads `armed: false` under the bootstrap fallback, and a
+  single 20.7 reading (above `on`) reads `armed: true`.
+- This is logged as the kind of judgment call rule 6 asks for rather
+  than silently decided: Phase 5 (backfill) will eventually make this
+  moot by giving the gate years of real MTS-basis history, but Phase 3
+  ships before Phase 5 per the spec's own rollout order, so the
+  bootstrap path is live, real behavior for some unknown stretch of
+  time, not a short-lived theoretical edge case.
+
+**3a.** `_shared/hysteresisGate.ts` (new file): `hysteresisGate(series,
+{ on, off, persistMonths })`. Dedupes via the existing `dedupeConsecutive`
+(reused, not reinvented, per the spec), then walks the distinct readings
+oldest-first as a state machine — arms on `persistMonths` consecutive
+readings `> on`, disarms on `persistMonths` consecutive readings `< off`,
+holds otherwise. Returns `{ armed, insufficientHistory, monthsAvailable,
+latest }`. Pure, no Deno/Supabase dependency — same `_shared/` pattern as
+every other module this session.
+
+**3b.** `DEBT_SERVICE_STRAINED_GATE = { on: 20.5, off: 19.5,
+persistMonths: 2 }` added to `_shared/statusThresholds.ts` (logged as
+uncalibrated, rule 6 — a symmetric 1-point dead band around Dalio's 20%
+checkpoint, not statistically fit). `ClassifierInput` gains
+`debtServiceStrainedGate: HysteresisGateResult`, computed by the caller
+(`updateDebtCycleStage`, via a new `macro_snapshots` query filtered to
+the MTS cutover date); `debtServiceStrained` now reads
+`input.debtServiceStrainedGate.armed` instead of a fresh
+`interestExpenseRevenuePct > 20` check. `rawInputs` carries both the raw
+value (`interestExpenseRevenuePct`, unchanged) and the gate state
+(`debtServiceStrainedGateInsufficientHistory`,
+`debtServiceStrainedGateMonthsAvailable`).
+
+**3c.** `evalFiscalDominanceConfirmed`'s condition 1 no longer re-derives
+anything from `netInterestPctReceipts` daily history (that field and its
+whole per-day check are removed from `FiscalDominanceDailyRow`/the
+streak loop). It now takes `debtServiceStrainedNow: boolean` as a new
+parameter — the exact same `stageResult.conditions.debtServiceStrained`
+value the classifier already computed via 3b — applied as a current-only
+AND term (`armed = streakHolds && condition3Now && debtServiceStrainedNow`),
+the same way condition 3 already worked before this phase. Wired at the
+single call site: `evaluateTripWires(sb, fedPrintingRisingNow,
+somaAbsorbingNow, stageResult?.conditions.debtServiceStrained ?? false)`
+— mirrors the existing precedent where `fedPrintingRising`/
+`mp3SomaAbsorbing` already flow from `stageResult` into
+`evaluateTripWires` rather than being independently recomputed. The
+`interestRevSnaps` query inside `evaluateTripWires` is now dead (nothing
+reads day-level net-interest history there any more) and has been
+deleted, along with `netInterestByDate`/its slot in the date-join union
+— confirmed via grep that `netInterestPctReceipts` has zero remaining
+references anywhere in the codebase after this change.
+
+As a side effect, this also un-sticks a real limitation the v1 Phase 4
+decisions log had already flagged but not fixed: with condition 1 now
+current-only instead of day-by-day, the 60-day persistence streak for
+this trip-wire depends only on conditions 2/4's history (real fed funds,
+CPI YoY — both long-running series), not on net-interest/receipts' own
+thin 1-2-day MTS-basis history. The trip-wire was previously structurally
+incapable of ever reaching a 60-day streak regardless of real fiscal
+conditions; it no longer is.
+
+**Current live gate state, confirmed with real data (not projected):**
+ran `hysteresisGate` from the actual new code against the real
+MTS-basis-only `macro_snapshots` rows (2026-11-16 and 2026-11-17, both
+19.821):
+
+```
+{ armed: false, insufficientHistory: true, monthsAvailable: 1, latest: 19.821 }
+```
+
+**`debtServiceStrained` reads not-armed**, via the bootstrap fallback
+(19.821 is in the dead band — above `off`=19.5 but below `on`=20.5 — so
+even the single-reading fallback, which only arms on clearing the
+stricter `on` bound, reads false). This matches Phase 0's finding that
+the OLD raw `>20` check also read false, by 0.179pts — both the old
+check and the new gate agree on today's answer, for different reasons
+(old: literally below 20; new: below the stricter 20.5 bootstrap bound).
+`fiscal_dominance_confirmed`'s condition 1 therefore also reads false
+today (confirmed: it receives this exact boolean, not a re-derived one —
+see 3c above), so that trip-wire stays unarmed regardless of conditions
+2/3/4.
+
+**3d.** `components/DebtCyclePositionCheck.jsx`'s `debtServiceStrained`
+row detail, with today's live numbers substituted:
+
+> Debt service strained — 19.8% of revenue — threshold 20% (on above
+> 20.5% for 2 months, off below 19.5%) — insufficient history yet, using
+> single-reading fallback
+
+(The renderer joins `{label}` and `{detail}` with " — ", the same
+convention every other condition row already uses — not the ": "
+literally shown in the spec's own illustrative example. Flagging this
+explicitly since it's a cosmetic deviation from the spec's exact
+wording, not a functional one: the same information is present, just
+joined with this codebase's existing separator rather than a one-off
+colon for this single row. Did not change the separator globally, since
+that would affect every other row's established rendering for a case
+that wasn't asked for.) The mirrored thresholds (20.5/19.5/2 months) are
+hardcoded in the JSX with a pointer comment to
+`DEBT_SERVICE_STRAINED_GATE`, matching this codebase's established
+pattern of components mirroring `_shared/` constants rather than
+cross-importing Deno-targeted edge-function code into Next.js.
+
+### Tests
+
+`tests/hysteresisGate.test.ts` (new): threshold crossing without
+persistence (no flip), a persistent crossing (flip), a dead-band dip on
+an already-armed gate (no flip back), a disarm path (rule 7 — arms then
+disarms on the same series), five insufficient-history cases (zero
+readings, one reading above `on`, one in the dead band — the live case
+today — one below `off`, and exactly `persistMonths` readings no longer
+being insufficient), and a dedicated dedup test (45 identical daily
+snapshot values collapsing to 1 distinct reading, not 45). Caught my own
+test-authoring bug while writing these: three early drafts used two
+*identical* adjacent values to represent two different months (e.g.
+`[21, 21]`), which `dedupeConsecutive` correctly collapses to one
+reading — silently degrading "2 consecutive months above on" into "1
+reading, insufficient history" and making the assertion pass for the
+wrong reason in one case (the disarm test). Fixed by giving every
+adjacent month a slightly different value (e.g. `21.0`/`21.1`) wherever
+the test's intent requires dedup to treat them as distinct.
+
+`tests/debtCycleClassifier.test.ts`: every fixture gained
+`debtServiceStrainedGate` (via a small `gate()` helper); added a
+dedicated describe block proving `debtServiceStrained` reads the gate's
+`armed` state directly rather than re-deriving from the raw value (a
+raw value above 20 with the gate still off reads false; a raw value
+below 20 with the gate already on reads true), plus a `rawInputs`
+round-trip test for the new `insufficientHistory`/`monthsAvailable`
+fields.
+
+`tests/debtCycleTripWires.test.ts`: `evalFiscalDominanceConfirmed`'s
+fixtures drop `netInterestPctReceipts`; all call sites gain the new
+`debtServiceStrainedNow` parameter; added a dedicated case proving
+condition 1 actually gates the result (gate off + everything else
+qualifying → not armed, with `values.condition1DebtServiceStrained`
+pinned to 0) rather than silently always passing now that it is no
+longer a per-day check.
+
+Full suite: `npx vitest run tests/` → 737 passed (41 files). `npx next
+build` → compiles clean, all 27 routes prerender.
+
+### Acceptance
+
+A single month crossing 20% cannot flip the stage (`hysteresisGate.test.ts`'s
+"threshold crossing WITHOUT persistence" case, plus the live state
+itself: today's 19.821 reading sits in the dead band and reads
+not-armed). The Position Check explains the gate state, including the
+insufficient-history caveat, not just the boolean. **Nothing deployed**
+— code, tests, and this log entry are committed; the live gate's
+`insufficientHistory: true` bootstrap state is real and will resolve
+naturally as more MTS-basis months accumulate (and more thoroughly once
+Phase 5 backfills history), not something this phase works around.

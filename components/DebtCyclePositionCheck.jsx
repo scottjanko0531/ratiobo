@@ -16,7 +16,17 @@ const STAGE_META = {
 };
 
 const CONDITION_ROWS = [
-  { key: "debtServiceStrained", label: "Debt service strained", detail: (r) => r?.interestExpenseRevenuePct != null ? `Interest expense ${r.interestExpenseRevenuePct.toFixed(1)}% of revenue (> 20% threshold)` : null },
+  {
+    key: "debtServiceStrained", label: "Debt service strained",
+    // v2 Phase 3d: hysteresis gate (_shared/statusThresholds.ts's
+    // DEBT_SERVICE_STRAINED_GATE: on 20.5% / off 19.5% / 2 months) — mirrors
+    // that constant rather than importing it (this codebase's established
+    // pattern: Next.js components mirror _shared/ edge-function logic with
+    // a pointer comment, not a cross-import).
+    detail: (r) => r?.interestExpenseRevenuePct != null
+      ? `${r.interestExpenseRevenuePct.toFixed(1)}% of revenue — threshold 20% (on above 20.5% for 2 months, off below 19.5%)${r.debtServiceStrainedGateInsufficientHistory ? " — insufficient history yet, using single-reading fallback" : ""}`
+      : null,
+  },
   { key: "rGreaterG", label: "r > g", detail: (r) => r?.rateGrowthSpread != null ? `10Y yield minus nominal GDP growth = ${r.rateGrowthSpread >= 0 ? "+" : ""}${r.rateGrowthSpread.toFixed(2)}pts` : null },
   {
     key: "effectiveRateGrowthSpread", label: "r_eff > g (informational)",

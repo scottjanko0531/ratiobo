@@ -80,3 +80,12 @@ export function indirectBidderCardStatus(z: number): ThresholdStatus {
 export function indirectBidderIsWeak(z: number): boolean {
   return z <= INDIRECT_BIDDER_THRESHOLDS.classifierWeakZ;
 }
+
+// v2 Phase 3 (debt-metrics-integrity-v2 spec): the one threshold source for
+// the debt-service-strained hysteresis gate (_shared/hysteresisGate.ts) --
+// shared by the classifier's debtServiceStrained condition and the
+// fiscal-dominance trip-wire's condition 1 (Phase 3c: same gate state, not
+// a second independent >20 check). Uncalibrated starting point, logged per
+// rule 6 -- a symmetric 1-point dead band around the Dalio 20% checkpoint,
+// not statistically fit.
+export const DEBT_SERVICE_STRAINED_GATE = { on: 20.5, off: 19.5, persistMonths: 2 };
