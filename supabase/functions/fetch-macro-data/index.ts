@@ -9,8 +9,8 @@ import {
   assertPeriodAligned,
 } from "../_shared/mtsFiscalData.ts";
 import { findYearAgo, yoyPair } from "../_shared/yoyMath.ts";
-import { computeIndirectBidderSnapshot, AuctionRow } from "../_shared/indirectBidder.ts";
-import { goldTrendStatus, goldPurchasesZScoreStatus, realFedFundsStance, convenienceYieldChangeStatus } from "../_shared/statusThresholds.ts";
+import { computeIndirectBidderSnapshot, computeIndirectBidderFullSeries, zScoreOf, AuctionRow } from "../_shared/indirectBidder.ts";
+import { goldTrendStatus, goldPurchasesZScoreStatus, realFedFundsStance, convenienceYieldChangeStatus, indirectBidderCardStatus } from "../_shared/statusThresholds.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -413,10 +413,12 @@ const INDICATORS: Indicator[] = [
   {
     name: "Indirect Bidder Share (10Y/30Y)",
     layer: 1, layer_name: "Long-term Debt Cycle",
-    description: "Trailing 6-auction average share of accepted bids from indirect bidders — the standard proxy for foreign official and central-bank auction demand — on 10Y and 30Y Treasury auctions (averaged; the long end is where the signal lives). A falling share means primary dealers are absorbing more supply, the price-insensitive-to-price-sensitive substitution this panel exists to track. A sustained rise back above 65% would falsify a weakening-demand thesis.",
+    description: "Trailing 6-auction average share of accepted bids from indirect bidders — the standard proxy for foreign official and central-bank auction demand — on 10Y and 30Y Treasury auctions (per-term average, then equal-weighted mean of the two). Status is a z-score against this metric's own full history (uncalibrated starting point — see docs/specs/debt-metrics-integrity-decisions.md v2 Phase 1), not a fixed level: the typical range has structurally risen since the mid-2010s, so a fixed threshold calibrated to an older regime can't tell \"low for today\" apart from \"always low.\"",
     fred_series_id: null, unit: "%", data_source: "treasurydirect", sort_order: 104,
     type: "supabase_indirect_bidder",
-    statusFn: v => v > 65 ? "healthy" : v >= 55 ? "watch" : "danger",
+    // Fallback only — statusOverride (the full-history z-score) is always
+    // set when enough history exists. v2 Phase 1.
+    statusFn: () => "unknown",
   },
   {
     name: "Gold / Real Yield Correlation (90d)",
@@ -1731,27 +1733,35 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         break;
       }
       case "supabase_indirect_bidder": {
-        // Phase 4a: computeIndirectBidderSnapshot is the ONE place this
-        // calculation lives now — classifyDebtCycleStageV2's input and the
-        // auction-demand trip-wire both call the exact same function (see
-        // _shared/indirectBidder.ts and the Phase 4 decisions log).
+        // v1 Phase 4a: computeIndirectBidderSnapshot is the ONE place this
+        // calculation lives — classifyDebtCycleStageV2's input and the
+        // auction-demand trip-wire both call the exact same function.
+        // v2 Phase 1: status is now a z-score against the metric's own
+        // FULL history, not a fixed level — fetch everything (the live
+        // table is ~180 rows for these two terms; 1000 is generous
+        // headroom), not just enough for one trailing-6 window.
         const { data: rows, error: auErr } = await supabase
           .from("treasury_auction_results")
           .select("auction_date, security_term, indirect_share_pct")
           .in("security_term", ["10-Year", "30-Year"])
           .not("indirect_share_pct", "is", null)
           .order("auction_date", { ascending: false })
-          .limit(24); // plenty to find 6 of each term
+          .limit(1000);
         if (auErr || !rows || !rows.length) return null;
         const snap0 = computeIndirectBidderSnapshot(rows as AuctionRow[], 0);
         const snap1 = computeIndirectBidderSnapshot(rows as AuctionRow[], 1);
         if (snap0.value == null) return null;
         current = snap0.value;
         previous = snap1.value ?? current;
+        const fullSeries = computeIndirectBidderFullSeries(rows as AuctionRow[]);
+        const z = zScoreOf(current, fullSeries.map((s) => s.value));
+        if (z != null) statusOverride = indirectBidderCardStatus(z);
         metadata = {
           avg_10y_6auction_pct: snap0.avg10,
           avg_30y_6auction_pct: snap0.avg30,
           latest_auction_date: rows[0].auction_date,
+          zscore: z != null ? Math.round(z * 100) / 100 : null,
+          full_history_readings: fullSeries.length,
         };
         break;
       }

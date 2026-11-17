@@ -1,5 +1,5 @@
 // Pure, Deno-API-free Indirect Bidder Share (10Y/30Y) computation — the ONE
-// place this calculation lives, per debt-metrics-integrity.md Phase 4a.
+// place this calculation lives, per debt-metrics-integrity.md v1 Phase 4a.
 // Before this file existed, three call sites each computed their own
 // version: the macro card did per-term trailing-6 averages then an
 // equal-weighted mean (10Y and 30Y averaged separately, THEN combined);
@@ -15,6 +15,15 @@
 // quarterly, 10Y roughly every 6-10 weeks — a naive pooled-and-sorted top-6
 // skews toward whichever term happened to auction more recently, not an
 // equal blend of both).
+//
+// v2 Phase 1 adds: a full-history consolidated series (for the card's and
+// classifier's z-scores) and a proper hysteresis state machine for the
+// trip-wire (v1's fixed `< 65` per-round check never disarmed once the
+// metric's typical range structurally rose past the mid-2010s — see
+// docs/specs/debt-metrics-integrity-decisions.md's v2 Phase 0 distribution
+// work). Thresholds themselves live in _shared/statusThresholds.ts
+// (INDIRECT_BIDDER_THRESHOLDS) — this file only computes the numbers the
+// thresholds get compared against.
 
 export interface AuctionRow {
   auction_date: string;
@@ -26,7 +35,6 @@ export interface IndirectBidderSnapshot {
   value: number | null; // equal-weighted mean of avg10/avg30
   avg10: number | null;
   avg30: number | null;
-  windowOldestDate: string | null; // oldest auction_date folded into this snapshot's trailing-6 windows
 }
 
 function round2(n: number): number {
@@ -42,9 +50,7 @@ function cleanRows(rows: AuctionRow[]): AuctionRow[] {
 // `offset` shifts the trailing-6 window back by `offset` auctions PER TERM
 // (0 = current/most recent trailing-6, 1 = the trailing-6 as of one auction
 // round earlier per term, ...). `rows` must be sorted descending by
-// auction_date and should include enough history for the requested offset
-// (the card and classifier only ever need offset 0-1; the trip-wire needs
-// up to `n`).
+// auction_date and should include enough history for the requested offset.
 export function computeIndirectBidderSnapshot(rows: AuctionRow[], offset = 0): IndirectBidderSnapshot {
   const clean = cleanRows(rows);
   const windowOf = (term: string) => clean.filter((r) => r.security_term === term).slice(offset, offset + 6);
@@ -58,17 +64,58 @@ export function computeIndirectBidderSnapshot(rows: AuctionRow[], offset = 0): I
   const parts = [avg10, avg30].filter((v): v is number => v != null);
   const value = parts.length ? parts.reduce((s, v) => s + v, 0) / parts.length : null;
 
-  const oldestDates = [w10[w10.length - 1]?.auction_date, w30[w30.length - 1]?.auction_date].filter(
-    (d): d is string => !!d
-  );
-  const windowOldestDate = oldestDates.length ? oldestDates.sort()[0] : null;
-
   return {
     value: value != null ? round2(value) : null,
     avg10: avg10 != null ? round2(avg10) : null,
     avg30: avg30 != null ? round2(avg30) : null,
-    windowOldestDate,
   };
+}
+
+export interface HistoricalSnapshot {
+  offset: number;
+  value: number;
+  asofDate: string; // the most recent auction_date folded into this round (max across both terms' window[0])
+}
+
+// Every consolidated reading available in `rows`, oldest first — one entry
+// per "auction round" (offset), stopping once an offset produces no value
+// at all (both terms' windows empty). Used for both the full-history
+// z-score (card/classifier) and the trailing-2-year hysteresis walk
+// (trip-wire), so both read the exact same underlying series.
+export function computeIndirectBidderFullSeries(rows: AuctionRow[]): HistoricalSnapshot[] {
+  const clean = cleanRows(rows);
+  const byTerm = (term: string) => clean.filter((r) => r.security_term === term);
+  const ten = byTerm("10-Year");
+  const thirty = byTerm("30-Year");
+  const maxOffset = Math.max(ten.length, thirty.length) - 1;
+
+  const out: HistoricalSnapshot[] = [];
+  for (let offset = 0; offset <= maxOffset; offset++) {
+    const snap = computeIndirectBidderSnapshot(rows, offset);
+    if (snap.value == null) continue;
+    const w10latest = ten.slice(offset, offset + 6)[0]?.auction_date;
+    const w30latest = thirty.slice(offset, offset + 6)[0]?.auction_date;
+    const asofDate = [w10latest, w30latest].filter((d): d is string => !!d).sort().reverse()[0];
+    out.push({ offset, value: snap.value, asofDate });
+  }
+  return out.reverse(); // oldest first
+}
+
+// Population mean/stdev (same convention as _shared/paradigmScoring.ts's
+// zScore — the window IS the population being compared against, not a
+// sample of a larger one). Returns null stdev for a degenerate series.
+export function meanAndStdev(values: number[]): { mean: number; stdev: number } {
+  const n = values.length;
+  const mean = n ? values.reduce((s, v) => s + v, 0) / n : 0;
+  const variance = n ? values.reduce((s, v) => s + (v - mean) ** 2, 0) / n : 0;
+  return { mean, stdev: Math.sqrt(variance) };
+}
+
+export function zScoreOf(value: number, series: number[]): number | null {
+  if (series.length < 2) return null;
+  const { mean, stdev } = meanAndStdev(series);
+  if (stdev === 0) return 0;
+  return (value - mean) / stdev;
 }
 
 export interface TripWireResultShape {
@@ -77,19 +124,95 @@ export interface TripWireResultShape {
   values: Record<string, number | null>;
 }
 
-// TW2 "auction demand deterioration" — now built directly on the
-// consolidated snapshot above: armed only if the LAST `n` consolidated
-// readings (not raw pooled auctions) are all below 65%, a persistent
-// failure to recover rather than one weak print. `n` auction *rounds*
-// back, each round being its own per-term-trailing-6-then-mean snapshot —
-// same persistence semantics as before, now computed on the consistent
-// number instead of the pooled/interleaved one.
-export function evalAuctionDemandDeterioration(rows: AuctionRow[], n = 6): TripWireResultShape {
-  const snapshots = Array.from({ length: n }, (_, i) => computeIndirectBidderSnapshot(rows, i));
-  const complete = snapshots.filter((s) => s.value != null);
-  if (!complete.length) return { armed: false, sinceDate: null, values: { trailingAvg: null, latest: null } };
-  const armed = complete.length === n && complete.every((s) => s.value! < 65);
-  const trailingAvg = round2(complete.reduce((s, sn) => s + sn.value!, 0) / complete.length);
-  const sinceDate = armed ? snapshots[n - 1].windowOldestDate : null;
-  return { armed, sinceDate, values: { trailingAvg, latest: snapshots[0].value } };
+// TW2 "auction demand deterioration" — v2 Phase 1 rewrite. v1's version
+// checked whether the last 6 CONSOLIDATED readings (an improvement over
+// the original pooled-raw-auction check) were all below a fixed 65%
+// threshold — but the consolidated reading has run ~55-58% for the entire
+// trailing 2 years (see the v2 Phase 0 distribution), so that fixed
+// threshold could never clear once met: a permanently-armed trip-wire,
+// not a real early-warning signal.
+//
+// This version is relative, not fixed, and has a genuine disarm path
+// (rule 7): it walks the FULL available history forward chronologically,
+// tracking the hysteresis state exactly as it would have evolved in real
+// time — arms when 3 consecutive rounds fall more than 1 std dev below the
+// metric's own trailing-2-year mean, disarms when 2 consecutive rounds
+// recover back above (mean - 0.5 sd). `sinceDate` (rule 9) is the date of
+// the FIRST round in the streak that triggered the CURRENT state, not the
+// oldest point in some fixed lookback window — fixing the exact bug Phase
+// 0 found (sinceDate pinned to 2024-08-08, the edge of a 6-round window,
+// regardless of when the condition actually started).
+//
+// The trailing-2-year mean/stdev is computed ONCE, anchored to the most
+// recent reading (not recomputed at every historical point in the walk) —
+// the same simplification every other trend test in this codebase already
+// makes (isSustainedRising/isSustainedPositive don't recompute a rolling
+// window per historical day either); recomputing a true rolling 2-year
+// window at each of ~100 historical points would be a much larger
+// investment for a threshold that's explicitly uncalibrated and starting-
+// point-only anyway.
+export function evalAuctionDemandDeterioration(
+  rows: AuctionRow[],
+  thresholds: { armSdMultiplier: number; armPersistRounds: number; disarmSdMultiplier: number; disarmPersistRounds: number },
+  trailingYears = 2,
+): TripWireResultShape {
+  const series = computeIndirectBidderFullSeries(rows); // oldest first
+  if (series.length === 0) {
+    return { armed: false, sinceDate: null, values: { latest: null, mean2y: null, sd2y: null } };
+  }
+
+  const latest = series[series.length - 1];
+  const cutoff = new Date(latest.asofDate + "T00:00:00Z");
+  cutoff.setUTCFullYear(cutoff.getUTCFullYear() - trailingYears);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const window2y = series.filter((s) => s.asofDate >= cutoffStr).map((s) => s.value);
+
+  if (window2y.length < 2) {
+    return { armed: false, sinceDate: null, values: { latest: latest.value, mean2y: null, sd2y: null } };
+  }
+  const { mean: mean2y, stdev: sd2y } = meanAndStdev(window2y);
+  const armThreshold = mean2y - thresholds.armSdMultiplier * sd2y;
+  const disarmThreshold = mean2y - thresholds.disarmSdMultiplier * sd2y;
+
+  let armed = false;
+  let sinceDate: string | null = null;
+  let belowStreak = 0;
+  let belowStreakStart: string | null = null;
+  let aboveStreak = 0;
+
+  for (const snap of series) {
+    if (snap.value < armThreshold) {
+      belowStreak++;
+      if (belowStreak === 1) belowStreakStart = snap.asofDate;
+    } else {
+      belowStreak = 0;
+      belowStreakStart = null;
+    }
+    if (snap.value > disarmThreshold) {
+      aboveStreak++;
+    } else {
+      aboveStreak = 0;
+    }
+
+    if (!armed && belowStreak >= thresholds.armPersistRounds) {
+      armed = true;
+      sinceDate = belowStreakStart;
+    } else if (armed && aboveStreak >= thresholds.disarmPersistRounds) {
+      armed = false;
+      sinceDate = null;
+    }
+  }
+
+  return {
+    armed,
+    sinceDate,
+    values: {
+      latest: latest.value,
+      mean2y: round2(mean2y),
+      sd2y: round2(sd2y),
+      armThreshold: round2(armThreshold),
+      disarmThreshold: round2(disarmThreshold),
+      windowReadingCount: window2y.length,
+    },
+  };
 }

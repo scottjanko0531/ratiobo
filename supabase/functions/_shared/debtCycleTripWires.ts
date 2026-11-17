@@ -32,23 +32,13 @@ export function evalMp2OnsetWatch(walclPrints: WeeklyPoint[], cpiYoy: number | n
   };
 }
 
-// TW2 "auction demand deterioration": Indirect Bidder Share (10Y/30Y) has
-// failed to close back above ~65% for the trailing `n` auctions — a
-// persistent failure to recover, not a single weak print.
-export function evalAuctionDemandDeterioration(
-  rows: { auction_date: string; indirect_share_pct: number }[],
-  n = 6,
-): TripWireResult {
-  const window = rows.slice(0, n);
-  if (!window.length) return { armed: false, sinceDate: null, values: { trailingAvg: null, latest: null } };
-  const armed = window.every((r) => r.indirect_share_pct < 65);
-  const trailingAvg = window.reduce((s, r) => s + r.indirect_share_pct, 0) / window.length;
-  return {
-    armed,
-    sinceDate: armed ? window[window.length - 1].auction_date : null,
-    values: { trailingAvg, latest: window[0].indirect_share_pct },
-  };
-}
+// TW2 "auction demand deterioration" lives in _shared/indirectBidder.ts as
+// evalAuctionDemandDeterioration (built on the same consolidated
+// per-term-trailing-6 calculation the macro card and classifier use) — v2
+// Phase 1 found a dead duplicate of this trip-wire still defined here, from
+// before that move, still carrying the retired fixed `< 65` threshold.
+// Nothing imported this copy (confirmed via grep); removed rather than kept
+// as an unused alternate implementation.
 
 // TW3 "dollar confidence divergence widening": 30Y yield sits at a new cycle
 // high (its own trailing-window max) while DXY's concurrent 3-month change

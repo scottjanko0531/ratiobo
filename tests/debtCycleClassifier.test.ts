@@ -33,6 +33,7 @@ describe("classifyDebtCycleStageV2", () => {
       // Falling: 20.8 down to 20.0 over 8 prints.
       walclPctGdpSeries: series([20.8, 20.9, 21.0, 21.1, 21.2, 21.3, 21.4, 21.5]),
       indirectBidderShareAvg6: 57.25, // avg of [57.5, 56.0, 58.0, 55.0, 57.0, 60.0]
+      indirectBidderShareZ: null, // not MP2/MP3, so the auction gate is never reached either way
       bidToCoverSeries: series([2.53, 2.4, 2.6, 2.5, 2.45, 2.55]),
       somaLongDurationDeltaSeries: series([-11.05, -5, 3, -2, -8, 1, -4, -3]),
     };
@@ -54,6 +55,7 @@ describe("classifyDebtCycleStageV2", () => {
       // Rising 8-of-8: 20.0 up to 23.5.
       walclPctGdpSeries: series([23.5, 23.0, 22.5, 22.0, 21.5, 21.0, 20.5, 20.0]),
       indirectBidderShareAvg6: 70, // avg of [70, 71, 69, 72, 70, 68]
+      indirectBidderShareZ: 1.8, // strong demand, well above the classifier's weak boundary
       bidToCoverSeries: series([2.6, 2.7, 2.5, 2.6, 2.65, 2.55]),
       somaLongDurationDeltaSeries: series([-2, 1, -3, 2, -1, 4, -2, 1]),
     };
@@ -71,8 +73,12 @@ describe("classifyDebtCycleStageV2", () => {
       effectiveRateGrowthSpread: null,
       debtToTaxRevenueX: 8,
       walclPctGdpSeries: series([30.0, 29.5, 29.0, 28.5, 28.0, 27.5, 27.0, 26.5]),
-      // Weak: well under 57.5.
+      // Weak: well under 57.5. bidToCoverAvg6 (1.825) alone already trips
+      // mp3AuctionDemandWeak < 2.0, so z is set consistently weak too rather
+      // than tested in isolation here (see the dedicated z-boundary describe
+      // block below for that).
       indirectBidderShareAvg6: 50.5, // avg of [50, 52, 48, 51, 49, 53]
+      indirectBidderShareZ: -2.1,
       bidToCoverSeries: series([1.8, 1.9, 1.7, 1.85, 1.75, 1.95]),
       // Sustained positive 7-of-8.
       somaLongDurationDeltaSeries: series([5, 3, 6, 2, 4, 7, 1, -1]),
@@ -105,9 +111,13 @@ describe("classifyDebtCycleStageV2", () => {
       effectiveRateGrowthSpread: -2.491,
       debtToTaxRevenueX: 7.303,
       walclPctGdpSeries: series([20.475, 20.5, 20.55, 20.6, 20.65, 20.7, 20.75, 20.8]),
-      // Live per-term-then-mean value as of 2026-11-17 (Phase 4a consolidation) —
-      // just above the 57.5 "weak" boundary, confirmed mp3AuctionDemandWeak stays false.
+      // Live per-term-then-mean value as of 2026-11-17 — now informational
+      // only (Phase 4a consolidation); the gate reads indirectBidderShareZ.
       indirectBidderShareAvg6: 57.55,
+      // Live full-history z as of 2026-11-17 (v2 Phase 1 verification:
+      // docs/specs/debt-metrics-integrity-decisions.md v2 Phase 1) — well
+      // above the classifier's -1.5 weak boundary, confirmed mp3AuctionDemandWeak stays false.
+      indirectBidderShareZ: 1.16,
       bidToCoverSeries: series([2.53, 2.4, 2.6, 2.5, 2.45, 2.55]),
       somaLongDurationDeltaSeries: series([-11.05, -5, 3, -2, -8, 1, -4, -3]),
     };
@@ -121,34 +131,42 @@ describe("classifyDebtCycleStageV2", () => {
     expect(result.rawInputs.effectiveRateGrowthSpread).toBe(-2.491);
   });
 
-  // Phase 4a: pinning the 57.5 boundary itself, not just a fixture that
-  // happens to land on one side of it. The consolidated (per-term-then-mean)
-  // calculation is the macro card's own method — see
-  // _shared/indirectBidder.ts and the Phase 4 decisions log for why the old
-  // pooled-across-both-terms average (59.3%) and the card's method (57.55%)
-  // disagreed in the first place. 57.5 itself is unchanged; this just
-  // confirms which side of it the corrected number falls on.
-  describe("mp3AuctionDemandWeak / the 57.5 boundary", () => {
-    const baseInput: Omit<ClassifierInput, "indirectBidderShareAvg6"> = {
+  // v2 Phase 1 (debt-metrics-integrity-v2 spec): the fixed 57.5 raw-value
+  // threshold is retired — it could never reflect that the metric's own
+  // typical range has structurally shifted over time (see the v2 Phase 0
+  // distribution: full-history mean 49.34, stdev 7.05). mp3AuctionDemandWeak
+  // now gates on indirectBidderShareZ <= -1.5 (INDIRECT_BIDDER_THRESHOLDS.
+  // classifierWeakZ in _shared/statusThresholds.ts — the ONE threshold
+  // source also used by indirectBidderIsWeak()). bidToCoverSeries is held
+  // flat at a non-weak average (2.6) in every case below so only the z gate
+  // is under test.
+  describe("mp3AuctionDemandWeak / the z <= -1.5 boundary (v2 Phase 1)", () => {
+    const baseInput: Omit<ClassifierInput, "indirectBidderShareZ"> = {
       fedFundsMid: 0.1, interestExpenseRevenuePct: 15, rateGrowthSpread: -0.5,
       effectiveRateGrowthSpread: null, debtToTaxRevenueX: null,
       walclPctGdpSeries: series([20, 20, 20, 20, 20, 20, 20, 20]),
+      indirectBidderShareAvg6: 50, // informational only now; not part of the gate
       bidToCoverSeries: series([2.6, 2.6, 2.6, 2.6, 2.6, 2.6]),
       somaLongDurationDeltaSeries: series([0, 0, 0, 0, 0, 0, 0, 0]),
     };
 
-    it("just above 57.5 is NOT weak", () => {
-      const result = classifyDebtCycleStageV2({ ...baseInput, indirectBidderShareAvg6: 57.55 });
+    it("z = -1.4 (just above the boundary) is NOT weak", () => {
+      const result = classifyDebtCycleStageV2({ ...baseInput, indirectBidderShareZ: -1.4 });
       expect(result.conditions.mp3AuctionDemandWeak).toBe(false);
     });
 
-    it("just below 57.5 IS weak", () => {
-      const result = classifyDebtCycleStageV2({ ...baseInput, indirectBidderShareAvg6: 57.45 });
+    it("z = -1.5 (exactly at the boundary) IS weak (<=, not strict <)", () => {
+      const result = classifyDebtCycleStageV2({ ...baseInput, indirectBidderShareZ: -1.5 });
       expect(result.conditions.mp3AuctionDemandWeak).toBe(true);
     });
 
-    it("exactly 57.5 is NOT weak (strict less-than)", () => {
-      const result = classifyDebtCycleStageV2({ ...baseInput, indirectBidderShareAvg6: 57.5 });
+    it("z = -1.6 (below the boundary) IS weak", () => {
+      const result = classifyDebtCycleStageV2({ ...baseInput, indirectBidderShareZ: -1.6 });
+      expect(result.conditions.mp3AuctionDemandWeak).toBe(true);
+    });
+
+    it("null z (no history yet) is NOT weak by itself — falls through to the bidToCover gate only", () => {
+      const result = classifyDebtCycleStageV2({ ...baseInput, indirectBidderShareZ: null });
       expect(result.conditions.mp3AuctionDemandWeak).toBe(false);
     });
   });
@@ -162,6 +180,7 @@ describe("classifyDebtCycleStageV2", () => {
       debtToTaxRevenueX: null,
       walclPctGdpSeries: series([25.0]), // only 1 distinct print
       indirectBidderShareAvg6: null,
+      indirectBidderShareZ: null,
       bidToCoverSeries: [],
       somaLongDurationDeltaSeries: [],
     };

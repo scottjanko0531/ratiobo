@@ -27,7 +27,7 @@ const CONDITION_ROWS = [
   },
   { key: "fedPrintingRising", label: "Fed printing rising", detail: () => "Fed Balance Sheet % GDP in a sustained multi-week uptrend" },
   { key: "mp2Gate", label: "MP2 gate", detail: () => "Near-zero fed funds AND Fed printing rising, together" },
-  { key: "mp3AuctionDemandWeak", label: "Auction demand weak", detail: (r) => r?.indirectBidderShareAvg6 != null ? `Trailing-6 indirect bidder share ${r.indirectBidderShareAvg6.toFixed(1)}%` : null },
+  { key: "mp3AuctionDemandWeak", label: "Auction demand weak", detail: (r) => r?.indirectBidderShareAvg6 != null ? `Trailing-6 indirect bidder share ${r.indirectBidderShareAvg6.toFixed(1)}%${r.indirectBidderShareZ != null ? ` (z ${r.indirectBidderShareZ >= 0 ? "+" : ""}${r.indirectBidderShareZ.toFixed(2)}σ vs. full history)` : ""}` : null },
   { key: "mp3SomaAbsorbing", label: "Fed absorbing duration", detail: () => "SOMA long-duration holdings sustained positive over trailing weeks" },
 ];
 

@@ -6,7 +6,6 @@ import {
   evalFiscalDominanceConfirmed,
   type FiscalDominanceDailyRow,
 } from "../supabase/functions/_shared/debtCycleTripWires.ts";
-import { evalAuctionDemandDeterioration, type AuctionRow } from "../supabase/functions/_shared/indirectBidder.ts";
 import type { WeeklyPoint } from "../supabase/functions/_shared/debtCycleClassifier.ts";
 
 function daysAgo(n: number): string {
@@ -38,52 +37,11 @@ describe("evalMp2OnsetWatch", () => {
   });
 });
 
-// Phase 4a: evalAuctionDemandDeterioration now lives in _shared/indirectBidder.ts
-// and is built directly on computeIndirectBidderSnapshot — armed only if the
-// last `n` CONSOLIDATED (per-term-trailing-6-then-mean) readings are all
-// below 65%, not raw pooled auctions. Each synthetic round below supplies
-// both a 10-Year and a 30-Year auction so every offset has a real
-// consolidated value.
-function buildAuctionRounds(roundValues: { y10: number; y30: number }[]): AuctionRow[] {
-  const rows: AuctionRow[] = [];
-  roundValues.forEach(({ y10, y30 }, round) => {
-    rows.push({ auction_date: daysAgo(round * 14), security_term: "10-Year", indirect_share_pct: y10 });
-    rows.push({ auction_date: daysAgo(round * 14 + 1), security_term: "30-Year", indirect_share_pct: y30 });
-  });
-  return rows;
-}
-
-describe("evalAuctionDemandDeterioration", () => {
-  it("armed: consolidated indirect bidder share below 65% across all 6 trailing rounds", () => {
-    // 11 rounds so each of the 6 offsets (0-5) has a full trailing-6-per-term
-    // window behind it (offset 5 needs rows out to index 10).
-    const rounds = Array.from({ length: 11 }, () => ({ y10: 60, y30: 58 }));
-    const rows = buildAuctionRounds(rounds);
-    const result = evalAuctionDemandDeterioration(rows, 6);
-    expect(result.armed).toBe(true);
-  });
-
-  it("not armed: the most recent round's trailing-6-per-term window closes above 65%", () => {
-    // Each offset's consolidated value is itself an average of 6 rounds, so
-    // one outlier round only shifts that average by ~1/6 of the gap — round
-    // 0 has to be a genuinely strong auction (not just "a bit higher") to
-    // push its own window (offset 0, which includes round 0) above 65 while
-    // the other offsets (1-5, which exclude round 0) stay below it.
-    const rounds = Array.from({ length: 11 }, (_, i) => (i === 0 ? { y10: 100, y30: 100 } : { y10: 60, y30: 58 }));
-    const rows = buildAuctionRounds(rounds);
-    const result = evalAuctionDemandDeterioration(rows, 6);
-    expect(result.armed).toBe(false);
-  });
-
-  it("the card, the classifier input, and this trip-wire read the same number at offset 0", () => {
-    const rounds = Array.from({ length: 11 }, () => ({ y10: 57.608, y30: 57.483 }));
-    const rows = buildAuctionRounds(rounds);
-    const result = evalAuctionDemandDeterioration(rows, 6);
-    // 57.608 and 57.483 average to ~57.546, rounds to 57.55 — matches the
-    // card's own live value confirmed in the Phase 4 decisions log.
-    expect(result.values.latest).toBeCloseTo(57.55, 1);
-  });
-});
+// v2 Phase 1: evalAuctionDemandDeterioration's tests moved to
+// tests/indirectBidder.test.ts, alongside the rest of _shared/indirectBidder.ts's
+// coverage (the function's signature changed from (rows, n) to
+// (rows, thresholds, trailingYears) as part of the hysteresis rewrite — see
+// docs/specs/debt-metrics-integrity-v2.md Phase 1).
 
 describe("evalDollarDivergenceWidening", () => {
   it("armed: 30Y yield at a cycle high while DXY's 3-month change is flat-to-negative", () => {

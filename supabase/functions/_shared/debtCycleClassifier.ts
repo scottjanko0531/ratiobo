@@ -11,6 +11,8 @@
 // Dalio's own stated r > g test (confirmed against the 2026-08-21 fixture,
 // which only resolves to "MP1 (strained)" under a >0 reading).
 
+import { indirectBidderIsWeak } from "./statusThresholds.ts";
+
 export interface WeeklyPoint {
   date: string;
   value: number;
@@ -24,11 +26,20 @@ export interface ClassifierInput {
   debtToTaxRevenueX: number | null; // informational only, not a gate
   walclPctGdpSeries: WeeklyPoint[]; // most-recent-first
   // Precomputed by the caller via _shared/indirectBidder.ts's
-  // computeIndirectBidderSnapshot(rows, 0).value — Phase 4a consolidation,
-  // so this classifier gate, the macro card, and the auction-demand
-  // trip-wire all read the exact same number off the same table instead of
-  // three independently-pooled averages.
+  // computeIndirectBidderSnapshot(rows, 0).value — v1 Phase 4a
+  // consolidation, so this classifier gate, the macro card, and the
+  // auction-demand trip-wire all read the exact same number off the same
+  // table instead of three independently-pooled averages. Informational
+  // only now (shown in the Position Check detail text) — the actual gate
+  // uses indirectBidderShareZ below (v2 Phase 1).
   indirectBidderShareAvg6: number | null;
+  // z-score of indirectBidderShareAvg6 against the metric's own full
+  // history (_shared/indirectBidder.ts's computeIndirectBidderFullSeries +
+  // zScoreOf) — v2 Phase 1: the raw value's fixed 57.5 threshold could
+  // never reflect that this metric's typical range has structurally
+  // shifted over time (see the v2 Phase 0 distribution). Comparing
+  // relative to history instead.
+  indirectBidderShareZ: number | null;
   bidToCoverSeries: WeeklyPoint[]; // trailing auctions, most-recent-first
   somaLongDurationDeltaSeries: WeeklyPoint[]; // trailing weeks, most-recent-first
 }
@@ -124,9 +135,10 @@ export function classifyDebtCycleStageV2(input: ClassifierInput): ClassifierResu
   const mp2Gate = input.fedFundsMid < 0.5 && fedPrintingRising;
 
   const indirectBidderAvg6 = input.indirectBidderShareAvg6;
+  const indirectBidderZ = input.indirectBidderShareZ;
   const bidToCoverAvg6 = trailingAverage(input.bidToCoverSeries, 6);
   const mp3AuctionDemandWeak =
-    (indirectBidderAvg6 != null && indirectBidderAvg6 < 57.5) ||
+    (indirectBidderZ != null && indirectBidderIsWeak(indirectBidderZ)) ||
     (bidToCoverAvg6 != null && bidToCoverAvg6 < 2.0);
 
   const somaTrend = isSustainedPositive(input.somaLongDurationDeltaSeries);
@@ -167,6 +179,7 @@ export function classifyDebtCycleStageV2(input: ClassifierInput): ClassifierResu
       effectiveRateGrowthSpread: input.effectiveRateGrowthSpread,
       debtToTaxRevenueX: input.debtToTaxRevenueX,
       indirectBidderShareAvg6: indirectBidderAvg6,
+      indirectBidderShareZ: indirectBidderZ,
       bidToCoverAvg6: bidToCoverAvg6,
     },
   };

@@ -1649,3 +1649,185 @@ against real numbers rather than assumption.
 completed; the one surprise (the confirmed v1 grep miss) is logged, not
 a blocker — Phase 2 will fix it along with the rest of the wording
 sweep. Stopping here per the gate; not touching Phase 1.
+
+### Phase 1: one threshold source, calibration vs. own history, sinceDate fix, notification hygiene
+
+**1a. One threshold source.** `INDIRECT_BIDDER_THRESHOLDS` added to
+`_shared/statusThresholds.ts`. Card status (`indirectBidderCardStatus`)
+and the classifier's weak gate (`indirectBidderIsWeak`) both import it;
+the trip-wire (`evalAuctionDemandDeterioration` in `_shared/indirectBidder.ts`)
+takes the threshold object as a parameter and
+`update-big-cycle-metrics/index.ts` passes `INDIRECT_BIDDER_THRESHOLDS.tripWire`
+at the one call site. Grep for the retired raw values, both ASCII and
+unicode variants (rule 8), after all code changes:
+
+```
+grep -rnF "57.5" supabase/functions components/*.jsx | grep -v _shared/statusThresholds.ts | grep -v tests/
+grep -rn "< *65\|<65\b" supabase/functions components
+```
+
+Zero live hits — every remaining match is an explanatory comment citing
+the retired number for context, not executable logic. One genuine find
+along the way: `_shared/debtCycleTripWires.ts` still carried a **dead
+duplicate** of `evalAuctionDemandDeterioration` (the pre-Phase-4a
+original, pooled-auctions-with-fixed-`<65`), left behind when the real
+implementation moved to `_shared/indirectBidder.ts` in v1 Phase 4a but
+never deleted. Confirmed via grep that nothing imported it from that
+file (both `update-big-cycle-metrics/index.ts` and the tests only ever
+imported the `indirectBidder.ts` version) — removed it rather than
+leaving an unused alternate implementation sitting there with a stale
+threshold baked in, since finding exactly this kind of stale leftover is
+what rule 8's grep is for.
+
+**1b. Calibration.** Using the Phase 0 distribution (full-history mean
+49.34/stdev 7.05, n=101; trailing-2yr mean 56.83/stdev 2.02, n=12):
+
+- Card: `z > -1` healthy, `-2 < z <= -1` watch, `z <= -2` danger — vs.
+  full history.
+- Classifier `mp3AuctionDemandWeak`: `z <= -1.5` — vs. full history,
+  one boundary (stronger than the card's watch line, since it's
+  MP3-adjacent evidence per the spec).
+- Trip-wire: arms on 3 consecutive rounds below `mean2yr - 1*sd2yr`,
+  disarms on 2 consecutive rounds above `mean2yr - 0.5*sd2yr` —
+  computed once per call, anchored to the latest reading, walked across
+  the full available history as a state machine (not recomputed per
+  historical point — same simplification `isSustainedRising`/
+  `isSustainedPositive` already make).
+
+All of these are logged as **uncalibrated starting points** per rule 6
+— directionally reasonable given the real distribution, not statistically
+fit.
+
+**Judgment call: is n=12 (trailing 2 years) enough for a stable stdev?**
+No — 12 points is below the general comfort floor (~20-30+) for a
+stable stdev estimate; a single additional extreme auction could swing
+`sd2yr` meaningfully. Decided to proceed with the literal "trailing 2
+years" the spec specifies anyway, rather than unilaterally widening the
+window, for three reasons: (1) the spec explicitly asks "fewer than
+~24" as the fallback trigger for the percentile-rank path, and 12 is
+below that — but the fallback path is for cases with too little data to
+compute *any* meaningful spread at all (the near-term-signal-confidence
+style guard), not a general "more data is always better" rule, and 12
+genuine auction rounds is a real, if thin, empirical window, not a data
+desert; (2) this is explicitly flagged elsewhere in this same phase as
+an "uncalibrated starting point" like every other threshold here —
+adding a second, undocumented deviation (silently widening the window)
+on top of an already-provisional threshold compounds uncertainty rather
+than reducing it; (3) the alternative (recomputing a true rolling
+window) is the explicitly-rejected larger investment noted in
+`indirectBidder.ts`'s own doc comment. **What was done about it:** logged
+here as a known caveat rather than silently accepted — if `sd2yr` is
+later observed to swing wildly auction-to-auction in production, that's
+the empirical signal to revisit the window length, not a priori
+reasoning now.
+
+**1c. sinceDate fix.** The old implementation (both the v1
+`indirectBidder.ts` version and the now-removed dead duplicate in
+`debtCycleTripWires.ts`) reported `window[window.length-1].auction_date`
+— the oldest point in whatever fixed lookback window was passed in, not
+when the condition actually started. This is exactly the
+2024-08-08 bug the Phase 0 fixture captured (`sinceDate` pinned to the
+window edge regardless of true onset). The rewrite walks the full
+history chronologically as a state machine and only updates
+`sinceDate` on the false→true arm transition, to the date of the first
+round in that specific streak — verified directly (see 1d) with a
+synthetic test where the streak start is deliberately not the oldest
+row available, and the assertion confirms `sinceDate` is neither. No
+`windowOldestDate` field was carried forward — confirmed via grep it
+had no other reader anywhere in the codebase.
+
+**1d. Live projected state, confirmed against the real new code (not
+just Phase 0's hand-calc).** Ran `evalAuctionDemandDeterioration` from
+the actual rewritten `_shared/indirectBidder.ts`, with
+`INDIRECT_BIDDER_THRESHOLDS.tripWire`, against the real 185-row Treasury
+auction history pulled in Phase 0 (now committed as
+`tests/fixtures/indirect-bidder-auction-history-2026-11-17.json`, and
+used directly as the test suite's live-numbers regression anchor):
+
+```
+{
+  armed: false,
+  sinceDate: null,
+  values: {
+    latest: 57.55,
+    mean2y: 56.83,
+    sd2y: 2.02,
+    armThreshold: 54.81,
+    disarmThreshold: 55.82,
+    windowReadingCount: 12
+  }
+}
+```
+
+**Disarmed**, exactly matching Phase 0's manual projection (54.81 arm
+boundary, none of the last 3 rounds below it) — but now produced by the
+real code path end to end, not a hand calculation standing in for it.
+The full-history z-score for the same latest reading is **+1.16**
+(`indirectBidderCardStatus` → `"healthy"`, `indirectBidderIsWeak` →
+`false`), also matching Phase 0.
+
+**1e. Notification hygiene.** Checked the existing notification pipeline
+in `update-big-cycle-metrics/index.ts`'s `Deno.serve` handler before
+building anything new: it compares today's trip-wires against
+yesterday's (from `big_cycle_stage_audit_log`) and only fires a
+"Trip-wire fired" notification on a `!prior.armed && current.armed`
+transition, deduped via `dedup_key: debt_cycle_tw_${key}:${sinceDate}`.
+**There is no "cleared" notification type anywhere in this codebase** —
+only "fired." Given today's projected transition is armed→disarmed
+(or, if the live data differs from this projection by deploy day,
+possibly no transition at all), the existing pipeline would not fire
+anything regardless — the `!prior.armed && current.armed` guard is
+false either way. Built an explicit suppression guard anyway, as a
+defensive measure for the edge case where live deploy-day numbers
+differ from this projection and the trip-wire unexpectedly computes
+`armed: true`: a query against `big_cycle_stage_notes` for a
+recalibration note created *today* (matching `"Auction-demand trip-wire
+recalibrated%"`), reusing the same table and the same note 1e separately
+asks for rather than inventing a second mechanism — if found, the
+`auction_demand_deterioration` key is filtered out of today's
+notification batch. The note text itself (`"Auction-demand trip-wire
+recalibrated 2026-11-17: now relative to its own history; prior armed
+state reflected a threshold mismatch, not new deterioration."`) is
+drafted and ready but **not yet inserted** — per the same live-DB-write
+gate used in every prior phase (v1 Phase 1's r-g note, Phase 4b's
+recalibration note), it goes in only at deploy time, not during
+build/commit/report.
+
+### Tests
+
+`tests/indirectBidder.test.ts` rewritten: kept the existing
+`computeIndirectBidderSnapshot` coverage unchanged (that calculation
+didn't change in Phase 1), removed the now-stale "57.5 boundary, pinned"
+block (that threshold is retired), and added coverage for
+`meanAndStdev`/`zScoreOf` and the rewritten
+`evalAuctionDemandDeterioration`: an armed case, a disarm case (same
+armed fixture with 5 recovery rounds prepended — proves the gate
+actually flips off, not just that it sometimes doesn't arm), two
+hysteresis cases (a too-short dip that never arms; a single recovery
+round that fails to disarm an already-armed wire), a dedicated
+sinceDate-streak-start assertion, and the live 185-row regression anchor
+described in 1d. The old trip-wire tests that lived in
+`tests/debtCycleTripWires.test.ts` (pre-dating the v1 Phase 4a move)
+were deleted from that file with a pointer comment, since they tested
+the now-removed dead duplicate under the old `(rows, n)` signature.
+
+`tests/debtCycleClassifier.test.ts`: every existing `ClassifierInput`
+fixture gained `indirectBidderShareZ` (now a required field); the stale
+"57.5 boundary" describe block was replaced with a `z <= -1.5` boundary
+block (z = -1.4/-1.5/-1.6, plus a null-z case confirming the bidToCover
+gate still works independently).
+
+Full suite: `npx vitest run tests/` → 722 passed (40 files). `npx next
+build` → compiles clean, all 27 routes prerender.
+
+### Acceptance
+
+One threshold source (confirmed by grep, and by deleting the dead
+duplicate that grep surfaced); trip-wire proven to both arm AND disarm
+on realistic synthetic data, not just today's single live snapshot;
+`sinceDate` now means streak start, verified against a case where that
+differs from both the window edge and the oldest available row; live
+state (disarmed, real numbers) reported above before any deploy.
+**Nothing deployed yet** — code, tests, and this log entry are
+committed; the recalibration note is drafted but not inserted; awaiting
+deploy approval.

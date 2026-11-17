@@ -16,7 +16,8 @@ import {
   fetchDebtHeldPublicLatest,
   fetchDebtAddedTrailing,
 } from "../_shared/mtsFiscalData.ts";
-import { computeIndirectBidderSnapshot, evalAuctionDemandDeterioration, AuctionRow } from "../_shared/indirectBidder.ts";
+import { computeIndirectBidderSnapshot, computeIndirectBidderFullSeries, zScoreOf, evalAuctionDemandDeterioration, AuctionRow } from "../_shared/indirectBidder.ts";
+import { INDIRECT_BIDDER_THRESHOLDS } from "../_shared/statusThresholds.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -757,14 +758,16 @@ async function updateDebtCycleStage(
         .eq("indicator_name", "Fed Balance Sheet % GDP").order("snapshot_date", { ascending: false }).limit(60),
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "Fed SOMA Long-Duration Holdings (Δ)").order("snapshot_date", { ascending: false }).limit(60),
-      // Phase 4a: one shared calculation (_shared/indirectBidder.ts) for the
-      // indirect-bidder number now — per-term trailing-6 averages (10Y and
+      // v1 Phase 4a: one shared calculation (_shared/indirectBidder.ts) for
+      // the indirect-bidder number — per-term trailing-6 averages (10Y and
       // 30Y), then an equal-weighted mean, the macro card's own original
       // method. security_term is selected (not just filtered on) because
-      // the shared function needs it to split the two terms apart; 40 rows
-      // covers 6+ auction rounds per term with margin.
+      // the shared function needs it to split the two terms apart.
+      // v2 Phase 1: fetch the FULL history (not just enough for one
+      // trailing-6 window) — the classifier gate is now a z-score against
+      // this metric's own full history, same basis as the macro card.
       sb.from("treasury_auction_results").select("auction_date, security_term, indirect_share_pct, bid_to_cover_ratio")
-        .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(40),
+        .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(1000),
     ]);
 
     const byName = new Map((macroRows ?? []).map((r: { name: string; current_value: number }) => [r.name, Number(r.current_value)]));
@@ -774,7 +777,12 @@ async function updateDebtCycleStage(
     const effectiveRateGrowthSpread = byName.get("Effective Rate vs. Nominal Growth (r_eff − g)") ?? null;
     if (interestExpenseRevenuePct == null || rateGrowthSpread == null) return null;
 
-    const indirectBidderShareAvg6 = computeIndirectBidderSnapshot((auctionRows ?? []) as AuctionRow[], 0).value;
+    const auctionRowsTyped = (auctionRows ?? []) as AuctionRow[];
+    const indirectBidderShareAvg6 = computeIndirectBidderSnapshot(auctionRowsTyped, 0).value;
+    const indirectBidderFullSeries = computeIndirectBidderFullSeries(auctionRowsTyped);
+    const indirectBidderShareZ = indirectBidderShareAvg6 != null
+      ? zScoreOf(indirectBidderShareAvg6, indirectBidderFullSeries.map((s) => s.value))
+      : null;
 
     const result = classifyDebtCycleStageV2({
       fedFundsMid,
@@ -784,6 +792,7 @@ async function updateDebtCycleStage(
       debtToTaxRevenueX,
       walclPctGdpSeries: toWeeklyPointSeries(walclSnaps, "snapshot_date", "value"),
       indirectBidderShareAvg6,
+      indirectBidderShareZ,
       bidToCoverSeries: toWeeklyPointSeries(auctionRows, "auction_date", "bid_to_cover_ratio"),
       somaLongDurationDeltaSeries: toWeeklyPointSeries(somaSnaps, "snapshot_date", "value"),
     });
@@ -853,12 +862,13 @@ async function evaluateTripWires(
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "Fed Balance Sheet % GDP").order("snapshot_date", { ascending: false }).limit(10),
       sb.from("macro_indicators").select("current_value").eq("name", "CPI (YoY)").maybeSingle(),
-      // Phase 4a: security_term selected (not just filtered) and limit
-      // bumped to 40 — evalAuctionDemandDeterioration now needs up to 6
-      // consolidated auction-rounds back, each round needing its own
-      // trailing-6-per-term window (see _shared/indirectBidder.ts).
+      // v1 Phase 4a: security_term selected (not just filtered).
+      // v2 Phase 1: fetch the FULL history (not just a handful of rounds)
+      // — evalAuctionDemandDeterioration now walks the entire available
+      // history to find the trip-wire's current hysteresis state and when
+      // that state actually began (see _shared/indirectBidder.ts).
       sb.from("treasury_auction_results").select("auction_date, security_term, indirect_share_pct")
-        .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(40),
+        .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(1000),
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "30Y Treasury Yield").order("snapshot_date", { ascending: false }).limit(260),
       sb.from("macro_indicators").select("metadata").eq("name", "DXY").maybeSingle(),
@@ -929,7 +939,7 @@ async function evaluateTripWires(
 
     return {
       mp2_onset_watch: evalMp2OnsetWatch(toWeeklyPointSeries(walclSnaps, "snapshot_date", "value"), cpiYoy),
-      auction_demand_deterioration: evalAuctionDemandDeterioration((auctionRows ?? []) as AuctionRow[], 6),
+      auction_demand_deterioration: evalAuctionDemandDeterioration((auctionRows ?? []) as AuctionRow[], INDIRECT_BIDDER_THRESHOLDS.tripWire),
       dollar_divergence_widening: evalDollarDivergenceWidening(toWeeklyPointSeries(t30ySnaps, "snapshot_date", "value"), dxyChange3mPct),
       stock_bond_corr_positive: evalStockBondCorrPositive(sbCorrRowsClean),
       fiscal_dominance_confirmed: fiscalDominanceResult,
@@ -992,12 +1002,38 @@ Deno.serve(async (req: Request) => {
         trend_confidence: stageResult.trendConfidence,
       });
 
+      // v2 Phase 1e: suppress a fired notification for auction_demand_
+      // deterioration on the day its definition was recalibrated — a
+      // redefinition isn't a new signal (today's projected transition is
+      // actually armed->disarmed, so the existing not-armed->armed filter
+      // below wouldn't fire anyway; this guards the edge case where live
+      // numbers differ from the pre-deploy projection and it fires armed
+      // on deploy day regardless). Reuses the SAME big_cycle_stage_notes
+      // row this phase already writes (not a new table/column) — the
+      // suppression window is exactly "today, if today's note exists,"
+      // so it auto-expires the next day with no separate cleanup needed.
+      // v1's r-g stage note (Phase 1) had no applicable notification path
+      // to suppress, so there's no prior "how we did this before"
+      // mechanism to reuse beyond the notes table itself.
+      const todayForSuppressionCheck = new Date().toISOString().slice(0, 10);
+      const { data: recalibrationNote } = await sb
+        .from("big_cycle_stage_notes")
+        .select("created_at")
+        .eq("cycle_id", DEBT_CYCLE_ID)
+        .ilike("note", "Auction-demand trip-wire recalibrated%")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const suppressAuctionDemandNotificationToday =
+        recalibrationNote?.created_at?.slice(0, 10) === todayForSuppressionCheck;
+
       // Only notify on a not-armed -> armed transition, mirroring
       // generateSovereignRiskNotifications()'s exact pattern (dedup key
       // scoped to the crossing date, ignoreDuplicates so re-running the
       // classifier on an already-armed trip-wire is a silent no-op).
       const notifRows = Object.entries(tripWires)
         .filter(([key, r]) => r.armed && !priorTripWires[key]?.armed)
+        .filter(([key]) => !(key === "auction_demand_deterioration" && suppressAuctionDemandNotificationToday))
         .map(([key, r]) => ({
           category: "debt_cycle", type: "trip_wire", importance: "high",
           title: `Trip-wire fired: ${TRIP_WIRE_LABELS[key] ?? key}`,
