@@ -1048,23 +1048,37 @@ Deno.serve(async (req: Request) => {
       }).eq("name", determinantName);
     }
 
+    // Both determinant fixes below read the STORED big_cycle_metrics value
+    // (not allUpdates, this run's own results only) — found live while
+    // verifying the Phase 4d fix: home_price_income_ratio's upstream
+    // Redfin S3 fetch is currently returning HTTP 403 (broken since before
+    // this phase, unrelated to it) and so is absent from allUpdates on
+    // every run right now. Reading the stored card value instead means
+    // these determinants track the best available live number even when
+    // one of their inputs has a bad run, rather than requiring every
+    // dependency to succeed in the exact same invocation — the same
+    // flakiness could just as easily hit Debt Burden's own inputs on a
+    // different day.
+    const { data: determinantSourceRows } = await sb
+      .from("big_cycle_metrics")
+      .select("key, value_display")
+      .in("key", ["debt_to_gdp", "deficit_pct_gdp", "top1_wealth_share", "home_price_income_ratio"]);
+    const metricDisplay = new Map((determinantSourceRows ?? []).map((r: { key: string; value_display: string }) => [r.key, r.value_display]));
+
     // Phase 2e: "Debt Burden" determinant — was refresh_method 'manual' with
     // a hand-typed reading_text ("124.6% federal debt/GDP" — gross debt, not
     // debt HELD BY THE PUBLIC, the figure that actually represents external
     // repayment burden). Built live from three already-computed figures:
     // total nonfinancial debt/GDP (all sectors), federal debt held by the
-    // public/GDP, and the 2a deficit %GDP figure. Requires the DB's
-    // big_cycle_determinants.refresh_method for this row to be switched to
-    // 'api_macro_xref' (held for deploy approval along with everything else
-    // live-visible — see decisions log).
+    // public/GDP, and the 2a deficit %GDP figure.
     let debtBurdenText: string | null = null;
     try {
-      const totalDebtGdp = allUpdates.find((x) => x.key === "debt_to_gdp");
-      const deficitPctGdp = allUpdates.find((x) => x.key === "deficit_pct_gdp");
+      const totalDebtGdpDisplay = metricDisplay.get("debt_to_gdp");
+      const deficitPctGdpDisplay = metricDisplay.get("deficit_pct_gdp");
       const [debtPublic, gdp4q] = await Promise.all([fetchDebtHeldPublicLatest(), fetchTrailingNominalGdp4Q(FRED_KEY)]);
       const debtPublicGdpPct = (debtPublic.heldByPublicB / gdp4q.gdpB) * 100;
-      if (totalDebtGdp && deficitPctGdp) {
-        debtBurdenText = `${totalDebtGdp.value_display} total nonfinancial debt/GDP (${debtPublicGdpPct.toFixed(1)}% federal debt held by the public/GDP); ${deficitPctGdp.value_display} deficit/GDP`;
+      if (totalDebtGdpDisplay && deficitPctGdpDisplay) {
+        debtBurdenText = `${totalDebtGdpDisplay} total nonfinancial debt/GDP (${debtPublicGdpPct.toFixed(1)}% federal debt held by the public/GDP); ${deficitPctGdpDisplay} deficit/GDP`;
       }
     } catch (e) { console.error("[big-cycle] Debt Burden determinant:", e); }
     if (debtBurdenText) {
@@ -1081,10 +1095,10 @@ Deno.serve(async (req: Request) => {
     // different affordability measure before assuming 7.1x was just wrong,
     // and found none). Built from the same two already-computed cards the
     // Internal Order section itself uses.
-    const top1WealthShare = allUpdates.find((x) => x.key === "top1_wealth_share");
-    const homePriceIncomeRatio = allUpdates.find((x) => x.key === "home_price_income_ratio");
-    if (top1WealthShare && homePriceIncomeRatio) {
-      const gapsText = `Top 1% holds ${top1WealthShare.value_display} of household wealth; home price/income ${homePriceIncomeRatio.value_display}.`;
+    const top1WealthShareDisplay = metricDisplay.get("top1_wealth_share");
+    const homePriceIncomeRatioDisplay = metricDisplay.get("home_price_income_ratio");
+    if (top1WealthShareDisplay && homePriceIncomeRatioDisplay) {
+      const gapsText = `Top 1% holds ${top1WealthShareDisplay} of household wealth; home price/income ${homePriceIncomeRatioDisplay}.`;
       await sb.from("big_cycle_determinants").update({ reading_text: gapsText }).eq("name", "Gaps in Wealth, Opportunity, Values");
     }
 
