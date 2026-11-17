@@ -12,6 +12,7 @@ import {
 } from "../_shared/debtCycleTripWires.ts";
 import {
   fetchMtsTable1Trailing12,
+  fetchMtsNetInterestTrailing12,
   fetchTrailingNominalGdp4Q,
   fetchDebtHeldPublicLatest,
   fetchDebtAddedTrailing,
@@ -126,13 +127,19 @@ async function computeFredUpdates(): Promise<FredUpdatesResult> {
     status_label: top1.value > 35 ? "Wide" : top1.value > 28 ? "Elevated" : "Moderate",
   });
 
-  const [interest, defense] = await Promise.all([fredLatest("A091RC1Q027SBEA"), fredLatest("FDEFX")]);
+  const [interest, defense, mtsNetInterest] = await Promise.all([
+    fredLatest("A091RC1Q027SBEA"), fredLatest("FDEFX"), fetchMtsNetInterestTrailing12(),
+  ]);
   if (interest && defense && defense.value > 0) {
     const ratio = (interest.value / defense.value) * 100;
     const fmtT = (v: number) => `$${(v / 1000).toFixed(2)}T`;
     updates.push({
       key: "interest_vs_defense", value_numeric: ratio, value_display: `${fmtT(interest.value)} vs ${fmtT(defense.value)}`,
-      note_suffix: `Interest on federal debt vs. defense spending (SAAR). Interest overtook defense in FY2024 and the gap is widening.`,
+      // v2 Phase 2d: both sides here are NIPA (incl. imputed pension
+      // interest), which no longer matches the net-interest headline
+      // ($1.06T budget-basis) now shown elsewhere on this dashboard —
+      // clarify rather than change the calculation.
+      note_suffix: `Interest on federal debt vs. defense spending (SAAR). Interest overtook defense in FY2024 and the gap is widening. NIPA basis on both sides (includes imputed pension interest); budget-basis net interest (Treasury MTS, trailing 12 months) is ${fmtT(mtsNetInterest.netInterestB)}.`,
       status: ratio > 100 ? "bad" : ratio > 70 ? "warn" : "good",
       status_label: ratio > 100 ? "Crossed over" : ratio > 70 ? "Approaching defense spending" : "Below defense spending",
     });
@@ -553,8 +560,11 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
       const status = MACRO_STATUS_MAP[rg.status] ?? null;
       updates.push({
         key: "rate_growth_spread", value_numeric: v, value_display: pct1(v),
-        status, status_label: status === "bad" ? "r > g — unsustainable trajectory" : status === "warn" ? "r ≈ g — borderline" : "r < g — sustainable",
-        note_suffix: "10Y Treasury yield minus real GDP growth (r−g) — the classic debt-sustainability test. Cross-referenced from Macro.",
+        status, status_label: status === "bad" ? "r > g — new debt compounding faster than the economy" : status === "warn" ? "r ≈ g — borderline" : "r < g — growth outpacing rates",
+        // v2 Phase 2: retired "sustainable"/"unsustainable" — r < g alone
+        // doesn't stabilize debt/GDP while a primary deficit persists, so
+        // the caveat is spelled out rather than implied by the label.
+        note_suffix: "10Y Treasury yield minus nominal GDP growth (r−g) — the marginal cost of new federal borrowing vs. growth of the nominal tax base. Cross-referenced from Macro. r < g alone doesn't stabilize debt/GDP while a primary deficit persists.",
       });
     }
 

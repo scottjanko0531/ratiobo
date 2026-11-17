@@ -1831,3 +1831,176 @@ state (disarmed, real numbers) reported above before any deploy.
 **Nothing deployed yet** — code, tests, and this log entry are
 committed; the recalibration note is drafted but not inserted; awaiting
 deploy approval.
+
+### Phase 2: wording, labels, source lines — the v1 grep miss, fixed
+
+**2a. The exact old string, read directly at the literal file location**
+(not re-run from v1's grep pattern, per the coordinator's explicit ask —
+v1's grep evidently missed this). `update-big-cycle-metrics/index.ts`,
+the `rate_growth_spread` block (was lines 555–557, shifted slightly by
+v2 Phase 1's unrelated edits earlier in the file — now ~562–564):
+
+```
+status, status_label: status === "bad" ? "r > g — unsustainable trajectory" : status === "warn" ? "r ≈ g — borderline" : "r < g — sustainable",
+note_suffix: "10Y Treasury yield minus real GDP growth (r−g) — the classic debt-sustainability test. Cross-referenced from Macro.",
+```
+
+Replaced with the spec's exact new copy:
+
+```
+status, status_label: status === "bad" ? "r > g — new debt compounding faster than the economy" : status === "warn" ? "r ≈ g — borderline" : "r < g — growth outpacing rates",
+note_suffix: "10Y Treasury yield minus nominal GDP growth (r−g) — the marginal cost of new federal borrowing vs. growth of the nominal tax base. Cross-referenced from Macro. r < g alone doesn't stabilize debt/GDP while a primary deficit persists.",
+```
+
+Confirmed live (pre-fix) in `big_cycle_metrics`: `note` = "10Y Treasury
+yield minus real GDP growth (r−g) — the classic debt-sustainability
+test. Cross-referenced from Macro.", `status_label` = "r < g —
+sustainable" — this table's `note`/`status_label` columns are written
+by `note_suffix`/`status_label` on every function run (see line ~1061's
+`noteAppend`), so no separate migration is needed for this card's live
+`note`/`status_label` — the fix lands on the next deploy's run.
+`source_name` is a **different, separately-seeded column never touched
+by the function** — handled in 2b below.
+
+Spot-checked the fix's own byte encoding before committing (per the
+coordinator's warning that a prior grep miss may be an encoding issue):
+the new `status_label` line uses U+2014 (em dash) as the clause
+separator and U+2248 (≈) for the warn case — both byte-identical to
+what the original line already used, so no regression there. The new
+`note_suffix`'s "(r−g)" uses U+2212 (minus sign), matching
+`macro_indicators.description`'s own "(r−g)" from v1 Phase 1. No
+encoding drift introduced.
+
+**2b. Source lines.** `big_cycle_metrics.source_name` is a plain
+editorial text column — confirmed via the same grep-vs-reality check
+that nothing in `update-big-cycle-metrics/index.ts` ever writes it (the
+function only writes `value_numeric`/`value_display`/`status`/
+`status_label`/`note` per run); it carries whatever was seeded at
+migration/creation time. Live values confirmed stale on 2026-11-17:
+
+| key | live source_name (stale) |
+|---|---|
+| `rate_growth_spread` | "Macro dashboard, Long-Term Debt Cycle layer (FRED DGS10/GDPC1)" |
+| `interest_expense_revenue_pct` | "Macro dashboard, Long-Term Debt Cycle layer (FRED A091RC1Q027SBEA / FYFR)" |
+| `deficit_pct_gdp` | "FRED" |
+
+Migration `supabase/migrations/20261117_v2_phase2_source_line_fixes.sql`
+updates all three to the spec's exact text (no FK involved — a plain
+`UPDATE`, unlike the `macro_indicators.name` rename pattern from v1's
+`20261117_rename_cb_gold_reserves_to_gold_price_yoy.sql`, which needed
+the insert-repoint-delete workaround only because of that table's
+non-deferrable FK). **Not yet applied** — held for deploy, per the
+same-gate instruction for this phase.
+
+Checked the equivalent `/macro` descriptions (`macro_indicators.description`)
+for all three: `Rate vs. GDP Growth Spread` and `Interest Expense % of
+Federal Revenue` are **already correct** (both already say "nominal
+GDP growth" / MTS-basis, confirmed fixed by v1 Phase 1/2 — this is a
+genuinely different text column from `big_cycle_metrics.source_name`
+and v1's fix never touched the latter). `Federal Deficit % GDP` has no
+`macro_indicators` row at all (it's a `big_cycle_metrics`-only card,
+computed directly in `update-big-cycle-metrics`, no `/macro` drawer
+counterpart to check).
+
+**2c. The sweep.** `grep -rnF` for all seven terms across
+`supabase/functions`, `components`, `app`, `lib`, plus the three live DB
+text columns named in the spec (`big_cycle_metrics.note`/`status_label`/
+`source_name` — the function's `note_suffix` input maps to the `note`
+column; `big_cycle_determinants.reading_text`; `macro_indicators.description`).
+
+- **"real GDP growth"** — 5 code hits, all in genuinely different,
+  real-GDP-based features unrelated to the r−g card: a CBO potential-
+  growth comment (`fetch-macro-data/index.ts:1854`, `lib/simulatorKeys.js:216`),
+  the Dalio quadrant chart (`ThreeForcesChart.jsx:284`), and the
+  Growth-Inflation Risk gauge (`DalioGauges.jsx:620,624`). **Intentional,
+  logged, not fixed** — these cards are supposed to use real GDP.
+- **"GDPC1"** — many hits, all the FRED series ID for other genuinely
+  real-GDP-based cards (Real GDP Growth, Output Gap, GDP 2Q/4Q Avg
+  crossover, M2 − GDP, Growth-Inflation Risk gauge, three backtests,
+  `get-gdp-crossover-history`). Confirmed the r−g card itself does
+  **not** use GDPC1 (`fetch-macro-data/index.ts`'s own INDICATORS entry:
+  `series: "DGS10", series2: "GDP"` — nominal, since v1 Phase 1).
+  **Intentional, logged, not fixed.**
+- **"A091RC1Q027SBEA"** (NIPA interest series) — 3 hits: the Interest-vs-
+  Defense card (`update-big-cycle-metrics/index.ts:129`, intentionally
+  NIPA-basis per 2d — both sides of that comparison are supposed to be
+  NIPA) and two `fetch-macro-data/index.ts` call sites inside the
+  `interest_net_gdp_pct`/`interest_net_revenue_pct` cases — read directly:
+  both only populate `metadata.nipa_pct_gdp`/`nipa_note` ("shown in the
+  drawer"), the headline `current`/`previous` values come from MTS. This
+  is exactly the spec's own "NIPA lines kept as secondary context"
+  example. **Intentional, logged, not fixed.**
+- **"sustainable"** — 6 hits: this phase's own new explanatory comment
+  (intentional — it's explaining the retirement, not live text), a
+  retirement-planning "4% rule" card (`financial-plan/index.ts`,
+  `app/planning/page.jsx` — unrelated feature, not the r−g card), and
+  three Dalio-gauge narrative paragraphs (`DalioGauges.jsx:259,838,843`)
+  describing *other* gauges' own debt-growth-rate framing, not r−g's
+  retired status_label. **Intentional, logged, not fixed.** Confirmed
+  zero hits against the actual retired r−g wording itself
+  (`grep -rnF "unsustainable trajectory"` / `"r < g — sustainable"` →
+  clean after the 2a fix).
+- **"Subsidy inverted" / "Privilege intact"** — **zero exact-case hits**,
+  anywhere, code or DB. But per the coordinator's warning about a prior
+  grep miss, re-ran case-insensitively on the bare words "privilege"/
+  "subsidy" rather than trusting the exact-phrase miss, and found the
+  real (paraphrased, different case) source: `app/macro/page.jsx`'s
+  Treasury Convenience Yield drawer — "exorbitant privilege intact" /
+  "the subsidy has inverted" — plus a matching code comment in
+  `ingest-convenience-yield/index.ts`. Read both in context: these are
+  **definitional sign-convention copy** ("positive value means X,
+  negative means Y"), not a live status label — the actual
+  `status_label` for this card was already retired from this exact
+  level-based framing in v1 Phase 3c (confirmed via that code's own
+  comment: "'Subsidy inverted' was a level-based label that could read
+  as deteriorating even while the level was recovering off a low").
+  The drawer text answers a different question ("what does the sign
+  mean") than the trend-based status does ("is it improving") — both
+  can be true simultaneously, so this is **intentional, logged, not
+  fixed**, not a second instance of the same bug.
+- **"fiscal_dominance_confirmed"** — several hits, all current: this is
+  the live key for the NEW 4-condition trip-wire from v1 Phase 4b (the
+  OLD trip-wire that used to hold this name was renamed to
+  `stock_bond_corr_positive`; the name was then reused for the actual
+  fiscal-dominance test). **Intentional, logged, not fixed.**
+
+**Live DB text columns** (`big_cycle_metrics.note`/`status_label`/
+`source_name`, `big_cycle_determinants.reading_text`,
+`macro_indicators.description`): queried all three tables for all seven
+terms (case-insensitive, broader than exact-phrase to catch any
+encoding/case drift). Zero hits in `big_cycle_determinants.reading_text`
+and `macro_indicators.description`. `big_cycle_metrics` hits were
+exactly the 2a (`note`/`status_label`, fixed by code, lands next run)
+and 2b (`source_name`, fixed by migration, held for deploy) items
+already covered above — no additional unexplained hits.
+
+**Zero unexplained remaining hits.** Every hit above is either fixed
+(2a in code, 2b in a migration) or explicitly logged as intentional
+with a stated reason.
+
+**2d. Interest vs. Defense card.** Added to its `note_suffix`: "NIPA
+basis on both sides (includes imputed pension interest); budget-basis
+net interest (Treasury MTS, trailing 12 months) is $X." `$X` is filled
+in live via `fetchMtsNetInterestTrailing12()` (already imported
+elsewhere in this file; added to this call site's `Promise.all`) rather
+than hardcoded. Verified live: trailing-12 net interest (window
+2025-11-30 → 2026-10-31) = **$1,063.96B → "$1.06T"** — matches the
+spec's own reference figure exactly. No calculation change to the
+card's own NIPA-vs-NIPA ratio.
+
+### Tests / build
+
+No `_shared/` module touched this phase (all edits are in
+`update-big-cycle-metrics/index.ts`'s plain Deno.serve body plus one new
+plain-text migration), so no new test coverage is applicable — existing
+suite re-run as a regression check: `npx vitest run tests/` → 722 passed
+(40 files), `npx next build` → compiles clean.
+
+### Acceptance
+
+Sweep log above shows the required zero unintended hits (everything is
+either fixed or explicitly logged as intentional with a stated reason).
+**Nothing deployed and the migration is not yet applied** — code,
+migration file, and this log entry are committed; the live page will
+show the new wording only after deploy, which is reported separately
+per the standing gate.
