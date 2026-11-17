@@ -30,6 +30,30 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
 
+// Phase 4c (debt-metrics-integrity spec): real completion status, written
+// to the same generic job-run log every other scheduled job already uses
+// (rb_job_runs — not rb-specific despite the name; see
+// update-inflation-regime/index.ts for the identical pattern). Before this,
+// a chunked-upsert failure here only ever hit console.error and the run
+// continued — including writing big_cycle_paradigm_scores (the composite,
+// user-facing table) right after a metric_scores chunk had silently failed,
+// which is the prime suspect for the Paradigm "stale" display bug Phase 0
+// investigated (not reproducible at the time, but this is the fix for the
+// failure mode that would cause it). Fire-and-forget: a logging failure
+// must never affect this function's real response.
+async function logJobRun(
+  sb: ReturnType<typeof createClient>, startedAt: Date, status: "ok" | "error", detail: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await sb.from("rb_job_runs").insert({
+      job_name: "update-big-cycle-paradigm-metrics", started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(), status, detail,
+    });
+  } catch {
+    // never let logging break the real response
+  }
+}
+
 interface FredObs { date: string; value: number; }
 
 // Full-history fetch, never throws — mirrors update-big-cycle-metrics's own
@@ -139,8 +163,9 @@ const TRAILING_WINDOW_YEARS = 10;
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
+  const jobStartedAt = new Date();
+  const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
   try {
-    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
     const today = new Date().toISOString().slice(0, 10);
     const windowCutoff = new Date();
     windowCutoff.setUTCFullYear(windowCutoff.getUTCFullYear() - TRAILING_WINDOW_YEARS);
@@ -166,7 +191,7 @@ Deno.serve(async (req: Request) => {
       for (let i = 0; i < rawRows.length; i += 1000) {
         const { error } = await sb.from("big_cycle_paradigm_raw_series")
           .upsert(rawRows.slice(i, i + 1000), { onConflict: "metric_key,obs_date" });
-        if (error) console.error(`[paradigm] raw_series upsert ${def.key}:`, error.message);
+        if (error) throw new Error(`raw_series upsert (${def.key}, chunk ${i}): ${error.message}`);
       }
 
       const latest = series[series.length - 1];
@@ -218,10 +243,16 @@ Deno.serve(async (req: Request) => {
         .map((p) => ({ paradigm: p.paradigm, score: p.score }))
     );
 
+    // Phase 4c: this upsert must not proceed past a metric_scores failure —
+    // the suspected root cause of the Paradigm "stale" display bug was
+    // exactly this: a chunk failing silently here while paradigm_scores (the
+    // composite, user-facing table) wrote unconditionally right after,
+    // producing a recorded_at that exists in paradigm_scores but has
+    // partial-or-zero matching rows in metric_scores.
     for (let i = 0; i < metricScoreRows.length; i += 500) {
       const { error } = await sb.from("big_cycle_paradigm_metric_scores")
         .upsert(metricScoreRows.slice(i, i + 500), { onConflict: "metric_key,paradigm,recorded_at" });
-      if (error) console.error("[paradigm] metric_scores upsert:", error.message);
+      if (error) throw new Error(`metric_scores upsert (chunk ${i}): ${error.message}`);
     }
 
     const paradigmScoreRows = paradigmComposites.map((p) => ({
@@ -230,8 +261,11 @@ Deno.serve(async (req: Request) => {
     }));
     const { error: paradigmWriteError } = await sb.from("big_cycle_paradigm_scores")
       .upsert(paradigmScoreRows, { onConflict: "paradigm,recorded_at" });
-    if (paradigmWriteError) console.error("[paradigm] paradigm_scores upsert:", paradigmWriteError.message);
+    if (paradigmWriteError) throw new Error(`paradigm_scores upsert: ${paradigmWriteError.message}`);
 
+    await logJobRun(sb, jobStartedAt, "ok", {
+      recordedAt: today, dominantParadigm, metricsAvailable: fetchSummary.filter((f) => f.ok).length, metricsTotal: fetchSummary.length,
+    });
     return json({
       recordedAt: today,
       dominantParadigm,
@@ -239,7 +273,9 @@ Deno.serve(async (req: Request) => {
       metricFetchSummary: fetchSummary,
     });
   } catch (e) {
-    console.error("[update-big-cycle-paradigm-metrics]", e);
-    return json({ error: String(e) }, 500);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[update-big-cycle-paradigm-metrics]", msg);
+    await logJobRun(sb, jobStartedAt, "error", { message: msg });
+    return json({ error: msg }, 500);
   }
 });

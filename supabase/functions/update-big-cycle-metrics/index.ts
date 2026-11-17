@@ -1,12 +1,13 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import * as XLSX from "npm:xlsx";
-import { classifyDebtCycleStageV2, WeeklyPoint } from "../_shared/debtCycleClassifier.ts";
+import { classifyDebtCycleStageV2, WeeklyPoint, isSustainedRising, isSustainedPositive } from "../_shared/debtCycleClassifier.ts";
 import {
   evalMp2OnsetWatch,
-  evalAuctionDemandDeterioration,
+  evalStockBondCorrPositive,
   evalDollarDivergenceWidening,
   evalFiscalDominanceConfirmed,
+  FiscalDominanceDailyRow,
   TripWireResult,
 } from "../_shared/debtCycleTripWires.ts";
 import {
@@ -15,6 +16,7 @@ import {
   fetchDebtHeldPublicLatest,
   fetchDebtAddedTrailing,
 } from "../_shared/mtsFiscalData.ts";
+import { computeIndirectBidderSnapshot, evalAuctionDemandDeterioration, AuctionRow } from "../_shared/indirectBidder.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -755,11 +757,14 @@ async function updateDebtCycleStage(
         .eq("indicator_name", "Fed Balance Sheet % GDP").order("snapshot_date", { ascending: false }).limit(60),
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "Fed SOMA Long-Duration Holdings (Δ)").order("snapshot_date", { ascending: false }).limit(60),
-      // Combined 10Y/30Y trailing auctions (not per-term-then-averaged like the
-      // Indirect Bidder Share card itself) — a simpler approximation, fine for a
-      // starting-point threshold per the source spec's own framing.
-      sb.from("treasury_auction_results").select("auction_date, indirect_share_pct, bid_to_cover_ratio")
-        .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(6),
+      // Phase 4a: one shared calculation (_shared/indirectBidder.ts) for the
+      // indirect-bidder number now — per-term trailing-6 averages (10Y and
+      // 30Y), then an equal-weighted mean, the macro card's own original
+      // method. security_term is selected (not just filtered on) because
+      // the shared function needs it to split the two terms apart; 40 rows
+      // covers 6+ auction rounds per term with margin.
+      sb.from("treasury_auction_results").select("auction_date, security_term, indirect_share_pct, bid_to_cover_ratio")
+        .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(40),
     ]);
 
     const byName = new Map((macroRows ?? []).map((r: { name: string; current_value: number }) => [r.name, Number(r.current_value)]));
@@ -769,6 +774,8 @@ async function updateDebtCycleStage(
     const effectiveRateGrowthSpread = byName.get("Effective Rate vs. Nominal Growth (r_eff − g)") ?? null;
     if (interestExpenseRevenuePct == null || rateGrowthSpread == null) return null;
 
+    const indirectBidderShareAvg6 = computeIndirectBidderSnapshot((auctionRows ?? []) as AuctionRow[], 0).value;
+
     const result = classifyDebtCycleStageV2({
       fedFundsMid,
       interestExpenseRevenuePct,
@@ -776,7 +783,7 @@ async function updateDebtCycleStage(
       effectiveRateGrowthSpread,
       debtToTaxRevenueX,
       walclPctGdpSeries: toWeeklyPointSeries(walclSnaps, "snapshot_date", "value"),
-      indirectBidderShareSeries: toWeeklyPointSeries(auctionRows, "auction_date", "indirect_share_pct"),
+      indirectBidderShareAvg6,
       bidToCoverSeries: toWeeklyPointSeries(auctionRows, "auction_date", "bid_to_cover_ratio"),
       somaLongDurationDeltaSeries: toWeeklyPointSeries(somaSnaps, "snapshot_date", "value"),
     });
@@ -802,21 +809,60 @@ const TRIP_WIRE_LABELS: Record<string, string> = {
   mp2_onset_watch: "MP2 onset watch",
   auction_demand_deterioration: "Auction demand deterioration",
   dollar_divergence_widening: "Dollar confidence divergence widening",
+  // Phase 4b: renamed from fiscal_dominance_confirmed (rule 2.1) — this key
+  // now only ever means the stock/bond-correlation test; the real fiscal-
+  // dominance test is the NEW fiscal_dominance_confirmed key below.
+  stock_bond_corr_positive: "Positive stock-bond correlation regime",
   fiscal_dominance_confirmed: "Fiscal-dominance regime confirmed",
 };
 
-async function evaluateTripWires(sb: ReturnType<typeof createClient>): Promise<Record<string, TripWireResult>> {
+// "Fed is easing" (Phase 4b condition 3, one of three ORed signals) — the
+// upper target (DFEDTARU) is below where it sat ~90 days ago. A simple,
+// directional read, not a formal easing-cycle classifier; consistent with
+// how lightly the other two ORed signals (WALCL trend, SOMA trend) are
+// themselves defined elsewhere in this file.
+async function fetchFedEasingNow(): Promise<boolean> {
   try {
-    const [{ data: walclSnaps }, { data: cpiRow }, { data: auctionRows }, { data: t30ySnaps }, { data: dxyRow }, { data: sbCorrRows }] = await Promise.all([
+    const url = `${FRED}?series_id=DFEDTARU&api_key=${FRED_KEY}&file_type=json&sort_order=desc&limit=200`;
+    const res = await fetch(url);
+    if (!res.ok) return false;
+    const j = await res.json();
+    const obs = (j.observations as { date: string; value: string }[])
+      .filter((o) => o.value !== "." && o.value !== "")
+      .map((o) => ({ date: o.date, value: parseFloat(o.value) }));
+    if (obs.length < 2) return false;
+    const latest = obs[0];
+    const cutoff = new Date(latest.date + "T00:00:00Z");
+    cutoff.setUTCDate(cutoff.getUTCDate() - 90);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    const ninetyDaysAgo = obs.find((o) => o.date <= cutoffStr);
+    if (!ninetyDaysAgo) return false;
+    return latest.value < ninetyDaysAgo.value;
+  } catch { return false; }
+}
+
+async function evaluateTripWires(
+  sb: ReturnType<typeof createClient>, fedPrintingRisingNow: boolean, somaAbsorbingNow: boolean,
+): Promise<Record<string, TripWireResult>> {
+  try {
+    const [
+      { data: walclSnaps }, { data: cpiRow }, { data: auctionRows }, { data: t30ySnaps }, { data: dxyRow },
+      { data: sbCorrRows }, fedEasingNow, { data: interestRevSnaps }, { data: realFedFundsSnaps },
+      { data: cpiYoySnaps }, { data: paradigmARow },
+    ] = await Promise.all([
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "Fed Balance Sheet % GDP").order("snapshot_date", { ascending: false }).limit(10),
       sb.from("macro_indicators").select("current_value").eq("name", "CPI (YoY)").maybeSingle(),
-      sb.from("treasury_auction_results").select("auction_date, indirect_share_pct")
-        .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(6),
+      // Phase 4a: security_term selected (not just filtered) and limit
+      // bumped to 40 — evalAuctionDemandDeterioration now needs up to 6
+      // consolidated auction-rounds back, each round needing its own
+      // trailing-6-per-term window (see _shared/indirectBidder.ts).
+      sb.from("treasury_auction_results").select("auction_date, security_term, indirect_share_pct")
+        .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(40),
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "30Y Treasury Yield").order("snapshot_date", { ascending: false }).limit(260),
       sb.from("macro_indicators").select("metadata").eq("name", "DXY").maybeSingle(),
-      // No small limit here on purpose: evalFiscalDominanceConfirmed's
+      // No small limit here on purpose: evalStockBondCorrPositive's
       // sinceDate now walks backward through this full set to find the
       // streak's true start, not just a 90-day window boundary — a small
       // cap (previously 100 rows) would silently truncate that walk for
@@ -824,22 +870,69 @@ async function evaluateTripWires(sb: ReturnType<typeof createClient>): Promise<R
       // ~19 years of daily rows against the table's actual ~4.5-year history.
       sb.from("stock_bond_correlation").select("obs_date, corr_90d")
         .not("corr_90d", "is", null).order("obs_date", { ascending: false }).limit(5000),
+      fetchFedEasingNow(),
+      // Phase 4b conditions 1/2/4, each already a daily macro_snapshots
+      // history. "Interest Expense % of Federal Revenue" only carries valid
+      // Phase-2b (net-interest-basis) history from 2026-11-17 onward —
+      // earlier rows are the old NIPA-basis definition (rule 2.2: never mix
+      // definitions in one series), so the persistence streak below can't
+      // exceed a few days yet regardless of actual fiscal conditions. See
+      // the Phase 4 decisions log.
+      sb.from("macro_snapshots").select("snapshot_date, value")
+        .eq("indicator_name", "Interest Expense % of Federal Revenue").order("snapshot_date", { ascending: false }).limit(400),
+      sb.from("macro_snapshots").select("snapshot_date, value")
+        .eq("indicator_name", "Real Fed Funds Rate").order("snapshot_date", { ascending: false }).limit(400),
+      sb.from("macro_snapshots").select("snapshot_date, value")
+        .eq("indicator_name", "CPI (YoY)").order("snapshot_date", { ascending: false }).limit(400),
+      sb.from("big_cycle_paradigm_scores").select("recorded_at, composite_score, label")
+        .eq("paradigm", "A").order("recorded_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
 
     const cpiYoy = cpiRow?.current_value != null ? Number(cpiRow.current_value) : null;
     const dxyChange3mPct = (dxyRow?.metadata as { change3m_pct?: number } | undefined)?.change3m_pct ?? null;
-    const auctionShareRows = (auctionRows ?? []).map((r: { auction_date: string; indirect_share_pct: number }) => ({
-      auction_date: r.auction_date, indirect_share_pct: Number(r.indirect_share_pct),
-    }));
     const sbCorrRowsClean = (sbCorrRows ?? []).map((r: { obs_date: string; corr_90d: number }) => ({
       obs_date: r.obs_date, corr_90d: Number(r.corr_90d),
     }));
 
+    // Date-join conditions 1/2/4 into one daily series — a day only counts
+    // if ALL THREE have a value that day (see evalFiscalDominanceConfirmed's
+    // own doc comment for why a partial day breaks the streak rather than
+    // being skipped).
+    const byDate = (rows: { snapshot_date: string; value: number }[] | null) =>
+      new Map((rows ?? []).map((r) => [r.snapshot_date, Number(r.value)]));
+    const interestByDate = byDate(interestRevSnaps);
+    const fedFundsByDate = byDate(realFedFundsSnaps);
+    const cpiByDate = byDate(cpiYoySnaps);
+    const allDates = [...new Set([...interestByDate.keys(), ...fedFundsByDate.keys(), ...cpiByDate.keys()])].sort().reverse();
+    const fiscalDominanceDailyRows: FiscalDominanceDailyRow[] = allDates.map((date) => ({
+      date,
+      netInterestPctReceipts: interestByDate.get(date) ?? null,
+      realFedFunds: fedFundsByDate.get(date) ?? null,
+      cpiYoy: cpiByDate.get(date) ?? null,
+    }));
+    const condition3Now = fedEasingNow || fedPrintingRisingNow || somaAbsorbingNow;
+    const fiscalDominanceResult = evalFiscalDominanceConfirmed(fiscalDominanceDailyRows, condition3Now, 60);
+
+    // Cross-check against Paradigm A (Phase 4b) — a reporting requirement,
+    // not a gate: the new trip-wire can still arm even if A disagrees, this
+    // just makes the disagreement visible instead of silent.
+    const paradigmAScore = paradigmARow?.composite_score != null ? Number(paradigmARow.composite_score) : null;
+    if (fiscalDominanceResult.armed && paradigmAScore != null && paradigmAScore < 0.5) {
+      console.error(
+        `[big-cycle] fiscal_dominance_confirmed armed while Paradigm A composite is ${paradigmAScore} (< 0.5, "${paradigmARow?.label}") — flagging disagreement for review, not suppressing either reading.`
+      );
+      fiscalDominanceResult.values.paradigmAComposite = paradigmAScore;
+      fiscalDominanceResult.values.paradigmADisagreement = 1;
+    } else if (paradigmAScore != null) {
+      fiscalDominanceResult.values.paradigmAComposite = paradigmAScore;
+    }
+
     return {
       mp2_onset_watch: evalMp2OnsetWatch(toWeeklyPointSeries(walclSnaps, "snapshot_date", "value"), cpiYoy),
-      auction_demand_deterioration: evalAuctionDemandDeterioration(auctionShareRows, 6),
+      auction_demand_deterioration: evalAuctionDemandDeterioration((auctionRows ?? []) as AuctionRow[], 6),
       dollar_divergence_widening: evalDollarDivergenceWidening(toWeeklyPointSeries(t30ySnaps, "snapshot_date", "value"), dxyChange3mPct),
-      fiscal_dominance_confirmed: evalFiscalDominanceConfirmed(sbCorrRowsClean),
+      stock_bond_corr_positive: evalStockBondCorrPositive(sbCorrRowsClean),
+      fiscal_dominance_confirmed: fiscalDominanceResult,
     };
   } catch (e) {
     console.error("[big-cycle] trip-wire evaluation:", e);
@@ -873,7 +966,11 @@ Deno.serve(async (req: Request) => {
     ]);
     const allUpdates = [...fredResult.updates, treasuryUpdate, imfUpdate, coferUpdate, voteviewUpdate, ...macroXrefUpdates, redfinUpdate, nyFedUpdate, threatsUpdate].filter((u): u is Update => u != null);
     const stageResult = await updateDebtCycleStage(sb, fredResult.fedFundsMid);
-    const tripWires = await evaluateTripWires(sb);
+    const tripWires = await evaluateTripWires(
+      sb,
+      stageResult?.conditions.fedPrintingRising ?? false,
+      stageResult?.conditions.mp3SomaAbsorbing ?? false,
+    );
 
     if (stageResult) {
       const { data: priorAudit } = await sb
@@ -972,6 +1069,23 @@ Deno.serve(async (req: Request) => {
     } catch (e) { console.error("[big-cycle] Debt Burden determinant:", e); }
     if (debtBurdenText) {
       await sb.from("big_cycle_determinants").update({ reading_text: debtBurdenText }).eq("name", "Debt Burden");
+    }
+
+    // Phase 4d: "Gaps in Wealth, Opportunity, Values" determinant — was a
+    // hand-typed reading_text ("Top 1% holds 31.6%... home price/income
+    // 7.1x") despite refresh_method already saying 'api_fred'; both numbers
+    // were stale/unsourced (the live top1_wealth_share card reads 32.5%,
+    // and no other code or data in this repo computes anything resembling
+    // 7.1x — the only live affordability figure is home_price_income_ratio,
+    // the Redfin-sourced card at ~5.14x; checked for a second, deliberately
+    // different affordability measure before assuming 7.1x was just wrong,
+    // and found none). Built from the same two already-computed cards the
+    // Internal Order section itself uses.
+    const top1WealthShare = allUpdates.find((x) => x.key === "top1_wealth_share");
+    const homePriceIncomeRatio = allUpdates.find((x) => x.key === "home_price_income_ratio");
+    if (top1WealthShare && homePriceIncomeRatio) {
+      const gapsText = `Top 1% holds ${top1WealthShare.value_display} of household wealth; home price/income ${homePriceIncomeRatio.value_display}.`;
+      await sb.from("big_cycle_determinants").update({ reading_text: gapsText }).eq("name", "Gaps in Wealth, Opportunity, Values");
     }
 
     return json({ updated, skipped, total: allUpdates.length, debtCycleStage: stageResult, tripWires, debtBurdenText, timestamp: now });

@@ -1075,3 +1075,290 @@ Everything in Phase 3's own scope is deployed and verified. One item
 (Real Fed Funds' live display) surfaced a genuine, separate, pre-existing
 data-gap bug rather than confirming cleanly — reported rather than
 papered over, per the standing "stop and report, don't guess" rule.
+
+## Phase 4 (2026-11-17) — last phase of the spec
+
+Built and committed per §3 Phase 4. 4b rebuilds the fiscal-dominance
+trip-wire (changes its armed/unarmed state); 4a/4c/4d don't touch
+stage/trip-wire logic. Nothing deployed yet — same two-step gate.
+
+### 4a: one indirect-bidder calculation
+
+Confirmed the card's existing method before consolidating anything (per
+spec: "that is the card's method; document why"): per-term trailing-6
+averages (10Y and 30Y computed separately), then an equal-weighted mean
+of the two. Chose this over the pooled/interleaved method
+`classifyDebtCycleStageV2`'s input and the trip-wire used instead,
+because pooling a 30Y auction in with a 10Y auction into one "trailing 6"
+isn't well-defined when the two terms auction on different, uneven
+schedules — confirmed live: 30Y auctions roughly quarterly, 10Y roughly
+every 6-10 weeks, so a naive pooled-and-sorted top-6 skews toward
+whichever term happened to auction more recently.
+
+New `_shared/indirectBidder.ts`: `computeIndirectBidderSnapshot(rows,
+offset)` is the one function now called by the card
+(`fetch-macro-data`), `classifyDebtCycleStageV2`'s input (via
+`updateDebtCycleStage` in `update-big-cycle-metrics`), and
+`evalAuctionDemandDeterioration` (moved into this same file — it's now
+built directly on the consolidated snapshot: armed only if the last `n`
+CONSOLIDATED readings, not raw pooled auctions, are all below 65%).
+`classifyDebtCycleStageV2`'s `ClassifierInput` changed from
+`indirectBidderShareSeries: WeeklyPoint[]` (which it averaged itself via
+`trailingAverage`) to a precomputed `indirectBidderShareAvg6: number |
+null` — the caller now does the one consolidated calculation and hands
+the classifier a single number, so there's no second averaging method
+left anywhere to drift from the first.
+
+**Confirmed with real numbers, not just "code now calls one function"**
+(pulled live `treasury_auction_results` rows, same data all three
+consumers read):
+
+```
+10Y trailing-6 (desc): 60.98, 58.29, 51.52, 50.1, 66.99, 57.77 -> avg10 = 57.608
+30Y trailing-6 (desc): 53.15, 53.69, 77.99, 54.41, 61.29, 44.37 -> avg30 = 57.483
+Consolidated = (57.608 + 57.483) / 2 = 57.546 -> rounds to 57.55
+
+OLD pooled method (what the classifier/trip-wire used before):
+top 6 by date across both terms: 53.15, 60.98, 58.29, 53.69, 51.52, 77.99
+-> pooled avg = 59.27 (confirmed: matches the live rawInputs.
+   indirectBidderShareAvg6 value seen in every Phase 1-3 verification
+   this session)
+```
+
+**Card = 57.55% (unchanged, same method as always). Classifier input and
+trip-wire's "latest" value both become 57.55% once deployed (were
+59.27%) — all three now read the identical number**, confirmed by
+`tests/indirectBidder.test.ts`'s own assertion against this exact data.
+
+**The 57.5 boundary, pinned (per spec: "is 57.5 'weak' or not? Log the
+decision"):** 57.55 > 57.5 — **not weak**, by 0.05pts. `strainedCount`'s
+`mp3AuctionDemandWeak` OR-condition is unaffected either way
+(59.27 >= 57.5 was already false; 57.55 >= 57.5 is also false) — no
+stage-level change from this fix alone. The boundary itself (57.5) is
+unchanged; the spec asked to determine which side of it the *corrected*
+number falls on, not to recalibrate it. Logged here as the explicit
+decision, with three dedicated boundary tests
+(`debtCycleClassifier.test.ts`'s new "the 57.5 boundary" describe block:
+57.55 not weak, 57.45 weak, exactly 57.5 not weak under the existing
+strict less-than).
+
+### 4b: fiscal-dominance trip-wire — the stakes item
+
+**Rename** (rule 2.1): `fiscal_dominance_confirmed` →
+`stock_bond_corr_positive` ("Positive stock-bond correlation regime"),
+logic unchanged (`evalFiscalDominanceConfirmed` renamed to
+`evalStockBondCorrPositive` in `_shared/debtCycleTripWires.ts`, same
+90-day-positive-correlation test). Grepped the whole repo for the old key
+before considering this done: two more live consumers found beyond
+`update-big-cycle-metrics` itself — `generate-debt-cycle-brief/index.ts`
+and `components/DebtCyclePositionCheck.jsx` (both carry their own
+`TRIP_WIRE_LABELS`-style map) — both updated with the new key alongside
+the existing one. `DebtCyclePositionCheck.jsx`'s plain-language
+`TRIP_WIRE_DEFINITIONS` entry for the old behavior moved under the new
+key too, with a one-line pointer explaining the rename so a reader
+doesn't wonder where the old description went.
+
+**New `fiscal_dominance_confirmed`** (same file): arms only when
+conditions 1 (net interest/receipts > 20%, Phase 2b basis), 2 (real fed
+funds <= 0), and 4 (CPI YoY > 3%) have ALL held *simultaneously* for >=
+60 consecutive calendar days (date-joined daily `macro_snapshots`
+history — a day missing even one of the three series breaks the streak
+rather than being silently skipped), AND condition 3 (Fed easing, OR Fed
+BS %GDP sustained-rising, OR SOMA sustained-positive) holds *today*.
+
+**Judgment call, logged per rule 6:** condition 3 is evaluated as a
+current snapshot, not re-derived at each of the trailing 60 days —
+`isSustainedRising`/`isSustainedPositive` are themselves already
+multi-week-window trend tests, and no other trip-wire in this codebase
+re-runs a trend test at every historical day either (TW1's WALCL check is
+also a current-state read, not a persistence check over its own trend
+test). Re-deriving it per-day would need a much larger infrastructure
+investment (recomputing an 8-print rolling window at 60+ different
+historical anchor points) for a condition that's inherently about "is
+the posture currently X," not "has the posture test itself held for 60
+days" — the spec's "for >= 60 days" reads most naturally as describing
+conditions 1/2/4 (simple per-day thresholds on already-daily series),
+with condition 3 as the gate.
+
+**A real, structural limitation, found and logged rather than smoothed
+over:** condition 1 — net interest/receipts, Phase 2b's basis — only
+carries valid history in `macro_snapshots` from **2026-11-17 onward**
+(today, the day Phase 2 deployed). Rows before that date are the old
+NIPA-basis definition (rule 2.2: never mix definitions in one series), so
+the merged daily series has at most 1 day of valid condition-1 history
+right now. The new trip-wire's 60-day persistence requirement on
+condition 1 **cannot be satisfied until ~2027-01-16 at the earliest**,
+regardless of actual fiscal conditions, purely as a consequence of when
+Phase 2b's basis-corrected history started accumulating. This doesn't
+change today's armed/unarmed outcome (condition 3 already fails
+independently — see below) but is worth knowing: if someone checks this
+trip-wire in, say, three weeks and finds it still unarmed, the reason
+could be this data-floor, not necessarily "fiscal conditions are fine."
+
+**Confirmed live, with real inputs, not assumed from the spec's own
+prediction:**
+
+```
+Fed easing? DFEDTARU latest (2026-11-17) = 4.00%; ~90 days ago
+  (2026-08-19) = 3.75%. 4.00 is NOT less than 3.75 -> Fed is NOT easing
+  (confirmed: the Fed hiked 3.75->4.00 on 2026-09-17, mid-window).
+fedPrintingRising (WALCL sustained-rising)? false (confirmed live,
+  unchanged since Phase 1-3 verification).
+mp3SomaAbsorbing (SOMA sustained-positive)? false (same).
+condition3Now = false || false || false = FALSE.
+```
+
+`fiscal_dominance_confirmed` (new): **NOT ARMED** — both because
+condition 3 is false today AND because condition 1's streak can't reach
+60 days yet. Two independent reasons, same conclusion — matches the
+spec's own "Expected now: not armed (the Fed is hiking)," confirmed here
+against real pulled data rather than taken on faith.
+
+`stock_bond_corr_positive` (renamed, logic unchanged): **ARMED since
+2026-02-20** — identical to what the old `fiscal_dominance_confirmed` key
+showed throughout Phases 1-3's verification; only the key changed.
+
+**Paradigm A cross-check:** latest `big_cycle_paradigm_scores` row for
+paradigm `A` (2026-11-17): composite **0.4152**, label **"Not
+Confirmed."** Since the new trip-wire is unarmed, there's no disagreement
+to flag today (both readings point the same direction) — but the
+cross-check code path is live and tested: it writes
+`values.paradigmAComposite` and `values.paradigmADisagreement: 1` plus a
+`console.error` the moment armed=true while composite<0.5, a reporting
+signal, not a gate (the trip-wire can still arm even if A disagrees).
+
+**One-time transition note:** the notification-dedup logic in
+`update-big-cycle-metrics`'s `Deno.serve` handler compares today's
+`tripWires` against yesterday's `priorTripWires` by key. On the FIRST run
+after this deploys, `priorTripWires["fiscal_dominance_confirmed"]` will
+still be the OLD (stock-bond-corr) trip-wire's prior-day state, compared
+against TODAY's NEW (real fiscal-dominance) trip-wire under the same
+key — a harmless one-day artifact that self-corrects the following day
+once both sides of the comparison use the new definition. Not worth
+special-casing for a single day.
+
+Test coverage (`tests/debtCycleTripWires.test.ts`, rewritten): the
+renamed trip-wire's 4 existing test cases pass unchanged under the new
+name/function; the new trip-wire has 6 cases covering armed (synthetic —
+live data is unarmed right now, as expected), condition-3-false,
+streak-one-day-short, a mid-window break in condition 2, a mid-window
+missing-data day breaking the streak, and the live "condition 1's
+history is only 1 day old" reality check.
+
+### 4c: Paradigm "stale" display bug
+
+**Re-confirmed the Phase 0 baseline still holds, days later, not
+assumed:** `max(recorded_at)` in `big_cycle_paradigm_scores` =
+2026-11-17; all 13 `big_cycle_paradigm_metric_scores` rows for that date
+exist with `available = true`. Not reproducible right now, same as Phase
+0 found.
+
+**Fixed the suspected root cause preventively** (per the coordinator's
+explicit instruction — not chasing a ghost): `update-big-cycle-
+paradigm-metrics/index.ts`'s three chunked/batch upserts
+(`big_cycle_paradigm_raw_series`, `big_cycle_paradigm_metric_scores`,
+`big_cycle_paradigm_scores`) previously only `console.error`'d on
+failure and continued — meaning a `metric_scores` chunk could fail
+silently while the composite `paradigm_scores` write proceeded
+unconditionally right after, producing exactly the reported symptom (a
+`recorded_at` that exists in the composite table with partial-or-zero
+matching metric rows). All three now `throw` on error, caught by the
+outer handler, which logs `status: "error"` to `rb_job_runs` (the same
+generic job-run-status table `update-inflation-regime` and others
+already use — confirmed by reading that file's exact pattern before
+copying it, not inventing a new convention) and returns a 500 instead of
+silently succeeding. A future partial failure is now visible, not silent.
+
+**The two independent improvements** (both implemented regardless of
+whether the stale bug is live right now, per the spec): `FiscalParadigm
+Section.jsx` now queries the latest date directly
+(`order("recorded_at",{ascending:false}).limit(5)` — one row per
+paradigm for the single most recent date) instead of loading the *entire*
+history table with no `.range()`/`.limit()` at all just to find
+`max(recorded_at)` client-side; and the chart's history is now fetched in
+its own separate query with an explicit (generous, 50,000-row) limit,
+rather than reusing the same unbounded "find latest" fetch for both
+purposes.
+
+**Acceptance confirmed:** all 13 metric rows show oriented-z values right
+now (re-confirmed above); "stale" in `MetricRow` only ever renders when
+`available = false` (unchanged — the display logic itself wasn't the
+bug, the write path feeding it was).
+
+### 4d: Gaps determinant
+
+"Gaps in Wealth, Opportunity, Values" had `refresh_method: 'api_fred'`
+already (not `'manual'` — so this one wasn't even flagged as hand-typed
+by its own metadata) but a hardcoded `reading_text`: "Top 1% holds
+31.6%... home price/income 7.1×." **Checked before assuming 7.1× was
+just wrong** (per the explicit instruction): grepped the whole repo for
+any second, deliberately different affordability measure that might
+explain 7.1× — found none. The only live affordability figure anywhere
+in this codebase is `home_price_income_ratio` (Redfin-sourced, the same
+card the Internal Order section displays), currently ~5.14×. 31.6% is
+also stale against the live `top1_wealth_share` card (WFRBST01134,
+currently 32.5%). Built `reading_text` live from these two already-
+computed cards, same pattern as Phase 2e's "Debt Burden" fix:
+`"Top 1% holds 32.5% of household wealth; home price/income 5.14x."`
+
+### Mandatory before-deploy report
+
+Nothing deployed. All of 4a-4d built and committed; the stance-constraint
+and gold-rename migrations from Phase 3 are already live (deployed
+before this phase started) — no new migrations this phase.
+
+| | Before | After (once deployed) |
+|---|---|---|
+| Indirect bidder — card | 57.55% | 57.55% (unchanged) |
+| Indirect bidder — classifier input (`rawInputs.indirectBidderShareAvg6`) | 59.27% (pooled) | **57.55%** (matches the card) |
+| Indirect bidder — trip-wire "latest" | 59.27% (pooled) | **57.55%** (matches the card) |
+| `mp3AuctionDemandWeak` | false | false (unchanged — 57.55 and 59.27 are both >= 57.5) |
+| `stock_bond_corr_positive` (was `fiscal_dominance_confirmed`) | — | **armed since 2026-02-20** (same state, new key) |
+| `fiscal_dominance_confirmed` (new) | doesn't exist | **not armed** (condition 3 false; condition 1's streak also can't reach 60 days yet) |
+| Paradigm A cross-check | — | 0.4152, "Not Confirmed" — consistent with the new trip-wire's unarmed state, no disagreement to flag |
+| Paradigm stale bug | not reproducible (re-confirmed) | preventive fix shipped; future partial failures now surface via `rb_job_runs` |
+| "Gaps in Wealth..." determinant | "31.6%... 7.1×" (stale/unsourced) | `"Top 1% holds 32.5%... home price/income 5.14x."` (live) |
+
+### §5 test checklist — final status
+
+- [x] `debtMetrics.test.ts` — 6/6 passing, unaffected by Phase 4.
+- [x] `debtCycleClassifier.test.ts` — 12/12 passing (3 new boundary-pinning
+  tests added this phase; `indirectBidderShareSeries` fixtures converted
+  to the new precomputed `indirectBidderShareAvg6` field).
+- [x] `debtCycleTripWires.test.ts` — 17/17 passing (rewritten: renamed
+  trip-wire's existing cases unchanged under the new name; 6 new cases for
+  the real fiscal-dominance test; `evalAuctionDemandDeterioration` cases
+  rebuilt for its new per-term-consolidated-snapshot signature).
+- [x] `indirectBidder.test.ts` (new) — 6/6 passing, built directly against
+  the real live auction numbers in this log.
+- [x] Gold/fed-funds/convenience-yield status tests — **new this phase**:
+  extracted the three Phase 3 threshold decisions (previously inline,
+  untestable logic in `fetch-macro-data`, which can't be imported under
+  Vitest) into `_shared/statusThresholds.ts`, wired `fetch-macro-data` to
+  call them instead of duplicating the thresholds inline, and added
+  `statusThresholds.test.ts` — 16/16 passing, including a dedicated
+  regression test reproducing the exact "DANGER while falling" bug Phase
+  3a fixed, using the real live numbers from that phase's own
+  verification.
+- [x] Migration check for zero `macro_snapshots` rows under retired names
+  — new `scripts/check-rls.sql`-style script,
+  `scripts/check-retired-indicator-names.sql`, covers the one true rename
+  this spec performed ("CB Gold Reserves (YoY)," already live from Phase
+  3) — confirmed zero rows under it right now. Phase 1a's r-g work was a
+  redefinition under the same name (rule 2.2), not a rename, so it has no
+  entry in this list; the script is written to take more rows as future
+  renames happen.
+
+Full suite: 716/716 passing (40 files, +32 since Phase 3's 684 — 16 new
+in `statusThresholds.test.ts`, the trip-wire/classifier/indirect-bidder
+net additions, and a handful more); `npx next build` clean.
+
+This closes out every numbered phase (0-4) of
+`docs/specs/debt-metrics-integrity.md`. Nothing is known to be
+outstanding from the spec itself once this phase deploys — the only
+standing, explicitly-disclosed items from the whole workstream are (1)
+Real Fed Funds Rate's silent staleness since 2026-10-29 due to the
+unrelated FRED CPIAUCSL gap (Phase 3, still unresolved, not caused by
+this spec and not fixed by it), and (2) condition 1's 60-day data floor
+on the new fiscal-dominance trip-wire (Phase 4b, self-resolving by
+~2027-01-16, not a bug).

@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   evalMp2OnsetWatch,
-  evalAuctionDemandDeterioration,
+  evalStockBondCorrPositive,
   evalDollarDivergenceWidening,
   evalFiscalDominanceConfirmed,
+  type FiscalDominanceDailyRow,
 } from "../supabase/functions/_shared/debtCycleTripWires.ts";
+import { evalAuctionDemandDeterioration, type AuctionRow } from "../supabase/functions/_shared/indirectBidder.ts";
 import type { WeeklyPoint } from "../supabase/functions/_shared/debtCycleClassifier.ts";
 
 function daysAgo(n: number): string {
@@ -36,17 +38,50 @@ describe("evalMp2OnsetWatch", () => {
   });
 });
 
+// Phase 4a: evalAuctionDemandDeterioration now lives in _shared/indirectBidder.ts
+// and is built directly on computeIndirectBidderSnapshot — armed only if the
+// last `n` CONSOLIDATED (per-term-trailing-6-then-mean) readings are all
+// below 65%, not raw pooled auctions. Each synthetic round below supplies
+// both a 10-Year and a 30-Year auction so every offset has a real
+// consolidated value.
+function buildAuctionRounds(roundValues: { y10: number; y30: number }[]): AuctionRow[] {
+  const rows: AuctionRow[] = [];
+  roundValues.forEach(({ y10, y30 }, round) => {
+    rows.push({ auction_date: daysAgo(round * 14), security_term: "10-Year", indirect_share_pct: y10 });
+    rows.push({ auction_date: daysAgo(round * 14 + 1), security_term: "30-Year", indirect_share_pct: y30 });
+  });
+  return rows;
+}
+
 describe("evalAuctionDemandDeterioration", () => {
-  it("armed: indirect bidder share below 65% across the entire trailing window", () => {
-    const rows = [60, 58, 62, 55, 59, 61].map((v, i) => ({ auction_date: daysAgo(i * 14), indirect_share_pct: v }));
+  it("armed: consolidated indirect bidder share below 65% across all 6 trailing rounds", () => {
+    // 11 rounds so each of the 6 offsets (0-5) has a full trailing-6-per-term
+    // window behind it (offset 5 needs rows out to index 10).
+    const rounds = Array.from({ length: 11 }, () => ({ y10: 60, y30: 58 }));
+    const rows = buildAuctionRounds(rounds);
     const result = evalAuctionDemandDeterioration(rows, 6);
     expect(result.armed).toBe(true);
   });
 
-  it("not armed: at least one auction in the window closed above 65%", () => {
-    const rows = [60, 58, 66, 55, 59, 61].map((v, i) => ({ auction_date: daysAgo(i * 14), indirect_share_pct: v }));
+  it("not armed: the most recent round's trailing-6-per-term window closes above 65%", () => {
+    // Each offset's consolidated value is itself an average of 6 rounds, so
+    // one outlier round only shifts that average by ~1/6 of the gap — round
+    // 0 has to be a genuinely strong auction (not just "a bit higher") to
+    // push its own window (offset 0, which includes round 0) above 65 while
+    // the other offsets (1-5, which exclude round 0) stay below it.
+    const rounds = Array.from({ length: 11 }, (_, i) => (i === 0 ? { y10: 100, y30: 100 } : { y10: 60, y30: 58 }));
+    const rows = buildAuctionRounds(rounds);
     const result = evalAuctionDemandDeterioration(rows, 6);
     expect(result.armed).toBe(false);
+  });
+
+  it("the card, the classifier input, and this trip-wire read the same number at offset 0", () => {
+    const rounds = Array.from({ length: 11 }, () => ({ y10: 57.608, y30: 57.483 }));
+    const rows = buildAuctionRounds(rounds);
+    const result = evalAuctionDemandDeterioration(rows, 6);
+    // 57.608 and 57.483 average to ~57.546, rounds to 57.55 — matches the
+    // card's own live value confirmed in the Phase 4 decisions log.
+    expect(result.values.latest).toBeCloseTo(57.55, 1);
   });
 });
 
@@ -72,16 +107,20 @@ describe("evalDollarDivergenceWidening", () => {
   });
 });
 
-describe("evalFiscalDominanceConfirmed", () => {
+// Phase 4b rename: fiscal_dominance_confirmed -> stock_bond_corr_positive.
+// Same logic, same function body, just renamed (evalFiscalDominanceConfirmed
+// -> evalStockBondCorrPositive) — these are the SAME test cases that existed
+// before the rename, passing unchanged under the new name.
+describe("evalStockBondCorrPositive", () => {
   it("armed: stock/bond correlation stays positive across the trailing 90 days", () => {
     const rows = Array.from({ length: 91 }, (_, i) => ({ obs_date: daysAgo(i), corr_90d: 0.1 + i * 0.001 }));
-    const result = evalFiscalDominanceConfirmed(rows);
+    const result = evalStockBondCorrPositive(rows);
     expect(result.armed).toBe(true);
   });
 
   it("not armed: correlation dips negative at some point within the trailing 90 days", () => {
     const rows = Array.from({ length: 91 }, (_, i) => ({ obs_date: daysAgo(i), corr_90d: i === 45 ? -0.05 : 0.1 }));
-    const result = evalFiscalDominanceConfirmed(rows);
+    const result = evalStockBondCorrPositive(rows);
     expect(result.armed).toBe(false);
   });
 
@@ -95,7 +134,7 @@ describe("evalFiscalDominanceConfirmed", () => {
       obs_date: daysAgo(i),
       corr_90d: i <= 149 ? 0.1 : -0.05,
     }));
-    const result = evalFiscalDominanceConfirmed(rows);
+    const result = evalStockBondCorrPositive(rows);
     expect(result.armed).toBe(true);
     expect(result.sinceDate).toBe(daysAgo(149));
     expect(result.sinceDate).not.toBe(daysAgo(90));
@@ -106,9 +145,72 @@ describe("evalFiscalDominanceConfirmed", () => {
     // have, so sinceDate should fall back to the oldest available row and
     // be flagged as a floor, not presented as if it were the real start.
     const rows = Array.from({ length: 95 }, (_, i) => ({ obs_date: daysAgo(i), corr_90d: 0.1 }));
-    const result = evalFiscalDominanceConfirmed(rows);
+    const result = evalStockBondCorrPositive(rows);
     expect(result.armed).toBe(true);
     expect(result.sinceDate).toBe(daysAgo(94));
     expect(result.values.sinceDateIsDataFloor).toBe(1);
+  });
+});
+
+// Phase 4b: the NEW fiscal_dominance_confirmed. Arms only when conditions
+// 1/2/4 have ALL held simultaneously for >= 60 consecutive days AND
+// condition 3 holds today.
+describe("evalFiscalDominanceConfirmed (Phase 4b)", () => {
+  function buildDailyRows(n: number, overrides: Partial<FiscalDominanceDailyRow> = {}): FiscalDominanceDailyRow[] {
+    return Array.from({ length: n }, (_, i) => ({
+      date: daysAgo(i),
+      netInterestPctReceipts: 22,
+      realFedFunds: -0.5,
+      cpiYoy: 3.5,
+      ...overrides,
+    }));
+  }
+
+  it("armed: all four conditions held for 65 consecutive days (synthetic — live data is unarmed right now)", () => {
+    const rows = buildDailyRows(65);
+    const result = evalFiscalDominanceConfirmed(rows, true, 60);
+    expect(result.armed).toBe(true);
+    expect(result.values.streakDays).toBe(65);
+    expect(result.sinceDate).toBe(daysAgo(64));
+  });
+
+  it("not armed: condition 3 (Fed posture) is false today even though 1/2/4 have held 65 days", () => {
+    const rows = buildDailyRows(65);
+    const result = evalFiscalDominanceConfirmed(rows, false, 60);
+    expect(result.armed).toBe(false);
+    expect(result.values.streakDays).toBe(65);
+  });
+
+  it("not armed: the 1/2/4 streak is only 59 days, one short of the 60-day minimum", () => {
+    const rows = buildDailyRows(59);
+    const result = evalFiscalDominanceConfirmed(rows, true, 60);
+    expect(result.armed).toBe(false);
+    expect(result.values.streakDays).toBe(59);
+  });
+
+  it("not armed: real fed funds goes positive partway through an otherwise-qualifying window, breaking the streak", () => {
+    const rows = buildDailyRows(65);
+    rows[10].realFedFunds = 0.3; // breaks the streak 10 days back from today
+    const result = evalFiscalDominanceConfirmed(rows, true, 60);
+    expect(result.armed).toBe(false);
+    expect(result.values.streakDays).toBe(10);
+  });
+
+  it("not armed: a day missing even one of the three series breaks the streak rather than being skipped", () => {
+    const rows = buildDailyRows(65);
+    rows[5].cpiYoy = null;
+    const result = evalFiscalDominanceConfirmed(rows, true, 60);
+    expect(result.armed).toBe(false);
+    expect(result.values.streakDays).toBe(5);
+  });
+
+  it("live reality right now: condition 1's Phase-2b-basis history is only 1 day old, so the streak can't reach 60 regardless of the other three conditions", () => {
+    // Confirmed in the Phase 4 decisions log: "Interest Expense % of Federal
+    // Revenue" only carries valid net-interest-basis daily history from the
+    // Phase 2 deploy date onward.
+    const rows = buildDailyRows(1);
+    const result = evalFiscalDominanceConfirmed(rows, true, 60);
+    expect(result.armed).toBe(false);
+    expect(result.values.streakDays).toBe(1);
   });
 });

@@ -35,6 +35,7 @@ const TRIP_WIRE_LABELS = {
   mp2_onset_watch: "MP2 onset watch",
   auction_demand_deterioration: "Auction demand deterioration",
   dollar_divergence_widening: "Dollar confidence divergence widening",
+  stock_bond_corr_positive: "Positive stock-bond correlation regime",
   fiscal_dominance_confirmed: "Fiscal-dominance regime confirmed",
 };
 
@@ -49,8 +50,10 @@ const TRIP_WIRE_DEFINITIONS = {
     "Fires when the Indirect Bidder Share on 10-Year/30-Year Treasury auctions (the standard proxy for foreign-official and other price-insensitive demand) has failed to close back above ~65% for 6 consecutive auctions — a persistent shortfall, not one weak print. A sustained decline means primary dealers are absorbing more of each auction themselves, the substitution away from price-insensitive buyers this wire exists to catch.",
   dollar_divergence_widening:
     "Fires when the 30-Year Treasury yield sets a new cycle high while the Dollar Index's trailing 3-month change is flat or negative over the same stretch. Rising long yields and dollar strength normally move together — both reflect compensation demanded for holding US assets. Yields pushing to new highs without the dollar confirming suggests investors are demanding more compensation for the debt itself, not building broader confidence in the currency.",
+  stock_bond_corr_positive:
+    "Fires when the 90-day rolling correlation between stocks and bonds has stayed positive for the entire trailing 90-day window — bonds have stopped acting as an equity hedge. Normally stocks and bonds move opposite (bad news sells stocks but rallies bonds via flight-to-safety); a sustained positive correlation means something structural has changed in how the market prices Treasuries. Requiring the full window (not just a day or two) confirms the market has actually repriced this way, not just noise. (Renamed from \"Fiscal-dominance regime confirmed\" — on its own, a positive stock-bond correlation isn't fiscal dominance; see that trip-wire's own definition below.)",
   fiscal_dominance_confirmed:
-    "Fires when the 90-day rolling correlation between stocks and bonds has stayed positive for the entire trailing 90-day window — bonds have stopped acting as an equity hedge. Normally stocks and bonds move opposite (bad news sells stocks but rallies bonds via flight-to-safety); under fiscal dominance, bad news hurts both at once because rate policy is constrained by debt-service concerns rather than free to respond to growth/inflation news. Requiring the full window (not just a day or two) confirms the market has actually repriced Treasuries this way, not just noise.",
+    "Fires only when ALL of the following have held simultaneously for at least 60 consecutive days: net interest is over 20% of federal receipts (the net-interest basis, not NIPA); real fed funds is at or below zero; the Fed is easing, OR the Fed balance sheet (% of GDP) is in a sustained multi-week uptrend, OR SOMA long-duration holdings are sustained-positive; and CPI YoY is above 3%. All four together describe a government whose debt service is already straining revenue, borrowing at a negative real rate, printing or about to print, with inflation still running hot — the textbook debt-service-crowds-out-policy setup, not just one correlated market signal.",
 };
 
 function fmtDateTime(d) {

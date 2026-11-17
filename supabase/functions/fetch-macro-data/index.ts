@@ -9,6 +9,8 @@ import {
   assertPeriodAligned,
 } from "../_shared/mtsFiscalData.ts";
 import { findYearAgo, yoyPair } from "../_shared/yoyMath.ts";
+import { computeIndirectBidderSnapshot, AuctionRow } from "../_shared/indirectBidder.ts";
+import { goldTrendStatus, goldPurchasesZScoreStatus, realFedFundsStance, convenienceYieldChangeStatus } from "../_shared/statusThresholds.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -312,7 +314,7 @@ const INDICATORS: Indicator[] = [
     // unrecognized status string with neutral styling (falls through to its
     // "unknown" branch), so no frontend change was needed — confirmed by
     // reading STATUS_STYLE's fallback before deciding this needed new UI code.
-    statusFn: v => v < 0 ? "accommodative" : v <= 1.5 ? "neutral" : "restrictive",
+    statusFn: realFedFundsStance,
   },
   {
     name: "Fed Balance Sheet % GDP",
@@ -1465,8 +1467,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // threshold for years without that being news; a fast run-up is the
         // actual fiat-distrust signal. Thresholds are a starting point, not
         // calibrated (logged in the Phase 3 decisions log per spec rule 6).
-        const trendPct = (current / previous - 1) * 100;
-        statusOverride = trendPct > 5 ? "danger" : trendPct > 0 ? "watch" : "healthy";
+        statusOverride = goldTrendStatus(current, previous);
         break;
       }
       case "silver_3m_avg": {
@@ -1510,7 +1511,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         previous = Number(prior.tonnes);
         const z = Math.round(((current - mu) / sd) * 100) / 100;
         metadata = { zscore: z, is_actual: latest.is_actual, year: latest.year };
-        statusOverride = z > 2 ? "danger" : z > 1 ? "watch" : "healthy";
+        statusOverride = goldPurchasesZScoreStatus(z);
         break;
       }
       case "supabase_lei": {
@@ -1697,8 +1698,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         const avg1y = rows1y.length ? avgFn(rows1y) : null;
         const avg3y = rows3y.length ? avgFn(rows3y) : null;
         if (avg1y != null) {
-          const deltaBp = current - avg1y;
-          statusOverride = deltaBp < -15 ? "danger" : deltaBp < -5 ? "watch" : "healthy";
+          statusOverride = convenienceYieldChangeStatus(current, avg1y);
         }
 
         metadata = {
@@ -1731,6 +1731,10 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         break;
       }
       case "supabase_indirect_bidder": {
+        // Phase 4a: computeIndirectBidderSnapshot is the ONE place this
+        // calculation lives now — classifyDebtCycleStageV2's input and the
+        // auction-demand trip-wire both call the exact same function (see
+        // _shared/indirectBidder.ts and the Phase 4 decisions log).
         const { data: rows, error: auErr } = await supabase
           .from("treasury_auction_results")
           .select("auction_date, security_term, indirect_share_pct")
@@ -1739,20 +1743,14 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
           .order("auction_date", { ascending: false })
           .limit(24); // plenty to find 6 of each term
         if (auErr || !rows || !rows.length) return null;
-        const avgOf = (term: string, offset: number) => {
-          const vals = rows.filter((r) => r.security_term === term).slice(offset, offset + 6).map((r) => Number(r.indirect_share_pct));
-          return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
-        };
-        const avg10 = avgOf("10-Year", 0), avg30 = avgOf("30-Year", 0);
-        const parts = [avg10, avg30].filter((v): v is number => v != null);
-        if (!parts.length) return null;
-        current = Math.round((parts.reduce((s, v) => s + v, 0) / parts.length) * 100) / 100;
-        const prevAvg10 = avgOf("10-Year", 1), prevAvg30 = avgOf("30-Year", 1);
-        const prevParts = [prevAvg10, prevAvg30].filter((v): v is number => v != null);
-        previous = prevParts.length ? Math.round((prevParts.reduce((s, v) => s + v, 0) / prevParts.length) * 100) / 100 : current;
+        const snap0 = computeIndirectBidderSnapshot(rows as AuctionRow[], 0);
+        const snap1 = computeIndirectBidderSnapshot(rows as AuctionRow[], 1);
+        if (snap0.value == null) return null;
+        current = snap0.value;
+        previous = snap1.value ?? current;
         metadata = {
-          avg_10y_6auction_pct: avg10 != null ? Math.round(avg10 * 100) / 100 : null,
-          avg_30y_6auction_pct: avg30 != null ? Math.round(avg30 * 100) / 100 : null,
+          avg_10y_6auction_pct: snap0.avg10,
+          avg_30y_6auction_pct: snap0.avg30,
           latest_auction_date: rows[0].auction_date,
         };
         break;

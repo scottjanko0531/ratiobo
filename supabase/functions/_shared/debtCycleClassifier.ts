@@ -23,7 +23,12 @@ export interface ClassifierInput {
   effectiveRateGrowthSpread: number | null; // r_eff - g; informational only, not a gate (Phase 1b)
   debtToTaxRevenueX: number | null; // informational only, not a gate
   walclPctGdpSeries: WeeklyPoint[]; // most-recent-first
-  indirectBidderShareSeries: WeeklyPoint[]; // trailing auctions, most-recent-first
+  // Precomputed by the caller via _shared/indirectBidder.ts's
+  // computeIndirectBidderSnapshot(rows, 0).value — Phase 4a consolidation,
+  // so this classifier gate, the macro card, and the auction-demand
+  // trip-wire all read the exact same number off the same table instead of
+  // three independently-pooled averages.
+  indirectBidderShareAvg6: number | null;
   bidToCoverSeries: WeeklyPoint[]; // trailing auctions, most-recent-first
   somaLongDurationDeltaSeries: WeeklyPoint[]; // trailing weeks, most-recent-first
 }
@@ -118,7 +123,7 @@ export function classifyDebtCycleStageV2(input: ClassifierInput): ClassifierResu
   const fedPrintingRising = walclTrend.rising;
   const mp2Gate = input.fedFundsMid < 0.5 && fedPrintingRising;
 
-  const indirectBidderAvg6 = trailingAverage(input.indirectBidderShareSeries, 6);
+  const indirectBidderAvg6 = input.indirectBidderShareAvg6;
   const bidToCoverAvg6 = trailingAverage(input.bidToCoverSeries, 6);
   const mp3AuctionDemandWeak =
     (indirectBidderAvg6 != null && indirectBidderAvg6 < 57.5) ||

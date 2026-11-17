@@ -121,16 +121,22 @@ export default function FiscalParadigmSection() {
   const [openMetric, setOpenMetric] = useState(null); // { def, score }
 
   useEffect(() => {
+    // Phase 4c (debt-metrics-integrity spec): query the latest date
+    // directly (order desc, limit) instead of loading the FULL history
+    // table just to find max(recorded_at) client-side. The old approach
+    // had no .range()/.limit() at all, silently relying on Supabase's
+    // implicit 1000-row default — fine today (325 rows), but it would
+    // start truncating this exact "find the latest row" logic once the
+    // table outgrows that cap, with no error, just a wrong "latest" pick.
     supabase
       .from("big_cycle_paradigm_scores")
       .select("*")
-      .order("recorded_at", { ascending: true })
+      .order("recorded_at", { ascending: false })
+      .limit(5) // one row per paradigm (A-E) for the single most recent date
       .then(({ data }) => {
-        const rows = data ?? [];
-        setHistory(rows);
-        if (rows.length === 0) return;
-        const latestDate = rows[rows.length - 1].recorded_at;
-        const latestRows = rows.filter((r) => r.recorded_at === latestDate);
+        const latestRows = data ?? [];
+        if (latestRows.length === 0) return;
+        const latestDate = latestRows[0].recorded_at;
         setLatest(Object.fromEntries(latestRows.map((r) => [r.paradigm, r])));
         setLastRunAt(latestRows[0]?.run_at ?? null);
 
@@ -142,6 +148,17 @@ export default function FiscalParadigmSection() {
             setMetricScores(Object.fromEntries((mData ?? []).map((r) => [`${r.metric_key}_${r.paradigm}`, r])));
           });
       });
+
+    // Chart history — fetched SEPARATELY from the "find latest" query
+    // above, with its own explicit range rather than reusing (or omitting)
+    // a row cap. 50,000 is deliberately generous (the table is at 325 rows
+    // today) so this doesn't need revisiting for a very long time.
+    supabase
+      .from("big_cycle_paradigm_scores")
+      .select("recorded_at, paradigm, composite_score")
+      .order("recorded_at", { ascending: true })
+      .limit(50000)
+      .then(({ data }) => setHistory(data ?? []));
   }, []);
 
   if (!latest) {

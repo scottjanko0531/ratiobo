@@ -213,6 +213,7 @@ Deno.serve(async (req: Request) => {
       mp2_onset_watch: "MP2 onset watch",
       auction_demand_deterioration: "Auction demand deterioration",
       dollar_divergence_widening: "Dollar confidence divergence widening",
+      stock_bond_corr_positive: "Positive stock-bond correlation regime",
       fiscal_dominance_confirmed: "Fiscal-dominance regime confirmed",
     };
     const tripWiresArmed = Object.entries(tripWires)
