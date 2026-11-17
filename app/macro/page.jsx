@@ -309,6 +309,13 @@ function IndicatorCard({ ind, onSave, onClick, note }) {
           vintage: debt {ind.metadata.debt_quarter}, FYFR FY end {ind.metadata.fyfr_fiscal_year_end}
         </p>
       )}
+      {(ind.metadata?.avg_1y_bp != null || ind.metadata?.avg_3y_bp != null) && (
+        <p className="text-paper-dim text-xs">
+          {ind.metadata.avg_1y_bp != null && <>1y avg <span className="num text-paper">{Number(ind.metadata.avg_1y_bp) >= 0 ? "+" : ""}{Number(ind.metadata.avg_1y_bp).toFixed(1)}bp</span></>}
+          {ind.metadata.avg_1y_bp != null && ind.metadata.avg_3y_bp != null && <span className="mx-1 opacity-40">·</span>}
+          {ind.metadata.avg_3y_bp != null && <>3y avg <span className="num text-paper">{Number(ind.metadata.avg_3y_bp) >= 0 ? "+" : ""}{Number(ind.metadata.avg_3y_bp).toFixed(1)}bp</span></>}
+        </p>
+      )}
       <p className="text-paper-dim text-xs leading-snug line-clamp-2">{ind.description}</p>
     </div>
   );
@@ -6250,8 +6257,11 @@ function CbGoldDrawer({ open, onClose, ind }) {
           <div className="flex items-start gap-4 shrink-0">
             {currentValue != null && (
               <div className="text-right">
-                <p className="num text-xl font-bold text-brass-soft leading-none">{currentValue.toFixed(1)}%</p>
-                <p className="text-[10px] text-paper-dim mt-0.5">Gold YoY</p>
+                <p className="num text-xl font-bold text-brass-soft leading-none">{currentValue.toFixed(0)}t</p>
+                <p className="text-[10px] text-paper-dim mt-0.5">
+                  {ind?.metadata?.year ?? "Latest"}{ind?.metadata?.is_actual === false ? " (est.)" : ""}
+                  {ind?.metadata?.zscore != null ? ` · z ${ind.metadata.zscore >= 0 ? "+" : ""}${Number(ind.metadata.zscore).toFixed(2)}σ` : ""}
+                </p>
               </div>
             )}
             <button onClick={onClose} className="text-paper-dim hover:text-paper transition-colors mt-0.5">
@@ -8022,7 +8032,7 @@ export default function MacroDashboard() {
                           : ind.name === "Core CPI (YoY)" ? () => setCpiDrawerOpen(true)
                           : ind.name === "Consumer Inflation Expectations" ? () => setConsumerExpOpen(true)
                           : ind.name === "Gold Price (3M Avg)" ? () => setGoldPriceOpen(true)
-                          : ind.name === "CB Gold Reserves (YoY)" ? () => setCbGoldOpen(true)
+                          : ind.name === "Central Bank Gold Purchases (4Q, tonnes)" ? () => setCbGoldOpen(true)
                           : ind.name === "PPI (YoY)" ? () => setPpiDrawerOpen(true)
                           : ind.name === "Conference Board LEI" ? () => setLeiDrawerOpen(true)
                           : ind.name === "30Y Treasury Yield" ? () => setT30DrawerOpen(true)
@@ -8122,7 +8132,7 @@ export default function MacroDashboard() {
       <CbGoldDrawer
         open={cbGoldOpen}
         onClose={() => setCbGoldOpen(false)}
-        ind={indicators?.find((i) => i.name === "CB Gold Reserves (YoY)")}
+        ind={indicators?.find((i) => i.name === "Central Bank Gold Purchases (4Q, tonnes)")}
       />
       <PpiDrawer
         open={ppiDrawerOpen}

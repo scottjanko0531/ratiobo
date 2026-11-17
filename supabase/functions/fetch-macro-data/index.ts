@@ -170,7 +170,14 @@ async function computeFixedWindowZScore(
   };
 }
 
-type Status = "healthy" | "watch" | "danger" | "unknown";
+// "accommodative" / "neutral" / "restrictive" are Phase 3b's stance family
+// (Real Fed Funds Rate) — a genuinely different semantic axis from the
+// healthy/watch/danger risk scale, not a relabeling of it. See
+// macro_indicators_status_check (widened in the Phase 3 migration) and
+// app/macro/page.jsx's StatusBadge, which renders any status it doesn't
+// recognize with neutral styling — exactly the "use neutral styling" the
+// spec asks for, with no frontend change required.
+type Status = "healthy" | "watch" | "danger" | "unknown" | "accommodative" | "neutral" | "restrictive";
 type StatusFn = (v: number) => Status;
 
 interface Indicator {
@@ -211,7 +218,8 @@ interface Indicator {
     | "gpr_website"
     | "gold_3m_avg"
     | "silver_3m_avg"
-    | "cb_gold_imf"
+    | "gold_price_yoy"
+    | "wgc_gold_purchases_card"
     | "level_with_3m"
     | "level_with_shock"
     | "yoy_monthly_with_3m"
@@ -291,10 +299,20 @@ const INDICATORS: Indicator[] = [
   {
     name: "Real Fed Funds Rate",
     layer: 1, layer_name: "Long-term Debt Cycle",
-    description: "Fed funds rate minus CPI YoY — monetary policy stance (positive = restrictive)",
+    description: "Positive = restrictive; ≤ 0 with inflation above target = policy accommodating the debt load.",
     fred_series_id: null, unit: "%", data_source: "computed", sort_order: 5,
+    // FEDFUNDS is the effective (not target) fed funds rate, date-matched
+    // against CPI YoY via the shared yoyPair/findYearAgo helpers (match by
+    // calendar year/month, not array position) — confirmed, no change
+    // needed here per Phase 3b.
     series: "FEDFUNDS", series2: "CPIAUCSL", type: "level_minus_yoy_monthly",
-    statusFn: v => v >= -1 && v <= 2 ? "healthy" : v >= -3 && v <= 4 ? "watch" : "danger",
+    // Phase 3b: stance labels, not a risk level — macro_indicators_status_check
+    // widened (see migration) to allow these three alongside healthy/watch/
+    // danger/unknown. app/macro/page.jsx's StatusBadge already renders any
+    // unrecognized status string with neutral styling (falls through to its
+    // "unknown" branch), so no frontend change was needed — confirmed by
+    // reading STATUS_STYLE's fallback before deciding this needed new UI code.
+    statusFn: v => v < 0 ? "accommodative" : v <= 1.5 ? "neutral" : "restrictive",
   },
   {
     name: "Fed Balance Sheet % GDP",
@@ -329,12 +347,32 @@ const INDICATORS: Indicator[] = [
     statusFn: v => v < 2000 ? "healthy" : v < 3000 ? "watch" : "danger",
   },
   {
-    name: "CB Gold Reserves (YoY)",
+    // Phase 3a (rule 2.1 rename): was "CB Gold Reserves (YoY)" — the name
+    // implied central-bank reserve *holdings*, but this card has only ever
+    // measured the YoY change in the gold PRICE (COMEX GC=F). Actual central
+    // bank purchase tonnage is the separate "Central Bank Gold Purchases"
+    // card below, sourced from wgc_gold_purchases.
+    name: "Gold Price (YoY)",
     layer: 1, layer_name: "Long-term Debt Cycle",
-    description: "YoY % change in gold price (COMEX GC=F) — proxy for central bank accumulation and de-dollarization pressure; rising gold signals sovereign distrust of fiat",
+    description: "YoY % change in gold price (COMEX GC=F) — proxy for de-dollarization pressure; rising gold signals sovereign distrust of fiat",
     fred_series_id: null, unit: "% YoY", data_source: "yahoo", sort_order: 97,
-    type: "cb_gold_imf",
+    type: "gold_price_yoy",
     statusFn: v => v < 5 ? "healthy" : v < 25 ? "watch" : "danger",
+  },
+  {
+    name: "Central Bank Gold Purchases (4Q, tonnes)",
+    layer: 1, layer_name: "Long-term Debt Cycle",
+    description: "Annual net central bank gold purchases (World Gold Council) — the real purchase-volume counterpart to the price-based card above; the same demand-side de-dollarization series behind Gauge 5's Reserve Confidence Risk, z-scored against its own full history.",
+    fred_series_id: null, unit: "tons", data_source: "supabase", sort_order: 97,
+    type: "wgc_gold_purchases_card",
+    // current_value is raw tonnage (for display); the actual threshold is on
+    // the z-score, set via statusOverride in the case below (one-sided: only
+    // a buying SURGE is the signal this card exists to catch — below-average
+    // buying isn't itself concerning under this framework). This statusFn is
+    // a defensive fallback only — never reached once the case computes a
+    // z-score, which it always can with 5+ years of history. Thresholds are
+    // an uncalibrated starting point, logged in the Phase 3 decisions log.
+    statusFn: () => "unknown",
   },
   {
     name: "Fed SOMA Long-Duration Holdings (Δ)",
@@ -355,9 +393,11 @@ const INDICATORS: Indicator[] = [
   {
     name: "Treasury Convenience Yield (10Y)",
     layer: 1, layer_name: "Long-term Debt Cycle",
-    description: "10Y SOFR swap rate minus 10Y Treasury yield — the nonpecuniary premium the world pays to hold Treasuries (Krishnamurthy & Vissing-Jorgensen 2012). Positive = the US borrows below the risk-free rate (exorbitant privilege intact). Negative = Treasuries trade cheap to swaps; the subsidy has inverted. A sustained return above zero would falsify the privilege-erosion thesis.",
+    description: "10Y SOFR swap rate minus 10Y Treasury yield — the nonpecuniary premium the world pays to hold Treasuries (Krishnamurthy & Vissing-Jorgensen 2012). Status tracks the TREND (current level minus its trailing 1-year average), not the level's sign — see the drawer for the level and 1y/3y averages. A sustained reversal of the trend would falsify the privilege-erosion thesis.",
     fred_series_id: null, unit: "bp", data_source: "supabase", sort_order: 100, series: "10",
     type: "supabase_convenience_yield",
+    // Fallback only — statusOverride (level minus trailing-1y average) is
+    // always set when enough history exists. Phase 3c.
     statusFn: v => v > 10 ? "healthy" : v >= -25 ? "watch" : "danger",
   },
   {
@@ -846,6 +886,12 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
   try {
     let current: number, previous: number;
     let metadata: Record<string, unknown> | undefined;
+    // Set by a case when ind.statusFn(current) isn't the right status source
+    // — e.g. a trend/change-based status that depends on more than just the
+    // headline current value (gold's 3M-vs-prior-3M trend, convenience
+    // yield's level-vs-trailing-average, a z-score threshold). Falls back to
+    // ind.statusFn(current) when a case doesn't set it.
+    let statusOverride: Status | undefined;
     switch (ind.type) {
       case "level": {
         // 10Y Breakeven Inflation is a regime-driving input (market-
@@ -1414,6 +1460,13 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         previous = avgFn(obs.slice(half, half * 2));
         metadata = { spot_price: Math.round(obs[0].value * 100) / 100 };
         pendingGoldObs = [...obs].reverse();
+        // Phase 3a: status follows the TREND (3M avg vs. the prior 3M avg),
+        // not the price level — gold can sit above any fixed dollar
+        // threshold for years without that being news; a fast run-up is the
+        // actual fiat-distrust signal. Thresholds are a starting point, not
+        // calibrated (logged in the Phase 3 decisions log per spec rule 6).
+        const trendPct = (current / previous - 1) * 100;
+        statusOverride = trendPct > 5 ? "danger" : trendPct > 0 ? "watch" : "healthy";
         break;
       }
       case "silver_3m_avg": {
@@ -1426,38 +1479,38 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         metadata = { spot_price: Math.round(obs[0].value * 100) / 100 };
         break;
       }
-      case "cb_gold_imf": {
-        let imfOk = false;
-        try {
-          const controller = new AbortController();
-          const tid = setTimeout(() => controller.abort(), 5000);
-          const res = await fetch(
-            "https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/IFS/Q.W00.RAXGFX_XDC?startPeriod=2018-Q1",
-            { headers: { "Accept": "application/json" }, signal: controller.signal }
-          );
-          clearTimeout(tid);
-          if (res.ok) {
-            const j = await res.json();
-            const series = j?.CompactData?.DataSet?.Series;
-            const rawObs = Array.isArray(series?.Obs) ? series.Obs : (series?.Obs ? [series.Obs] : []);
-            const vals = (rawObs as Array<Record<string, string>>)
-              .filter(o => o["@OBS_VALUE"] && !isNaN(parseFloat(o["@OBS_VALUE"])))
-              .sort((a, b) => a["@TIME_PERIOD"].localeCompare(b["@TIME_PERIOD"]))
-              .map(o => parseFloat(o["@OBS_VALUE"]));
-            if (vals.length >= 6) {
-              const n = vals.length;
-              current  = (vals[n - 1] / vals[n - 5] - 1) * 100;
-              previous = (vals[n - 2] / vals[n - 6] - 1) * 100;
-              imfOk = true;
-            }
-          }
-        } catch { /* IMF not accessible from this runtime */ }
-        if (!imfOk) {
-          const obs = await fetchYahooGold("2y");
-          if (obs.length < 260) throw new Error(`cb_gold fallback: only ${obs.length} obs`);
-          current  = (obs[0].value   / obs[252].value - 1) * 100;
-          previous = (obs[1].value / obs[253].value - 1) * 100;
-        }
+      case "gold_price_yoy": {
+        // Phase 3a: dropped the dead dataservices.imf.org IFS call (retired
+        // endpoint — confirmed in the spec and by this code's own prior
+        // behavior, since every path always fell through to this exact
+        // Yahoo fallback anyway). Calls Yahoo directly now, no silent
+        // always-failing detour first.
+        const obs = await fetchYahooGold("2y");
+        if (obs.length < 260) throw new Error(`gold_price_yoy: only ${obs.length} obs`);
+        current  = (obs[0].value / obs[252].value - 1) * 100;
+        previous = (obs[1].value / obs[253].value - 1) * 100;
+        break;
+      }
+      case "wgc_gold_purchases_card": {
+        // Same z-scoring methodology as computeGauge5() (z-score each year's
+        // tonnage against the full-history mean/stdev) — reused, not
+        // reinvented, so this card and Gauge 5 can never silently disagree
+        // about what "above-average buying" means.
+        const { data: rows } = await supabase
+          .from("wgc_gold_purchases")
+          .select("year, tonnes, is_actual")
+          .order("year", { ascending: true });
+        if (!rows || rows.length < 5) throw new Error(`wgc_gold_purchases_card: only ${rows?.length ?? 0} years of history`);
+        const vals = rows.map((r) => Number(r.tonnes));
+        const mu = vals.reduce((s, v) => s + v, 0) / vals.length;
+        const sd = Math.sqrt(vals.reduce((s, v) => s + (v - mu) ** 2, 0) / vals.length) || 1;
+        const latest = rows[rows.length - 1];
+        const prior = rows[rows.length - 2];
+        current = Number(latest.tonnes);
+        previous = Number(prior.tonnes);
+        const z = Math.round(((current - mu) / sd) * 100) / 100;
+        metadata = { zscore: z, is_actual: latest.is_actual, year: latest.year };
+        statusOverride = z > 2 ? "danger" : z > 1 ? "watch" : "healthy";
         break;
       }
       case "supabase_lei": {
@@ -1622,7 +1675,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
           .select("obs_date, convenience_bp, swap_rate_pct, treasury_yield_pct, is_proxy, source")
           .eq("tenor_years", tenor)
           .order("obs_date", { ascending: false })
-          .limit(400); // Pensford's feed carries a row per calendar day (weekends included, forward-filled), not just trading days — 400 safely spans 12 months back for the change_12m_bp metadata
+          .limit(1100); // Pensford's feed carries a row per calendar day (weekends included, forward-filled) — 1100 safely spans 3 years back for the 1y/3y trailing averages (Phase 3c; was 400/~12mo, only enough for change_12m_bp)
         if (cyErr || !rows || rows.length < 2) return null;
         current = Number(rows[0].convenience_bp);
         previous = Number(rows[1].convenience_bp);
@@ -1630,6 +1683,24 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         oneYearAgo.setUTCFullYear(oneYearAgo.getUTCFullYear() - 1);
         const cutoff = oneYearAgo.toISOString().slice(0, 10);
         const yearAgo = rows.find((r) => r.obs_date <= cutoff);
+
+        // Phase 3c: status follows the trend (current level minus its own
+        // trailing 1-year average), not the level's absolute sign — a
+        // positive level that's falling toward zero is deteriorating even
+        // though the old level-based statusFn would still call it "healthy."
+        const avgFn = (arr: { convenience_bp: number }[]) => arr.reduce((s, r) => s + Number(r.convenience_bp), 0) / arr.length;
+        const rows1y = rows.filter((r) => r.obs_date >= cutoff);
+        const threeYearsAgo = new Date(rows[0].obs_date + "T00:00:00Z");
+        threeYearsAgo.setUTCFullYear(threeYearsAgo.getUTCFullYear() - 3);
+        const cutoff3y = threeYearsAgo.toISOString().slice(0, 10);
+        const rows3y = rows.filter((r) => r.obs_date >= cutoff3y);
+        const avg1y = rows1y.length ? avgFn(rows1y) : null;
+        const avg3y = rows3y.length ? avgFn(rows3y) : null;
+        if (avg1y != null) {
+          const deltaBp = current - avg1y;
+          statusOverride = deltaBp < -15 ? "danger" : deltaBp < -5 ? "watch" : "healthy";
+        }
+
         metadata = {
           as_of_date: rows[0].obs_date,
           swap_rate_pct: Number(rows[0].swap_rate_pct),
@@ -1637,6 +1708,8 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
           is_proxy: rows[0].is_proxy,
           source: rows[0].source,
           change_12m_bp: yearAgo ? Math.round((current - Number(yearAgo.convenience_bp)) * 100) / 100 : null,
+          avg_1y_bp: avg1y != null ? Math.round(avg1y * 100) / 100 : null,
+          avg_3y_bp: avg3y != null ? Math.round(avg3y * 100) / 100 : null,
         };
         break;
       }
@@ -1758,7 +1831,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
       description: ind.description, fred_series_id: ind.fred_series_id,
       unit: ind.unit, data_source: ind.data_source, sort_order: ind.sort_order,
       current_value: round(current), previous_value: round(previous),
-      change_value: round(current - previous), status: ind.statusFn(current),
+      change_value: round(current - previous), status: statusOverride ?? ind.statusFn(current),
       last_fetched_at: now, updated_at: now,
       ...(metadata ? { metadata } : {}),
     };

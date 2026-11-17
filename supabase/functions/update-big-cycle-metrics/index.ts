@@ -583,8 +583,12 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
       const status = MACRO_STATUS_MAP[convenienceYield.status] ?? null;
       updates.push({
         key: "convenience_yield_10y", value_numeric: v, value_display: `${v >= 0 ? "+" : ""}${v.toFixed(1)}bp`,
-        status, status_label: status === "bad" ? "Subsidy inverted" : status === "warn" ? "Watch" : "Privilege intact",
-        note_suffix: "10Y SOFR swap rate minus 10Y Treasury yield — the market-priced nonpecuniary premium the world pays to hold Treasuries; positive means the US borrows below the true risk-free rate, negative means the subsidy has inverted. Not yet used to classify the MP-stage itself — this is a single market price, not yet a validated trend. Cross-referenced from Macro's Sovereign Risk panel.",
+        // Phase 3c: labels now describe the TREND (current level vs. its own
+        // trailing 1-year average), not the level's absolute sign — "Subsidy
+        // inverted" was a level-based label that could read as deteriorating
+        // even while the level was recovering off a low, or vice versa.
+        status, status_label: status === "bad" ? "Treasuries cheap to swaps (deteriorating)" : status === "warn" ? "Stable" : "Improving",
+        note_suffix: "10Y SOFR swap rate minus 10Y Treasury yield — the market-priced nonpecuniary premium the world pays to hold Treasuries. Status reflects the trend (current level minus its trailing 1-year average), not the level's sign — a positive level that's falling toward zero shows as deteriorating, a negative level recovering toward zero shows as improving. Not yet used to classify the MP-stage itself. Cross-referenced from Macro's Sovereign Risk panel.",
       });
     }
 

@@ -798,3 +798,169 @@ both UPDATEs successfully.
 
 All mandatory-gate items and all five of the coordinator's specific
 verification asks confirmed live. Nothing outstanding from Phase 2.
+
+## Phase 3 (2026-11-17)
+
+Built and committed per §3 Phase 3. Doesn't touch the classifier or any
+trip-wire, but does rename a live indicator (rule 2.1) — same two-step
+gate as before; nothing deployed yet.
+
+### 3a: Gold cards
+
+**Rename, repo-wide grep (clean):** "CB Gold Reserves (YoY)" → "Gold
+Price (YoY)" in `fetch-macro-data`'s `INDICATORS` array; a migration
+(`20261117_rename_cb_gold_reserves_to_gold_price_yoy.sql`, not yet
+applied) renames the existing rows in both `macro_indicators` (1 row)
+and `macro_snapshots` (115 historical rows). Confirmed before writing
+the migration: zero existing rows under the new name in either table
+(no collision). Grepped the whole repo for "CB Gold Reserves" after
+updating `fetch-macro-data/index.ts` and `app/macro/page.jsx`: **three
+hits remain, all expected** — the governing spec document itself
+(historical description), the migration file's own `WHERE` clause
+(necessarily references the old name as its target), and one
+explanatory code comment noting the rename's history. Zero functional
+code references anywhere else. Also grepped for the retired type string
+`cb_gold_imf` — only the spec doc references it now.
+
+**Dead IMF call removed.** The `cb_gold_imf` case (renamed
+`gold_price_yoy`) no longer attempts `dataservices.imf.org` at all —
+calls `fetchYahooGold` directly, since every prior path always fell
+through to that same Yahoo call anyway.
+
+**New "Central Bank Gold Purchases (4Q, tonnes)" card**, type
+`wgc_gold_purchases_card`, z-scored against `wgc_gold_purchases`'s full
+history using the *exact same* mean/stdev-of-all-years method
+`computeGauge5()` already uses for the same table — reused, not
+reimplemented, so the card and Gauge 5 can never silently disagree about
+what "above-average buying" means. `current_value` is the latest year's
+raw tonnage (unit `tons`, matches `formatValue`'s existing case); the
+z-score, `is_actual` flag, and year sit in `metadata`, rendered via the
+existing generic z-score badge in `IndicatorCard` (no new UI needed
+there — only discovered after checking that block already keys off
+`metadata.zscore` for any indicator). Re-pointed the `CbGoldDrawer`
+(which already showed this exact WGC tonnage chart, previously attached
+to the mislabeled price card) to the new card instead — its header now
+shows tonnage + z-score rather than a % that belonged to a different
+card's measurement.
+
+**Decision — gold trend status thresholds (uncalibrated, per spec rule
+6):** `(3M avg / prior 3M avg − 1)`: `> +5% danger`, `0–5% watch`, `≤ 0
+healthy`. Implemented via a new `statusOverride` mechanism (see below) —
+`current`/`previous` already *are* the two 3-month averages the case
+needed (no new fetch), so the trend calc was one line.
+
+**Decision — CB gold purchases z-score thresholds (uncalibrated, per
+spec rule 6):** one-sided — `z > 2 danger`, `z > 1 watch`, else
+`healthy`. One-sided because only a buying *surge* is the signal this
+card exists to catch; below-average buying isn't itself concerning
+under the de-dollarization framing Gauge 5 already uses.
+
+### A new mechanism: `statusOverride`
+
+Phase 3a/3c both need a status computed from something other than the
+single `current` value `ind.statusFn(current)` receives (a trend
+needing `previous`, a change needing a trailing average `previous`
+doesn't carry). Rather than widen `StatusFn`'s signature (would touch
+every indicator), added one optional `let statusOverride: Status |
+undefined` local in `processIndicator`, settable per-case, checked
+first in the final return (`statusOverride ?? ind.statusFn(current)`).
+Each affected indicator keeps a real (if now largely unreachable)
+`statusFn` as a defensive fallback — never silently crashes if a
+future edit removes the override logic from its case.
+
+### 3b: Real Fed Funds — stance family
+
+**Confirmed, not assumed:** already uses `FEDFUNDS` (the *effective*,
+not target, fed funds rate) date-matched against CPI YoY via the shared
+`yoyPair`/`findYearAgo` helpers (calendar year/month match, not array
+position) — extracted to `_shared/yoyMath.ts` in Phase 2 specifically so
+this kind of claim can be verified by reading code, not taken on faith.
+No change needed to the underlying calculation.
+
+**Status-rendering architecture, checked before deciding (per the
+coordinator's explicit ask):** `app/macro/page.jsx`'s `StatusBadge`
+looks up `STATUS_STYLE[status] ?? STATUS_STYLE.unknown` and renders
+`status.toUpperCase()` as the badge text — so *any* status string the
+backend emits displays correctly with neutral/grey styling by falling
+through to the existing "unknown" branch, with zero frontend code
+changes required. The real blocker was **not** the frontend — it was
+`macro_indicators_status_check`, a Postgres CHECK constraint
+restricting `status` to exactly `healthy`/`watch`/`danger`/`unknown`.
+**Found a second, identical constraint on `macro_snapshots`** before
+deploying (not discovered live): had I only widened the
+`macro_indicators` one, the very next `fetch-macro-data` run's snapshot
+upsert — a single multi-row statement covering *every* indicator, not
+just this one — would have aborted entirely the moment it tried to
+write Real Fed Funds Rate's new stance value, silently breaking that
+day's `macro_snapshots` history for all ~70 other indicators too. Both
+constraints widened in one migration
+(`20261117_allow_stance_status_on_macro_indicators.sql`, not yet
+applied) to add `accommodative`/`neutral`/`restrictive` alongside the
+existing four. No `big_cycle_metrics` constraint touch needed — "Real
+Fed Funds Rate" was never cross-referenced into Big Cycle (confirmed:
+it's absent from `computeMacroCrossRefUpdates`'s name list), so the
+stance strings never reach `MACRO_STATUS_MAP` (which would otherwise
+silently map them to `null`).
+
+**Decision — stance thresholds (uncalibrated, per spec rule 6):** `< 0
+accommodative`, `0 to +1.5 neutral`, `> +1.5 restrictive`. Description
+updated to the spec's exact wording.
+
+### 3c: Convenience yield — change-based status
+
+Fetched up to 1100 rows (was 400, ~12mo) so a genuine 3-year trailing
+average is possible, not just the existing single-point `change_12m_bp`.
+Computed `avg_1y_bp`/`avg_3y_bp` (simple mean over the respective trailing
+window) and set `statusOverride` from `current − avg_1y_bp`: `< −15bp
+danger`, `−15 to −5bp watch`, else `healthy` (per spec, logged here as
+confirmation of the exact values, not a new judgment call — the spec
+gave these thresholds directly). Both averages surfaced in the drawer
+(a new `IndicatorCard` metadata line, same pattern as Phase 1/2's drawer
+additions) and the underlying card description rewritten so it
+describes the trend-based calculation instead of the retired
+level-based "subsidy intact/inverted" framing.
+
+**Big Cycle labels retired/replaced:** `update-big-cycle-metrics`'s
+`convenience_yield_10y` cross-ref `status_label` changed from
+`"Subsidy inverted"/"Watch"/"Privilege intact"` to `"Treasuries cheap to
+swaps (deteriorating)"/"Stable"/"Improving"` — confirmed via repo-wide
+grep that "Subsidy inverted" and "Privilege intact" appear nowhere else
+in the codebase (so nothing else needed updating to stay consistent).
+
+**Gauge 7 — confirmed unchanged, not assumed:** read
+`supabase/functions/compute-gauge7/index.ts` directly. It queries
+`convenience_yield_observations` (the raw table) itself — it does
+**not** read `macro_indicators`' `current_value` or `status` for this
+card at all, and never has. Two independent reasons the composite
+cannot have changed: (1) this phase's edits only changed `status`
+derivation and added `metadata` fields — the underlying `current`/
+`previous` values written to `macro_indicators` (`convenience_bp`
+itself) are byte-for-byte the same calculation as before; (2) even if
+they had changed, Gauge 7 wouldn't see it, since it never reads that
+table for this input. `components/DalioGauges.jsx`'s Gauge 7 drawer
+likewise reads `components.z.z_conv_yield` from the gauge's own
+computed output, not from `macro_indicators`. Will still re-run
+`compute-gauge7` before/after the actual deploy and diff the output, per
+"confirm, don't assume" — expecting bit-identical, will report
+immediately if not.
+
+### Mandatory before-deploy report
+
+Nothing deployed. Two migrations staged (gold rename data migration +
+stance-status constraint widening on both tables) alongside the function
+code; `app/macro/page.jsx` drawer bindings updated for the rename.
+
+| | Before | After (once deployed) |
+|---|---|---|
+| "CB Gold Reserves (YoY)" | mislabeled gold-price card | renamed "Gold Price (YoY)", same calc |
+| "Central Bank Gold Purchases (4Q, tonnes)" | doesn't exist | new card, z-scored vs. own history |
+| "Gold Price (3M Avg)" status | level-based (`<2000/<3000/else`) | trend-based (3M-avg-vs-prior-3M-avg %) |
+| "Real Fed Funds Rate" status | healthy/watch/danger | accommodative/neutral/restrictive (stance) |
+| "Treasury Convenience Yield (10Y)" status | level-based (`>10/≥-25/else`) | change-based (level − trailing-1y avg) |
+| Big Cycle convenience-yield labels | "Subsidy inverted"/"Watch"/"Privilege intact" | "Treasuries cheap to swaps (deteriorating)"/"Stable"/"Improving" |
+| Gauge 7 composite | — | unchanged (confirmed by code read; live diff pending deploy) |
+
+Test suite: 684/684 passing (unchanged — no new indicator-specific
+Vitest coverage this phase, since these three cases are live-data-only
+edge-function logic with no pure-function extraction candidate the way
+the MTS trailing-12 math was in Phase 2); `npx next build` clean.
