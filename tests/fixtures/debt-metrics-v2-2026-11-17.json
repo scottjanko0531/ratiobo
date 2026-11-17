@@ -1,0 +1,65 @@
+{
+  "_comment": "Pulled live from macro_indicators / big_cycle_metrics / big_cycle_stage_audit_log on 2026-11-17, per Phase 0 of docs/specs/debt-metrics-integrity-v2.md. All values pulled directly, not hand-typed.",
+  "pulled_at": "2026-11-17",
+  "source": "macro_indicators, big_cycle_metrics, big_cycle_stage_audit_log (live query)",
+  "indirect_bidder_three_thresholds": {
+    "card": {
+      "name": "Indirect Bidder Share (10Y/30Y)",
+      "current_value": 57.55,
+      "status": "watch",
+      "threshold_source": "fetch-macro-data INDICATORS statusFn: v > 65 healthy / v >= 55 watch / else danger",
+      "last_fetched_at": "2026-11-17T20:46:27.687+00:00",
+      "metadata": { "latest_auction_date": "2026-08-13", "avg_10y_6auction_pct": 57.61, "avg_30y_6auction_pct": 57.48 }
+    },
+    "classifier": {
+      "field": "indirectBidderShareAvg6",
+      "live_value": 57.55,
+      "threshold": "mp3AuctionDemandWeak = value < 57.5",
+      "live_result": false,
+      "note": "57.55 is 0.05pts above the 57.5 gate -- not weak, but within noise of flipping either way on a single auction"
+    },
+    "trip_wire": {
+      "key": "auction_demand_deterioration",
+      "threshold": "evalAuctionDemandDeterioration: armed if the last 6 consolidated (per-term-averaged) readings are ALL < 65%",
+      "live_armed": true,
+      "live_sinceDate": "2024-08-08",
+      "live_trailingAvg": 55.67,
+      "live_latest": 57.55,
+      "problem": "consolidated readings run ~55-58% structurally (see distribution in decisions log) -- the 65% threshold, inherited unchanged from the old per-auction check, can never be crossed by this metric's current regime, so the trip-wire is effectively permanently armed"
+    }
+  },
+  "auction_demand_deterioration_trip_wire_raw": {
+    "armed": true,
+    "sinceDate": "2024-08-08",
+    "values": { "latest": 57.55, "trailingAvg": 55.67 }
+  },
+  "net_interest_pct_receipts": {
+    "indicator_name": "Interest Expense % of Federal Revenue",
+    "current_value": 19.821,
+    "status": "watch",
+    "last_fetched_at": "2026-11-17T20:46:28.826+00:00",
+    "metadata": { "basis": "net_interest_mts_trailing12", "window_start": "2025-11-30", "window_end": "2026-10-31", "nipa_pct_revenue": 24.6 },
+    "hard_gate": "debtServiceStrained = value > 20",
+    "live_result": false,
+    "note": "0.179pts below the gate -- a single month of MTS data could flip this"
+  },
+  "frozen_cpi_cluster": {
+    "note": "all three share the same root cause: yoyPair's all-or-nothing refusal to pair across the CPIAUCSL gap at 2025-10-01",
+    "CPI (YoY)": { "current_value": 3.717, "status": "watch", "last_fetched_at": "2026-10-29T15:08:34.555+00:00", "metadata": { "reference_period": "2026-09-01" } },
+    "Core CPI (YoY)": { "current_value": 2.566, "status": "healthy", "last_fetched_at": "2026-10-29T15:08:34.731+00:00", "metadata": { "zscore": 2.38, "window_mean": 2.04, "window_min": 1.6, "window_max": 2.35 } },
+    "Real Fed Funds Rate": { "current_value": 0.033, "status": "healthy", "last_fetched_at": "2026-10-29T15:08:34.335+00:00", "note": "status is still the OLD healthy/watch/danger family, not v1 Phase 3b's stance labels -- this card has never successfully re-run since that code deployed, because of this same frozen-CPI gap" }
+  },
+  "convergence_gap": {
+    "indicator_name": "Effective Rate vs. Nominal Growth (r_eff - g)",
+    "r_eff": 3.376,
+    "convergence_gap_live": 1.774,
+    "reference_period": "2026-10-31",
+    "note": "spec text cites 1.72; live value today is 1.774 -- normal day-to-day drift from DGS10/r_eff updates, not a discrepancy to chase"
+  },
+  "redfin_card": {
+    "key": "home_price_income_ratio",
+    "value_display": "5.14x",
+    "last_updated": "2026-10-27T06:30:08.653+00:00",
+    "note": "confirmed in v1 Phase 4: Redfin's public S3 file (redfin-public-data.s3-us-west-2.amazonaws.com) returns HTTP 403; v1 worked around this for the Gaps determinant's text only, not for this card itself"
+  }
+}

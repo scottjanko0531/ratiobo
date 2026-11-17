@@ -1499,3 +1499,153 @@ trip-wire's armed-state flip, and the Redfin 403 blocking the Gaps fix.
 Both are disclosed above with root cause, not smoothed over. Everything
 else confirms exactly as predicted. This closes out every phase (0-4) of
 `docs/specs/debt-metrics-integrity.md`.
+
+## v2 (2026-11-17)
+
+New follow-up spec, `docs/specs/debt-metrics-integrity-v2.md` — a post-
+deploy review found 9 problems in what v1 shipped. Phase 0 only
+(reconnaissance, no behavior changes) per the same two-step gate as v1.
+
+### Phase 0, task 1: fixture
+
+`tests/fixtures/debt-metrics-v2-2026-11-17.json`, pulled live. Headline
+numbers:
+
+| | Value |
+|---|---|
+| Indirect bidder — card | 57.55% (status watch) |
+| Indirect bidder — classifier (`indirectBidderShareAvg6`) | 57.55%, gate `< 57.5` → **not weak** (0.05pts of margin) |
+| Indirect bidder — trip-wire | **armed**, `sinceDate: 2024-08-08`, `trailingAvg: 55.67` |
+| Net interest / receipts | 19.821% (`debtServiceStrained` gate `> 20` → **false**, 0.179pts of margin) |
+| CPI (YoY) | 3.717%, `last_fetched_at` **2026-10-29** |
+| Core CPI (YoY) | 2.566%, `last_fetched_at` **2026-10-29** |
+| Real Fed Funds Rate | 0.033%, `last_fetched_at` **2026-10-29**, status still the OLD healthy/watch/danger family (v1 Phase 3b's stance code has never successfully re-run on this card) |
+| Convergence gap (`10Y − r_eff`) | 1.774 (spec text cites 1.72 — normal day-to-day drift, not a discrepancy) |
+| Redfin home-price/income card | 5.14x, `last_updated` **2026-10-27** (HTTP 403, confirmed in v1 Phase 4) |
+
+### Phase 0, task 2: consumers, re-grepped fresh (not assumed from v1)
+
+**`auction_demand_deterioration`** — 5 hits, all in code already known from
+v1's own trip-wire renaming work (confirming nothing new appeared):
+1. `generate-debt-cycle-brief/index.ts:214` — `TRIP_WIRE_LABELS` map.
+2. `update-big-cycle-metrics/index.ts:810` — `TRIP_WIRE_LABELS` map.
+3. `update-big-cycle-metrics/index.ts:932` — the evaluator call site itself.
+4. `components/DebtCyclePositionCheck.jsx:36` — `TRIP_WIRE_LABELS` map.
+5. `components/DebtCyclePositionCheck.jsx:49` — `TRIP_WIRE_DEFINITIONS`
+   (the plain-language description a reader actually sees).
+
+Notification `dedup_key`s are derived at runtime from the label text
+(`name.toLowerCase().replace(...)`), not a separate hardcoded occurrence
+of this literal key — so there's no 6th hit hiding there, just a
+generated string that happens to produce the same text.
+
+**`debtServiceStrained`** — 4 production hits (plus test-file
+assertions, not counted as consumers): `_shared/debtCycleClassifier.ts`
+(the definition, the `strainedCount` sum, and the result object),
+`generate-debt-cycle-brief/index.ts` (interface + prompt text), and
+`components/DebtCyclePositionCheck.jsx` (the condition row). Matches
+v1's own list — nothing new.
+
+**Re-confirmed the non-goals section's portfolio claim, fresh:** grepped
+`update-regime-portfolio-targets` and `update-regime-shadow-targets` for
+`DEBT_CYCLE_ID` / `big_cycle_stages` / `classifyDebtCycleStageV2` — zero
+hits in either. Still true: nothing downstream of the debt-cycle stage
+feeds portfolio targets.
+
+**A genuine v1 miss, found and confirmed while re-grepping (not assumed
+from the spec's own claim):** item #2's "stale r−g wording" is real.
+`update-big-cycle-metrics/index.ts` lines 554-556 still reads:
+
+```
+status_label: ... "r > g — unsustainable trajectory" ... "r < g — sustainable"
+note_suffix: "10Y Treasury yield minus real GDP growth (r−g) — ..."
+```
+
+My own v1 Phase 1 decisions log explicitly claimed *"No literal
+'unsustainable trajectory' string exists anywhere in the repo
+(grepped)"* — that claim was wrong; the string is right here, in the
+same function (`computeMacroCrossRefUpdates`) I was actively editing
+that same phase for the net-interest wiring and the convenience-yield
+label fix, just a few hundred lines away. The spec's "real" in "minus
+real GDP growth" is plain ASCII, so the miss here specifically wasn't a
+U+2212-vs-ASCII-hyphen encoding issue — more likely I grepped for the
+*exact spec-quoted phrase* (which embeds an em dash, `—`) as a single
+literal pattern at some point, and a shell/tool-level mangling of that
+non-ASCII character silently zeroed out the match. Either way: logged
+as a real, confirmed miss, not re-litigated further here — this is
+exactly what Phase 2's `grep -rnF` sweep (rule 8) is for; not expanding
+into that phase's work now.
+
+### Phase 0, task 3: indirect-bidder distribution — the load-bearing number for Phase 1
+
+Pulled the full `treasury_auction_results` history (10Y/30Y, back to
+2010-01-11 — 180 raw auctions) and ran v1's own `computeIndirectBidderSnapshot`
+logic at every offset where a full consolidated reading exists (101
+consolidated readings, offsets 0-100, spanning 2010 through today).
+
+**Full history (n=101, ~16 years):**
+
+| Stat | Value |
+|---|---|
+| Mean | 49.34 |
+| Std dev (population) | 7.05 |
+| P10 | 38.46 |
+| P25 | 43.54 |
+| P50 (median) | 50.70 |
+| Min / Max | 31.98 / 62.76 |
+
+**Trailing 2-year window (n=12 consolidated readings, `asof >= 2024-08-13`):**
+
+| Stat | Value |
+|---|---|
+| Mean | 56.83 |
+| Std dev (population) | 2.02 |
+
+**Today's reading (offset 0, asof 2026-08-13): 57.55** — avg10=57.61,
+avg30=57.48.
+
+**This is the number that determines whether Phase 1's "expected:
+disarmed" prediction holds, and it does, decisively:** today's 57.55 is
+**above** both the full-history mean (z = (57.55−49.34)/7.05 = **+1.16**)
+and the 2-year mean (z = (57.55−56.83)/2.02 = **+0.36**) — not below
+either one. Under Phase 1's planned trip-wire rule ("arms when the
+consolidated reading is below its own trailing 2-year mean by more than
+1 std dev for 3 consecutive auction rounds"), the relevant boundary is
+`mean2yr − 1·sd2yr` = `56.83 − 2.02` = **54.81**. Checking the 3 most
+recent rounds against that boundary: offset 0 = 57.55 (above), offset 1
+= 55.63 (above), offset 2 = 57.00 (above) — none of the 3 most recent
+rounds are below 54.81, let alone all 3 consecutively. **The new
+trip-wire would NOT arm under today's data.** This directly confirms why
+the current "permanently armed" state (problem #1) is a pure artifact of
+the stale fixed 65% threshold: indirect-bidder participation has
+structurally risen from the ~30s-40s (2010-2014) to the ~50s-60s
+(2015-present) — a `< 65` test that made sense against the OLD regime's
+history is now comparing the metric to a level it was never typically at
+during the *current* regime, meaning the test can't tell "normal for
+today" apart from "actually deteriorating."
+
+### Phase 0, task 4: "core CPI 2.6%" in the Daily Macro Summary
+
+`daily-brief/index.ts:347`: `const coreCpi = get("Core CPI (YoY)")`,
+where `get()` (line 342) reads `macro_indicators.current_value` by exact
+name match — the same frozen row the fixture captured: **2.566%** (rounds
+to "2.6%"), `last_fetched_at` **2026-10-29**. Confirmed this is the exact
+same stale value every other CPI-dependent card shares, sourced from the
+same `yoyPair` gap — not a separate bug, not a different computation,
+just another reader of the one frozen row. Once Phase 4's inflation-gap
+fix lands and this card refreshes, the Daily Summary will automatically
+pick up the corrected value with no change needed in `daily-brief` itself
+(it just reads whatever `macro_indicators` currently holds).
+
+### Acceptance
+
+Fixture committed (`tests/fixtures/debt-metrics-v2-2026-11-17.json`);
+both consumer lists given above, re-derived fresh; indirect-bidder
+distribution (full-history and 2-year) is in this log, with the
+boundary check that validates Phase 1's "expected: disarmed" prediction
+against real numbers rather than assumption.
+
+**Nothing structurally blocking found.** All four Phase 0 tasks
+completed; the one surprise (the confirmed v1 grep miss) is logged, not
+a blocker — Phase 2 will fix it along with the rest of the wording
+sweep. Stopping here per the gate; not touching Phase 1.
