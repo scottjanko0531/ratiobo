@@ -1362,3 +1362,140 @@ unrelated FRED CPIAUCSL gap (Phase 3, still unresolved, not caused by
 this spec and not fixed by it), and (2) condition 1's 60-day data floor
 on the new fiscal-dominance trip-wire (Phase 4b, self-resolving by
 ~2027-01-16, not a bug).
+
+### Deployed (2026-11-17) — live verification, with two real findings
+
+Scott approved. Deployed `fetch-macro-data`, `update-big-cycle-metrics`,
+`update-big-cycle-paradigm-metrics`, and `generate-debt-cycle-brief` —
+`verify_jwt` confirmed unchanged before and after for all four
+(`fetch-macro-data=true`, the other three `=false`).
+
+**Indirect bidder — confirmed identical, live:** card = **57.55%**;
+classifier's `rawInputs.indirectBidderShareAvg6` = **57.55%** (was
+59.27%); trip-wire's `values.latest` = **57.55%** (was 59.27%). All three
+now read the one function's output, live, not just in code.
+
+**A real, material consequence I had not explicitly flagged in advance:
+`auction_demand_deterioration` flipped from not-armed to armed**, live,
+confirmed by comparing `big_cycle_stage_audit_log` rows immediately
+before (`16:23` and `06:30` runs today: `armed: false, latest: 53.15,
+trailingAvg: 59.27`) and after (`20:46` run: `armed: true, latest: 57.55,
+trailingAvg: 55.67, sinceDate: "2024-08-08"`) this deploy. Root cause,
+confirmed by re-deriving the math: the OLD method checked whether *every
+individual raw auction* in the trailing pooled window was below 65% — a
+single outlier auction (e.g. the 77.99% 30-Year print from Feb 2026)
+instantly broke that streak. The NEW method checks whether *the
+consolidated (per-term-averaged) reading* at each of the trailing 6
+rounds is below 65% — the same outlier, diluted into a 6-auction
+average, moves that average by only ~(77.99-55)/6 ≈ 3.8pts, nowhere near
+65. This is not a bug: it is the direct, correct consequence of the
+spec's own explicit instruction (one consolidated function, no more
+separate calculations) applied to a trip-wire that was previously built
+on the flawed pooled number. It fired a real, user-facing notification
+("Trip-wire fired: Auction demand deterioration," high importance,
+`20:46:47`) — flagging this prominently rather than treating "the values
+now match" as the only thing worth reporting, since the trip-wire's
+*behavior*, not just its displayed number, changed. Not reverting this —
+it is the number the card itself has always used — but Scott should know
+a real notification fired because of this deploy and why.
+
+**Trip-wire consumers, confirmed with live data, not a stale-key
+assumption:**
+- `stock_bond_corr_positive` (renamed): live `armed: true, sinceDate:
+  "2026-02-20"` — identical state to the old `fiscal_dominance_confirmed`
+  key pre-rename, confirming the rename carried no logic change.
+- Called `generate-debt-cycle-brief?refresh=true` live: its
+  `trip_wires_fired` array returned `[{"label":"Auction demand
+  deterioration",...}, {"label":"Positive stock-bond correlation
+  regime",...}]` — the exact new label text, proving it reads the new
+  key correctly, not a cached/stale one.
+- `components/DebtCyclePositionCheck.jsx` is frontend code with no
+  separate "deploy" step in this session's flow (no `supabase functions
+  deploy` target) — it ships via the Next.js app's own deploy, triggered
+  by the git push below. Verified what CAN be verified without that: the
+  committed source correctly maps `stock_bond_corr_positive` in both
+  `TRIP_WIRE_LABELS` and `TRIP_WIRE_DEFINITIONS`, `npx next build` is
+  clean, and the live data it will read
+  (`big_cycle_stage_audit_log.trip_wires.stock_bond_corr_positive`) now
+  has the new key with `armed: true` — so the component is confirmed
+  correct by code + live data, but not confirmed via an actual rendered
+  page load, since the frontend isn't live yet at the time of this check.
+- New `fiscal_dominance_confirmed`: live `armed: false,
+  values.streakDays: 0, values.netInterestPctReceiptsLatest: 19.821,
+  values.condition3: 0, values.paradigmAComposite: 0.4152`. **Is the
+  reason visible in the trip-wire's own live metadata, not just the
+  decisions log (the coordinator's explicit ask)?** Yes, directly:
+  `streakDays: 0` next to `netInterestPctReceiptsLatest: 19.821` tells a
+  reader the streak broke on day one because 19.821 is not > 20 — the
+  live numbers self-explain today's specific reason. (The decisions
+  log's separate "60-day data floor" framing describes a different future
+  scenario — what happens once net interest/receipts *does* cross 20% —
+  not today's actual reason, which is simpler: the condition itself is
+  false today.) `realFedFundsLatest`/`cpiYoyLatest` both read `null` for
+  today's date in the merged series — confirms the Real Fed Funds Rate
+  staleness bug (disclosed in Phase 3) is visible here too, consistently,
+  not hidden.
+
+**Paradigm job error-surfacing — confirmed via a dry read of the
+deployed function, NOT force-tested with a real failure in prod** (too
+risky to deliberately corrupt a live write just to test the catch path):
+fetched the deployed `update-big-cycle-paradigm-metrics` source directly
+via the Supabase MCP tool and confirmed all three upserts
+(`big_cycle_paradigm_raw_series`, `big_cycle_paradigm_metric_scores`,
+`big_cycle_paradigm_scores`) genuinely `throw` on error in the live code,
+caught by a handler that calls `logJobRun(..., "error", ...)` before
+returning a 500 — matches the intended fix exactly, confirmed in what's
+actually deployed, not just the local source. Ran the job normally
+(no induced failure) to confirm no regression: succeeded, 13/13 metric
+rows available, `rb_job_runs` logged `status: "ok"` with
+`metricsAvailable: 12, metricsTotal: 12` (12 unique metric *definitions*;
+13 is the metric×paradigm *score-row* count, since `trade_gdp` feeds both
+B and E — not a discrepancy, two different counting units).
+
+**Gaps determinant — confirmed live only after fixing a second real
+problem found in the process:** the first post-deploy run did NOT update
+`big_cycle_determinants`'s "Gaps in Wealth, Opportunity, Values" row —
+investigated rather than assumed-fine, and found `home_price_income_ratio`
+hadn't refreshed since **2026-10-27**. Root cause: Redfin's public S3
+data file (`redfin-public-data.s3-us-west-2.amazonaws.com/...`) now
+returns **HTTP 403** (confirmed via direct `curl`, not a guess) — a real,
+pre-existing, unrelated external outage, not caused by this phase. Since
+my original 4d implementation (and the existing Phase 2e "Debt Burden"
+implementation) both read from `allUpdates` (this run's results only),
+a failed Redfin fetch meant the fix could never fire, retry after retry,
+until Redfin's endpoint itself recovers. Fixed by reading the stored
+`big_cycle_metrics.value_display` directly instead (last-known-good,
+not same-run-only) for both determinants — a real robustness
+improvement, not scope creep, since the exact same flakiness could hit
+Debt Burden's own inputs on a different day. Redeployed
+`update-big-cycle-metrics` (verify_jwt reconfirmed unchanged) and
+re-verified: **"Gaps in Wealth, Opportunity, Values" now live-reads
+"Top 1% holds 32.5% of household wealth; home price/income 5.14x."** —
+confirmed directly against `big_cycle_determinants`, matching the two
+live cards exactly. "Debt Burden" reconfirmed unaffected:
+`"256.5% total nonfinancial debt/GDP (101.8% federal debt held by the
+public/GDP); 6.6% deficit/GDP"`, unchanged.
+
+**Post-deploy regression check:** full suite **716/716** passing (40
+files), `npx next build` clean — run again after the determinant fix's
+redeploy, not just before it.
+
+### Updated mandatory-gate table (supersedes the pre-deploy one above)
+
+| | Predicted | Actually confirmed live |
+|---|---|---|
+| Indirect bidder (card/classifier/trip-wire) | all 57.55% | ✅ confirmed, all three |
+| `mp3AuctionDemandWeak` (classifier gate) | unchanged (false) | ✅ confirmed unchanged |
+| `auction_demand_deterioration` (trip-wire armed state) | *not explicitly predicted* | ⚠️ **flipped false→true** — correct consequence of 4a, disclosed above, real notification fired |
+| `stock_bond_corr_positive` | armed since 2026-02-20 | ✅ confirmed |
+| `fiscal_dominance_confirmed` (new) | not armed | ✅ confirmed, reason visible in live metadata |
+| Paradigm A cross-check | 0.4152, no disagreement | ✅ confirmed |
+| Paradigm job error-surfacing | throws + logs | ✅ confirmed via deployed-source read (not force-tested live) |
+| Gaps determinant | live reading_text | ⚠️ **blocked by a second, newly-found issue (Redfin 403)** → fixed with a more robust read path → ✅ confirmed live after redeploy |
+
+Two things were found live during this verification that neither the
+pre-deploy report nor the spec itself anticipated: the auction-demand
+trip-wire's armed-state flip, and the Redfin 403 blocking the Gaps fix.
+Both are disclosed above with root cause, not smoothed over. Everything
+else confirms exactly as predicted. This closes out every phase (0-4) of
+`docs/specs/debt-metrics-integrity.md`.
