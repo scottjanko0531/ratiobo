@@ -1,0 +1,159 @@
+{
+  "_comment": "v3 Phase 0 reconnaissance snapshot (debt-metrics-integrity-v3 spec). Pulled live 2026-11-18, before any v3 behavior changes.",
+  "pulled_at": "2026-11-18T18:00:00Z",
+  "indirect_bidder": {
+    "card": {
+      "name": "Indirect Bidder Share (10Y/30Y)",
+      "current_value": 57.55,
+      "status": "healthy",
+      "metadata": {
+        "zscore": 1.16,
+        "latest_auction_date": "2026-08-13",
+        "avg_10y_6auction_pct": 57.61,
+        "avg_30y_6auction_pct": 57.48,
+        "full_history_readings": 101
+      },
+      "last_fetched_at": "2026-11-18T17:23:59.023Z"
+    },
+    "classifier_raw_inputs": {
+      "indirectBidderShareAvg6": 57.55,
+      "indirectBidderShareZ": 1.1638844619824964
+    },
+    "classifier_condition": { "mp3AuctionDemandWeak": false },
+    "trip_wire": {
+      "armed": false,
+      "sinceDate": null,
+      "values": {
+        "latest": 57.55,
+        "mean2y": 56.83,
+        "sd2y": 2.02,
+        "armThreshold": 54.81,
+        "disarmThreshold": 55.82,
+        "windowReadingCount": 12
+      }
+    }
+  },
+  "bid_to_cover": {
+    "name": "Treasury Bid-to-Cover",
+    "current_value": 2.53,
+    "status": "healthy",
+    "last_fetched_at": "2026-11-18T17:23:58.957Z",
+    "note": "current/previous computed from the latest 2 rows where security_term = '10-Year' exactly (fetch-macro-data/index.ts ~line 1227) -- same Aug-2026 staleness as the indirect-bidder card."
+  },
+  "pre_v3_nov17_artifact_notification": {
+    "id": "13ec5b1c-c8c0-4507-8b03-3bd7d85d5bd7",
+    "title": "Trip-wire fired: Auction demand deterioration",
+    "description": "{\"trailingAvg\":55.67,\"latest\":57.55}",
+    "dedup_key": "debt_cycle_tw_auction_demand_deterioration:2024-08-08",
+    "created_at": "2026-11-17T20:46:47.408408Z",
+    "note": "Fired under the OLD (pre-v2-Phase-1) fixed-threshold trip-wire, before that day's recalibration deploy. This is the 'Nov 17 artifact' problem #3 refers to."
+  },
+  "recalibration_note": {
+    "id": "7ba47b2c-7198-411b-8994-0b88f0c1e618",
+    "note": "Auction-demand trip-wire recalibrated 2026-11-17: now relative to its own history; prior armed state reflected a threshold mismatch, not new deterioration.",
+    "created_at": "2026-11-17T22:20:48.033463Z"
+  },
+  "current_brief_2026_11_18": {
+    "brief_date": "2026-11-18",
+    "generated_at": "2026-11-18T17:29:34.748Z",
+    "stage": "MP1",
+    "trip_wires_fired": [
+      { "label": "Auction demand deterioration", "firedAt": "2026-11-17" },
+      { "label": "Positive stock-bond correlation regime", "firedAt": "2026-11-17" }
+    ],
+    "narrative_full_text": "Current stage is MP1 with normal trend confidence. No gate is tripped: debt service is at 19.8% of federal revenue (just shy of the 20% threshold), r is not exceeding g, Fed balance sheet is not in a sustained uptrend, and auction demand has not yet deteriorated to MP3 levels despite this week's weakness. This stage classification is unchanged from prior. The operative read is no current strain, but rising pressure—a critical distinction. The large convergence gap ahead means substantial repricing risk remains embedded in the maturity schedule.\n\nAgainst Dalio's own published benchmarks, we sit in the yellow zone across the board. Interest expense at 19.8% is essentially at his danger line of 20%. Debt-to-revenue at 7.30x now exceeds his current reference of 6x and is tracking toward his 10-year estimate of 7x, meaning we are already priced into the extended cycle. The deficit at 6.6% of GDP is more than double his soft-landing target of 3%, signaling structural imbalance. We are not in crisis, but we are not in the comfort zone either.\n\nRefinancing pressure ahead is a forward signal, distinct from the stage classification. The blended effective rate on all outstanding federal debt sits at 3.38%; the 10Y Treasury yield is 5.12%. That 1.74-point convergence gap represents the amount of repricing still ahead as maturing debt rolls over at higher rates. The effective rate has moved only 0.02 points higher over the trailing 12 months, suggesting the repricing is still in its early innings. This is not a current expense; it is a scheduled one.\n\nCurrently armed trip-wires include the positive stock-bond correlation regime, which signals regime shift and hedging degradation. This week both auction demand deterioration and positive stock-bond correlation fired simultaneously on 2026-11-17. The methodology note flags that the auction-demand trip-wire was recalibrated on that same date to reflect its own historical distribution rather than an absolute threshold, so this firing reflects deterioration relative to historical auction behavior, not a move into the absolute red zone. Watch for whether auction demand continues to soften or if this is a one-week blip; watch whether positive correlation persists or mean-reverts.\n\nConcrete moves: The portfolio is massively overweight cash and short-duration lending instruments and severely underweight risk assets and inflation hedges. This positioning may feel safe but leaves you uncompensated for the refinancing repricing ahead and unhedged against the regime shifts the trip-wires are signaling.\n\n- Reduce Cash from 51% to target of 3% — that is a 48-point release that must be deployed into real assets and risk.\n- Reduce Notes/Loans from 42% to 0% — this bucket is a placeholder for ultra-safe, ultra-low-yielding collateral that is being economically eroded by repricing; redeploy into duration and equity.\n- Increase US Equities from 0.7% to 20% target — this is a 19.3-point gap that reflects no equity hedge at all; this is a critical miss given the positive correlation signal.\n- Increase TIPS from 1.8% to 20% target — the repricing gap is real and nominal bonds alone will not protect you; real rates embedded in TIPS hedge the r_eff convergence directly.\n- Increase Commodities and Gold combined from 0.7% to 24% target — this is a 23-point combined underweight in the two most effective hedges against positive correlation regimes and fiscal repricing cycles.",
+    "false_deterioration_claims_in_narrative": [
+      "despite this week's weakness",
+      "This week both auction demand deterioration and positive stock-bond correlation fired simultaneously on 2026-11-17",
+      "this firing reflects deterioration relative to historical auction behavior, not a move into the absolute red zone"
+    ],
+    "household_allocation_instructions_in_narrative": [
+      "Reduce Cash from 51% to target of 3% -- that is a 48-point release that must be deployed into real assets and risk.",
+      "Reduce Notes/Loans from 42% to 0% -- this bucket is a placeholder for ultra-safe, ultra-low-yielding collateral that is being economically eroded by repricing; redeploy into duration and equity.",
+      "Increase US Equities from 0.7% to 20% target...",
+      "Increase TIPS from 1.8% to 20% target...",
+      "Increase Commodities and Gold combined from 0.7% to 24% target..."
+    ]
+  },
+  "portfolio_gap_panel_2026_11_18": {
+    "_comment": "Full 'Portfolio Gap vs. BW Modified' contents as stored (dalio_debt_cycle_brief.portfolio_gap), same data the brief's Concrete-moves bullets above were built from. 'alt_loan' (Notes/Loans, 42.04% of the portfolio) is the bucket the brief tells the user to zero out -- per the spec, this is believed to include AETSTOCK, an illiquid/business-related holding.",
+    "rows": [
+      { "key": "cash", "label": "Cash", "currentPct": 51.0298123433237, "targetPct": 3, "deltaPct": 48.0298123433237 },
+      { "key": "alt_loan", "label": "Notes / Loans", "currentPct": 42.04240794116822, "targetPct": 0, "deltaPct": 42.04240794116822 },
+      { "key": "eq", "label": "US Equities", "currentPct": 0.7375702968674008, "targetPct": 20, "deltaPct": -19.2624297031326 },
+      { "key": "tip", "label": "TIPS", "currentPct": 1.8486172418790132, "targetPct": 20, "deltaPct": -18.151382758120988 },
+      { "key": "nb", "label": "Nominal Bonds", "currentPct": 3.1328411674438255, "targetPct": 20, "deltaPct": -16.867158832556175 },
+      { "key": "com", "label": "Commodities", "currentPct": 0, "targetPct": 12, "deltaPct": -12 },
+      { "key": "gld", "label": "Gold", "currentPct": 0.7296032712279508, "targetPct": 12, "deltaPct": -11.270396728772049 },
+      { "key": "intl", "label": "International", "currentPct": 0, "targetPct": 8, "deltaPct": -8 },
+      { "key": "em", "label": "EM Equities", "currentPct": 0, "targetPct": 5, "deltaPct": -5 },
+      { "key": "alt_crypto", "label": "Crypto", "currentPct": 0.47914773808986527, "targetPct": 0, "deltaPct": 0.47914773808986527 },
+      { "key": "alt_re", "label": "Real Estate", "currentPct": 0, "targetPct": 0, "deltaPct": 0 },
+      { "key": "alt_pp", "label": "Private Placements", "currentPct": 0, "targetPct": 0, "deltaPct": 0 },
+      { "key": "alt_other", "label": "Other", "currentPct": 0, "targetPct": 0, "deltaPct": 0 }
+    ]
+  },
+  "auction_ingest_root_cause_1a": {
+    "live_api_call_matching_current_ingest_code": {
+      "url": "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query?filter=auction_date:gte:2010-01-01&sort=auction_date&page[number]=1&page[size]=10000&fields=...",
+      "meta_total_count": 5785,
+      "meta_total_pages": 1,
+      "first_row": { "auction_date": "2010-01-04", "security_term": "26-Week" },
+      "last_row_on_page_1": { "auction_date": "2026-10-22", "security_term": "5-Year" }
+    },
+    "live_api_call_unfiltered_descending": {
+      "url": "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query?sort=-auction_date&page[size]=20",
+      "meta_total_count": 11149,
+      "meta_total_pages": 558,
+      "newest_row": { "auction_date": "2026-10-22", "security_term": "5-Year" }
+    },
+    "live_api_call_probe_after_cutoff": {
+      "url": "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query?filter=auction_date:gte:2026-10-23&sort=auction_date",
+      "meta_total_count": 0,
+      "conclusion": "zero rows exist anywhere in the API for any date after 2026-10-22, for any query shape"
+    },
+    "finding": "PARTIALLY REFUTES the spec's specific mechanism. meta.total-count for the ingest's actual 2010+-filtered query is 5785, NOT above 10,000 as the spec expected -- it fits entirely within one page[size]=10000 request (meta.total-pages: 1). The ascending-sort-with-no-pagination design is NOT currently truncating anything: confirmed the true newest auction_date available from the API (for ANY query, any sort direction, any filter) is 2026-10-22, matching exactly what our ingest already has. The 'about 3 months stale' symptom is real and confirmed, but today its cause is that the API itself has nothing newer -- not that our code is cutting off newer rows that exist. The unfiltered total-count (11149) DOES match the spec's 'above 10,000' expectation -- that number includes ~5364 pre-2010 rows our ingest deliberately excludes by design (not a bug).",
+    "still_a_real_latent_bug": "The ascending-sort + single-page(10000)-no-pagination design has no actual pagination logic at all -- once total-count for the 2010+ filter exceeds 10000 (it will, eventually, as more auctions accumulate), ascending sort means the newest rows are exactly the ones that would get silently cut off. Today's symptom isn't caused by this yet, but the design is still broken and will cause exactly this failure mode later if left as-is -- Phase 1a's incremental/paginated fetch is still the right fix, just not provably why today's data stops at 2026-10-22."
+  },
+  "term_to_tenor_mapping": {
+    "10Y_family": [
+      { "security_term": "10-Year", "security_type": "Note", "count": 101, "min_date": "2010-01-11", "max_date": "2026-08-12" },
+      { "security_term": "9-Year 11-Month", "security_type": "Note", "count": 68, "min_date": "2010-03-10", "max_date": "2026-09-09" },
+      { "security_term": "9-Year 10-Month", "security_type": "Note", "count": 101, "min_date": "2010-01-13", "max_date": "2026-10-07" },
+      { "security_term": "9-Year 9-Month", "security_type": "Note", "count": 1, "min_date": "2010-04-05", "max_date": "2010-04-05" },
+      { "security_term": "9-Year 8-Month", "security_type": "Note", "count": 32, "min_date": "2010-11-04", "max_date": "2026-05-21" }
+    ],
+    "30Y_family": [
+      { "security_term": "30-Year", "security_type": "Bond", "count": 84, "min_date": "2010-02-11", "max_date": "2026-08-13" },
+      { "security_term": "29-Year 11-Month", "security_type": "Bond", "count": 27, "min_date": "2020-06-17", "max_date": "2026-09-15" },
+      { "security_term": "29-Year 10-Month", "security_type": "Bond", "count": 68, "min_date": "2010-01-14", "max_date": "2026-10-08" },
+      { "security_term": "29-Year 8-Month", "security_type": "Bond", "count": 8, "min_date": "2011-06-23", "max_date": "2018-06-21" },
+      { "security_term": "29-Year 6-Month", "security_type": "Bond", "count": 9, "min_date": "2010-08-23", "max_date": "2026-08-20" },
+      { "security_term": "29-Year 4-Month", "security_type": "Bond", "count": 8, "min_date": "2011-10-20", "max_date": "2018-10-18" }
+    ],
+    "20Y_family_reference_only_out_of_scope": [
+      { "security_term": "20-Year", "security_type": "Bond", "count": 26, "min_date": "2020-05-20", "max_date": "2026-08-19" },
+      { "security_term": "19-Year 11-Month", "security_type": "Bond", "count": 27, "min_date": "2020-06-17", "max_date": "2026-09-15" },
+      { "security_term": "19-Year 10-Month", "security_type": "Bond", "count": 26, "min_date": "2020-07-22", "max_date": "2026-10-21" }
+    ],
+    "derived_rule": "security_term of exactly 'N-Year' (new issue), OR '(N-1)-Year X-Month' for any X in 1..11 (a reopening, auctioned at decreasing remaining-maturity as the note/bond ages toward its original N-year maturity) maps to original tenor N-Year. The specific X values actually used (8,9,10,11 for both 10Y and 30Y; 4,6,8,10,11 for 30Y specifically) have changed more than once over 2010-2026 as Treasury's own reopening calendar shifted -- the mapping must be general (N-1 plus any month count), not a hardcoded list of the two labels the spec's problem table used as illustrative examples.",
+    "note_on_19Y_vs_29Y_11_month_coincidence": "19-Year 11-Month and 29-Year 11-Month happen to show identical count(27)/min/max in the aggregate -- checked directly (different CUSIPs, 29-Year 11-Month's rows start in 2010, 19-Year 11-Month's start in 2020) -- confirmed genuinely separate series, not a duplicate-row bug. Coincidental."
+  },
+  "consumer_list": {
+    "_comment": "Every security_term exact-match (===) or .eq()/.in() filter against 'treasury_auction_results', grepped across supabase/functions, components, app, lib -- not assumed to be just indirectBidder.ts.",
+    "consumers": [
+      { "file": "supabase/functions/ingest-auction-results/index.ts", "line": 100, "what": "latest10y diagnostic value in the ingest's own JSON response (not used downstream by anything else)", "named_in_spec": true },
+      { "file": "supabase/functions/_shared/indirectBidder.ts", "line": "46, 56, 87", "what": "the shared computeIndirectBidderSnapshot / computeIndirectBidderFullSeries / evalAuctionDemandDeterioration functions -- the core consolidated logic from v1 Phase 4a / v2 Phase 1", "named_in_spec": true },
+      { "file": "supabase/functions/compute-gauge7/index.ts", "line": 97, "what": "Gauge 7 (Privilege Erosion) composite's foreign-demand input -- 10-Year exact match only", "named_in_spec": false },
+      { "file": "supabase/functions/fetch-macro-data/index.ts", "line": 1227, "what": "\"Treasury Bid-to-Cover\" card's live current/previous computation -- 10-Year exact match only", "named_in_spec": "implied (card named, file/line not)" },
+      { "file": "supabase/functions/fetch-macro-data/index.ts", "line": 1798, "what": "\"Indirect Bidder Share\" card's live computation, via the shared function", "named_in_spec": "implied (card named, file/line not)" },
+      { "file": "supabase/functions/fetch-macro-data/index.ts", "line": 3222, "what": "single-auction notification trigger: fires if the latest 10Y/30Y auction's indirect share prints below 50% -- independent of the shared 6-auction-average logic", "named_in_spec": false },
+      { "file": "supabase/functions/update-big-cycle-metrics/index.ts", "line": 850, "what": "classifier rawInputs (indirectBidderShareAvg6 / indirectBidderShareZ) feeding mp3AuctionDemandWeak", "named_in_spec": true },
+      { "file": "supabase/functions/update-big-cycle-metrics/index.ts", "line": 985, "what": "the auction-demand trip-wire's own evaluation query (evalAuctionDemandDeterioration caller)", "named_in_spec": true },
+      { "file": "app/macro/page.jsx", "line": 7453, "what": "the Macro page's Indirect Bidder drawer -- has its OWN independent inline trailing-6-average computation, does NOT call the shared _shared/indirectBidder.ts function (a separate code-duplication finding, not just a staleness/reopening one)", "named_in_spec": false }
+    ],
+    "total_distinct_call_sites": 9,
+    "total_distinct_files": 6,
+    "not_named_in_spec_problem_table": 3
+  }
+}

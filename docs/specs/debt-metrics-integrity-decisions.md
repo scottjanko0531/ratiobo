@@ -3066,3 +3066,167 @@ with its period prominent. The Paradigm loading-state fix is confirmed
 correct by full code trace plus live data showing nothing should read
 stale today. This is the final deploy of the entire v1+v2
 debt-metrics-integrity effort.
+
+## v3 (2026-11-18) — Phase 0: reconnaissance only, no behavior changes
+
+### Task 1: root cause 1(a) — confirmed real, but the spec's specific mechanism doesn't hold up today
+
+Called the EXACT URL `ingest-auction-results/index.ts` currently uses
+(`auction_date:gte:2010-01-01&sort=auction_date&page[number]=1&page[size]=10000`),
+live:
+
+```
+meta.total-count: 5785
+meta.total-pages: 1
+first row: 2010-01-04 (26-Week)
+last row (page 1, the only page): 2026-10-22 (5-Year)
+```
+
+**This does not match the spec's expectation** ("total count above
+10,000"). 5785 fits entirely inside one `page[size]=10000` request —
+`total-pages: 1`, nothing is being paginated at all, so the ascending-
+sort-with-no-pagination design is **not currently truncating anything**.
+Checked two more ways to be sure, not just trusting one number:
+
+- Unfiltered, descending, no date floor:
+  `meta.total-count: 11149, meta.total-pages: 558` — this IS where the
+  spec's "above 10,000" figure comes from, but that total includes
+  ~5364 rows dated before 2010 (our ingest deliberately excludes those
+  by design — "Backfills all auctions since 2010," not a bug). Newest
+  row across the ENTIRE unfiltered, descending dataset: still
+  **2026-10-22**.
+- Direct probe, `auction_date:gte:2026-10-23`: **`total-count: 0`** —
+  confirms, for any query shape, there is genuinely nothing newer than
+  2026-10-22 available from this API right now.
+
+**Conclusion, logged precisely rather than rubber-stamping the spec's
+framing:** the "~3 months stale" symptom is real and confirmed (today's
+date is 2026-11-18; the newest data anywhere is 2026-10-22, ~27 days,
+consistent with "about 3 months" once you count from whenever the last
+10Y/30Y reading specifically landed — Aug 12-13 for those two terms
+specifically, since the newest OVERALL auction, a 5-Year, isn't a
+10Y/30Y reading at all). But the SPECIFIC mechanism the spec attributes
+it to — ascending sort cutting off newer rows once the page fills —
+is not what's causing today's staleness; today, the API itself has
+nothing newer, for any query. The design is still a real, latent bug
+(once the 2010+-filtered total-count eventually exceeds 10000, which it
+will, ascending sort means the newest rows are exactly the ones that
+would silently vanish) — Phase 1a's incremental/paginated rewrite is
+still the right fix, just not provably the active cause of the current
+specific staleness. Flagging this distinction clearly since "confirm or
+refute, don't assume the spec's numbers are right" was the explicit
+instruction, and the numbers partially refute the stated mechanism even
+though the underlying symptom and design flaw are both real.
+
+### Task 2: term-to-tenor mapping
+
+Queried `treasury_auction_results` for every distinct `(security_term,
+security_type)` pair with its count/date range. 10Y family: `10-Year`
+(new issue, n=101) plus FOUR reopening labels, not just the two the
+spec's problem table used as examples — `9-Year 11-Month` (n=68),
+`9-Year 10-Month` (n=101), `9-Year 9-Month` (n=1, a one-off from
+2010-04-05), `9-Year 8-Month` (n=32). 30Y family: `30-Year` (new issue,
+n=84) plus FIVE reopening labels — `29-Year 11-Month` (n=27),
+`29-Year 10-Month` (n=68), `29-Year 8-Month` (n=8), `29-Year 6-Month`
+(n=9), `29-Year 4-Month` (n=8). The specific month-offsets in use have
+changed more than once across 2010-2026 as Treasury's own reopening
+calendar shifted (e.g. 29-Year 11-Month only appears 27 times across 16
+years, not continuously) — confirms the mapping rule has to be
+**general**, not a hardcoded 2-label list:
+
+> `security_term` of exactly `N-Year` (new issue), or `(N−1)-Year
+> X-Month` for any `X` in 1-11 (a reopening, auctioned at decreasing
+> remaining maturity as the security ages toward its original N-year
+> maturity), maps to original tenor `N`Y.
+
+20Y family logged for reference only (out of scope per the spec):
+`20-Year` (n=26), `19-Year 11-Month` (n=27), `19-Year 10-Month` (n=26).
+Noticed `19-Year 11-Month` and `29-Year 11-Month` share an identical
+count/min/max in the aggregate — checked directly rather than assuming
+a duplicate-row bug: different CUSIPs, genuinely separate series
+(29-Year 11-Month starts 2010, 19-Year 11-Month starts 2020) —
+coincidence, not a data integrity problem. Logged so a future reader
+doesn't re-discover the same false alarm.
+
+### Task 3: full consumer list — NOT just indirectBidder.ts
+
+Grepped every `security_term ===` / `.eq("security_term"` /
+`.in("security_term"` across `supabase/functions`, `components`, `app`,
+`lib`. **9 distinct call sites across 6 files** — the spec's own
+problem table named 2 of the files explicitly (plus implied the two
+cards by name without citing file/line); **3 call sites it never
+mentioned at all**:
+
+1. `ingest-auction-results/index.ts:100` — `latest10y` (diagnostic only).
+2. `_shared/indirectBidder.ts:46,56,87` — the shared consolidated functions.
+3. **`compute-gauge7/index.ts:97`** — Gauge 7 (Privilege Erosion)'s
+   foreign-demand input. **Not in the spec's table.**
+4. `fetch-macro-data/index.ts:1227` — Treasury Bid-to-Cover card.
+5. `fetch-macro-data/index.ts:1798` — Indirect Bidder Share card (via the shared function).
+6. **`fetch-macro-data/index.ts:3222`** — a single-auction "indirect
+   bidder share < 50%" notification trigger, independent of the
+   6-auction-average logic entirely. **Not in the spec's table.**
+7. `update-big-cycle-metrics/index.ts:850` — classifier rawInputs (`mp3AuctionDemandWeak`).
+8. `update-big-cycle-metrics/index.ts:985` — the auction-demand trip-wire evaluator.
+9. **`app/macro/page.jsx:7453`** — the Macro page's Indirect Bidder
+   drawer, which has its OWN independent inline trailing-6-average
+   calculation — does not call the shared `_shared/indirectBidder.ts`
+   function at all. **Not in the spec's table, and a separate
+   code-duplication finding Phase 1c should account for** (switching
+   this one consumer to the tenor field isn't enough on its own if it's
+   also never sharing the one consolidated calculation v1 Phase 4a
+   built everything else around).
+
+### Task 4: live snapshot — the clearest evidence for problem #2/#3
+
+Captured into `tests/fixtures/debt-metrics-v3-2026-11-18.json` (read
+from the existing cached `dalio_debt_cycle_brief` row — did NOT trigger
+a fresh `?refresh=true` generation, since that would itself be a
+behavior change beyond reconnaissance; this is exactly what Scott is
+currently seeing on the live page).
+
+**Problem #2, confirmed verbatim** — the brief's "Concrete moves"
+section, live right now: *"Reduce Cash from 51% to target of 3%...
+Reduce Notes/Loans from 42% to 0% — this bucket is a placeholder for
+ultra-safe, ultra-low-yielding collateral that is being economically
+eroded by repricing; redeploy into duration and equity."* The
+`portfolio_gap` data backing this: `alt_loan` (Notes/Loans) at 42.04%
+current vs. 0% target — a 42-point instruction to zero out a bucket
+the spec identifies as including AETSTOCK, an illiquid/business-related
+$5.2M holding being described as something to liquidate and redeploy.
+
+**Problem #3, confirmed verbatim** — the SAME brief: *"This week both
+auction demand deterioration and positive stock-bond correlation fired
+simultaneously on 2026-11-17. The methodology note flags that the
+auction-demand trip-wire was recalibrated on that same date... so this
+firing reflects deterioration relative to historical auction behavior,
+not a move into the absolute red zone."* Checked against the actual
+live state: the trip-wire is `armed: false` right now (confirmed in
+`big_cycle_stage_audit_log`'s latest row); the Nov 17 firing
+(`notifications` row, `dedup_key:...2024-08-08`) fired under the OLD,
+pre-recalibration fixed threshold, literally hours before that same
+day's recalibration deploy; the recalibration note itself says in
+plain language *"prior armed state reflected a threshold mismatch, not
+new deterioration."* The brief's fact-check pass let through a
+narrative directly contradicting its own cited methodology note, and
+"this week's weakness" is doubly wrong given problem #1 — no 10Y/30Y
+auction has actually happened since August.
+
+Also snapshotted (for Phase 2's before/after baseline): indirect bidder
+card (57.55%, healthy, z=1.16, `latest_auction_date: 2026-08-13`),
+classifier rawInputs (`indirectBidderShareAvg6: 57.55`,
+`indirectBidderShareZ: 1.1638...`), `mp3AuctionDemandWeak: false`,
+trip-wire (`armed: false`, `mean2y: 56.83`, `sd2y: 2.02`,
+`armThreshold: 54.81`, `disarmThreshold: 55.82`,
+`windowReadingCount: 12`), bid-to-cover (2.53, healthy).
+
+### Acceptance
+
+Root cause confirmed with real API metadata, not assumed — and the
+confirmation came back more nuanced than the spec's own description
+(the symptom is real, the specific truncation mechanism isn't
+currently active). Term mapping derived as a general rule from the
+real data, not just the two illustrative labels. Full consumer list is
+9 call sites / 6 files, 3 of which the spec never named. Fixture
+committed. **Nothing changed behaviorally.** Stopping here per the gate
+— not touching Phase 1.
