@@ -3025,3 +3025,44 @@ migration committed, held for deploy approval per the standing gate.
 
 **This closes out every phase of the entire debt-metrics-integrity
 effort — v1 Phases 0-4 and v2 Phases 0-7, both specs, start to finish.**
+
+### Phase 7 deploy: live confirmation
+
+Deployed `update-big-cycle-metrics`; applied
+`20261118_fix_redfin_home_price_source_line.sql`. `verify_jwt` confirmed
+unchanged (`false`, version 41→42).
+
+**Invoked live — `skipped: []`, no write failures.** Live row for
+`home_price_income_ratio`, confirmed by direct query:
+
+```
+value_display: "4.44x (Oct 2026)"   -- period now prominent, in the headline itself
+value_numeric: 4.4436
+status / status_label: "good" / "Historically normal"  -- recomputed correctly (4.44 < 4.5)
+note: "...from Redfin's public national-level data (Data Center, relaunched May 2026)..."
+source_url: https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_data_center/housing_market/monthly/country.csv
+last_updated: 2026-11-18 17:51:06 (fresh, matches this invocation)
+```
+
+The card is confirmed live on the new source, showing real Oct 2026
+data with the period visible in `value_display` — not stuck at May 2026,
+not buried in the note. (Note: the actual ratio, 4.44x, differs from the
+5.68x figure in my earlier pre-deploy report — that was an error in my
+own mental math using a half-remembered income figure, not a data
+problem; the real computation, confirmed here with the real stored
+Census income value $87,460, is correct.)
+
+**Paradigm metrics re-confirmed live, post-deploy**: all 13 rows for
+today (2026-11-18) still read `available: true` — consistent with the
+code trace's conclusion that, once `FiscalParadigmSection.jsx` ships
+(via the git push below — this is a frontend-only fix with no separate
+edge-function deploy step), no metric will show a false "stale" today.
+
+`npx vitest run tests/` → 760 passed (42 files). `npx next build` →
+compiles clean, against the deployed backend state.
+
+**Acceptance, fully confirmed**: the Redfin card is current (restored),
+with its period prominent. The Paradigm loading-state fix is confirmed
+correct by full code trace plus live data showing nothing should read
+stale today. This is the final deploy of the entire v1+v2
+debt-metrics-integrity effort.
