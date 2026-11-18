@@ -22,13 +22,19 @@ import { INDIRECT_BIDDER_THRESHOLDS, DEBT_SERVICE_STRAINED_GATE } from "../_shar
 import { hysteresisGate } from "../_shared/hysteresisGate.ts";
 
 // v1 Phase 2b switched "Interest Expense % of Federal Revenue" from NIPA to
-// Treasury MTS net-interest basis. Confirmed live (v2 Phase 3 investigation,
-// see docs/specs/debt-metrics-integrity-decisions.md): macro_snapshots for
-// this indicator reads ~23.8-24.6 (NIPA) through 2026-11-15, then drops to
-// 19.821 (MTS) starting 2026-11-16 -- a different metric, not a real
-// 4.8-point move, so pre-cutover rows must never feed the v2 Phase 3
-// hysteresis gate alongside post-cutover ones.
-const MTS_NET_INTEREST_BASIS_CUTOVER = "2026-11-16";
+// Treasury MTS net-interest basis. At the time v2 Phase 3 built the
+// debtServiceStrained hysteresis gate, macro_snapshots only had MTS-basis
+// history from 2026-11-16 onward (everything before that was the old
+// NIPA-basis definition), so Phase 3 filtered the gate's query to
+// `snapshot_date >= 2026-11-16` -- correct then, but a HARDCODED DATE, not
+// a statement about the data that stays true forever. v2 Phase 5 backfilled
+// real MTS-basis values for every month back to 2022-11-30 and replaced
+// every pre-existing NIPA-basis row in that range outright (see
+// docs/specs/debt-metrics-integrity-decisions.md's v2 Phase 5 section) --
+// the cutover filter is gone; it was silently excluding exactly the
+// backfilled history it was supposed to let through. There is no longer
+// any date before which this indicator's macro_snapshots rows are a
+// different definition, so there is nothing left to filter on.
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -789,12 +795,15 @@ async function updateDebtCycleStage(
       sb.from("treasury_auction_results").select("auction_date, security_term, indirect_share_pct, bid_to_cover_ratio")
         .in("security_term", ["10-Year", "30-Year"]).order("auction_date", { ascending: false }).limit(1000),
       // v2 Phase 3b: history for the debt-service-strained hysteresis gate.
-      // Filtered to MTS_NET_INTEREST_BASIS_CUTOVER onward -- pre-cutover
-      // rows are the old NIPA-basis definition and must not feed this gate.
+      // v2 Phase 5 backfilled ~4 years of consistent MTS-basis history for
+      // this indicator (no date filter needed any more -- see the comment
+      // at this file's top). limit(2000) comfortably covers 4 years of
+      // daily rows (even un-deduped) with margin, matching the sizing
+      // convention used for other full-history fetches in this file (e.g.
+      // the auction-demand trip-wire's limit(1000)).
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "Interest Expense % of Federal Revenue")
-        .gte("snapshot_date", MTS_NET_INTEREST_BASIS_CUTOVER)
-        .order("snapshot_date", { ascending: false }).limit(400),
+        .order("snapshot_date", { ascending: false }).limit(2000),
     ]);
 
     const byName = new Map((macroRows ?? []).map((r: { name: string; current_value: number }) => [r.name, Number(r.current_value)]));

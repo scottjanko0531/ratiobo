@@ -1363,6 +1363,15 @@ this spec and not fixed by it), and (2) condition 1's 60-day data floor
 on the new fiscal-dominance trip-wire (Phase 4b, self-resolving by
 ~2027-01-16, not a bug).
 
+> **RESOLVED (v2 Phase 5, 2026-11-18):** item (1) was fixed by v2 Phase 4
+> (the CPIAUCSL gap-fill + stale-fallback rule); item (2) was fixed —
+> faster than the "self-resolving by ~2027-01-16" projection — by v2
+> Phase 5's backfill, which gave the gate ~4 years of real history
+> immediately rather than waiting for it to accumulate day by day. See
+> the v2 Phase 5 section below for the real post-backfill numbers. This
+> note is left in place rather than deleting the paragraph above, so the
+> history of what the limitation was and why it existed stays legible.
+
 ### Deployed (2026-11-17) — live verification, with two real findings
 
 Scott approved. Deployed `fetch-macro-data`, `update-big-cycle-metrics`,
@@ -2497,3 +2506,150 @@ Full suite re-run after these edits (confirms nothing else regressed):
 `npx vitest run tests/` → 754 passed (42 files, unchanged — this phase
 touched no `_shared/` module any existing test imports). `npx next
 build` → compiles clean.
+
+### Phase 5 continued: real write, a stale-guard bug, a contamination bug, and the real final numbers
+
+**The real backfill write.** Ran `?dryRun=true&months=48` first: all 48
+months succeeded, **zero `gdpError`s** — this is the live confirmation
+of the one thing I couldn't verify locally (the FRED GDP historical-fetch
+fix). Values were smooth and monotonic-ish (10.31% → 19.821% for
+Revenue%, matching the live card exactly at the endpoint), no outliers.
+Proceeded straight to the real write per approval: **48 revenue rows +
+48 GDP rows written.**
+
+**Found a real data-consistency bug the dry run couldn't catch (it never
+touches the DB): the backfill only writes one row per month-END, but
+both indicators already had pre-existing DAILY snapshot rows for parts
+of the target range under the old NIPA basis.** Re-running the
+row-count/definition-check assertion after the real write found 69
+outlier rows for "Interest Expense % of Federal Revenue" (value > 21,
+impossible under the real MTS-basis series' actual 10.3-19.8% range) —
+traced to: my backfill overwrote the exact month-end dates, but every
+OTHER daily date within those months (not month-end) still carried the
+old NIPA value nobody had touched. A naive magnitude threshold missed
+"Interest Expense % GDP"'s version of the same bug at first (its NIPA
+values, ~3.8-4.0, aren't obviously out of range next to its real
+1.9-3.3% series by eye) — caught by a second, more robust check (`count
+distinct value per calendar month`, not a magnitude guess), which also
+surfaced a one-off wild outlier (2026-06-25, value 15.301, status
+"danger") and revealed the GDP% contamination window started earlier
+(2026-06-25) than the Revenue% one (2026-08-21) — the two indicators had
+different pre-existing daily-snapshot histories.
+
+**Fixed via forward-fill**, matching the live system's own actual
+"same reading repeats daily until the next month's report" cadence (not
+a flat single value per month — the real system reflects the ~3-week
+MTS publish lag, so most of a calendar month shows the PRIOR month's
+figure until the new one lands): every contaminated date set to the
+most recently completed month-end's real backfilled value. Re-ran the
+assertion after the fix:
+
+```
+Interest Expense % of Federal Revenue: 120 rows, 2022-11-30 -> 2026-11-18,
+  value range [10.31, 19.821] -- zero NIPA-basis (~23-24) values anywhere.
+Interest Expense % GDP: 173 rows, 2022-11-30 -> 2026-11-18,
+  value range [1.939, 3.301] -- zero NIPA-basis (~3.8-4.0) or outlier values.
+Zero rows before 2022-11-01 for either indicator.
+```
+
+**The backfill row-count/definition-check assertion passes** — a real
+SQL assertion run against the actual written data, re-run after the fix
+confirmed clean, not eyeballed.
+
+**A second bug, found by the coordinator, not by me: a stale hardcoded
+cutover guard in `update-big-cycle-metrics/index.ts` was silently
+excluding the very history this backfill was supposed to feed the gate.**
+v2 Phase 3 added `MTS_NET_INTEREST_BASIS_CUTOVER = "2026-11-16"` and
+filtered the gate's `macro_snapshots` query to `>= that date` — correct
+at the time (pre-Phase-5, nothing before 2026-11-16 was valid MTS-basis
+data), but Phase 5's backfill made that filter wrong without anyone
+updating it: it kept excluding 2022-11-30 through 2026-11-15, which is
+now exactly the real history the gate needed. My own "re-evaluate the
+gate" check after the real write and cleanup still showed
+`monthsAvailable: 1` — I initially read that as still-pending work
+rather than catching the stale guard myself (an oversight on my part;
+the coordinator found the root cause by reading the deployed source
+directly). **Fixed**: removed the `MTS_NET_INTEREST_BASIS_CUTOVER`
+constant and its `.gte()` filter entirely, raised the query's
+`.limit(400)` to `.limit(2000)` (400 was sized for the old ~1-day
+window, not 4 years of potentially-daily rows), and rewrote the
+now-stale top-of-file comment block that described the pre-backfill
+NIPA/MTS split as still-current. **Grepped for other similarly-stale
+cutover-date assumptions** per the coordinator's explicit ask (checked
+`debtCycleTripWires.ts` and every other reader of "Interest Expense % of
+Federal Revenue"/"Interest Expense % GDP"): `debtCycleTripWires.ts` has
+no date-cutover logic left at all (v2 Phase 3c already removed its
+per-day net-interest check entirely); the only other readers of these
+indicator names read `macro_indicators.current_value` directly (today's
+live scalar, no history/date-filtering, no cutover concept applicable);
+`tests/debtMetrics.test.ts`'s fixed `asOf` date is a deterministic mock-fetch
+test unrelated to live data assumptions. Confirmed no second instance of
+this bug exists.
+
+**The real final numbers, after the fix, redeployed and re-invoked live:**
+
+```
+rawInputs.debtServiceStrainedGateInsufficientHistory: 0   (was 1)
+rawInputs.debtServiceStrainedGateMonthsAvailable: 48      (was 1)
+conditions.debtServiceStrained: false
+```
+
+**`debtServiceStrained` now evaluates on real, persistence-based history
+— not the bootstrap fallback.** With 48 real monthly readings, none of
+which ever crossed the 20.5 "on" threshold (max was 19.821%, October
+2026), the gate correctly reads **not armed**, for the first time as a
+genuine confirmed read rather than either the old raw `>20` check or
+Phase 3's single-reading bootstrap. This is the real, mechanism-correct
+answer the backfill exists to produce — matching the spec's own
+"expected: still unarmed," now actually demonstrated rather than merely
+predicted.
+
+**Fiscal-dominance trip-wire, re-evaluated against the real backfilled
+history:**
+
+```
+{ armed: false, sinceDate: null,
+  values: { streakDays: 1, condition1DebtServiceStrained: 0, condition3: 0,
+            realFedFundsLatest: -0.07, cpiYoyLatest: 3.95, paradigmAComposite: 0.4152 } }
+```
+
+Still unarmed: condition 1 (now genuinely evaluated against real
+history, not a stale/bootstrap read) is false, and condition 3 is
+independently false. `streakDays: 1` is unchanged from the pre-fix
+read — expected, since conditions 2/4's own day-by-day streak doesn't
+depend on condition 1's history at all (3c wired condition 1 as a
+current-only AND term, not part of the per-day streak), so fixing the
+gate's history doesn't change the streak length, only whether condition
+1 itself reads real-vs-bootstrap.
+
+**5c: the 60-day data floor caveat — confirmed resolved, now removed.**
+Grepped code comments first: already clean (the only remaining hit was
+the stale `MTS_NET_INTEREST_BASIS_CUTOVER` guard just fixed above; no
+other code comment described this limitation as current).
+`tests/debtCycleTripWires.test.ts`'s "...one short of the 60-day
+minimum" test name refers to the unchanged 60-day THRESHOLD itself (the
+mechanism, not the data-floor bug that used to make 60 days
+unreachable) — left as-is, correctly. In the decisions log, added a
+`RESOLVED` annotation directly after the v1 Phase 4 section's "standing
+outstanding items" callout (the one place a reader would check whether
+this was still open) pointing here, rather than rewriting the historical
+narrative paragraphs that correctly describe what the limitation was
+and why it existed at the time.
+
+### Tests (re-run after the guard fix)
+
+Full suite: `npx vitest run tests/` → 754 passed (42 files, unchanged —
+the guard fix only changed a query filter/comment inside
+`update-big-cycle-metrics/index.ts`'s `Deno.serve` body, nothing any
+Vitest file imports). `npx next build` → compiles clean.
+
+### Acceptance
+
+At least 3 years of consistent-basis history: **confirmed, 4 years
+(48 months), 2022-11-30 through today, zero mixed-definition rows
+remaining after the contamination fix.** The trip-wire evaluates on
+real history: **confirmed** — `debtServiceStrained` now reads from 48
+real monthly observations (`insufficientHistory: 0`), not the Phase 3
+bootstrap fallback, and the fiscal-dominance trip-wire's condition 1
+reads that same real gate state rather than a stale/excluded one.
+Deployed and verified live, not projected.
