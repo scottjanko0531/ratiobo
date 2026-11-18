@@ -3485,3 +3485,102 @@ something v3 Phase 1 introduced or can fix; it will self-resolve once
 the Fiscal Data API catches up, and `assertAuctionFeedFresh` will keep
 flagging it loudly in the meantime rather than silently serving stale
 data the way the pre-v3 ingest did.
+
+## v3 Phase 2 (2026-11-18) — recalibration report, NOT deployed
+
+Scott approved Phase 2. Per spec §2b, no threshold *rule* changed (z
+bands, arm/disarm persistence, hysteresis multipliers — all identical
+to v2 Phase 1); only the inputs did, and those inputs were already
+corrected by Phase 1's live backfill. So this phase is pure analysis:
+a dry run of the real `_shared/indirectBidder.ts` /
+`_shared/statusThresholds.ts` / `debtCycleClassifier.ts`'s
+`trailingAverage` functions (imported directly via `tsx`, not
+reimplemented) against the live 547-row corrected dataset, with
+**nothing written to the database** — `update-big-cycle-metrics` was
+deliberately NOT invoked, since invoking it would persist the new
+state into `big_cycle_stage_audit_log` and IS the deploy action this
+phase's gate exists to hold back. Confirmed via direct query that
+`big_cycle_stage_audit_log`'s latest live row (run_at 17:51 UTC) still
+shows the pre-Phase-2 state (57.55%, z=1.16, trip-wire disarmed,
+`windowReadingCount: 12`) — nothing has changed on the server since
+Phase 1.
+
+### 2a — recalibrated distribution
+
+**Full history** (all 303 consolidated per-tenor-trailing-6 readings,
+up from ~100 pre-fix): n=303, mean=52.99, sd=9.02, P10=39.91,
+P25=44.62, P50=55.87.
+
+**Trailing 2 years** (`asofDate >= 2024-10-08`, anchored to the latest
+reading's own asofDate of 2026-10-08 — same anchor
+`evalAuctionDemandDeterioration` uses internally, not today's wall-clock
+date): n=**37**, mean=62.32, sd=2.57, P10=59.17, P25=60.62, P50=61.67.
+
+The spec's own estimate was "roughly 24, not 12." 37 is directionally
+right (nowhere near the old 12) but higher than the ~24 ballpark — the
+real increase is ~3.08x (37/12), close to but above the overall
+auction-count increase (547/185 ≈ 2.96x), because 10Y reopenings have
+run more frequently than 30Y's in the trailing 2 years specifically
+(confirmed in Phase 0/1's term listing: 10Y reopened roughly monthly,
+30Y roughly quarterly) — the 2-year window is dense with the
+higher-frequency tenor's rounds, so it scales slightly faster than the
+flat overall-row-count ratio. Logged per rule 6 (judgment call, not
+stopping to ask): reporting the real 37 rather than rounding it toward
+the spec's ballpark.
+
+### 2b — before/after
+
+All "before" values confirmed live (not recalled from a fixture) via
+`big_cycle_stage_audit_log`'s current latest row, run 2026-11-18
+17:51 UTC — the system has not recomputed since Phase 1's deploy.
+
+| | Before (old filter) | After (corrected, dry run) |
+|---|---|---|
+| Card value | 57.55% (avg10 57.61, avg30 57.48) | **67.34%** (avg10 66.8, avg30 67.89) |
+| Card z (vs. full history) | +1.16 (n≈100) | **+1.59** (n=303) |
+| Card status | healthy | healthy |
+| `indirectBidderIsWeak` (z ≤ -1.5) | false | false |
+| `bidToCoverAvg6` (pooled 10Y+30Y, trailing 6) | 2.445 | 2.62 |
+| `mp3AuctionDemandWeak` | **false** | **false** — unchanged |
+| Trip-wire `armed` | **false** | **false** — unchanged |
+| Trip-wire `mean2y` / `sd2y` | 56.83 / 2.02 | 62.32 / 2.57 |
+| `armThreshold` / `disarmThreshold` | 54.81 / 55.82 | 59.75 / 61.03 |
+| `windowReadingCount` | 12 | 37 |
+| Trip-wire `latest` / `sinceDate` | 57.55 / null | 67.34 / null |
+| Bid-to-Cover (10Y) value / date | 2.53 / ~2026-08-12 | **2.77** / **2026-10-07** (carried forward from Phase 1, confirmed unchanged at report time — same live row) |
+
+### 2c — does the trip-wire arm?
+
+**No.** On the corrected, complete data, `auction_demand_deterioration`
+evaluates to `armed: false`, identical to its pre-correction state.
+The corrected distribution's mean is materially higher (62.32% vs.
+56.83%) AND today's latest reading rose right along with it (67.34%
+vs. 57.55%, still comfortably above the new, higher `armThreshold` of
+59.75) — the whole distribution shifted up together, not just the
+mean while the latest lagged, so there's no new arming. `mp3Auction
+DemandWeak` is unchanged for the same reason.
+
+**No state change in either direction** → per the spec, no
+`big_cycle_stage_notes` line is needed (that's gated on "if it changes
+state," and it doesn't). Flagging this explicitly per the coordinator's
+ask: the trip-wire does NOT arm on corrected data — this is not being
+suppressed or smoothed over, it's a genuine negative result from the
+actual corrected numbers above, reported plainly.
+
+### Verification
+
+Dry run used the real repo modules (`_shared/indirectBidder.ts`,
+`_shared/statusThresholds.ts`, `_shared/debtCycleClassifier.ts`), not
+a reimplementation — same code that's already live in
+`update-big-cycle-metrics` v43. No database writes; `big_cycle_stage_
+audit_log`'s latest row is still the pre-Phase-2 one, confirmed above.
+
+### Acceptance
+
+Thresholds evaluated on complete, corrected data (as current as the
+upstream feed allows — still capped at the Fiscal Data API's own
+2026-10-22/10-07/10-08 ceiling documented in Phase 1). State change
+determined: none. Nothing deployed; waiting on Scott's go-ahead to
+invoke `update-big-cycle-metrics` live (which would simply persist
+the dry run's own already-computed, non-arming numbers — not re-derive
+anything new).
