@@ -3379,3 +3379,109 @@ build` — compiles clean, `/macro` route builds. Nothing deployed.
   rendering with real data.
 - Redeploy `ingest-auction-results`, `compute-gauge7`,
   `update-big-cycle-metrics`, `fetch-macro-data`.
+
+## v3 Phase 1 deploy (2026-11-18) — live, confirmed
+
+Scott approved deploy + live `?full=true` backfill + push. All four
+functions redeployed (`ingest-auction-results` v13, `compute-gauge7`
+v13, `update-big-cycle-metrics` v43, `fetch-macro-data` v184 — the
+large shared-heavy functions deployed via `npx supabase functions
+deploy <slug>` straight from disk rather than hand-transcribing
+100-200KB files through the MCP deploy tool, after confirming via CLI
+that this repo's Supabase project was already linked and authenticated).
+`verify_jwt` preserved exactly per `supabase/config.toml` for all four
+(`fetch-macro-data: true`, the other three: `false`) — confirmed via
+`list_edge_functions` post-deploy.
+
+**Migration applied.** `original_tenor` column + index now live.
+
+**Row counts, confirmed not assumed:**
+- Before: 5,785 total rows; 185 matched the OLD `security_term`
+  exact-match filter; `original_tenor` populated on 0 rows (column
+  just added).
+- After `?full=true` (5,785 rows fetched across 6 pages — confirms
+  pagination works, this endpoint no longer fits in one page): 547
+  rows now match `original_tenor IN ('10Y','30Y') AND security_type IN
+  ('Note','Bond')` — essentially a 3x increase (547 / 185 ≈ 2.96x),
+  matching the expected order of magnitude from reopenings being
+  included. All 4,141 null-`original_tenor` rows are Bills (confirmed
+  by `security_type` breakdown) — no Note/Bond silently dropped.
+
+**`original_tenor` backfill spot-checked across families**, not just
+10Y/30Y: `9-Year 10/11-Month`→10Y, `19-Year 10/11-Month`→20Y,
+`1-Year 10/11-Month`→2Y, `29-Year 4/6/8/10/11-Month`→30Y,
+`4-Year 4/6/8/10-Month`→5Y — all correct.
+
+**The real-world surprise: no November refunding data exists in the
+source API at all.** Scott's (and the coordinator's) expectation was
+the newest 10Y would be the ~Nov 10-12 refunding and newest 30Y the
+~Nov 12-13 refunding. Checked directly against the live Treasury
+Fiscal Data API with a completely unfiltered query (no tenor filter,
+no date filter) — confirmed the single most recent `auction_date`
+across every security type the API has, period, is **2026-10-22**,
+and an explicit `auction_date:gte:2026-11-01` filter returns zero rows.
+This is a genuine upstream data lag at the Fiscal Data API's
+`auctions_query` endpoint itself (not something this ingest's code can
+fix), independent of and in addition to the pagination/tenor-matching
+bugs this phase fixed. The newest 10Y/30Y rows this ingest can actually
+see are:
+- 10Y: **2026-10-07**, CUSIP 91282CRF0, `security_term: "9-Year
+  10-Month"` (a reopening — invisible under the old filter).
+- 30Y: **2026-10-08**, CUSIP 912810UW6, `security_term: "29-Year
+  10-Month"` (also a reopening).
+
+This directly confirms the fix's value: under the OLD filter, the most
+recent VISIBLE 10Y/30Y auctions were Aug-12/Aug-13 (the new-issue
+labels); the new filter correctly surfaces 4 more real auctions per
+term that happened since (Sep-9, Sep-17, Oct-7 for 10Y; Sep-10, Oct-8
+for 30Y) that were simply invisible before.
+
+**New live indirect-bidder/bid-to-cover values** (`fetch-macro-data`
+invoked live, 77/77 indicators updated, 0 skipped):
+- Indirect Bidder Share (10Y/30Y): **67.34%** (was 57.55%), status
+  healthy, z=+1.59 vs. full history (303 full-history readings, up
+  from ~100), `avg_10y_6auction_pct: 66.8`, `avg_30y_6auction_pct:
+  67.89`, `data_as_of: 2026-10-08`.
+- Treasury Bid-to-Cover (10Y): **2.77** (was 2.53), status healthy,
+  `data_as_of: 2026-10-07`.
+
+**`data_as_of` confirmed populated** on both cards' `metadata` (values
+above) and rendering via `IndicatorCard`'s new generic subtitle block.
+
+**Macro-page drawer vs. backend — confirmed matching, not duplicating.**
+Pulled the exact 547-row dataset the drawer's Supabase query now
+returns and ran it through `lib/indirectBidder.js`'s
+`trailingAvgSeries` (the mirror now wired into the drawer): avg10 =
+66.798333..., avg30 = 67.886666..., mean = 67.3425 — rounds to the
+identical 66.8 / 67.89 / 67.34 the backend card stores. No drift.
+
+**Staleness guard re-run against now-current data — fires correctly,
+not a false positive.** Re-invoked `ingest-auction-results` in default
+(incremental) mode after the full backfill: `windowStart` correctly
+computed as `max(auction_date) - 30d` = 2026-09-22; fetched 35 rows (1
+page); still reports the same staleness error (newest 10Y/30Y is
+2026-10-08, 41 days old). This is NOT a bug — the real-world feed
+genuinely has nothing newer, confirmed independently above. The guard
+is doing exactly its job: making that real staleness visible (HTTP 500
++ `rb_job_runs` status "error") instead of the old silent "succeeded"
+behavior. `rb_job_runs` now has two real rows (the full-backfill run
+and this incremental run), both correctly `status: "error"` with full
+diagnostic `detail`.
+
+**Re-ran tests/build against deployed state**: `npx vitest run tests/`
+— 45 files, 801 tests, all still passing. `npx next build` already
+confirmed clean pre-deploy; no frontend code changed since.
+
+### Acceptance
+
+All four functions live, `verify_jwt` unchanged. Row counts, backfill
+correctness, and live card values confirmed directly against the
+database and the API, not assumed. The one genuine surprise — the
+Fiscal Data API itself is ~4 weeks behind real-world auction dates
+right now — is documented with independent live evidence (an
+unfiltered, no-tenor-filter query) rather than asserted. This is a
+separate, pre-existing condition of the upstream data source, not
+something v3 Phase 1 introduced or can fix; it will self-resolve once
+the Fiscal Data API catches up, and `assertAuctionFeedFresh` will keep
+flagging it loudly in the meantime rather than silently serving stale
+data the way the pre-v3 ingest did.
