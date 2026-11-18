@@ -3584,3 +3584,39 @@ determined: none. Nothing deployed; waiting on Scott's go-ahead to
 invoke `update-big-cycle-metrics` live (which would simply persist
 the dry run's own already-computed, non-arming numbers — not re-derive
 anything new).
+
+## v3 Phase 2 deploy (2026-11-18) — live, confirmed exact match
+
+Scott approved. Invoked `update-big-cycle-metrics` live (no code
+changes — same function already deployed in Phase 1; this run is the
+first time it's executed against the corrected 547-row dataset).
+Confirmed every written value against the dry run, field by field, not
+just spot-checked:
+
+- `big_cycle_stage_audit_log` (latest row, run_at 20:37:09 UTC):
+  `auction_demand_deterioration` = `{armed: false, latest: 67.34,
+  mean2y: 62.32, sd2y: 2.57, armThreshold: 59.75, disarmThreshold:
+  61.03, windowReadingCount: 37, sinceDate: null}` — exact match.
+  `conditions.mp3AuctionDemandWeak: false`, `rawInputs.
+  indirectBidderShareAvg6: 67.34`, `rawInputs.indirectBidderShareZ:
+  1.5906113415831291` (= 1.59), `rawInputs.bidToCoverAvg6: 2.615`
+  (= 2.62 rounded, the dry run's own reported precision) — all exact.
+- `big_cycle_metrics`: `indirect_bidder_share` = 67.34 (67.3%),
+  `treasury_bid_to_cover` = 2.77 — exact.
+- `macro_indicators`: Indirect Bidder Share `data_as_of` 2026-10-08,
+  Treasury Bid-to-Cover `data_as_of` 2026-10-07 — unchanged from
+  Phase 1, confirmed still correct.
+
+Stage stayed MP1; no new trip-wire fired (`stock_bond_corr_positive`
+was already armed since 2026-02-20, unrelated to this phase). No
+`big_cycle_stage_notes` line inserted, per 2c's own gate (state didn't
+change) and per the live confirmation above that the dry run already
+had every number right.
+
+`npx vitest run tests/` — 45 files, 801 tests, all passing, against
+the now-deployed state. `npx next build` — clean.
+
+### Acceptance
+
+Live write matches the pre-deploy dry-run report exactly, field for
+field. v3 Phase 2 complete.
