@@ -36,8 +36,22 @@ function Badge({ label }) {
   );
 }
 
-function MetricRow({ def, score, onClick }) {
+// v2 Phase 7b (debt-metrics-integrity-v2 spec): the Nov 16 false-bug-report
+// root cause — metricScores starts as {} and resolves in a SEPARATE, later
+// query than the one that un-gates the "No data yet" placeholder (see the
+// two-stage useEffect below), so every row's `score` prop was undefined on
+// first paint, which this component previously could not distinguish from
+// "fetched, and there's genuinely no row for this metric/date." `loaded`
+// (metricScoresLoaded) is the fix: while false, show a neutral "…" — not
+// "stale" — regardless of what `score` happens to be. Only once loaded is
+// true does a missing/unavailable score actually mean something, and even
+// then the two real causes get distinct tooltip text: no row returned for
+// this date at all ("no row for this date") vs. a row that exists but was
+// marked unavailable at computation time ("source unavailable").
+function MetricRow({ def, score, loaded, onClick }) {
   const oz = score?.available ? Number(score.oriented_z) : null;
+  const stale = loaded && (score == null || score.available === false);
+  const staleReason = score == null ? "no row for this date" : "source unavailable";
   return (
     <button
       onClick={onClick}
@@ -45,7 +59,8 @@ function MetricRow({ def, score, onClick }) {
     >
       <span className="text-[11px] text-paper-dim truncate">{def.label}</span>
       <span className="flex items-center gap-2 shrink-0">
-        {!score?.available && <span className="text-[9px] text-loss">stale</span>}
+        {!loaded && <span className="text-[9px] text-paper-dim/50" title="Loading…">…</span>}
+        {stale && <span className="text-[9px] text-loss" title={staleReason}>stale</span>}
         <span className={`num text-[11px] font-medium ${oz == null ? "text-paper-dim" : oz >= 0 ? "text-gain" : "text-loss"}`}>
           {oz == null ? "—" : oz.toFixed(2)}
         </span>
@@ -116,6 +131,7 @@ function TrendChart({ history }) {
 export default function FiscalParadigmSection() {
   const [latest, setLatest] = useState(null);   // { A: paradigmScoreRow, ... }
   const [metricScores, setMetricScores] = useState({}); // key `${metric_key}_${paradigm}` -> row
+  const [metricScoresLoaded, setMetricScoresLoaded] = useState(false); // v2 Phase 7b
   const [history, setHistory] = useState([]);
   const [lastRunAt, setLastRunAt] = useState(null);
   const [openMetric, setOpenMetric] = useState(null); // { def, score }
@@ -146,6 +162,7 @@ export default function FiscalParadigmSection() {
           .eq("recorded_at", latestDate)
           .then(({ data: mData }) => {
             setMetricScores(Object.fromEntries((mData ?? []).map((r) => [`${r.metric_key}_${r.paradigm}`, r])));
+            setMetricScoresLoaded(true); // v2 Phase 7b — only now can "stale" mean anything
           });
       });
 
@@ -218,7 +235,7 @@ export default function FiscalParadigmSection() {
           The originating condition B/C/D respond to, not a competing paradigm — composite {Number(latest.A?.composite_score ?? 0).toFixed(2)}.
         </p>
         {metricsForParadigm("A").map((def) => (
-          <MetricRow key={def.key} def={def} score={metricScores[`${def.key}_A`]} onClick={() => openDrawerFor(def.key, "A")} />
+          <MetricRow key={def.key} def={def} score={metricScores[`${def.key}_A`]} loaded={metricScoresLoaded} onClick={() => openDrawerFor(def.key, "A")} />
         ))}
       </div>
 
@@ -237,7 +254,7 @@ export default function FiscalParadigmSection() {
                 Composite {Number(row?.composite_score ?? 0).toFixed(2)} · coverage {Number(row?.coverage_pct ?? 0).toFixed(0)}%
               </p>
               {metricsForParadigm(p).map((def) => (
-                <MetricRow key={def.key} def={def} score={metricScores[`${def.key}_${p}`]} onClick={() => openDrawerFor(def.key, p)} />
+                <MetricRow key={def.key} def={def} score={metricScores[`${def.key}_${p}`]} loaded={metricScoresLoaded} onClick={() => openDrawerFor(def.key, p)} />
               ))}
             </div>
           );
@@ -260,7 +277,7 @@ export default function FiscalParadigmSection() {
           a data outage. Composite {Number(latest.E?.composite_score ?? 0).toFixed(2)}.
         </p>
         {metricsForParadigm("E").map((def) => (
-          <MetricRow key={def.key} def={def} score={metricScores[`${def.key}_E`]} onClick={() => openDrawerFor(def.key, "E")} />
+          <MetricRow key={def.key} def={def} score={metricScores[`${def.key}_E`]} loaded={metricScoresLoaded} onClick={() => openDrawerFor(def.key, "E")} />
         ))}
       </div>
 

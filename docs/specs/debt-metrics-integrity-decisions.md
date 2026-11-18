@@ -2896,3 +2896,132 @@ correctly reads "danger"/"bad" given today's 1.744 gap (confirmed live,
 after the status-mapping fix). The fact-check pass's new capability is
 confirmed live, with direct evidence of catching a deliberately wrong
 number — not assumed from the prompt wording.
+
+## v2 Phase 7 (2026-11-18) — small fixes, closing out the spec
+
+### 7a: Redfin 403 — restorable, not gone
+
+**Checked before assuming anything**: confirmed live the old path
+(`redfin-public-data.s3-us-west-2.amazonaws.com/redfin_market_tracker/
+us_national_market_tracker.tsv000.gz`) still returns a genuine AWS S3
+`403 AccessDenied` (not a 404 — a real bucket-policy change, not a typo'd
+path). Rather than assume this means "gone for good" (the spec's own
+prior, more-likely framing), searched for what changed: Redfin relaunched
+their Data Center in **May 2026** under a new S3 bucket layout
+(`redfin-public-data.s3.us-west-2.amazonaws.com/redfin_data_center/...`).
+Probed for the national-level replacement file (the old bucket returns
+403 for ANY nonexistent key too, so this took some guessing): confirmed
+live, 200 OK — `.../redfin_data_center/housing_market/monthly/country.csv`,
+`REGION TYPE = "Country"` / `REGION NAME = "National"` is the one national
+row per period. **Restorable — took the "update the URL" path, not the
+FRED-switch path.**
+
+Pulled and parsed the real file (171KB, 356 rows = 178 periods × 2
+seasonal-adjustment variants, history back to ~2012): latest period with
+a real (non-seasonally-adjusted) median price is **2026-10-31, $388,634**
+— a large freshness improvement over the broken feed's last known read
+(2026-05-31, $449,846 — note the price going DOWN isn't a data error,
+it's `MEDIAN SALE PRICE NSA` for Oct vs. the stale May read, a real
+5-month-later number). Format changed too: plain CSV now (not gzipped),
+no `PROPERTY_TYPE` column at all (this file is already an all-residential
+aggregate — simpler than the old file's property-type breakout, one less
+filter needed). Confirmed safe to split on a bare `,` for this specific
+file (all quoted fields here are comma-free dates/"Monthly"/"Country"/
+"National" — unlike the metro-level sibling file, which has
+comma-containing names like "New York, NY" and would need real CSV
+parsing).
+
+**Rule 2.2 (backfill vs. new indicator name) doesn't actually apply
+here** — logged explicitly rather than skipped silently: this is a
+hosting-path/file-format change, not a definition change. The
+measurement is identical before and after (national median sale price,
+raw/non-seasonally-adjusted, same denominator — Census median household
+income, which was ALREADY the existing denominator, not something newly
+switched to). Nothing to backfill, no new indicator name warranted; the
+series continues under `home_price_income_ratio` unchanged.
+
+**Data period made prominent, not buried in a note** (the spec's explicit
+ask): this card's UI (`app/big-cycle/page.jsx`) renders `value_display`
+large/bold and `note` as a small caption underneath — there's no separate
+"as of" badge mechanism, and `last_updated` reflects when the ROW was
+WRITTEN (today, via the daily cron), not the data's own period, so it
+can't substitute. Put the period directly into `value_display`:
+`"X.XXx (Mon YYYY)"` — e.g. today's live value would read **"5.68x (Oct
+2026)"** instead of just "5.68x" with the period hidden in the note text.
+
+**Also fixed while in this code, found live**: `home_price_income_ratio`'s
+`source_url` was already stale/wrong BEFORE this phase — it pointed to
+FRED's MSPUS series page even though the card has never used MSPUS (only
+Redfin). Migration `20261118_fix_redfin_home_price_source_line.sql`
+points it at the real, current source. Also removed a dead, actively
+wrong comment in `computeFredUpdates()` claiming
+`home_price_income_ratio` "is manual... hand-entered" — it hasn't been
+manual since `computeRedfinHomePriceUpdate()` was built; the comment
+predates that function and was never cleaned up.
+
+### 7b: Paradigm loading-state fix — the original Nov 16 false-bug-report
+
+**Root cause, confirmed by code trace**: `FiscalParadigmSection.jsx`'s
+data loading is two-stage — the first query (`big_cycle_paradigm_scores`)
+un-gates the "No data yet" placeholder and triggers a render of the full
+scorecard; the SECOND, separately-chained query
+(`big_cycle_paradigm_metric_scores`) is what actually populates
+`metricScores`, and resolves strictly later (it only starts once the
+first query's `.then()` fires). Between those two renders, every
+`MetricRow`'s `score` prop was `undefined` — indistinguishable, before
+this fix, from "fetched, and this metric genuinely has no row for
+today."
+
+**Fix**: added `metricScoresLoaded` state, set `true` in the SAME
+`setMetricScores(...)` callback (same synchronous batch — React 18
+batches both state updates together, so there is no intermediate render
+where `loaded` is true but `metricScores` is still stale/empty).
+`MetricRow` now shows a neutral `"…"` while `!loaded`, regardless of what
+`score` happens to be; `"stale"` only renders when `loaded && (score ==
+null || score.available === false)`, with the tooltip distinguishing the
+two real causes: `score == null` → "no row for this date"; `score.available
+=== false` → "source unavailable".
+
+**Confirmed by full code trace** (no live browser session used — this is
+a deterministic render-timing/logic question, not a visual/CSS one, so
+a trace is the right tool, same reasoning as why `_shared/mtsFiscalData.ts`
+and other pure-logic modules in this spec get verified by code trace or
+`tsx` scripts rather than a browser):
+1. `latest == null` → early-return placeholder, no `MetricRow` rendered
+   at all yet (no flash possible here).
+2. `latest` resolves → re-render with `metricScores` still `{}` and
+   `metricScoresLoaded` still `false` → every row: `loaded=false` →
+   `stale` short-circuits to `false` via `loaded && (...)` → shows `"…"`,
+   never `"stale"`. This is the exact window that used to flash "stale"
+   before this fix.
+3. The metric-scores query resolves → `setMetricScores` and
+   `setMetricScoresLoaded(true)` fire in the same callback/batch → the
+   render where `loaded` first becomes `true` is the SAME render where
+   `metricScores` is already populated — no render exists where
+   `loaded=true` but `score` is stale/empty.
+4. Genuine post-load staleness (confirmed against real live data: all 13
+   metric rows for today, 2026-11-18, show `available: true` — nothing
+   is actually stale right now) still correctly shows `"stale"` with the
+   right distinguishing tooltip once `loaded` is `true`.
+
+### Tests
+
+`npx vitest run tests/` → 760 passed (42 files, unchanged — neither 7a
+nor 7b touches a `_shared/` module any existing test imports;
+`FiscalParadigmSection.jsx` has no existing test file in this codebase,
+consistent with other client components in this repo). `npx next build`
+→ compiles clean (also caught and fixed a JSX-attribute-placement bug I
+introduced mid-edit via an overly broad `sed`/regex pass on the
+`<MetricRow>` call sites — build failure would have caught it even if
+the manual review hadn't).
+
+### Acceptance
+
+The Redfin card is current (restored, not re-sourced) — Oct 2026 data,
+not stuck at May 2026 — with its period now prominent in
+`value_display`. No "stale" flash on load, confirmed by full code trace
+through all three render states. **Not yet deployed** — code and
+migration committed, held for deploy approval per the standing gate.
+
+**This closes out every phase of the entire debt-metrics-integrity
+effort — v1 Phases 0-4 and v2 Phases 0-7, both specs, start to finish.**

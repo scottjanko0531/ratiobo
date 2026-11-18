@@ -161,42 +161,54 @@ async function computeFredUpdates(): Promise<FredUpdatesResult> {
     });
   }
 
-  // home_price_income_ratio is manual (Redfin-sourced) — FRED has no equivalent series
-  // for the existing-home-price methodology Redfin uses, so this is hand-entered.
-
   return { updates, fedFundsMid, deficitAbs };
 }
 
-// Redfin's public Data Center publishes a genuine national-level file (not just
-// metro-level) — small enough (~1.3MB decompressed, ~1900 rows) to fetch and parse
-// directly, no streaming/aggregation needed. This is the same underlying source
-// Redfin's own affordability figures are built from, unlike FRED's MSPUS (new homes
-// only) or Zillow's ZHVI (a smoothed "typical value" index, not a straight median).
-// It still won't exactly reproduce Redfin's own published ratio, which pairs against
-// a median *family* income series, not Census household income.
+// v2 Phase 7a: the old redfin-public-data.s3-us-west-2.amazonaws.com/
+// redfin_market_tracker/us_national_market_tracker.tsv000.gz path has
+// returned HTTP 403 AccessDenied since ~2026-10-27 — confirmed live
+// (2026-11-18) this is NOT a dead/abandoned feed: Redfin relaunched their
+// Data Center in May 2026 under a new bucket layout
+// (redfin-public-data.s3.us-west-2.amazonaws.com/redfin_data_center/...).
+// The restorable replacement, confirmed live:
+// .../redfin_data_center/housing_market/monthly/country.csv — REGION TYPE
+// "Country" / REGION NAME "National" is the one national row per period
+// (this file has no PROPERTY_TYPE column at all; it's already an
+// all-residential aggregate, simpler than the old file's property-type
+// breakout). Plain CSV now, not gzipped. Same underlying measurement
+// (national median sale price, raw/non-seasonally-adjusted) and the same
+// denominator (Census median household income) as before — this is a
+// hosting-path change, not a definition change, so rule 2.2 doesn't apply
+// here (nothing to backfill or rename; same series, same meaning,
+// continues under home_price_income_ratio).
 async function computeRedfinHomePriceUpdate(): Promise<Update | null> {
   try {
     const res = await fetch(
-      "https://redfin-public-data.s3-us-west-2.amazonaws.com/redfin_market_tracker/us_national_market_tracker.tsv000.gz",
+      "https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_data_center/housing_market/monthly/country.csv",
       { signal: AbortSignal.timeout(30_000) },
     );
-    if (!res.ok || !res.body) return null;
+    if (!res.ok) return null;
 
-    const decompressed = await new Response(res.body.pipeThrough(new DecompressionStream("gzip"))).text();
-    const lines = decompressed.split("\n");
-    const header = lines[0].split("\t").map((s) => s.replace(/^"|"$/g, ""));
-    const iPeriodEnd = header.indexOf("PERIOD_END");
-    const iPropType = header.indexOf("PROPERTY_TYPE");
-    const iSA = header.indexOf("IS_SEASONALLY_ADJUSTED");
-    const iPrice = header.indexOf("MEDIAN_SALE_PRICE");
-    if ([iPeriodEnd, iPropType, iSA, iPrice].some((i) => i === -1)) return null;
+    const text = await res.text();
+    const lines = text.split("\n");
+    const header = lines[0].split(",").map((s) => s.replace(/^"|"$/g, ""));
+    const iPeriodEnd = header.indexOf("PERIOD END");
+    const iRegionType = header.indexOf("REGION TYPE");
+    const iSA = header.indexOf("IS SEASONALLY ADJUSTED");
+    const iPrice = header.indexOf("MEDIAN SALE PRICE NSA ($)");
+    if ([iPeriodEnd, iRegionType, iSA, iPrice].some((i) => i === -1)) return null;
 
     let latestPeriod = "";
     let latestPrice: number | null = null;
     for (let i = 1; i < lines.length; i++) {
       if (!lines[i]) continue;
-      const cols = lines[i].split("\t");
-      if (cols[iPropType]?.replace(/"/g, "") !== "All Residential") continue;
+      // Safe to split on a bare "," for this specific file: every quoted
+      // field here (dates, "Monthly", "Country", "National") is
+      // comma-free. The metro-level sibling file (all_metros.csv) has
+      // metro names like "New York, NY" and would need real CSV parsing —
+      // not a concern for this national-only file.
+      const cols = lines[i].split(",");
+      if (cols[iRegionType]?.replace(/"/g, "") !== "Country") continue;
       if (cols[iSA]?.replace(/"/g, "") !== "false") continue; // raw, not seasonally adjusted — matches how Redfin quotes its headline median
       const period = cols[iPeriodEnd]?.replace(/"/g, "");
       const price = parseFloat(cols[iPrice]);
@@ -208,10 +220,15 @@ async function computeRedfinHomePriceUpdate(): Promise<Update | null> {
     const income = await fredLatest("MEHOINUSA646N");
     if (!income) return null;
     const ratio = latestPrice / income.value;
+    // v2 Phase 7a: the data period must be prominent, not buried in the
+    // note — this card's UI renders value_display large/bold and note as
+    // a small caption underneath, so the period goes into value_display
+    // itself, not just the note text.
+    const periodLabel = new Date(latestPeriod + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
 
     return {
-      key: "home_price_income_ratio", value_numeric: ratio, value_display: `${ratio.toFixed(2)}x`,
-      note_suffix: `National median sale price ($${Math.round(latestPrice).toLocaleString()}, period ending ${latestPeriod}) from Redfin's public national-level data, divided by Census median household income ($${income.value.toLocaleString()}, ${income.date}). Approximates but won't exactly match Redfin's own published affordability ratio, which uses a median family income denominator instead of household income.`,
+      key: "home_price_income_ratio", value_numeric: ratio, value_display: `${ratio.toFixed(2)}x (${periodLabel})`,
+      note_suffix: `National median sale price ($${Math.round(latestPrice).toLocaleString()}, period ending ${latestPeriod}) from Redfin's public national-level data (Data Center, relaunched May 2026), divided by Census median household income ($${income.value.toLocaleString()}, ${income.date}). Approximates but won't exactly match Redfin's own published affordability ratio, which uses a median family income denominator instead of household income.`,
       status: ratio > 5.5 ? "bad" : ratio > 4.5 ? "warn" : "good",
       status_label: ratio > 5.5 ? "Stretched" : ratio > 4.5 ? "Elevated" : "Historically normal",
     };
@@ -1179,15 +1196,15 @@ Deno.serve(async (req: Request) => {
 
     // Both determinant fixes below read the STORED big_cycle_metrics value
     // (not allUpdates, this run's own results only) — found live while
-    // verifying the Phase 4d fix: home_price_income_ratio's upstream
-    // Redfin S3 fetch is currently returning HTTP 403 (broken since before
-    // this phase, unrelated to it) and so is absent from allUpdates on
-    // every run right now. Reading the stored card value instead means
-    // these determinants track the best available live number even when
-    // one of their inputs has a bad run, rather than requiring every
-    // dependency to succeed in the exact same invocation — the same
-    // flakiness could just as easily hit Debt Burden's own inputs on a
-    // different day.
+    // verifying the Phase 4d fix: home_price_income_ratio's upstream Redfin
+    // S3 fetch was returning HTTP 403 from 2026-10-27 until v2 Phase 7a's
+    // URL fix, and so was absent from allUpdates on every run during that
+    // window. Reading the stored card value instead means these
+    // determinants track the best available live number even when one of
+    // their inputs has a bad run, rather than requiring every dependency to
+    // succeed in the exact same invocation — the same flakiness could just
+    // as easily hit Debt Burden's own inputs on a different day, so this
+    // design choice stays even now that the specific Redfin outage is fixed.
     const { data: determinantSourceRows } = await sb
       .from("big_cycle_metrics")
       .select("key, value_display")
