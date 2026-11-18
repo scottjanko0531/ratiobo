@@ -24,10 +24,19 @@
 // work). Thresholds themselves live in _shared/statusThresholds.ts
 // (INDIRECT_BIDDER_THRESHOLDS) — this file only computes the numbers the
 // thresholds get compared against.
+//
+// v3 Phase 1c (debt-metrics-integrity-v3 spec): switched from exact-matching
+// security_term === "10-Year"/"30-Year" (which silently excluded every
+// reopening -- confirmed live in v3 Phase 0 to be most 10Y/30Y auctions,
+// not an edge case) to original_tenor IN ("10Y","30Y") + security_type IN
+// ("Note","Bond") -- tenor and nominal-vs-inflation-protected are two
+// independently-checked conditions, per the spec.
 
 export interface AuctionRow {
   auction_date: string;
   security_term: string;
+  original_tenor: string | null;
+  security_type: string;
   indirect_share_pct: number | null;
 }
 
@@ -41,9 +50,14 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+const NOMINAL_TYPES = ["Note", "Bond"];
+
 function cleanRows(rows: AuctionRow[]): AuctionRow[] {
   return rows.filter(
-    (r) => r.indirect_share_pct != null && (r.security_term === "10-Year" || r.security_term === "30-Year")
+    (r) =>
+      r.indirect_share_pct != null &&
+      (r.original_tenor === "10Y" || r.original_tenor === "30Y") &&
+      NOMINAL_TYPES.includes(r.security_type)
   );
 }
 
@@ -53,12 +67,12 @@ function cleanRows(rows: AuctionRow[]): AuctionRow[] {
 // auction_date and should include enough history for the requested offset.
 export function computeIndirectBidderSnapshot(rows: AuctionRow[], offset = 0): IndirectBidderSnapshot {
   const clean = cleanRows(rows);
-  const windowOf = (term: string) => clean.filter((r) => r.security_term === term).slice(offset, offset + 6);
+  const windowOf = (tenor: string) => clean.filter((r) => r.original_tenor === tenor).slice(offset, offset + 6);
   const avgOfWindow = (w: AuctionRow[]) =>
     w.length ? w.reduce((s, r) => s + Number(r.indirect_share_pct), 0) / w.length : null;
 
-  const w10 = windowOf("10-Year");
-  const w30 = windowOf("30-Year");
+  const w10 = windowOf("10Y");
+  const w30 = windowOf("30Y");
   const avg10 = avgOfWindow(w10);
   const avg30 = avgOfWindow(w30);
   const parts = [avg10, avg30].filter((v): v is number => v != null);
@@ -84,9 +98,9 @@ export interface HistoricalSnapshot {
 // (trip-wire), so both read the exact same underlying series.
 export function computeIndirectBidderFullSeries(rows: AuctionRow[]): HistoricalSnapshot[] {
   const clean = cleanRows(rows);
-  const byTerm = (term: string) => clean.filter((r) => r.security_term === term);
-  const ten = byTerm("10-Year");
-  const thirty = byTerm("30-Year");
+  const byTerm = (tenor: string) => clean.filter((r) => r.original_tenor === tenor);
+  const ten = byTerm("10Y");
+  const thirty = byTerm("30Y");
   const maxOffset = Math.max(ten.length, thirty.length) - 1;
 
   const out: HistoricalSnapshot[] = [];

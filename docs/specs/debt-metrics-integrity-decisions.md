@@ -3230,3 +3230,152 @@ real data, not just the two illustrative labels. Full consumer list is
 9 call sites / 6 files, 3 of which the spec never named. Fixture
 committed. **Nothing changed behaviorally.** Stopping here per the gate
 — not touching Phase 1.
+
+## v3 Phase 1 (2026-11-18) — build + commit only, NOT deployed
+
+Scott approved Phase 1. Everything below is built, tested, and
+committed; the migration has not been applied to the live DB, the live
+`?full=true` backfill has not been run, and no edge function has been
+redeployed — all gated behind a separate deploy-approval message, per
+the standing "build, commit, report before deploying" rule. Live
+before/after numbers (57.5% / 2.53 moving) can only be captured once
+that approval lands and the backfill actually runs against production
+data.
+
+### Natural key
+
+Confirmed via `pg_get_constraintdef` (not assumed from the existing
+`onConflict` string alone): `treasury_auction_results`'s primary key is
+`(auction_date, cusip)`. The rewritten ingest's upsert keeps the same
+`onConflict: "auction_date,cusip"`.
+
+### 1a — incremental, paginated fetch
+
+New `supabase/functions/_shared/fiscalDataPagination.ts` (`fetchAllPages`,
+4 tests passing) walks `meta.total-pages` instead of one
+`page[size]=10000` request — the real latent bug Phase 0 found (this
+endpoint's unfiltered total-count is already past 11,000 and climbing),
+even though it isn't today's active cause of staleness.
+
+`ingest-auction-results/index.ts` is rewritten around it:
+- Default (incremental) mode fetches from `max(auction_date) - 30 days`
+  (or `2010-01-01` if the table is empty), sorted `-auction_date`.
+- `?full=true` re-fetches the entire `2010-01-01`+ history — this is
+  also how the `original_tenor` backfill happens for pre-existing rows
+  (see 1b), rather than a separate SQL UPDATE duplicating the mapping
+  logic.
+- The staleness check (1d) always queries the newest 10Y/30Y row in the
+  DB *after* the upsert, not just within the current fetch window — so
+  a genuinely stalled feed (an incremental window that returns zero new
+  rows) still gets correctly flagged instead of silently reporting
+  "0 rows, ok."
+
+### 1b — `original_tenor` column + shared mapping
+
+New migration `20261118_add_auction_original_tenor.sql` (DDL only — adds
+`original_tenor text` + an index, no backfill UPDATE; not yet applied).
+
+New `supabase/functions/_shared/auctionTenor.ts` (`mapSecurityTermToTenor`,
+28 tests passing) is the one place the term→tenor rule lives: `N-Year`
+(new issue) or `(N−1)-Year X-Month` for X in 1-11 (a reopening) → `NY`.
+Confirmed against every real tenor family in the live data (2Y, 3Y, 5Y,
+7Y, 10Y, 20Y, 30Y), not just the two the spec's problem table used as
+examples — and confirmed the real reopening month-offsets have changed
+more than once across 2010-2026, so a hardcoded label list would have
+been wrong. TIPS/FRN are deliberately NOT handled inside this function —
+tenor-mapping and nominal-vs-inflation-protected are two independently-
+checked conditions at the consumer level (`original_tenor IN (...) AND
+security_type IN ('Note','Bond')`), per the spec. No TIPS/FRN rows exist
+anywhere in the live Fiscal Data API today, but the split is designed to
+stay correct if that changes.
+
+### 1c — all 9 consumers switched
+
+Every call site Phase 0 found now filters on `original_tenor IN
+('10Y','30Y')` + `security_type IN ('Note','Bond')` instead of exact-
+matching `security_term`:
+
+- `_shared/indirectBidder.ts` — `cleanRows`, both `windowOf`/`byTerm`
+  helpers.
+- `compute-gauge7/index.ts` (10Y only).
+- `update-big-cycle-metrics/index.ts` — both call sites (the classifier
+  gate fetch and the trip-wire fetch).
+- `fetch-macro-data/index.ts` — all three (`supabase_bid_to_cover`,
+  `supabase_indirect_bidder`, the below-50%-single-auction notification
+  check).
+- `app/macro/page.jsx`'s `IndirectBidderDrawer` — see below, this one
+  also got its duplicate-calculation fix.
+
+**The macro-page drawer duplication.** Phase 0 flagged that this
+drawer's chart/table had its OWN independent inline `byTerm`/`avg6`
+computation, never calling `_shared/indirectBidder.ts` at all. A Deno
+edge function and a Next.js client component can't literally share a
+module, so this repo's established pattern (confirmed by precedent —
+`lib/paradigmMetrics.js`, `lib/simulatorKeys.js`, `app/portfolios/page.jsx`'s
+`shadowLanes.ts` comment) is a hand-synced **mirror**, not a direct
+import. New `lib/indirectBidder.js` mirrors the backend's
+`original_tenor`/`security_type` filter and per-tenor trailing-window
+logic (`trailingAvgSeries`); the drawer now calls it instead of
+recomputing its own version, and its Supabase query was switched to the
+new filter too.
+
+### 1d — making failures visible
+
+New `supabase/functions/_shared/auctionFreshness.ts`
+(`assertAuctionFeedFresh`, 6 tests passing): throws `AuctionFeedStaleError`
+if the newest 10Y/30Y `auction_date` found is more than 35 days old (or
+missing entirely — null is treated as maximally stale, not a silent
+pass). 35 days ≈ one full 10Y auction cycle + slack for a late publish.
+
+The ingest now logs every run to `rb_job_runs` — confirmed the existing
+convention first (`job_name`, `started_at`, `finished_at`, `status`,
+`detail` jsonb; existing rows across 5 other jobs all use the literal
+string `"ok"` for success): `status: "ok"` with `detail` covering mode,
+window, rows fetched/upserted, pages, newest auction_date overall, and
+newest 10Y/30Y auction_date; `status: "error"` (with the same detail
+plus the stale-error diagnostics) when `assertAuctionFeedFresh` throws,
+or on any other failure (API error, upsert error) — returning HTTP 500
+either way rather than reporting "succeeded" while quietly serving
+stale or partial data, the exact failure mode Phase 0 found (the old
+ingest logged no run status at all, so a stalled feed was invisible).
+
+`data_as_of` metadata (the newest 10Y/30Y auction_date actually folded
+into the value) was added to both `fetch-macro-data`'s
+`supabase_bid_to_cover` and `supabase_indirect_bidder` cases, and is now
+rendered generically in `IndicatorCard`'s subtitle (`app/macro/page.jsx`)
+for any card whose `metadata.data_as_of` is set — covers both cards from
+one small addition rather than two one-off UI branches.
+
+### Test fixture enrichment
+
+`tests/fixtures/indirect-bidder-auction-history-2026-11-17.json` (the
+v2-era 185-row real-data regression fixture) predates `original_tenor`
+and only contains the two exact `security_term` labels ("10-Year",
+"30-Year") — it was itself pulled through the old exact-match filter, so
+it has no reopenings to prove anything with. Enriched it in place (via
+`tsx`, calling the actual `mapSecurityTermToTenor` function, not a
+reimplementation) rather than hand-writing the new fields, so the
+fixture can't silently drift from the real mapping logic. Also added a
+new, separate small-fixture test proving the behavioral difference
+directly: three synthetic rows mix a new-issue label with two different
+reopening labels, all mapping to `10Y` — the new filter includes all
+three where the old `security_term` exact-match would have kept only
+one — plus a TIPS-exclusion case.
+
+### Verification
+
+`npx vitest run tests/` — 45 files, 801 tests, all passing. `npx next
+build` — compiles clean, `/macro` route builds. Nothing deployed.
+
+### Still open before deploy approval
+
+- Apply the migration.
+- Run `?full=true` against live data (this both backfills `original_tenor`
+  for all pre-existing rows AND is the first real test of the new
+  pagination/incremental logic against production).
+- Confirm live before/after: row counts, new indirect-bidder/bid-to-cover
+  values (expected to move from 57.5%/2.53 now that reopenings count),
+  `data_as_of` actually populated on both cards, macro-page drawer
+  rendering with real data.
+- Redeploy `ingest-auction-results`, `compute-gauge7`,
+  `update-big-cycle-metrics`, `fetch-macro-data`.

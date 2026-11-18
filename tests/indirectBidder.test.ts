@@ -23,20 +23,20 @@ const ROWS: AuctionRow[] = [
   // Real live data (desc by auction_date), as pulled in the Phase 4
   // decisions log — 6 most-recent 10-Year and 6 most-recent 30-Year
   // auctions as of 2026-11-17.
-  { auction_date: "2026-08-12", security_term: "10-Year", indirect_share_pct: 60.98 },
-  { auction_date: "2026-07-23", security_term: "10-Year", indirect_share_pct: 58.29 },
-  { auction_date: "2026-05-12", security_term: "10-Year", indirect_share_pct: 51.52 },
-  { auction_date: "2026-02-11", security_term: "10-Year", indirect_share_pct: 50.1 },
-  { auction_date: "2026-01-22", security_term: "10-Year", indirect_share_pct: 66.99 },
-  { auction_date: "2025-11-12", security_term: "10-Year", indirect_share_pct: 57.77 },
-  { auction_date: "2025-08-06", security_term: "10-Year", indirect_share_pct: 47.79 },
-  { auction_date: "2026-08-13", security_term: "30-Year", indirect_share_pct: 53.15 },
-  { auction_date: "2026-05-13", security_term: "30-Year", indirect_share_pct: 53.69 },
-  { auction_date: "2026-02-19", security_term: "30-Year", indirect_share_pct: 77.99 },
-  { auction_date: "2026-02-12", security_term: "30-Year", indirect_share_pct: 54.41 },
-  { auction_date: "2025-11-13", security_term: "30-Year", indirect_share_pct: 61.29 },
-  { auction_date: "2025-08-07", security_term: "30-Year", indirect_share_pct: 44.37 },
-  { auction_date: "2025-02-13", security_term: "30-Year", indirect_share_pct: 50.96 },
+  { auction_date: "2026-08-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 60.98 },
+  { auction_date: "2026-07-23", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 58.29 },
+  { auction_date: "2026-05-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 51.52 },
+  { auction_date: "2026-02-11", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 50.1 },
+  { auction_date: "2026-01-22", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 66.99 },
+  { auction_date: "2025-11-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 57.77 },
+  { auction_date: "2025-08-06", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 47.79 },
+  { auction_date: "2026-08-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 53.15 },
+  { auction_date: "2026-05-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 53.69 },
+  { auction_date: "2026-02-19", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 77.99 },
+  { auction_date: "2026-02-12", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 54.41 },
+  { auction_date: "2025-11-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 61.29 },
+  { auction_date: "2025-08-07", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 44.37 },
+  { auction_date: "2025-02-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 50.96 },
 ].sort((a, b) => b.auction_date.localeCompare(a.auction_date));
 
 describe("computeIndirectBidderSnapshot", () => {
@@ -62,7 +62,7 @@ describe("computeIndirectBidderSnapshot", () => {
   });
 
   it("returns null when a term has no data at all", () => {
-    const only10y = ROWS.filter((r) => r.security_term === "10-Year");
+    const only10y = ROWS.filter((r) => r.original_tenor === "10Y");
     const snap = computeIndirectBidderSnapshot(only10y, 0);
     expect(snap.avg30).toBeNull();
     // Still produces a value from the one term that does have data.
@@ -74,6 +74,43 @@ describe("computeIndirectBidderSnapshot", () => {
     expect(snap.value).toBeNull();
     expect(snap.avg10).toBeNull();
     expect(snap.avg30).toBeNull();
+  });
+});
+
+// v3 Phase 1c (debt-metrics-integrity-v3 spec): the whole point of
+// original_tenor is that a reopening's security_term string ("9-Year
+// 10-Month") is NOT "10-Year", so the old exact-match filter silently
+// dropped it. These rows mix a new-issue label and two differently-worded
+// reopening labels, all mapped to the same original_tenor -- proving
+// cleanRows/windowOf now include all three, which the old security_term
+// check never would have.
+describe("computeIndirectBidderSnapshot — reopenings included (v3 fix)", () => {
+  const withReopenings: AuctionRow[] = [
+    { auction_date: "2026-08-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 60 },
+    { auction_date: "2026-07-12", security_term: "9-Year 11-Month", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 58 },
+    { auction_date: "2026-06-12", security_term: "9-Year 10-Month", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 56 },
+  ];
+
+  it("a reopening's non-'N-Year' security_term label still counts toward the 10Y window", () => {
+    const snap = computeIndirectBidderSnapshot(withReopenings, 0);
+    // All 3 rows are 10Y by original_tenor, so the trailing-3 average is
+    // the mean of all three readings, not just the one new-issue row.
+    expect(snap.avg10).toBeCloseTo((60 + 58 + 56) / 3, 2);
+  });
+
+  it("the OLD security_term exact-match would have excluded both reopenings (regression guard)", () => {
+    const oldStyleFiltered = withReopenings.filter((r) => r.security_term === "10-Year" || r.security_term === "30-Year");
+    expect(oldStyleFiltered.length).toBe(1); // only the new-issue row survives the old check
+  });
+
+  it("TIPS/FRN are excluded even with a matching original_tenor (security_type gate)", () => {
+    const withTips: AuctionRow[] = [
+      ...withReopenings,
+      { auction_date: "2026-08-01", security_term: "9-Year 10-Month", original_tenor: "10Y", security_type: "TIPS", indirect_share_pct: 99 },
+    ];
+    const snap = computeIndirectBidderSnapshot(withTips, 0);
+    // The TIPS row's 99% would skew the average if it weren't excluded.
+    expect(snap.avg10).toBeCloseTo((60 + 58 + 56) / 3, 2);
   });
 });
 
@@ -128,8 +165,8 @@ function daysAgo(n: number, anchor = "2026-08-21T00:00:00Z"): string {
 function buildAuctionRounds(roundValues: { y10: number; y30: number }[]): AuctionRow[] {
   const rows: AuctionRow[] = [];
   roundValues.forEach(({ y10, y30 }, round) => {
-    rows.push({ auction_date: daysAgo(round * 14), security_term: "10-Year", indirect_share_pct: y10 });
-    rows.push({ auction_date: daysAgo(round * 14 + 1), security_term: "30-Year", indirect_share_pct: y30 });
+    rows.push({ auction_date: daysAgo(round * 14), security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: y10 });
+    rows.push({ auction_date: daysAgo(round * 14 + 1), security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: y30 });
   });
   return rows;
 }

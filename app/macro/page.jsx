@@ -42,6 +42,7 @@ import {
   MEDTERM_THRESH,
 } from "../../lib/simulatorKeys";
 import { getAssetData } from "../../lib/data/assetReturns";
+import { trailingAvgSeries } from "../../lib/indirectBidder";
 import { applyNaiveRiskParity, solveTrueRiskParity } from "../../lib/riskParity";
 
 const LAYER_NAMES = {
@@ -314,6 +315,16 @@ function IndicatorCard({ ind, onSave, onClick, note }) {
           {ind.metadata.avg_1y_bp != null && <>1y avg <span className="num text-paper">{Number(ind.metadata.avg_1y_bp) >= 0 ? "+" : ""}{Number(ind.metadata.avg_1y_bp).toFixed(1)}bp</span></>}
           {ind.metadata.avg_1y_bp != null && ind.metadata.avg_3y_bp != null && <span className="mx-1 opacity-40">·</span>}
           {ind.metadata.avg_3y_bp != null && <>3y avg <span className="num text-paper">{Number(ind.metadata.avg_3y_bp) >= 0 ? "+" : ""}{Number(ind.metadata.avg_3y_bp).toFixed(1)}bp</span></>}
+        </p>
+      )}
+      {/* v3 Phase 1d (debt-metrics-integrity-v3 spec): the newest auction
+          date actually folded into this value, so a stopped feed reads as
+          stale on the card itself rather than silently looking current —
+          written by fetch-macro-data's supabase_indirect_bidder and
+          supabase_bid_to_cover cases. */}
+      {ind.metadata?.data_as_of != null && (
+        <p className="text-paper-dim/70 text-[10px]">
+          data as of {new Date(ind.metadata.data_as_of + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}
         </p>
       )}
       {/* v2 Phase 4e: _shared/yoyMath.ts's general gap rule (4a) fills a
@@ -7449,26 +7460,25 @@ function IndirectBidderDrawer({ open, onClose, ind }) {
     if (!open || rows !== null) return;
     supabase
       .from("treasury_auction_results")
-      .select("auction_date, security_term, indirect_share_pct, dealer_share_pct, bid_to_cover_ratio, dispersion_bp")
-      .in("security_term", ["10-Year", "30-Year"])
+      .select("auction_date, security_term, original_tenor, security_type, indirect_share_pct, dealer_share_pct, bid_to_cover_ratio, dispersion_bp")
+      .in("original_tenor", ["10Y", "30Y"])
+      .in("security_type", ["Note", "Bond"])
       .not("indirect_share_pct", "is", null)
       .order("auction_date", { ascending: true })
       .then(({ data }) => setRows(data ?? []))
       .catch(() => setRows([]));
   }, [open, rows]);
 
-  // Trailing 6-auction average per term, computed separately (spec: "do not
-  // pool tenors"), then merged onto one chart series per term.
+  // Trailing 6-auction average per tenor, computed separately (spec: "do not
+  // pool tenors"), then merged onto one chart series per term. v3 Phase 1c:
+  // uses lib/indirectBidder.js's trailingAvgSeries (mirrors the backend's
+  // _shared/indirectBidder.ts windowing + original_tenor/security_type
+  // filter) instead of this drawer's own former inline byTerm/avg6, which
+  // exact-matched security_term and silently dropped every reopening.
   const chartData = useMemo(() => {
     if (!rows) return [];
-    const byTerm = { "10-Year": [], "30-Year": [] };
-    for (const r of rows) byTerm[r.security_term]?.push(r);
-    const avg6 = (arr) => arr.map((r, i) => {
-      const w = arr.slice(Math.max(0, i - 5), i + 1);
-      return { auction_date: r.auction_date, avg: w.reduce((s, x) => s + Number(x.indirect_share_pct), 0) / w.length };
-    });
-    const a10 = avg6(byTerm["10-Year"]);
-    const a30 = avg6(byTerm["30-Year"]);
+    const a10 = trailingAvgSeries(rows, "10Y");
+    const a30 = trailingAvgSeries(rows, "30Y");
     const byDate = new Map();
     for (const r of a10) byDate.set(r.auction_date, { auction_date: r.auction_date, avg10: r.avg });
     for (const r of a30) {

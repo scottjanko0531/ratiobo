@@ -94,7 +94,10 @@ Deno.serve(async (req: Request) => {
       sb.from("convenience_yield_observations").select("obs_date, convenience_bp").eq("tenor_years", 10).order("obs_date"),
       sb.from("tic_foreign_official_holdings").select("as_of_month, grand_total_bn, foreign_official_bn").order("as_of_month"),
       sb.from("foreign_custody_holdings").select("obs_date, change_52w_bn").not("change_52w_bn", "is", null).order("obs_date"),
-      sb.from("treasury_auction_results").select("auction_date, indirect_share_pct").eq("security_term", "10-Year").not("indirect_share_pct", "is", null).order("auction_date"),
+      // v3 Phase 1c (debt-metrics-integrity-v3 spec): original_tenor +
+      // security_type instead of exact-matching security_term, so 10Y
+      // reopenings (e.g. "9-Year 10-Month") are included, not just new issues.
+      sb.from("treasury_auction_results").select("auction_date, indirect_share_pct").eq("original_tenor", "10Y").in("security_type", ["Note", "Bond"]).not("indirect_share_pct", "is", null).order("auction_date"),
       sb.from("gold_rate_correlation").select("obs_date, corr_90d").not("corr_90d", "is", null).order("obs_date"),
       fetchFredSeries(TERM_PREMIUM_SERIES),
     ]);

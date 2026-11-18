@@ -1,187 +1,1297 @@
 [
-{"auction_date":"2010-01-11","security_term":"10-Year","indirect_share_pct":38.08},
-{"auction_date":"2010-02-10","security_term":"10-Year","indirect_share_pct":29.55},
-{"auction_date":"2010-02-11","security_term":"30-Year","indirect_share_pct":25.62},
-{"auction_date":"2010-02-22","security_term":"30-Year","indirect_share_pct":41.97},
-{"auction_date":"2010-05-12","security_term":"10-Year","indirect_share_pct":38.28},
-{"auction_date":"2010-05-13","security_term":"30-Year","indirect_share_pct":29.85},
-{"auction_date":"2010-07-08","security_term":"10-Year","indirect_share_pct":51.23},
-{"auction_date":"2010-08-11","security_term":"10-Year","indirect_share_pct":42.91},
-{"auction_date":"2010-08-12","security_term":"30-Year","indirect_share_pct":43.29},
-{"auction_date":"2010-11-09","security_term":"10-Year","indirect_share_pct":54.89},
-{"auction_date":"2010-11-10","security_term":"30-Year","indirect_share_pct":37.32},
-{"auction_date":"2011-01-20","security_term":"10-Year","indirect_share_pct":36.75},
-{"auction_date":"2011-02-09","security_term":"10-Year","indirect_share_pct":69.27},
-{"auction_date":"2011-02-10","security_term":"30-Year","indirect_share_pct":42.01},
-{"auction_date":"2011-02-17","security_term":"30-Year","indirect_share_pct":51.99},
-{"auction_date":"2011-05-11","security_term":"10-Year","indirect_share_pct":46.98},
-{"auction_date":"2011-05-12","security_term":"30-Year","indirect_share_pct":32.98},
-{"auction_date":"2011-07-21","security_term":"10-Year","indirect_share_pct":41.34},
-{"auction_date":"2011-08-10","security_term":"10-Year","indirect_share_pct":34.18},
-{"auction_date":"2011-08-11","security_term":"30-Year","indirect_share_pct":11.79},
-{"auction_date":"2011-11-09","security_term":"10-Year","indirect_share_pct":38.56},
-{"auction_date":"2011-11-10","security_term":"30-Year","indirect_share_pct":26.39},
-{"auction_date":"2012-01-19","security_term":"10-Year","indirect_share_pct":35.23},
-{"auction_date":"2012-02-08","security_term":"10-Year","indirect_share_pct":34.46},
-{"auction_date":"2012-02-09","security_term":"30-Year","indirect_share_pct":25.95},
-{"auction_date":"2012-02-16","security_term":"30-Year","indirect_share_pct":39.81},
-{"auction_date":"2012-05-09","security_term":"10-Year","indirect_share_pct":36.41},
-{"auction_date":"2012-05-10","security_term":"30-Year","indirect_share_pct":31.73},
-{"auction_date":"2012-07-19","security_term":"10-Year","indirect_share_pct":43.86},
-{"auction_date":"2012-08-08","security_term":"10-Year","indirect_share_pct":40.47},
-{"auction_date":"2012-08-09","security_term":"30-Year","indirect_share_pct":36.66},
-{"auction_date":"2012-11-07","security_term":"10-Year","indirect_share_pct":39.65},
-{"auction_date":"2012-11-08","security_term":"30-Year","indirect_share_pct":45.38},
-{"auction_date":"2013-01-24","security_term":"10-Year","indirect_share_pct":53.07},
-{"auction_date":"2013-02-13","security_term":"10-Year","indirect_share_pct":27.98},
-{"auction_date":"2013-02-14","security_term":"30-Year","indirect_share_pct":36.33},
-{"auction_date":"2013-02-21","security_term":"30-Year","indirect_share_pct":54.32},
-{"auction_date":"2013-05-08","security_term":"10-Year","indirect_share_pct":33.85},
-{"auction_date":"2013-05-09","security_term":"30-Year","indirect_share_pct":38.78},
-{"auction_date":"2013-07-18","security_term":"10-Year","indirect_share_pct":57.61},
-{"auction_date":"2013-08-07","security_term":"10-Year","indirect_share_pct":46.21},
-{"auction_date":"2013-08-08","security_term":"30-Year","indirect_share_pct":40.15},
-{"auction_date":"2013-11-13","security_term":"10-Year","indirect_share_pct":47.58},
-{"auction_date":"2013-11-14","security_term":"30-Year","indirect_share_pct":35.22},
-{"auction_date":"2014-01-23","security_term":"10-Year","indirect_share_pct":51.66},
-{"auction_date":"2014-02-12","security_term":"10-Year","indirect_share_pct":49.54},
-{"auction_date":"2014-02-13","security_term":"30-Year","indirect_share_pct":45.18},
-{"auction_date":"2014-02-20","security_term":"30-Year","indirect_share_pct":56.31},
-{"auction_date":"2014-05-07","security_term":"10-Year","indirect_share_pct":49.15},
-{"auction_date":"2014-05-08","security_term":"30-Year","indirect_share_pct":40.31},
-{"auction_date":"2014-07-24","security_term":"10-Year","indirect_share_pct":52.88},
-{"auction_date":"2014-08-13","security_term":"10-Year","indirect_share_pct":46.88},
-{"auction_date":"2014-08-14","security_term":"30-Year","indirect_share_pct":45.79},
-{"auction_date":"2014-11-12","security_term":"10-Year","indirect_share_pct":44.47},
-{"auction_date":"2014-11-13","security_term":"30-Year","indirect_share_pct":43.67},
-{"auction_date":"2015-01-22","security_term":"10-Year","indirect_share_pct":63.75},
-{"auction_date":"2015-02-11","security_term":"10-Year","indirect_share_pct":59.41},
-{"auction_date":"2015-02-12","security_term":"30-Year","indirect_share_pct":49.33},
-{"auction_date":"2015-02-19","security_term":"30-Year","indirect_share_pct":68.91},
-{"auction_date":"2015-05-13","security_term":"10-Year","indirect_share_pct":58.72},
-{"auction_date":"2015-05-14","security_term":"30-Year","indirect_share_pct":49.63},
-{"auction_date":"2015-07-23","security_term":"10-Year","indirect_share_pct":64.71},
-{"auction_date":"2015-08-12","security_term":"10-Year","indirect_share_pct":58.87},
-{"auction_date":"2015-08-13","security_term":"30-Year","indirect_share_pct":50.83},
-{"auction_date":"2015-11-10","security_term":"10-Year","indirect_share_pct":60.07},
-{"auction_date":"2015-11-12","security_term":"30-Year","indirect_share_pct":59.89},
-{"auction_date":"2016-01-21","security_term":"10-Year","indirect_share_pct":56.48},
-{"auction_date":"2016-02-10","security_term":"10-Year","indirect_share_pct":57.71},
-{"auction_date":"2016-02-11","security_term":"30-Year","indirect_share_pct":53.74},
-{"auction_date":"2016-02-18","security_term":"30-Year","indirect_share_pct":52.53},
-{"auction_date":"2016-05-11","security_term":"10-Year","indirect_share_pct":59.85},
-{"auction_date":"2016-05-12","security_term":"30-Year","indirect_share_pct":48.66},
-{"auction_date":"2016-07-21","security_term":"10-Year","indirect_share_pct":68.19},
-{"auction_date":"2016-08-10","security_term":"10-Year","indirect_share_pct":65.43},
-{"auction_date":"2016-08-11","security_term":"30-Year","indirect_share_pct":55.72},
-{"auction_date":"2016-11-09","security_term":"10-Year","indirect_share_pct":43.02},
-{"auction_date":"2016-11-10","security_term":"30-Year","indirect_share_pct":44.64},
-{"auction_date":"2017-01-19","security_term":"10-Year","indirect_share_pct":72.19},
-{"auction_date":"2017-02-08","security_term":"10-Year","indirect_share_pct":58.24},
-{"auction_date":"2017-02-09","security_term":"30-Year","indirect_share_pct":59.34},
-{"auction_date":"2017-02-16","security_term":"30-Year","indirect_share_pct":61.1},
-{"auction_date":"2017-05-10","security_term":"10-Year","indirect_share_pct":45.59},
-{"auction_date":"2017-05-11","security_term":"30-Year","indirect_share_pct":44.37},
-{"auction_date":"2017-07-20","security_term":"10-Year","indirect_share_pct":47.56},
-{"auction_date":"2017-08-09","security_term":"10-Year","indirect_share_pct":44.48},
-{"auction_date":"2017-08-10","security_term":"30-Year","indirect_share_pct":51.34},
-{"auction_date":"2017-11-08","security_term":"10-Year","indirect_share_pct":60.55},
-{"auction_date":"2017-11-09","security_term":"30-Year","indirect_share_pct":55.1},
-{"auction_date":"2018-01-18","security_term":"10-Year","indirect_share_pct":68.54},
-{"auction_date":"2018-02-07","security_term":"10-Year","indirect_share_pct":56.66},
-{"auction_date":"2018-02-08","security_term":"30-Year","indirect_share_pct":51.38},
-{"auction_date":"2018-02-15","security_term":"30-Year","indirect_share_pct":59},
-{"auction_date":"2018-05-09","security_term":"10-Year","indirect_share_pct":50.69},
-{"auction_date":"2018-05-10","security_term":"30-Year","indirect_share_pct":50.54},
-{"auction_date":"2018-07-19","security_term":"10-Year","indirect_share_pct":58.76},
-{"auction_date":"2018-08-08","security_term":"10-Year","indirect_share_pct":53.95},
-{"auction_date":"2018-08-09","security_term":"30-Year","indirect_share_pct":54.84},
-{"auction_date":"2018-11-06","security_term":"10-Year","indirect_share_pct":61.21},
-{"auction_date":"2018-11-07","security_term":"30-Year","indirect_share_pct":49.03},
-{"auction_date":"2019-01-17","security_term":"10-Year","indirect_share_pct":68.83},
-{"auction_date":"2019-02-06","security_term":"10-Year","indirect_share_pct":47.86},
-{"auction_date":"2019-02-07","security_term":"30-Year","indirect_share_pct":45.4},
-{"auction_date":"2019-02-21","security_term":"30-Year","indirect_share_pct":78.17},
-{"auction_date":"2019-05-08","security_term":"10-Year","indirect_share_pct":39.76},
-{"auction_date":"2019-05-09","security_term":"30-Year","indirect_share_pct":45.1},
-{"auction_date":"2019-07-18","security_term":"10-Year","indirect_share_pct":61.75},
-{"auction_date":"2019-08-07","security_term":"10-Year","indirect_share_pct":33.68},
-{"auction_date":"2019-08-08","security_term":"30-Year","indirect_share_pct":37.1},
-{"auction_date":"2019-11-06","security_term":"10-Year","indirect_share_pct":43.77},
-{"auction_date":"2019-11-07","security_term":"30-Year","indirect_share_pct":39.87},
-{"auction_date":"2020-01-23","security_term":"10-Year","indirect_share_pct":66.14},
-{"auction_date":"2020-02-12","security_term":"10-Year","indirect_share_pct":42.41},
-{"auction_date":"2020-02-13","security_term":"30-Year","indirect_share_pct":42.57},
-{"auction_date":"2020-02-20","security_term":"30-Year","indirect_share_pct":73.66},
-{"auction_date":"2020-05-12","security_term":"10-Year","indirect_share_pct":43.25},
-{"auction_date":"2020-05-13","security_term":"30-Year","indirect_share_pct":42.95},
-{"auction_date":"2020-07-23","security_term":"10-Year","indirect_share_pct":64.73},
-{"auction_date":"2020-08-12","security_term":"10-Year","indirect_share_pct":41.01},
-{"auction_date":"2020-08-13","security_term":"30-Year","indirect_share_pct":37.51},
-{"auction_date":"2020-11-10","security_term":"10-Year","indirect_share_pct":43.01},
-{"auction_date":"2020-11-12","security_term":"30-Year","indirect_share_pct":48.56},
-{"auction_date":"2021-01-21","security_term":"10-Year","indirect_share_pct":62.59},
-{"auction_date":"2021-02-10","security_term":"10-Year","indirect_share_pct":44.45},
-{"auction_date":"2021-02-11","security_term":"30-Year","indirect_share_pct":44.34},
-{"auction_date":"2021-02-18","security_term":"30-Year","indirect_share_pct":67.97},
-{"auction_date":"2021-05-12","security_term":"10-Year","indirect_share_pct":41.37},
-{"auction_date":"2021-05-13","security_term":"30-Year","indirect_share_pct":39.11},
-{"auction_date":"2021-07-22","security_term":"10-Year","indirect_share_pct":70.01},
-{"auction_date":"2021-08-11","security_term":"10-Year","indirect_share_pct":53.4},
-{"auction_date":"2021-08-12","security_term":"30-Year","indirect_share_pct":41.94},
-{"auction_date":"2021-11-09","security_term":"10-Year","indirect_share_pct":44.96},
-{"auction_date":"2021-11-10","security_term":"30-Year","indirect_share_pct":37.37},
-{"auction_date":"2022-01-20","security_term":"10-Year","indirect_share_pct":60.11},
-{"auction_date":"2022-02-09","security_term":"10-Year","indirect_share_pct":48.3},
-{"auction_date":"2022-02-10","security_term":"30-Year","indirect_share_pct":42.33},
-{"auction_date":"2022-02-17","security_term":"30-Year","indirect_share_pct":59.57},
-{"auction_date":"2022-05-11","security_term":"10-Year","indirect_share_pct":41.3},
-{"auction_date":"2022-05-12","security_term":"30-Year","indirect_share_pct":40.96},
-{"auction_date":"2022-07-21","security_term":"10-Year","indirect_share_pct":66.74},
-{"auction_date":"2022-08-10","security_term":"10-Year","indirect_share_pct":45.61},
-{"auction_date":"2022-08-11","security_term":"30-Year","indirect_share_pct":43.26},
-{"auction_date":"2022-11-09","security_term":"10-Year","indirect_share_pct":42.43},
-{"auction_date":"2022-11-10","security_term":"30-Year","indirect_share_pct":51.68},
-{"auction_date":"2023-01-19","security_term":"10-Year","indirect_share_pct":78.85},
-{"auction_date":"2023-02-08","security_term":"10-Year","indirect_share_pct":56.94},
-{"auction_date":"2023-02-09","security_term":"30-Year","indirect_share_pct":46.85},
-{"auction_date":"2023-02-16","security_term":"30-Year","indirect_share_pct":61.76},
-{"auction_date":"2023-05-10","security_term":"10-Year","indirect_share_pct":52.97},
-{"auction_date":"2023-05-11","security_term":"30-Year","indirect_share_pct":56.85},
-{"auction_date":"2023-07-20","security_term":"10-Year","indirect_share_pct":84.93},
-{"auction_date":"2023-08-09","security_term":"10-Year","indirect_share_pct":52.36},
-{"auction_date":"2023-08-10","security_term":"30-Year","indirect_share_pct":49.27},
-{"auction_date":"2023-11-08","security_term":"10-Year","indirect_share_pct":67.96},
-{"auction_date":"2023-11-09","security_term":"30-Year","indirect_share_pct":58.76},
-{"auction_date":"2024-01-18","security_term":"10-Year","indirect_share_pct":78.96},
-{"auction_date":"2024-02-07","security_term":"10-Year","indirect_share_pct":65.79},
-{"auction_date":"2024-02-08","security_term":"30-Year","indirect_share_pct":65.69},
-{"auction_date":"2024-02-22","security_term":"30-Year","indirect_share_pct":69.89},
-{"auction_date":"2024-05-08","security_term":"10-Year","indirect_share_pct":57.98},
-{"auction_date":"2024-05-09","security_term":"30-Year","indirect_share_pct":57.55},
-{"auction_date":"2024-07-18","security_term":"10-Year","indirect_share_pct":64.76},
-{"auction_date":"2024-08-07","security_term":"10-Year","indirect_share_pct":55.43},
-{"auction_date":"2024-08-08","security_term":"30-Year","indirect_share_pct":54.75},
-{"auction_date":"2024-11-05","security_term":"10-Year","indirect_share_pct":49.39},
-{"auction_date":"2024-11-06","security_term":"30-Year","indirect_share_pct":50.36},
-{"auction_date":"2025-01-23","security_term":"10-Year","indirect_share_pct":62.52},
-{"auction_date":"2025-02-12","security_term":"10-Year","indirect_share_pct":55.82},
-{"auction_date":"2025-02-13","security_term":"30-Year","indirect_share_pct":50.96},
-{"auction_date":"2025-02-20","security_term":"30-Year","indirect_share_pct":69.93},
-{"auction_date":"2025-05-06","security_term":"10-Year","indirect_share_pct":52.43},
-{"auction_date":"2025-05-08","security_term":"30-Year","indirect_share_pct":43.37},
-{"auction_date":"2025-07-24","security_term":"10-Year","indirect_share_pct":58.45},
-{"auction_date":"2025-08-06","security_term":"10-Year","indirect_share_pct":47.79},
-{"auction_date":"2025-08-07","security_term":"30-Year","indirect_share_pct":44.37},
-{"auction_date":"2025-11-12","security_term":"10-Year","indirect_share_pct":57.77},
-{"auction_date":"2025-11-13","security_term":"30-Year","indirect_share_pct":61.29},
-{"auction_date":"2026-01-22","security_term":"10-Year","indirect_share_pct":66.99},
-{"auction_date":"2026-02-11","security_term":"10-Year","indirect_share_pct":50.1},
-{"auction_date":"2026-02-12","security_term":"30-Year","indirect_share_pct":54.41},
-{"auction_date":"2026-02-19","security_term":"30-Year","indirect_share_pct":77.99},
-{"auction_date":"2026-05-12","security_term":"10-Year","indirect_share_pct":51.52},
-{"auction_date":"2026-05-13","security_term":"30-Year","indirect_share_pct":53.69},
-{"auction_date":"2026-07-23","security_term":"10-Year","indirect_share_pct":58.29},
-{"auction_date":"2026-08-12","security_term":"10-Year","indirect_share_pct":60.98},
-{"auction_date":"2026-08-13","security_term":"30-Year","indirect_share_pct":53.15}
+  {
+    "auction_date": "2010-01-11",
+    "security_term": "10-Year",
+    "indirect_share_pct": 38.08,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2010-02-10",
+    "security_term": "10-Year",
+    "indirect_share_pct": 29.55,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2010-02-11",
+    "security_term": "30-Year",
+    "indirect_share_pct": 25.62,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2010-02-22",
+    "security_term": "30-Year",
+    "indirect_share_pct": 41.97,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2010-05-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 38.28,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2010-05-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 29.85,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2010-07-08",
+    "security_term": "10-Year",
+    "indirect_share_pct": 51.23,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2010-08-11",
+    "security_term": "10-Year",
+    "indirect_share_pct": 42.91,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2010-08-12",
+    "security_term": "30-Year",
+    "indirect_share_pct": 43.29,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2010-11-09",
+    "security_term": "10-Year",
+    "indirect_share_pct": 54.89,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2010-11-10",
+    "security_term": "30-Year",
+    "indirect_share_pct": 37.32,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2011-01-20",
+    "security_term": "10-Year",
+    "indirect_share_pct": 36.75,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2011-02-09",
+    "security_term": "10-Year",
+    "indirect_share_pct": 69.27,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2011-02-10",
+    "security_term": "30-Year",
+    "indirect_share_pct": 42.01,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2011-02-17",
+    "security_term": "30-Year",
+    "indirect_share_pct": 51.99,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2011-05-11",
+    "security_term": "10-Year",
+    "indirect_share_pct": 46.98,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2011-05-12",
+    "security_term": "30-Year",
+    "indirect_share_pct": 32.98,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2011-07-21",
+    "security_term": "10-Year",
+    "indirect_share_pct": 41.34,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2011-08-10",
+    "security_term": "10-Year",
+    "indirect_share_pct": 34.18,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2011-08-11",
+    "security_term": "30-Year",
+    "indirect_share_pct": 11.79,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2011-11-09",
+    "security_term": "10-Year",
+    "indirect_share_pct": 38.56,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2011-11-10",
+    "security_term": "30-Year",
+    "indirect_share_pct": 26.39,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2012-01-19",
+    "security_term": "10-Year",
+    "indirect_share_pct": 35.23,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2012-02-08",
+    "security_term": "10-Year",
+    "indirect_share_pct": 34.46,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2012-02-09",
+    "security_term": "30-Year",
+    "indirect_share_pct": 25.95,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2012-02-16",
+    "security_term": "30-Year",
+    "indirect_share_pct": 39.81,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2012-05-09",
+    "security_term": "10-Year",
+    "indirect_share_pct": 36.41,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2012-05-10",
+    "security_term": "30-Year",
+    "indirect_share_pct": 31.73,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2012-07-19",
+    "security_term": "10-Year",
+    "indirect_share_pct": 43.86,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2012-08-08",
+    "security_term": "10-Year",
+    "indirect_share_pct": 40.47,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2012-08-09",
+    "security_term": "30-Year",
+    "indirect_share_pct": 36.66,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2012-11-07",
+    "security_term": "10-Year",
+    "indirect_share_pct": 39.65,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2012-11-08",
+    "security_term": "30-Year",
+    "indirect_share_pct": 45.38,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2013-01-24",
+    "security_term": "10-Year",
+    "indirect_share_pct": 53.07,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2013-02-13",
+    "security_term": "10-Year",
+    "indirect_share_pct": 27.98,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2013-02-14",
+    "security_term": "30-Year",
+    "indirect_share_pct": 36.33,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2013-02-21",
+    "security_term": "30-Year",
+    "indirect_share_pct": 54.32,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2013-05-08",
+    "security_term": "10-Year",
+    "indirect_share_pct": 33.85,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2013-05-09",
+    "security_term": "30-Year",
+    "indirect_share_pct": 38.78,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2013-07-18",
+    "security_term": "10-Year",
+    "indirect_share_pct": 57.61,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2013-08-07",
+    "security_term": "10-Year",
+    "indirect_share_pct": 46.21,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2013-08-08",
+    "security_term": "30-Year",
+    "indirect_share_pct": 40.15,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2013-11-13",
+    "security_term": "10-Year",
+    "indirect_share_pct": 47.58,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2013-11-14",
+    "security_term": "30-Year",
+    "indirect_share_pct": 35.22,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2014-01-23",
+    "security_term": "10-Year",
+    "indirect_share_pct": 51.66,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2014-02-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 49.54,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2014-02-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 45.18,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2014-02-20",
+    "security_term": "30-Year",
+    "indirect_share_pct": 56.31,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2014-05-07",
+    "security_term": "10-Year",
+    "indirect_share_pct": 49.15,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2014-05-08",
+    "security_term": "30-Year",
+    "indirect_share_pct": 40.31,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2014-07-24",
+    "security_term": "10-Year",
+    "indirect_share_pct": 52.88,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2014-08-13",
+    "security_term": "10-Year",
+    "indirect_share_pct": 46.88,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2014-08-14",
+    "security_term": "30-Year",
+    "indirect_share_pct": 45.79,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2014-11-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 44.47,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2014-11-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 43.67,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2015-01-22",
+    "security_term": "10-Year",
+    "indirect_share_pct": 63.75,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2015-02-11",
+    "security_term": "10-Year",
+    "indirect_share_pct": 59.41,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2015-02-12",
+    "security_term": "30-Year",
+    "indirect_share_pct": 49.33,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2015-02-19",
+    "security_term": "30-Year",
+    "indirect_share_pct": 68.91,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2015-05-13",
+    "security_term": "10-Year",
+    "indirect_share_pct": 58.72,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2015-05-14",
+    "security_term": "30-Year",
+    "indirect_share_pct": 49.63,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2015-07-23",
+    "security_term": "10-Year",
+    "indirect_share_pct": 64.71,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2015-08-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 58.87,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2015-08-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 50.83,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2015-11-10",
+    "security_term": "10-Year",
+    "indirect_share_pct": 60.07,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2015-11-12",
+    "security_term": "30-Year",
+    "indirect_share_pct": 59.89,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2016-01-21",
+    "security_term": "10-Year",
+    "indirect_share_pct": 56.48,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2016-02-10",
+    "security_term": "10-Year",
+    "indirect_share_pct": 57.71,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2016-02-11",
+    "security_term": "30-Year",
+    "indirect_share_pct": 53.74,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2016-02-18",
+    "security_term": "30-Year",
+    "indirect_share_pct": 52.53,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2016-05-11",
+    "security_term": "10-Year",
+    "indirect_share_pct": 59.85,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2016-05-12",
+    "security_term": "30-Year",
+    "indirect_share_pct": 48.66,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2016-07-21",
+    "security_term": "10-Year",
+    "indirect_share_pct": 68.19,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2016-08-10",
+    "security_term": "10-Year",
+    "indirect_share_pct": 65.43,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2016-08-11",
+    "security_term": "30-Year",
+    "indirect_share_pct": 55.72,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2016-11-09",
+    "security_term": "10-Year",
+    "indirect_share_pct": 43.02,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2016-11-10",
+    "security_term": "30-Year",
+    "indirect_share_pct": 44.64,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2017-01-19",
+    "security_term": "10-Year",
+    "indirect_share_pct": 72.19,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2017-02-08",
+    "security_term": "10-Year",
+    "indirect_share_pct": 58.24,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2017-02-09",
+    "security_term": "30-Year",
+    "indirect_share_pct": 59.34,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2017-02-16",
+    "security_term": "30-Year",
+    "indirect_share_pct": 61.1,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2017-05-10",
+    "security_term": "10-Year",
+    "indirect_share_pct": 45.59,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2017-05-11",
+    "security_term": "30-Year",
+    "indirect_share_pct": 44.37,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2017-07-20",
+    "security_term": "10-Year",
+    "indirect_share_pct": 47.56,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2017-08-09",
+    "security_term": "10-Year",
+    "indirect_share_pct": 44.48,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2017-08-10",
+    "security_term": "30-Year",
+    "indirect_share_pct": 51.34,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2017-11-08",
+    "security_term": "10-Year",
+    "indirect_share_pct": 60.55,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2017-11-09",
+    "security_term": "30-Year",
+    "indirect_share_pct": 55.1,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2018-01-18",
+    "security_term": "10-Year",
+    "indirect_share_pct": 68.54,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2018-02-07",
+    "security_term": "10-Year",
+    "indirect_share_pct": 56.66,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2018-02-08",
+    "security_term": "30-Year",
+    "indirect_share_pct": 51.38,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2018-02-15",
+    "security_term": "30-Year",
+    "indirect_share_pct": 59,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2018-05-09",
+    "security_term": "10-Year",
+    "indirect_share_pct": 50.69,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2018-05-10",
+    "security_term": "30-Year",
+    "indirect_share_pct": 50.54,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2018-07-19",
+    "security_term": "10-Year",
+    "indirect_share_pct": 58.76,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2018-08-08",
+    "security_term": "10-Year",
+    "indirect_share_pct": 53.95,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2018-08-09",
+    "security_term": "30-Year",
+    "indirect_share_pct": 54.84,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2018-11-06",
+    "security_term": "10-Year",
+    "indirect_share_pct": 61.21,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2018-11-07",
+    "security_term": "30-Year",
+    "indirect_share_pct": 49.03,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2019-01-17",
+    "security_term": "10-Year",
+    "indirect_share_pct": 68.83,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2019-02-06",
+    "security_term": "10-Year",
+    "indirect_share_pct": 47.86,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2019-02-07",
+    "security_term": "30-Year",
+    "indirect_share_pct": 45.4,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2019-02-21",
+    "security_term": "30-Year",
+    "indirect_share_pct": 78.17,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2019-05-08",
+    "security_term": "10-Year",
+    "indirect_share_pct": 39.76,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2019-05-09",
+    "security_term": "30-Year",
+    "indirect_share_pct": 45.1,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2019-07-18",
+    "security_term": "10-Year",
+    "indirect_share_pct": 61.75,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2019-08-07",
+    "security_term": "10-Year",
+    "indirect_share_pct": 33.68,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2019-08-08",
+    "security_term": "30-Year",
+    "indirect_share_pct": 37.1,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2019-11-06",
+    "security_term": "10-Year",
+    "indirect_share_pct": 43.77,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2019-11-07",
+    "security_term": "30-Year",
+    "indirect_share_pct": 39.87,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2020-01-23",
+    "security_term": "10-Year",
+    "indirect_share_pct": 66.14,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2020-02-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 42.41,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2020-02-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 42.57,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2020-02-20",
+    "security_term": "30-Year",
+    "indirect_share_pct": 73.66,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2020-05-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 43.25,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2020-05-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 42.95,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2020-07-23",
+    "security_term": "10-Year",
+    "indirect_share_pct": 64.73,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2020-08-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 41.01,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2020-08-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 37.51,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2020-11-10",
+    "security_term": "10-Year",
+    "indirect_share_pct": 43.01,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2020-11-12",
+    "security_term": "30-Year",
+    "indirect_share_pct": 48.56,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2021-01-21",
+    "security_term": "10-Year",
+    "indirect_share_pct": 62.59,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2021-02-10",
+    "security_term": "10-Year",
+    "indirect_share_pct": 44.45,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2021-02-11",
+    "security_term": "30-Year",
+    "indirect_share_pct": 44.34,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2021-02-18",
+    "security_term": "30-Year",
+    "indirect_share_pct": 67.97,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2021-05-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 41.37,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2021-05-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 39.11,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2021-07-22",
+    "security_term": "10-Year",
+    "indirect_share_pct": 70.01,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2021-08-11",
+    "security_term": "10-Year",
+    "indirect_share_pct": 53.4,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2021-08-12",
+    "security_term": "30-Year",
+    "indirect_share_pct": 41.94,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2021-11-09",
+    "security_term": "10-Year",
+    "indirect_share_pct": 44.96,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2021-11-10",
+    "security_term": "30-Year",
+    "indirect_share_pct": 37.37,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2022-01-20",
+    "security_term": "10-Year",
+    "indirect_share_pct": 60.11,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2022-02-09",
+    "security_term": "10-Year",
+    "indirect_share_pct": 48.3,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2022-02-10",
+    "security_term": "30-Year",
+    "indirect_share_pct": 42.33,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2022-02-17",
+    "security_term": "30-Year",
+    "indirect_share_pct": 59.57,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2022-05-11",
+    "security_term": "10-Year",
+    "indirect_share_pct": 41.3,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2022-05-12",
+    "security_term": "30-Year",
+    "indirect_share_pct": 40.96,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2022-07-21",
+    "security_term": "10-Year",
+    "indirect_share_pct": 66.74,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2022-08-10",
+    "security_term": "10-Year",
+    "indirect_share_pct": 45.61,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2022-08-11",
+    "security_term": "30-Year",
+    "indirect_share_pct": 43.26,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2022-11-09",
+    "security_term": "10-Year",
+    "indirect_share_pct": 42.43,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2022-11-10",
+    "security_term": "30-Year",
+    "indirect_share_pct": 51.68,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2023-01-19",
+    "security_term": "10-Year",
+    "indirect_share_pct": 78.85,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2023-02-08",
+    "security_term": "10-Year",
+    "indirect_share_pct": 56.94,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2023-02-09",
+    "security_term": "30-Year",
+    "indirect_share_pct": 46.85,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2023-02-16",
+    "security_term": "30-Year",
+    "indirect_share_pct": 61.76,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2023-05-10",
+    "security_term": "10-Year",
+    "indirect_share_pct": 52.97,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2023-05-11",
+    "security_term": "30-Year",
+    "indirect_share_pct": 56.85,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2023-07-20",
+    "security_term": "10-Year",
+    "indirect_share_pct": 84.93,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2023-08-09",
+    "security_term": "10-Year",
+    "indirect_share_pct": 52.36,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2023-08-10",
+    "security_term": "30-Year",
+    "indirect_share_pct": 49.27,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2023-11-08",
+    "security_term": "10-Year",
+    "indirect_share_pct": 67.96,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2023-11-09",
+    "security_term": "30-Year",
+    "indirect_share_pct": 58.76,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2024-01-18",
+    "security_term": "10-Year",
+    "indirect_share_pct": 78.96,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2024-02-07",
+    "security_term": "10-Year",
+    "indirect_share_pct": 65.79,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2024-02-08",
+    "security_term": "30-Year",
+    "indirect_share_pct": 65.69,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2024-02-22",
+    "security_term": "30-Year",
+    "indirect_share_pct": 69.89,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2024-05-08",
+    "security_term": "10-Year",
+    "indirect_share_pct": 57.98,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2024-05-09",
+    "security_term": "30-Year",
+    "indirect_share_pct": 57.55,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2024-07-18",
+    "security_term": "10-Year",
+    "indirect_share_pct": 64.76,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2024-08-07",
+    "security_term": "10-Year",
+    "indirect_share_pct": 55.43,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2024-08-08",
+    "security_term": "30-Year",
+    "indirect_share_pct": 54.75,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2024-11-05",
+    "security_term": "10-Year",
+    "indirect_share_pct": 49.39,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2024-11-06",
+    "security_term": "30-Year",
+    "indirect_share_pct": 50.36,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2025-01-23",
+    "security_term": "10-Year",
+    "indirect_share_pct": 62.52,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2025-02-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 55.82,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2025-02-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 50.96,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2025-02-20",
+    "security_term": "30-Year",
+    "indirect_share_pct": 69.93,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2025-05-06",
+    "security_term": "10-Year",
+    "indirect_share_pct": 52.43,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2025-05-08",
+    "security_term": "30-Year",
+    "indirect_share_pct": 43.37,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2025-07-24",
+    "security_term": "10-Year",
+    "indirect_share_pct": 58.45,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2025-08-06",
+    "security_term": "10-Year",
+    "indirect_share_pct": 47.79,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2025-08-07",
+    "security_term": "30-Year",
+    "indirect_share_pct": 44.37,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2025-11-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 57.77,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2025-11-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 61.29,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2026-01-22",
+    "security_term": "10-Year",
+    "indirect_share_pct": 66.99,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2026-02-11",
+    "security_term": "10-Year",
+    "indirect_share_pct": 50.1,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2026-02-12",
+    "security_term": "30-Year",
+    "indirect_share_pct": 54.41,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2026-02-19",
+    "security_term": "30-Year",
+    "indirect_share_pct": 77.99,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2026-05-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 51.52,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2026-05-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 53.69,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  },
+  {
+    "auction_date": "2026-07-23",
+    "security_term": "10-Year",
+    "indirect_share_pct": 58.29,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2026-08-12",
+    "security_term": "10-Year",
+    "indirect_share_pct": 60.98,
+    "original_tenor": "10Y",
+    "security_type": "Note"
+  },
+  {
+    "auction_date": "2026-08-13",
+    "security_term": "30-Year",
+    "indirect_share_pct": 53.15,
+    "original_tenor": "30Y",
+    "security_type": "Bond"
+  }
 ]

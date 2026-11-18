@@ -1221,16 +1221,23 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // card) come from one consistent record. Cross-checked at build time
         // to match TreasuryDirect's own bid-to-cover value exactly on the
         // same auction.
+        // v3 Phase 1c: original_tenor + security_type instead of exact-
+        // matching security_term, so 10Y reopenings are included.
         const { data: rows, error: btcErr } = await supabase
           .from("treasury_auction_results")
           .select("auction_date, bid_to_cover_ratio")
-          .eq("security_term", "10-Year")
+          .eq("original_tenor", "10Y")
+          .in("security_type", ["Note", "Bond"])
           .not("bid_to_cover_ratio", "is", null)
           .order("auction_date", { ascending: false })
           .limit(2);
         if (btcErr || !rows || rows.length < 2) return null;
         current = Number(rows[0].bid_to_cover_ratio);
         previous = Number(rows[1].bid_to_cover_ratio);
+        // v3 Phase 1d: surface the actual auction date this value came
+        // from -- without it the card reads as "live today" even when the
+        // feed has gone stale (see assertAuctionFeedFresh).
+        metadata = { data_as_of: rows[0].auction_date };
         break;
       }
       case "supabase_debt_cycle": {
@@ -1792,10 +1799,13 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // FULL history, not a fixed level — fetch everything (the live
         // table is ~180 rows for these two terms; 1000 is generous
         // headroom), not just enough for one trailing-6 window.
+        // v3 Phase 1c: original_tenor + security_type instead of exact-
+        // matching security_term, so reopenings are included.
         const { data: rows, error: auErr } = await supabase
           .from("treasury_auction_results")
-          .select("auction_date, security_term, indirect_share_pct")
-          .in("security_term", ["10-Year", "30-Year"])
+          .select("auction_date, security_term, original_tenor, security_type, indirect_share_pct")
+          .in("original_tenor", ["10Y", "30Y"])
+          .in("security_type", ["Note", "Bond"])
           .not("indirect_share_pct", "is", null)
           .order("auction_date", { ascending: false })
           .limit(1000);
@@ -1811,7 +1821,11 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         metadata = {
           avg_10y_6auction_pct: snap0.avg10,
           avg_30y_6auction_pct: snap0.avg30,
-          latest_auction_date: rows[0].auction_date,
+          // v3 Phase 1d: data_as_of (not just the newest row overall --
+          // the newest 10Y/30Y row actually folded into the computed
+          // value) so a stale feed is visible on the card itself, not
+          // just in rb_job_runs.
+          data_as_of: rows[0].auction_date,
           zscore: z != null ? Math.round(z * 100) / 100 : null,
           full_history_readings: fullSeries.length,
         };
@@ -3216,10 +3230,12 @@ async function generateSovereignRiskNotifications(): Promise<void> {
 
     // Indirect bidder share prints below 50% on a single 10Y/30Y auction
     // (single-auction trigger — the 6-auction average card is too slow for this)
+    // v3 Phase 1c: original_tenor + security_type instead of exact-matching
+    // security_term, so reopenings are included.
     {
       const { data: rows } = await supabase.from("treasury_auction_results")
         .select("auction_date, security_term, indirect_share_pct")
-        .in("security_term", ["10-Year", "30-Year"]).not("indirect_share_pct", "is", null)
+        .in("original_tenor", ["10Y", "30Y"]).in("security_type", ["Note", "Bond"]).not("indirect_share_pct", "is", null)
         .order("auction_date", { ascending: false }).limit(2);
       for (const r of rows ?? []) {
         if (Number(r.indirect_share_pct) < 50) {
