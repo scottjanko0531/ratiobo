@@ -697,10 +697,20 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
     const rEffMetaVal = rEffRow?.metadata?.r_eff;
     const convergenceGapVal = rEffRow?.metadata?.convergence_gap;
     if (rEffMetaVal != null && convergenceGapVal != null) {
-      const status = convergenceGapStatus(convergenceGapVal);
+      // big_cycle_metrics.status has its OWN check constraint
+      // (good/warn/bad), a different vocabulary than macro_indicators'
+      // healthy/watch/danger (confirmed live the hard way: the first
+      // version of this block used convergenceGapStatus's raw return
+      // value directly and every write failed constraint
+      // "big_cycle_metrics_status_check", silently caught by this same
+      // function's own per-row try/skip loop -- MACRO_STATUS_MAP is the
+      // existing, already-used translation every other cross-ref block in
+      // this function already runs through; this block just hadn't been.
+      const gapStatus = convergenceGapStatus(convergenceGapVal);
+      const status = MACRO_STATUS_MAP[gapStatus] ?? null;
       updates.push({
         key: "effective_rate_on_debt", value_numeric: rEffMetaVal, value_display: pct1(rEffMetaVal),
-        status, status_label: status === "danger" ? "Large repricing gap ahead" : status === "watch" ? "Watch" : "Gap narrow",
+        status, status_label: gapStatus === "danger" ? "Large repricing gap ahead" : gapStatus === "watch" ? "Watch" : "Gap narrow",
         note_suffix: `Blended effective rate on all outstanding federal debt (trailing-12mo net interest ÷ average debt held by the public) — sits ${convergenceGapVal.toFixed(2)} pts below the 10Y; as maturing debt refinances at today's rate, this converges upward. Status reflects the convergence gap (10Y − r_eff), not r_eff's own level — a large gap means more repricing is still ahead. Cross-referenced from Macro.`,
       });
     }

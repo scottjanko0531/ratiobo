@@ -2798,3 +2798,101 @@ generate-debt-cycle-brief function changes are all committed, held for
 deploy approval. The one open verification (fact-check deliberate-wrong-
 number test) requires a live Anthropic API call and will be confirmed
 immediately after deploy.
+
+### Phase 6 deploy: a real bug found live, the fact-check verification, and final confirmation
+
+**Deploy sequence**: `fetch-macro-data`, `update-big-cycle-metrics`,
+`generate-debt-cycle-brief` deployed; `20261118_add_effective_rate_on_debt_card.sql`
+applied. `verify_jwt` confirmed unchanged for all three before and after
+(`fetch-macro-data=true`, the other two `=false`).
+
+**A real bug, found live (not caught by the earlier build/test pass,
+since nothing in this codebase unit-tests a live DB write against a
+CHECK constraint): the new "Effective Rate on Federal Debt (r_eff)"
+card's write silently failed every run.** `update-big-cycle-metrics`'s
+response showed `skipped: ["effective_rate_on_debt"]` even though the
+migrated row was confirmed present and queryable (both via direct SQL
+and anon REST). Root-caused via `function_logs` (not `function_edge_logs`,
+which only captures the HTTP-level line — the actual `console.error`
+output lives under `function_logs`):
+
+```
+code: "23514", message: 'new row for relation "big_cycle_metrics"
+violates check constraint "big_cycle_metrics_status_check"'
+```
+
+`big_cycle_metrics.status` has its own CHECK constraint
+(`good`/`warn`/`bad`) — a different vocabulary than
+`macro_indicators`/`macro_snapshots`'s `healthy`/`watch`/`danger`. My
+new code block used `convergenceGapStatus()`'s raw return value
+directly; every OTHER cross-ref block in this same function already
+runs its status through `MACRO_STATUS_MAP` (`{healthy: "good", watch:
+"warn", danger: "bad"}`) first — I'd missed that translation for the one
+new block. **Fixed**, redeployed, confirmed live: the card now writes
+successfully every run (`skipped: []`), with `status: "bad"` and
+`status_label: "Large repricing gap ahead"` for today's real 1.744-pt
+gap — the "danger"-equivalent reading the coordinator asked to confirm.
+
+(Also observed, logged for completeness, NOT fixed — pre-existing and
+unrelated to this phase: `computeNyFedStudentLoanUpdate` threw `Invalid
+HTML: could not find <table>` in the same run's logs. This predates
+Phase 6 and isn't touched by it; out of scope here.)
+
+**The `ANTHROPIC_API_KEY` concern — resolved for real, with direct
+evidence, not assumed.** Added a temporary, clearly-marked debug query
+param (`?debugFactCheck=true`) to `generate-debt-cycle-brief` that calls
+`validateConsistency` against this run's REAL reference block (today's
+actual r_eff/10Y/gap/framing-rule data) but a deliberately fabricated
+narrative claiming the gap is "0.10 points" and "healthy." Deployed,
+invoked live, got back:
+
+```json
+{
+  "consistent": false,
+  "issues": [
+    "Narrative claims convergence gap is 0.10pts (10Y - r_eff), but reference data shows 1.74pts — a material misstatement of the actual gap",
+    "Narrative describes conditions as 'healthy' with 'no meaningful repricing risk ahead,' but framing rule requires MP1 with large (danger-band) convergence gap to be described as 'no current strain, rising pressure' — not healthy",
+    "Narrative claims 'essentially converged already,' contradicting the danger-band classification of the 1.74pt gap in reference data"
+  ]
+}
+```
+
+This is direct, live confirmation: the deployed function's Anthropic API
+access works (the earlier `ANTHROPIC_API_KEY`-unavailable finding was
+purely a limitation of the local sandbox, exactly as expected), AND the
+fact-check pass's new capability genuinely catches a wrong
+convergence-gap number, a false "healthy" framing, and a contradiction
+of the explicit MP1-large-gap framing rule — all three, specifically and
+correctly, not a vague "something's off." Removed the temporary debug
+hook immediately after confirming (net diff on
+`generate-debt-cycle-brief/index.ts`: zero — it was never meant to ship).
+
+**The real (non-fabricated) brief, generated live** mentions the new
+signal as its own paragraph, using the exact required framing: *"The
+operative read is no current strain, but rising pressure—a critical
+distinction... The blended effective rate on all outstanding federal
+debt sits at 3.38%; the 10Y Treasury yield is 5.12%. That 1.74-point
+convergence gap represents the amount of repricing still ahead... The
+effective rate has moved only 0.02 points higher over the trailing 12
+months."* All numbers match the live data exactly.
+
+**Position Check UI data, confirmed live**: `big_cycle_stage_audit_log.raw_inputs`
+carries `rEff: 3.376, convergenceGap: 1.744, dgs10: 5.12, rEff12moAgo: 3.358`
+— exactly what the component's `rawInputs.rEff`/etc. reads.
+
+### Tests (re-run against deployed state)
+
+`npx vitest run tests/` → 760 passed (42 files, unchanged by the
+status-mapping fix — no test imports `computeMacroCrossRefUpdates`
+directly, consistent with this file never having had unit test
+coverage). `npx next build` → compiles clean.
+
+### Acceptance — fully confirmed live
+
+Position Check shows the forward signal next to the stage (confirmed
+live via `raw_inputs`). The brief mentions it (confirmed live, real
+generation, exact required framing). The new Big Cycle card is live and
+correctly reads "danger"/"bad" given today's 1.744 gap (confirmed live,
+after the status-mapping fix). The fact-check pass's new capability is
+confirmed live, with direct evidence of catching a deliberately wrong
+number — not assumed from the prompt wording.
