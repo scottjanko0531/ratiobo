@@ -8,7 +8,7 @@ import {
   fetchDebtHeldPublicLatest,
   assertPeriodAligned,
 } from "../_shared/mtsFiscalData.ts";
-import { findYearAgo, yoyPair } from "../_shared/yoyMath.ts";
+import { findYearAgo, yoyPair, yoyPairWithFallback } from "../_shared/yoyMath.ts";
 import { computeIndirectBidderSnapshot, computeIndirectBidderFullSeries, zScoreOf, AuctionRow } from "../_shared/indirectBidder.ts";
 import { goldTrendStatus, goldPurchasesZScoreStatus, realFedFundsStance, convenienceYieldChangeStatus, indirectBidderCardStatus } from "../_shared/statusThresholds.ts";
 
@@ -986,9 +986,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
       }
       case "yoy_monthly": {
         const obs = await fetchFredObs(ind.series!, 26);
-        const yoy = yoyPair(obs);
+        // v2 Phase 4c: yoyPairWithFallback (the shared gap rule +
+        // fallback-to-most-recent-pairable-pair) replaces plain yoyPair, so
+        // this card advances instead of freezing forever when the newest
+        // print can't be paired even after gap-filling.
+        const yoy = yoyPairWithFallback(obs);
         if (!yoy) return null;
         current = yoy.current; previous = yoy.previous;
+        if (yoy.usedInterpolatedMonth) metadata = { ...metadata, used_interpolated_month: yoy.usedInterpolatedMonth };
+        if (yoy.staleReason) metadata = { ...metadata, stale_reason: yoy.staleReason };
         // I1 "Level — Hi vs. Low": z-score vs. the fixed 2015-2019 reference
         // window (see computeFixedWindowZScore), computed on Core CPI
         // specifically (not headline — see the GDP & Inflation Regime
@@ -1009,7 +1015,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // move reads as a huge swing when the YoY rate is low and a trivial one
         // when it's high, exactly backwards from what a momentum signal wants.
         const obs = await fetchFredObs(ind.series!, 26);
-        const yoy = yoyPair(obs);
+        const yoy = yoyPairWithFallback(obs);
         if (!yoy) return null;
         current = yoy.current; previous = yoy.previous;
         // reference_period: the FRED observation date this reading actually
@@ -1017,8 +1023,17 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // release" from a value that's a month or two stale relative to a
         // different vintage shown elsewhere (see #6/#10 in the regime-calc
         // work order — a CPI-vintage mismatch was mistaken for a data error).
-        metadata = { reference_period: obs[0].date };
-        if (obs.length >= 4) {
+        // v2 Phase 4c: uses yoy.usedObsDate (the observation actually paired),
+        // not always obs[0].date — under the stale-fallback path those differ.
+        metadata = { reference_period: yoy.usedObsDate };
+        if (yoy.usedInterpolatedMonth) metadata.used_interpolated_month = yoy.usedInterpolatedMonth;
+        if (yoy.staleReason) metadata.stale_reason = yoy.staleReason;
+        // Skipped under the stale-fallback path: obs[3] is "3 months before
+        // obs[0]," which is a different reference point than the fallback's
+        // actual current reading (yoy.usedObsDate) — comparing them would be
+        // apples-to-oranges, so this momentum figure is omitted rather than
+        // computed against the wrong baseline.
+        if (!yoy.staleReason && obs.length >= 4) {
           const ya3 = findYearAgo(obs, obs[3].date);
           if (ya3) {
             const yoy3mAgo = (obs[3].value / ya3.value - 1) * 100;
@@ -1029,9 +1044,11 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
       }
       case "yoy_monthly_agg": {
         const obs = await fetchFredObsMonthly(ind.series!, 26);
-        const yoy = yoyPair(obs);
+        const yoy = yoyPairWithFallback(obs);
         if (!yoy) return null;
         current = yoy.current; previous = yoy.previous;
+        if (yoy.usedInterpolatedMonth) metadata = { ...metadata, used_interpolated_month: yoy.usedInterpolatedMonth };
+        if (yoy.staleReason) metadata = { ...metadata, stale_reason: yoy.staleReason };
         break;
       }
       case "yoy_quarterly": {
@@ -1390,11 +1407,18 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         break;
       }
       case "level_minus_yoy_monthly": {
+        // v2 Phase 4d: Real Fed Funds Rate (FEDFUNDS minus CPI YoY) froze
+        // for the exact same reason the CPI/Core CPI cards did — it calls
+        // the same yoyPair on CPIAUCSL independently. yoyPairWithFallback
+        // (gap-fill + stale-fallback) unfreezes this card too, same as the
+        // CPI cards, without any change to the level_minus arithmetic itself.
         const [rates, cpiObs] = await Promise.all([fetchFred(ind.series!, 2), fetchFredObs(ind.series2!, 26)]);
         if (rates.length < 2) return null;
-        const cpiYoy = yoyPair(cpiObs);
+        const cpiYoy = yoyPairWithFallback(cpiObs);
         if (!cpiYoy) return null;
         current = rates[0] - cpiYoy.current; previous = rates[1] - cpiYoy.previous;
+        if (cpiYoy.usedInterpolatedMonth) metadata = { ...metadata, used_interpolated_month: cpiYoy.usedInterpolatedMonth };
+        if (cpiYoy.staleReason) metadata = { ...metadata, stale_reason: cpiYoy.staleReason };
         break;
       }
       case "walcl_pct_gdp": {

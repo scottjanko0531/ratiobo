@@ -8,6 +8,12 @@
 //
 // Spec: docs/specs/regime-tilt-recalibration.md §3.2.
 
+import { addMonths, monthlyGapFill } from "./yoyMath.ts";
+// get-regime-analysis/index.ts imports addMonths from here — re-export so
+// that import keeps working now that the implementation lives in
+// yoyMath.ts (v2 Phase 4a: promoted as the general gap-rule's dependency).
+export { addMonths } from "./yoyMath.ts";
+
 export interface MonthlyObs {
   date: string; // any parseable date within the month; normalized to the 1st
   value: number;
@@ -38,14 +44,6 @@ function toMonthKey(dateStr: string): string {
   return dateStr.slice(0, 7) + "-01";
 }
 
-export function addMonths(monthKey: string, n: number): string {
-  const [y, m] = monthKey.split("-").map(Number);
-  const total = y * 12 + (m - 1) + n;
-  const ny = Math.floor(total / 12);
-  const nm = (total % 12) + 1;
-  return `${ny}-${String(nm).padStart(2, "0")}-01`;
-}
-
 // Linear-interpolation percentile over whatever values are present —
 // gaps (missing months) are simply absent from `values`, never filled,
 // per spec 3.1's gap-handling rule.
@@ -68,18 +66,27 @@ export function classifyInflationRegime(
   const ip = new Map<string, number>();
   for (const r of ipSeries) ip.set(toMonthKey(r.date), r.value);
 
-  // D-0 (docs/specs/regime-tilt-recalibration-decisions.md): CPIAUCSL is
-  // missing Oct 2025 (government shutdown). One-off interpolation for
-  // this classifier's own internal use only — geometric mean of the
-  // surrounding two months — never written back to bond_raw_series.
-  // Hardcoded to this one known date, not a general gap-filling policy;
-  // a no-op once/if the real print ever backfills.
-  const GAP_MONTH = "2025-10-01";
-  if (!cpi.has(GAP_MONTH)) {
-    const before = cpi.get("2025-09-01");
-    const after = cpi.get("2025-11-01");
-    if (before != null && after != null) {
-      cpi.set(GAP_MONTH, Math.sqrt(before * after));
+  // v2 Phase 4a/4b (debt-metrics-integrity-v2 spec): promoted out of a
+  // hardcoded single-date patch (D-0: "CPIAUCSL is missing Oct 2025
+  // (government shutdown)", docs/specs/regime-tilt-recalibration-decisions.md)
+  // into the general shared rule in _shared/yoyMath.ts. Sweeps every month
+  // between the series' own first and last observed month (a gap outside
+  // that range can never be bracketed by real neighbors anyway) and
+  // patches in a geometric-mean fill for any SINGLE missing month found —
+  // exactly the same "patch a local working copy up front, let every
+  // downstream reader (yoyAt, cpiP75At, accelAt) see it transparently"
+  // strategy the original hardcoded version used, just no longer limited
+  // to one specific date. `cpi` is already a fresh local Map (built two
+  // lines above from the caller's cpiSeries), so patching it never
+  // touches any raw-series table — same as before. Confirmed bit-identical
+  // against the full classifier history (see tests/inflationRegime.test.ts)
+  // since the only gap that actually exists in real CPIAUCSL history is
+  // still the one 2025-10-01 month this used to hardcode.
+  if (cpi.size > 0) {
+    const cpiMonthsSorted = [...cpi.keys()].sort();
+    for (let mo = cpiMonthsSorted[0]; mo <= cpiMonthsSorted[cpiMonthsSorted.length - 1]; mo = addMonths(mo, 1)) {
+      const fill = monthlyGapFill(cpi, mo);
+      if (fill) cpi.set(mo, fill.value);
     }
   }
 

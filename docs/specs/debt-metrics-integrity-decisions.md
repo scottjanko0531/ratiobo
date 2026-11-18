@@ -2194,3 +2194,202 @@ insufficient-history caveat, not just the boolean. **Nothing deployed**
 `insufficientHistory: true` bootstrap state is real and will resolve
 naturally as more MTS-basis months accumulate (and more thoroughly once
 Phase 5 backfills history), not something this phase works around.
+
+### Phase 4: inflation gap handling, unified
+
+**Discrepancy investigation (the primary finding, resolved before building
+anything).** The spec's item 5 claimed fiscal-dominance conditions 2/4
+"currently read null" because of the CPI freeze. My own Phase 3
+live-verification showed non-null values (`realFedFundsLatest: 0.033`,
+`cpiYoyLatest: 3.717`) — a real discrepancy worth resolving before
+scoping Phase 4.
+
+**Resolved: the spec's framing was imprecise. These conditions were
+never null — they were STALE, which is a different and more dangerous
+failure mode.** Traced the actual mechanism:
+
+- `fetch-macro-data`'s `processIndicator()` returns `null` outright when
+  `yoyPair(obs)` fails (the `if (!yoy) return null;` guard in every
+  `yoy_monthly`/`yoy_monthly_with_3m`/`level_minus_yoy_monthly` case).
+- A `null` return gets filtered out of `rows` entirely before BOTH the
+  `macro_indicators` upsert AND the `macro_snapshots` upsert at the end
+  of `Deno.serve` — so a frozen indicator doesn't just stop updating its
+  card, it stops getting ANY new row in `macro_snapshots` from that day
+  forward. The table doesn't accumulate null placeholder rows; it simply
+  stops accumulating rows for that indicator at all.
+- Queried `macro_snapshots` directly: "CPI (YoY)" and "Real Fed Funds
+  Rate" both have their last real row at **2026-10-29** (value 3.717 and
+  0.033 respectively — exactly my Phase 3 numbers), with nothing newer.
+  "Core CPI (YoY)" is frozen at the same date too (2.566).
+- `evaluateTripWires`'s date-join builds `fiscalDominanceDailyRows` from
+  whatever rows actually exist, then reads `dailyRows[0]` as "today's"
+  value. Since no new rows have been written since 2026-10-29, `dailyRows[0]`
+  IS the 2026-10-29 row — 20 days stale as of today (2026-11-18), but a
+  perfectly normal-looking non-null number, not a null. Nothing bypasses
+  the frozen cards; there's only one pipeline, and "frozen" here means
+  "stopped writing new rows," not "started writing nulls."
+
+This is actually a worse failure mode than the spec assumed: a null
+would at least be visibly "unknown" to any consumer; a stale non-null
+value silently presents 20-day-old data as if it were today's reading,
+with no signal anywhere that it's stale — the exact same category of
+problem v2 Phase 3's `insufficientHistory` flag was built to prevent for
+the debt-service gate, just not yet addressed for this one. Confirmed
+this doesn't change Phase 4's scope (the spec's underlying problem —
+"these conditions aren't using live data" — is correct even though its
+mechanism description was wrong), but it DOES mean Phase 4's fix (once
+`yoyPair` can pair the newest print again) should make `macro_snapshots`
+start accumulating fresh rows again too, which `evaluateTripWires`
+should then pick up automatically on its next run — confirmed live after
+deploy, not assumed (see the live-verification report).
+
+**4a.** `_shared/yoyMath.ts` gains:
+- `addMonths(monthKey, n)` — promoted from `inflationRegime.ts`'s local
+  copy (still re-exported there so `get-regime-analysis/index.ts`'s
+  existing `import { addMonths } from "../_shared/inflationRegime.ts"`
+  keeps working unchanged).
+- `monthlyGapFill(series, gapMonth)` — the general rule: a month missing
+  from a `Map<"YYYY-MM-01", number>`, bracketed by real values in the
+  immediately preceding and following calendar months, gets a one-off
+  geometric-mean fill. Returns `null` (never fills) for a month that
+  isn't actually missing, one missing at a series edge (no neighbor on
+  one side), or part of a 2+ consecutive-month gap. Never mutates its
+  input.
+- `yoyPair` upgraded internally (via a new `findYearAgoWithGapFill`) to
+  use this rule when the exact year-ago month is missing; returns
+  `usedInterpolatedMonth` (the filled month, or `null`) alongside
+  `current`/`previous`.
+- `yoyPairWithFallback` (4c) — walks backward through `obs` for the most
+  recent position that CAN be paired (with gap-fill already applied at
+  each position tried), returning `usedObsDate` and `staleReason`
+  (non-null whenever the returned pairing isn't the newest observation).
+
+Confirmed the fill path is inert for quarterly series by construction,
+not by a special case: the neighbor check looks for the immediately
+preceding/following CALENDAR MONTH in the same `obs` array, and a
+quarterly series' real observations are always 3 calendar months apart
+— there is structurally never a monthly-adjacent neighbor to find, so
+`monthlyGapFill` always returns null for quarterly data regardless of
+what gap exists. Verified with a dedicated test
+(`tests/yoyMath.test.ts`'s "quarterly-cadence data never spuriously
+triggers the fill").
+
+**4b.** `inflationRegime.ts`'s hardcoded `GAP_MONTH = "2025-10-01"` block
+replaced with a sweep: for every month between the CPI series' own
+first and last observed month, check `monthlyGapFill` and patch the
+result into the (already-local, never-mutates-the-caller) `cpi` map if
+it applies. This preserves the ORIGINAL architecture exactly — patch a
+local working copy up front so every downstream reader (`yoyAt`,
+`cpiP75At`'s windowed lookups, `accelAt`'s direct level reads) sees the
+filled value transparently — just generalized from one hardcoded date
+to any single bracketed gap found anywhere in the series' range.
+
+**Full-history bit-identical diff, confirmed (not spot-checked):** ran
+the OLD (`git show HEAD:`) and NEW `classifyInflationRegime` against the
+real `tests/fixtures/inflation-regime-fred-snapshot.json` fixture — 1293
+rows each. **Zero rows differ** (compared every field via `JSON.stringify`
+equality, not just the paper-replication test's broad transition
+windows). This confirms the ONLY gap that actually exists anywhere in
+real CPIAUCSL history is still the one 2025-10-01 month the old code
+hardcoded — the generalization found no OTHER gaps to newly fill, so
+production output is genuinely unchanged, not just "unchanged in the
+cases I happened to check."
+
+One existing unit test (`tests/inflationRegime.test.ts`, "skips a
+missing month's own YoY...") broke as an expected, correct consequence
+of generalizing the rule: its synthetic fixture dropped an ARBITRARY
+month (not 2025-10-01) from an otherwise-continuous series, which the
+OLD hardcoded-to-one-date code correctly left null — but which the NEW
+general rule now correctly fills, since it's a legitimately bracketed
+single-month gap. Rewrote it into two tests matching Phase 4's own test
+checklist: a single bracketed gap now fills (updated expectations,
+including the 12-months-later cascade and confirmation-streak count),
+and a genuine two-month gap still doesn't fill (new test, both months
+stay null). The three existing D-0-specific tests (fills 2025-10
+specifically; a sparse fixture with no real adjacent months stays
+unfilled; a real print always wins over interpolation) all still pass
+unchanged.
+
+**4c.** `yoyPair` callers in `fetch-macro-data` upgraded to
+`yoyPairWithFallback`, scoped to the genuinely monthly cases: `yoy_monthly`
+(Core CPI, Industrial Production, Retail Sales, M2 Growth, Real
+Disposable Income), `yoy_monthly_with_3m` (CPI, PPI), `yoy_monthly_agg`,
+and `level_minus_yoy_monthly` (Real Fed Funds — explicitly named in 4d).
+Each surfaces `metadata.used_interpolated_month`/`metadata.stale_reason`
+when set. `yoy_monthly_with_3m`'s `reference_period` now uses
+`yoy.usedObsDate` (the observation actually paired) instead of always
+`obs[0].date`, since under the stale-fallback path those differ; its
+3-month-momentum (`change3m_pp`) calculation is skipped entirely under
+the stale-fallback path rather than computed against a now-mismatched
+baseline (`obs[3]` is "3 months before `obs[0]`," a different reference
+point than the fallback's actual current reading) — a deliberate,
+conservative choice: omitting a metadata field under a known-stale
+fallback is safer than quietly computing a momentum figure against the
+wrong anchor.
+
+**Deliberately left unchanged (out of scope, logged per rule 6):** the
+GDP/quarterly-cadence `yoyPair` call sites (`yoy_quarterly`,
+`level_minus_yoy_quarterly`, `level_minus_nominal_yoy_quarterly`,
+`effective_rate_minus_nominal_yoy`, `m2_minus_gdp`'s GDP half, and the
+regime-history GDP YoY at the bottom of the file) stay on plain `yoyPair`,
+not `yoyPairWithFallback`. The gap-fill itself is safe there (inert for
+quarterly data, confirmed above), but the STALE-FALLBACK WALK is a
+different, untested behavior for quarterly series — unlike the monthly
+cases, I haven't verified whether `yoyPairWithFallback`'s backward walk
+could ever actually activate for GDP (e.g. around a revision/timing
+lag) or what that would mean for those cards. The spec's explicit scope
+is "monthly price indexes" and names CPI/Core CPI/Real Fed Funds
+specifically; extending the stale-fallback behavior to quarterly GDP
+cards wasn't asked for and isn't covered by any diff/test here, so it's
+left alone rather than silently widened.
+
+**4e.** `app/macro/page.jsx`'s generic indicator-card component gains
+two small note lines, in the same "metadata-driven per-card note" block
+that already handles NIPA/r_eff/zscore notes: `used_interpolated_month`
+→ "incl. interpolated {Mon YYYY} base"; `stale_reason` → "stale — newest
+print not yet pairable" (full reason in the title tooltip).
+
+### Tests
+
+`tests/yoyMath.test.ts` (new): `addMonths` (same-year, year-rollover
+both directions); `monthlyGapFill` (single gap filled; two-month gap not
+filled; not-actually-missing returns null; never mutates input; edge gap
+with no neighbor on one side not filled); `yoyPair` (normal pairing;
+single-month gap filled with `usedInterpolatedMonth` tagged — caught my
+own mistake writing this one, see below; 2+ month gap returns null;
+quarterly cadence never spuriously fills); `yoyPairWithFallback` (direct
+case matches plain `yoyPair`; fallback case walks back one position with
+`staleReason`/`usedObsDate` set correctly; fully-unpairable series
+returns null).
+
+Caught while writing the "fills a single-month gap" test: I initially
+asserted the fill showed up in `yoy.current`, but in that fixture
+`obs[0]`'s year-ago month (2025-11) was actually present — the gap I'd
+built (2025-10) was only the year-ago match for `obs[1]`, meaning it
+surfaces in `yoy.previous`, not `yoy.current`. Fixed by checking which
+field the fixture's gap actually lands on rather than assuming
+position 0 always exercises it.
+
+`tests/inflationRegime.test.ts`: rewrote the broken synthetic-gap test
+into "fills a single missing month... via the general gap rule" (updated
+expectations) and "does NOT fill a two-month gap" (new), per Phase 4's
+own checklist; left the three D-0-specific tests and the sparse/no-real-
+neighbors test as-is (still pass; see comment update on the latter for
+why it's still valid under the generalized rule).
+
+Full suite: `npx vitest run tests/` → 754 passed (42 files). `npx next
+build` → compiles clean, all 27 routes prerender.
+
+### Acceptance (pending live confirmation — not yet deployed)
+
+One gap rule now spans both subsystems (`inflationRegime.ts` and
+`fetch-macro-data`'s `yoyPair`), confirmed via the same shared
+`_shared/yoyMath.ts` implementation rather than two independent copies.
+`inflationRegime`'s output is confirmed bit-identical across its full
+real history (1293/1293 rows, zero diffs). **Not yet deployed** — code,
+tests, and this log entry are committed; the actual new CPI/Core
+CPI/Real Fed Funds values, whether Real Fed Funds' stance label changes,
+whether fiscal-dominance conditions 2/4 update to different live numbers
+than Phase 3's report, and whether the Daily Summary's core CPI now
+matches the corrected card are all reported separately after deploy —
+confirmed live, not assumed, per the standing gate.

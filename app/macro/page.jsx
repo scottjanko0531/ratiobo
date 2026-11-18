@@ -316,6 +316,19 @@ function IndicatorCard({ ind, onSave, onClick, note }) {
           {ind.metadata.avg_3y_bp != null && <>3y avg <span className="num text-paper">{Number(ind.metadata.avg_3y_bp) >= 0 ? "+" : ""}{Number(ind.metadata.avg_3y_bp).toFixed(1)}bp</span></>}
         </p>
       )}
+      {/* v2 Phase 4e: _shared/yoyMath.ts's general gap rule (4a) fills a
+          single missing month bracketed by real neighbors — flag it here
+          rather than presenting the YoY as an ordinary print. */}
+      {ind.metadata?.used_interpolated_month != null && (
+        <p className="text-paper-dim/70 text-[10px] italic">
+          incl. interpolated {new Date(ind.metadata.used_interpolated_month + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })} base
+        </p>
+      )}
+      {ind.metadata?.stale_reason != null && (
+        <p className="text-brass-soft text-[10px] italic" title={ind.metadata.stale_reason}>
+          stale — newest print not yet pairable
+        </p>
+      )}
       <p className="text-paper-dim text-xs leading-snug line-clamp-2">{ind.description}</p>
     </div>
   );

@@ -76,7 +76,18 @@ describe("classifyInflationRegime", () => {
     expect(row(156).confirmedState).toBe("stagflation");
   });
 
-  it("skips a missing month's own YoY, cascades to the YoY exactly 12 months later, but leaves the percentile window and confirmation streak otherwise unaffected", () => {
+  // v2 Phase 4a/4b: a SINGLE missing month, bracketed by real neighbors on
+  // both sides, is no longer left null — the general gap rule
+  // (_shared/yoyMath.ts's monthlyGapFill) fills it with the geometric mean
+  // of its neighbors, exactly like the old hardcoded 2025-10 patch did for
+  // that one date, now for ANY single-month gap. This fixture is a
+  // constant-2%-YoY series where every month within a 12-month block is
+  // literally flat (buildByYoyTarget only changes the level at 12-month
+  // boundaries), so the geometric mean of index 99 and 101 is index 100's
+  // true value exactly, not an approximation — the filled YoY, 12-months-
+  // later cascade, and confirmation streak all read as if the gap had
+  // never existed.
+  it("fills a single missing month (bracketed by real neighbors) via the general gap rule, including its 12-months-later cascade", () => {
     const cpiFull = buildByYoyTarget(150, () => 0.02);
     const ipFull = buildByYoyTarget(150, () => 0.02);
     const cpiWithGap = cpiFull.filter((_, i) => i !== 100); // drop index 100 entirely
@@ -86,24 +97,55 @@ describe("classifyInflationRegime", () => {
     expect(row(99).rawState).toBe("contained");
     expect(row(99).confirmedState).toBe("contained");
 
-    // The missing month itself: no YoY, no raw state — but the ongoing
-    // "contained" confirmation is untouched by a data gap.
-    expect(row(100).cpiYoy).toBeNull();
-    expect(row(100).rawState).toBeNull();
+    // The filled month: a real YoY (0.02, same as every other month in
+    // this fixture) and a normal "contained" rawState, not null/skipped.
+    expect(row(100).cpiYoy).toBeCloseTo(0.02, 6);
+    expect(row(100).rawState).toBe("contained");
     expect(row(100).confirmedState).toBe("contained");
 
-    // 12 months later, the missing month is the YoY denominator — also null.
-    expect(row(112).cpiYoy).toBeNull();
-    expect(row(112).rawState).toBeNull();
+    // 12 months later, the filled month is the YoY denominator — also a
+    // real value now, not null.
+    expect(row(112).cpiYoy).toBeCloseTo(0.02, 6);
+    expect(row(112).rawState).toBe("contained");
 
-    // The streak resumes exactly where it left off — the gap month is
-    // skipped, not treated as a break.
+    // The streak simply continues uninterrupted (the gap no longer breaks
+    // or skips anything — there's a real rawState at every month now, so
+    // the count increments at BOTH 100 and 101, not skipped at 100).
     expect(row(101).rawState).toBe("contained");
-    expect(row(101).candidateCount).toBe(row(99).candidateCount + 1);
+    expect(row(100).candidateCount).toBe(row(99).candidateCount + 1);
+    expect(row(101).candidateCount).toBe(row(99).candidateCount + 2);
 
-    // A later month's P75 window (which spans both gap rows) still
-    // computes a sane value from whichever months are actually present.
     expect(row(130).cpiP75).toBeCloseTo(0.02, 6);
+  });
+
+  // Phase 4's own test checklist: a gap of 2+ consecutive months is NEVER
+  // filled (no real neighbor exists immediately adjacent to either missing
+  // month), keeping v1's strict null behavior.
+  it("does NOT fill a two-month gap — neither missing month has a real adjacent neighbor", () => {
+    const cpiFull = buildByYoyTarget(150, () => 0.02);
+    const ipFull = buildByYoyTarget(150, () => 0.02);
+    const cpiWithGap = cpiFull.filter((_, i) => i !== 100 && i !== 101); // two consecutive months dropped
+    const rows = classifyInflationRegime(cpiWithGap, ipFull);
+    const row = (t: number) => rows[t];
+
+    expect(row(100).cpiYoy).toBeNull();
+    expect(row(100).rawState).toBeNull();
+    expect(row(101).cpiYoy).toBeNull();
+    expect(row(101).rawState).toBeNull();
+
+    // The ongoing confirmation is still untouched by the (unfilled) gap —
+    // a data gap leaves the candidate streak alone rather than breaking it.
+    expect(row(99).confirmedState).toBe("contained");
+    expect(row(100).confirmedState).toBe("contained");
+    expect(row(101).confirmedState).toBe("contained");
+
+    // 12 months later, both gap months are YoY denominators — also null.
+    expect(row(112).cpiYoy).toBeNull();
+    expect(row(113).cpiYoy).toBeNull();
+
+    // The streak resumes exactly where it left off once real data returns.
+    expect(row(102).rawState).toBe("contained");
+    expect(row(102).candidateCount).toBe(row(99).candidateCount + 1);
   });
 
   it("votes accelerating when 2 of 3 horizons agree and the third is missing for lack of history", () => {
@@ -235,10 +277,12 @@ describe("Oct 2025 CPI interpolation (D-0)", () => {
     expect(row!.cpiYoy).toBeCloseTo(expectedInterpolated / 100 - 1, 6);
   });
 
-  it("does not interpolate a different missing month", () => {
+  it("does not interpolate a different missing month when it has no real adjacent neighbors (v2 Phase 4: the rule is general now, but still only fills a BRACKETED single gap)", () => {
     const cpi: MonthlyObs[] = [
       { date: "2022-05-01", value: 100 },
-      // 2023-05 deliberately omitted — NOT the D-0 date
+      // 2023-05 deliberately omitted — this sparse fixture has no real
+      // 2023-04/2023-06 neighbor either, so even the generalized rule
+      // (any single bracketed gap, not just 2025-10) can't fill it.
       { date: "2024-05-01", value: 108 },
     ];
     const ip: MonthlyObs[] = [{ date: "2000-01-01", value: 100 }];
