@@ -1,7 +1,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { computeBucketGaps, BW_ALLOC, HoldingLike } from "../_shared/portfolioGap.ts";
 import { convergenceGapStatus } from "../_shared/statusThresholds.ts";
+import { buildBriefPrompt, BriefPromptParams } from "../_shared/debtCycleBriefPrompt.ts";
+import { runDeterministicFactChecks } from "../_shared/briefFactCheck.ts";
+import { filterSupersededFirings, FiringLike, StageNoteLike } from "../_shared/tripWireSupersession.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -31,11 +33,12 @@ const DALIO_BENCHMARKS_FOR_PROMPT = [
   { label: "Deficit — Soft-Landing Target", value: 3, unit: "% of GDP", metricKey: "deficit_pct_gdp" },
 ];
 
-const KEY_LABEL: Record<string, string> = {
-  eq: "US Equities", intl: "International", em: "EM Equities", nb: "Nominal Bonds",
-  tip: "TIPS", com: "Commodities", gld: "Gold", cash: "Cash",
-  alt_crypto: "Crypto", alt_re: "Real Estate", alt_loan: "Notes / Loans",
-  alt_pp: "Private Placements", alt_other: "Other",
+const TRIP_WIRE_LABELS: Record<string, string> = {
+  mp2_onset_watch: "MP2 onset watch",
+  auction_demand_deterioration: "Auction demand deterioration",
+  dollar_divergence_widening: "Dollar confidence divergence widening",
+  stock_bond_corr_positive: "Positive stock-bond correlation regime",
+  fiscal_dominance_confirmed: "Fiscal-dominance regime confirmed",
 };
 
 interface Conditions {
@@ -49,99 +52,12 @@ interface Conditions {
 
 interface TripWireState { armed: boolean; sinceDate: string | null; values: Record<string, number | null> }
 
-// v2 Phase 6c: the forward-looking "refinancing pressure ahead" signal
-// (Phase 6a/6b) -- informational, not a stage gate, same as the condition
-// lines above. null fields mean the underlying card hasn't got enough
-// data yet (e.g. rEff12moAgo before a year of history exists).
-interface RefinancingPressure {
-  rEff: number | null;
-  convergenceGap: number | null;
-  dgs10: number | null;
-  rEff12moAgo: number | null;
-}
-
-async function generateBrief(params: {
-  stage: string;
-  previousStage: string | null;
-  conditions: Conditions;
-  trendConfidence: string;
-  benchmarkLines: string[];
-  tripWiresArmed: { label: string; sinceDate: string | null }[];
-  tripWiresFiredThisWeek: { label: string; firedAt: string }[];
-  portfolioGapLines: string[];
-  refinancingPressure: RefinancingPressure;
-  correction?: string;
-  methodologyNote?: string | null;
-}): Promise<string | null> {
+async function generateBrief(
+  promptParams: BriefPromptParams,
+): Promise<string | null> {
   if (!ANTHROPIC_KEY) return null;
   try {
-    const {
-      stage, previousStage, conditions, trendConfidence,
-      benchmarkLines, tripWiresArmed, tripWiresFiredThisWeek, portfolioGapLines, refinancingPressure, correction, methodologyNote,
-    } = params;
-
-    // v2 Phase 6c: built once here (not inline in the template literal)
-    // since the MP1-framing instruction below needs to branch on whether
-    // the gap is actually in the "danger" (large) band.
-    let refinancingPressureBlock = "REFINANCING PRESSURE AHEAD (forward signal, not a stage gate): not enough data yet.";
-    let largeGapMp1Instruction = "";
-    if (refinancingPressure.rEff != null && refinancingPressure.convergenceGap != null) {
-      const gapStatus = convergenceGapStatus(refinancingPressure.convergenceGap);
-      const trendLine = refinancingPressure.rEff12moAgo != null
-        ? `r_eff 12 months ago: ${refinancingPressure.rEff12moAgo.toFixed(2)}% (${(refinancingPressure.rEff - refinancingPressure.rEff12moAgo) >= 0 ? "up" : "down"} ${Math.abs(refinancingPressure.rEff - refinancingPressure.rEff12moAgo).toFixed(2)}pts over the trailing 12 months)`
-        : "12-month trend: not enough history yet";
-      refinancingPressureBlock = `REFINANCING PRESSURE AHEAD (forward signal, not a stage gate):
-  r_eff (blended effective rate on all outstanding federal debt): ${refinancingPressure.rEff.toFixed(2)}%
-  10Y Treasury yield: ${refinancingPressure.dgs10 != null ? refinancingPressure.dgs10.toFixed(2) : "n/a"}%
-  Convergence gap (10Y - r_eff): ${refinancingPressure.convergenceGap.toFixed(2)}pts (${gapStatus})
-  ${trendLine}
-  As maturing debt refinances at today's higher rate, r_eff converges upward toward the 10Y over time -- this gap is the amount of future repricing still ahead, not a current-period cost.`;
-      if (stage === "MP1" && gapStatus === "danger") {
-        largeGapMp1Instruction = `\nIMPORTANT FRAMING RULE: the stage is MP1 (no current gate is tripped) AND the convergence gap above is large (${gapStatus}). Describe this combination explicitly as "no current strain, rising pressure" -- NOT as "healthy" or "no concern." A large gap means a lot of outstanding debt is still priced well below today's rate and has yet to reprice as it matures; that is a real forward risk even though no stage condition is triggered today. Do not let the calm stage label imply the forward picture is calm too.\n`;
-      }
-    }
-
-    const conditionLines = [
-      `Debt service strained (interest expense > 20% of federal revenue): ${conditions.debtServiceStrained ? "TRUE" : "false"}`,
-      `r > g (10Y yield exceeds nominal GDP growth): ${conditions.rGreaterG ? "TRUE" : "false"}`,
-      `Fed printing rising (Fed Balance Sheet % GDP in a sustained uptrend): ${conditions.fedPrintingRising ? "TRUE" : "false"}`,
-      `MP2 gate (near-zero rates AND Fed printing rising): ${conditions.mp2Gate ? "TRUE" : "false"}`,
-      `MP3 auction demand weak (indirect bidder share or bid-to-cover trailing average weak): ${conditions.mp3AuctionDemandWeak ? "TRUE" : "false"}`,
-      `MP3 SOMA absorbing (sustained positive long-duration absorption): ${conditions.mp3SomaAbsorbing ? "TRUE" : "false"}`,
-    ].join("\n  ");
-
-    const prompt = `You are Clio, macro analyst at RatioBo, writing the "Debt Cycle Position Check" — a sibling panel to your existing Clio Musings regime analysis, but scoped specifically to Ray Dalio's Big Debt Cycle framework (MP1 / MP1 (strained) / MP2 / MP3). Write direct, sharp analysis — no hedging language, no fluff, under 350 words total. No markdown headers, no bold, no title line.
-${correction ? `\nCORRECTION REQUIRED — your previous draft was flagged for these factual/consistency problems; fix all of them in this rewrite:\n${correction}\n` : ""}
-HARD CONSTRAINT: the stage below is a computed, auditable classification, not your own judgment call. State it exactly as given and never contradict it or hedge it into a different stage. If trendConfidence is "low" or "unknown", say so explicitly rather than presenting the read with unwarranted certainty.
-${methodologyNote ? `\nMETHODOLOGY NOTE (mention this plainly if the stage changed from the prior run — this is a definition correction, not evidence that fundamentals improved): ${methodologyNote}\n` : ""}${largeGapMp1Instruction}
-CURRENT STAGE: ${stage}${previousStage && previousStage !== stage ? ` (changed from ${previousStage} this run)` : ""}
-Trend confidence: ${trendConfidence}
-Conditions driving this classification:
-  ${conditionLines}
-
-DALIO'S PUBLISHED BENCHMARKS vs. LIVE READINGS (his own cited figures, not our model):
-${benchmarkLines.map((l) => `  ${l}`).join("\n")}
-
-${refinancingPressureBlock}
-
-TRIP-WIRES — currently armed (early-warning signals, distinct from the stage classification above):
-${tripWiresArmed.length ? tripWiresArmed.map((t) => `  - ${t.label}${t.sinceDate ? ` (since ${t.sinceDate})` : ""}`).join("\n") : "  None currently armed."}
-
-TRIP-WIRES fired in the last 7 days:
-${tripWiresFiredThisWeek.length ? tripWiresFiredThisWeek.map((t) => `  - ${t.label} (${t.firedAt})`).join("\n") : "  None fired this week."}
-
-PORTFOLIO GAP vs. BW Modified (bucket-level, largest deltas first):
-${portfolioGapLines.length ? portfolioGapLines.map((l) => `  ${l}`).join("\n") : "  No portfolio data available."}
-
-Structure your answer in five parts, separated by blank lines:
-(1) A paragraph stating the current stage, which conditions drove it, and how that compares to the prior stage if it changed.
-(2) A paragraph comparing the live readings above to Dalio's own cited benchmarks — where do we stand relative to his stated checkpoints?
-(3) A short paragraph on REFINANCING PRESSURE AHEAD above — mention r_eff, the 10Y, the convergence gap, and the 12-month trend if available. This is a forward signal, not part of today's stage classification; say so explicitly. If the IMPORTANT FRAMING RULE above applies, follow it exactly.
-(4) A paragraph on trip-wires: what's currently armed, what fired this week, and what a viewer should actually watch for next.
-(5) A "Concrete moves:" section: one short lead-in sentence, then 2-5 bullet points (each on its own line, starting with "- "), each a specific, actionable rebalancing suggestion grounded in the portfolio gap data above — name the actual bucket and direction, not vague advice.
-
-Parts 1-4 must be plain prose — no bullets, no bold, no headers. Part 5 must be lead-in sentence + bullets only.`;
-
+    const prompt = buildBriefPrompt(promptParams);
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
@@ -247,38 +163,64 @@ Deno.serve(async (req: Request) => {
     // own rawInputs (Phase 6a) — already on this same audit row, no extra
     // query needed.
     const rawInputs = (audit.raw_inputs ?? {}) as Record<string, number | null>;
-    const refinancingPressure: RefinancingPressure = {
+    const refinancingPressure = {
       rEff: rawInputs.rEff ?? null,
       convergenceGap: rawInputs.convergenceGap ?? null,
       dgs10: rawInputs.dgs10 ?? null,
       rEff12moAgo: rawInputs.rEff12moAgo ?? null,
     };
+    const refinancingGapStatus = refinancingPressure.convergenceGap != null ? convergenceGapStatus(refinancingPressure.convergenceGap) : null;
 
     const conditions = audit.conditions as Conditions;
     const tripWires = (audit.trip_wires ?? {}) as Record<string, TripWireState>;
-    const TRIP_WIRE_LABELS: Record<string, string> = {
-      mp2_onset_watch: "MP2 onset watch",
-      auction_demand_deterioration: "Auction demand deterioration",
-      dollar_divergence_widening: "Dollar confidence divergence widening",
-      stock_bond_corr_positive: "Positive stock-bond correlation regime",
-      fiscal_dominance_confirmed: "Fiscal-dominance regime confirmed",
-    };
+    const armedNow = Object.fromEntries(Object.entries(tripWires).map(([k, t]) => [k, t.armed]));
+
     const tripWiresArmed = Object.entries(tripWires)
       .filter(([, t]) => t.armed)
       .map(([key, t]) => ({ label: TRIP_WIRE_LABELS[key] ?? key, sinceDate: t.sinceDate }));
 
+    // v3 Phase 3d: exclude firings superseded by a same-key recalibration
+    // note dated on/after the firing, trip-wire disarmed since -- the exact
+    // fix for the Nov 17 artifact (the "Auction demand deterioration"
+    // firing that fired hours before that same day's recalibration note).
+    // Fetches ALL notes, not just the latest, since supersession needs to
+    // check every note for a match, not only the most recent one overall.
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const { data: firedRows } = await sb
-      .from("notifications")
-      .select("metadata, created_at")
-      .eq("category", "debt_cycle")
-      .eq("type", "trip_wire")
-      .gte("created_at", sevenDaysAgo)
-      .order("created_at", { ascending: false });
-    const tripWiresFiredThisWeek = (firedRows ?? []).map((r: { metadata: { trip_wire_key?: string }; created_at: string }) => ({
-      label: TRIP_WIRE_LABELS[r.metadata?.trip_wire_key ?? ""] ?? r.metadata?.trip_wire_key ?? "unknown",
-      firedAt: r.created_at.slice(0, 10),
+    const [{ data: firedRows }, { data: allNotes }] = await Promise.all([
+      sb.from("notifications")
+        .select("metadata, created_at")
+        .eq("category", "debt_cycle")
+        .eq("type", "trip_wire")
+        .gte("created_at", sevenDaysAgo)
+        .order("created_at", { ascending: false }),
+      sb.from("big_cycle_stage_notes").select("note, created_at").order("created_at", { ascending: false }),
+    ]);
+    const firings: FiringLike[] = (firedRows ?? []).map((r: { metadata: { trip_wire_key?: string }; created_at: string }) => ({
+      tripWireKey: r.metadata?.trip_wire_key ?? "",
+      firedAt: r.created_at,
     }));
+    const stageNotes: StageNoteLike[] = (allNotes ?? []).map((n: { note: string; created_at: string }) => ({
+      note: n.note, createdAt: n.created_at,
+    }));
+    const { kept: keptFirings, superseded: supersededFirings } = filterSupersededFirings(firings, stageNotes, armedNow);
+    const tripWiresFiredThisWeek = keptFirings.map((f) => ({
+      label: TRIP_WIRE_LABELS[f.tripWireKey] ?? f.tripWireKey,
+      firedAt: f.firedAt.slice(0, 10),
+    }));
+    const supersededLabelsForFactCheck = [...new Set(supersededFirings.map((f) => TRIP_WIRE_LABELS[f.tripWireKey] ?? f.tripWireKey))];
+
+    // v3 Phase 3c: the feed's real newest 10Y/30Y auction date -- so both
+    // the prompt (told explicitly not to call stale data "this week") and
+    // the fact-check's stale-claim rule use the same ground truth. Takes
+    // the more recent of the two auction-sourced cards' data_as_of.
+    const { data: auctionCardRows } = await sb
+      .from("macro_indicators")
+      .select("metadata")
+      .in("name", ["Indirect Bidder Share (10Y/30Y)", "Treasury Bid-to-Cover"]);
+    const auctionDataAsOfCandidates = (auctionCardRows ?? [])
+      .map((r: { metadata: { data_as_of?: string } | null }) => r.metadata?.data_as_of)
+      .filter((d): d is string => !!d);
+    const auctionDataAsOf = auctionDataAsOfCandidates.length ? auctionDataAsOfCandidates.sort().reverse()[0] : null;
 
     const { data: benchmarkMetricRows } = await sb
       .from("big_cycle_metrics")
@@ -289,23 +231,12 @@ Deno.serve(async (req: Request) => {
       `${b.label}: live ${metricDisplayByKey.get(b.metricKey) ?? "n/a"} vs. Dalio's ~${b.value}${b.unit}`
     );
 
-    const { data: stageNoteRow } = await sb
-      .from("big_cycle_stage_notes")
-      .select("note")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Latest note overall (any key) -- still used for the "stage changed
+    // due to a methodology fix" framing, a separate concern from the
+    // per-key supersession check above.
+    const methodologyNote = stageNotes[0]?.note ?? null;
 
-    const { data: holdingsRows } = await sb
-      .from("holdings_valued")
-      .select("simulator_key, asset_type, current_value");
-    const bucketGaps = computeBucketGaps((holdingsRows ?? []) as HoldingLike[], BW_ALLOC);
-    const portfolioGapLines = bucketGaps
-      .filter((g) => Math.abs(g.deltaPct) >= 1)
-      .slice(0, 8)
-      .map((g) => `${KEY_LABEL[g.key] ?? g.key}: ${g.currentPct.toFixed(1)}% actual vs ${g.targetPct.toFixed(1)}% target (${g.deltaPct >= 0 ? "+" : ""}${g.deltaPct.toFixed(1)}pt)`);
-
-    const briefParams = {
+    const promptParams: BriefPromptParams = {
       stage: audit.stage as string,
       previousStage: (audit.previous_stage as string | null) ?? null,
       conditions,
@@ -313,12 +244,13 @@ Deno.serve(async (req: Request) => {
       benchmarkLines,
       tripWiresArmed,
       tripWiresFiredThisWeek,
-      portfolioGapLines,
       refinancingPressure,
-      methodologyNote: stageNoteRow?.note ?? null,
+      refinancingGapStatus,
+      auctionDataAsOf,
+      methodologyNote,
     };
 
-    const narrativeFirstPass = await generateBrief(briefParams);
+    const narrativeFirstPass = await generateBrief(promptParams);
     if (!narrativeFirstPass) {
       return new Response(JSON.stringify({ error: "brief generation failed" }), {
         status: 500, headers: { ...CORS, "Content-Type": "application/json" },
@@ -331,36 +263,61 @@ Deno.serve(async (req: Request) => {
     // claims against, plus the exact MP1-large-gap framing rule so it can
     // catch "healthy"/"no concern" language if the narrative used it when
     // it shouldn't have.
-    const gapStatusForCheck = refinancingPressure.convergenceGap != null ? convergenceGapStatus(refinancingPressure.convergenceGap) : null;
     const referenceBlock = [
-      `Stage: ${briefParams.stage}`,
+      `Stage: ${promptParams.stage}`,
       `Conditions: ${JSON.stringify(conditions)}`,
       `Trip-wires armed: ${tripWiresArmed.map((t) => t.label).join(", ") || "none"}`,
       `r_eff: ${refinancingPressure.rEff != null ? refinancingPressure.rEff.toFixed(2) + "%" : "n/a"}`,
       `10Y Treasury yield: ${refinancingPressure.dgs10 != null ? refinancingPressure.dgs10.toFixed(2) + "%" : "n/a"}`,
-      `Convergence gap (10Y - r_eff): ${refinancingPressure.convergenceGap != null ? refinancingPressure.convergenceGap.toFixed(2) + "pts" : "n/a"}${gapStatusForCheck ? ` (${gapStatusForCheck})` : ""}`,
+      `Convergence gap (10Y - r_eff): ${refinancingPressure.convergenceGap != null ? refinancingPressure.convergenceGap.toFixed(2) + "pts" : "n/a"}${refinancingGapStatus ? ` (${refinancingGapStatus})` : ""}`,
       `r_eff 12 months ago: ${refinancingPressure.rEff12moAgo != null ? refinancingPressure.rEff12moAgo.toFixed(2) + "%" : "not enough history yet"}`,
-      ...(briefParams.stage === "MP1" && gapStatusForCheck === "danger"
+      ...(promptParams.stage === "MP1" && refinancingGapStatus === "danger"
         ? [`FRAMING RULE IN EFFECT: stage is MP1 with a large (danger-band) convergence gap — the narrative must describe this as "no current strain, rising pressure," not as "healthy" or "no concern." Flag it as a contradiction if the narrative calls this combination healthy or expresses no concern about it.`]
         : []),
     ].join("\n");
-    const check = await validateConsistency(narrativeFirstPass, referenceBlock);
+
+    // v3 Phase 3c: deterministic regex rules (holdings reference,
+    // rebalance instruction, superseded-firing claim, stale "this week"
+    // claim) run alongside the existing LLM consistency check -- either
+    // source of issues triggers the same regenerate-once-then-banner flow.
+    async function factCheck(narrative: string): Promise<string[]> {
+      const deterministic = runDeterministicFactChecks(narrative, {
+        supersededLabels: supersededLabelsForFactCheck,
+        auctionDataAsOf,
+        now: new Date(),
+      });
+      const llm = await validateConsistency(narrative, referenceBlock);
+      return [...deterministic, ...(llm.consistent ? [] : llm.issues)];
+    }
 
     let narrative = narrativeFirstPass;
-    if (!check.consistent && check.issues.length > 0) {
-      console.error("[debt-cycle-brief] consistency check flagged:", check.issues);
-      const retried = await generateBrief({ ...briefParams, correction: check.issues.map((i) => `- ${i}`).join("\n") });
-      if (retried) narrative = retried;
+    let issues = await factCheck(narrative);
+    let factCheckFlagged = false;
+
+    if (issues.length > 0) {
+      console.error("[debt-cycle-brief] fact-check flagged (pass 1):", issues);
+      const retried = await generateBrief({ ...promptParams, correction: issues.map((i) => `- ${i}`).join("\n") });
+      if (retried) {
+        narrative = retried;
+        issues = await factCheck(narrative);
+        if (issues.length > 0) {
+          console.error("[debt-cycle-brief] fact-check flagged (pass 2, after regenerate):", issues);
+          factCheckFlagged = true;
+        }
+      } else {
+        factCheckFlagged = true;
+      }
     }
 
     const row = {
       brief_date: today,
       narrative,
-      stage: briefParams.stage,
+      stage: promptParams.stage,
       stage_audit_id: audit.id,
       benchmarks_compared: benchmarkLines,
       trip_wires_fired: tripWiresFiredThisWeek,
-      portfolio_gap: bucketGaps,
+      fact_check_flagged: factCheckFlagged,
+      fact_check_issues: factCheckFlagged ? issues : [],
       generated_at: new Date().toISOString(),
     };
     await sb.from("dalio_debt_cycle_brief").upsert(row, { onConflict: "brief_date" });

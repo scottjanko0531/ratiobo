@@ -3620,3 +3620,161 @@ the now-deployed state. `npx next build` — clean.
 
 Live write matches the pre-deploy dry-run report exactly, field for
 field. v3 Phase 2 complete.
+
+## v3 Phase 3 (2026-11-18) — build, NOT deployed
+
+Scott's 3b decision: remove the "Portfolio Gap vs. BW Modified" panel
+entirely (the spec's own default), not the liquid-only rescoping.
+
+### 3a — household allocation orders removed from the brief
+
+`generate-debt-cycle-brief/index.ts` no longer queries `holdings_valued`
+or computes bucket gaps at all. `_shared/portfolioGap.ts` and its test
+(`tests/portfolioGap.test.ts`) deleted outright — confirmed via grep
+they had exactly one consumer each, both gone now.
+
+Prompt construction extracted into a new pure module,
+`_shared/debtCycleBriefPrompt.ts` (`buildBriefPrompt`), specifically so
+the "no holdings data reaches the prompt" claim has a real proof, not
+just a visual read of the output text: `BriefPromptParams` has NO
+`portfolioGapLines` field at all, so passing holdings data into the
+prompt builder is a TypeScript compile error, not just something the
+current code happens not to do. Item (5) is now "Implications" (2-4
+sentences, asset-classes-generally framing) instead of "Concrete
+moves"; added the explicit hard constraint: "Do not reference the
+user's holdings, balances, or allocation percentages. Do not issue
+rebalancing instructions."
+
+Also added (not explicitly asked, logged per rule 6): an
+`auctionDataAsOf` line in the prompt itself, telling the model the
+real newest 10Y/30Y auction date and explicitly forbidding "this week"
+language unless that date is within 7 days — a first line of defense
+before the fact-checker's rule 4 even has to catch anything.
+
+### 3b — panel removed
+
+`DebtCyclePositionCheck.jsx`'s "Portfolio Gap vs. BW Modified" table
+deleted outright, along with its now-unused `computeAllocationDeltas`/
+`ILLIQUID_KEYS`/`BW_ALLOC`/`SIMULATOR_KEYS` imports and `holdings`
+state/`loadHoldings()`. Confirmed via grep that `lib/simulatorKeys.js`
+itself (where those exports live) is still used by `app/portfolios`,
+`app/macro`, `lib/bondLensPortfolio.js`, and `lib/marketOverlayPortfolio.js`
+— only this component's own usage was removed, not the shared module.
+
+### 3c — fact-checker additions
+
+New `_shared/briefFactCheck.ts`: four deterministic, regex-based rules
+(holdings/balance/allocation reference; buy/sell/rebalance instruction;
+superseded-trip-wire-fired claim; stale "this week" auction claim) —
+pure and Vitest-testable, run ALONGSIDE the existing LLM-based
+`validateConsistency` check rather than replacing it (an LLM's judgment
+isn't something a CI test can assert on the way a regex match can).
+
+Two real bugs found and fixed while writing the tests for rule 3
+(logged per rule 6, not stopping to ask):
+- The trip-wire's own LABEL ("Auction demand deterioration") contains
+  the word "deterioration" — a document-wide check for "fired|deteriorat"
+  would always match just from naming the wire. Fixed by stripping the
+  label's own text out of the matched sentence before testing the
+  remainder.
+- A narrower, SENTENCE-scoped check was still needed, not a
+  document-wide one: the brief's own correct, legitimate sentence "no
+  trip-wires... fired this week" (reporting an empty list) contains the
+  word "fired" and was producing a false positive on ANY superseded-wire
+  mention anywhere else in the same document. Scoped the check to the
+  sentence containing the label.
+
+Both caught by the test suite itself (`tests/briefFactCheck.test.ts`),
+not by manual inspection — exactly why these rules needed to be
+unit-testable pure functions rather than an LLM-only check.
+
+Regenerate-once-then-banner flow: if fact-check issues survive one
+regenerate attempt, the brief is still stored and returned (never
+silently blocked) with `fact_check_flagged: true` and `fact_check_issues`
+set — migration `20261118_debt_cycle_brief_v3_phase3_factcheck.sql`
+adds both columns and drops the now-dead `portfolio_gap` column
+(confirmed via grep: `generate-debt-cycle-brief` was its only writer,
+nothing ever read it — `DebtCyclePositionCheck.jsx`'s own panel computed
+its table independently from `holdings_valued`, never from this
+column). `DebtCyclePositionCheck.jsx` renders the banner when set.
+
+### 3d — trip-wire firing history
+
+New `_shared/tripWireSupersession.ts` (`supersededByDate`,
+`filterSupersededFirings`): a firing is superseded when (1) a
+same-key recalibration note exists, (2) dated on/after the firing, (3)
+the trip-wire is disarmed now. Note-to-key association is by TEXT
+PREFIX (`TRIP_WIRE_RECALIBRATION_NOTE_PREFIX`), matching the EXACT
+convention `update-big-cycle-metrics/index.ts` already uses for its own
+same-day suppression check (`ilike("note", "Auction-demand trip-wire
+recalibrated%")`) — deliberately not a new `trip_wire_key` column on
+`big_cycle_stage_notes`, since there is exactly one note in production
+today and a schema change for one row isn't worth it.
+
+Used in BOTH `generate-debt-cycle-brief` (for `tripWiresFiredThisWeek`,
+feeding the prompt and the fact-checker's superseded-labels list) and
+`DebtCyclePositionCheck.jsx`'s own header count and per-wire tooltip
+(mirrored into `lib/tripWireSupersession.js`, same frontend/backend
+split convention as `lib/indirectBidder.js` — a Deno module and this
+Next.js frontend can't literally share code). One function, used twice,
+so the brief and the header can never disagree about which firings are
+real.
+
+**Confirmed live (dry run against the actual production data, no
+deploy):** the 2026-11-17 "Auction demand deterioration" firing
+(created_at 20:46:47 UTC) IS superseded by the recalibration note
+(created_at 22:20:48 UTC, same day) — the exact Nov 17 artifact. The
+2026-11-17 "Positive stock-bond correlation regime" firing (same
+timestamp) is correctly NOT superseded (still armed). **Header count:
+2 → 1.**
+
+### Verification
+
+`npx vitest run tests/` — 47 files, 823 tests, all passing (26 new:
+10 in `tripWireSupersession.test.ts`, 11 in `briefFactCheck.test.ts`,
+6 in `debtCycleBriefPrompt.test.ts` — minus 4 from the deleted
+`portfolioGap.test.ts`). `npx next build` — clean, `/big-cycle` bundle
+shrank slightly (287kB → 283kB) from the removed panel code.
+
+**Prompt-builder proof (the actual ask, not just "the text looks
+clean"):** `BriefPromptParams` has no `portfolioGapLines` field —
+passing holdings data into `buildBriefPrompt` would not compile. The
+test suite also asserts the rendered prompt text contains no dollar
+amounts, no "Portfolio Gap"/"BW Modified" text, and no old-style
+"(5) Concrete moves" structure, while the new "Implications" structure
+and the explicit no-holdings/no-rebalancing hard constraint ARE present.
+
+**Fact-check rule rigor (same standard as v2 Phase 6's live
+verification, done here via unit tests with real injected text instead
+of a temporary debug hook — equivalent proof, zero risk of any trace):**
+`tests/briefFactCheck.test.ts` feeds one deliberately-bad narrative per
+category (a holdings/dollar reference, a "Concrete moves:" rebalance
+list, a "fired this week" claim about the now-superseded auction-demand
+wire, and a "this week's auction" claim against the real live
+`data_as_of` of 2026-10-07/08 — which IS stale under today's real
+2026-11-18 date, confirming the rule fires correctly on live
+conditions, not just a contrived test date) and confirms each is
+caught; a combined-all-four narrative is caught with ≥4 issues; the
+clean reference narrative produces zero issues.
+
+### Still open before deploy approval
+
+- The actual regenerated brief text (3e) — requires deploying
+  `generate-debt-cycle-brief` and calling it with `?refresh=true`
+  against live Anthropic access this session doesn't have outside the
+  deployed function. Same gate as every other phase: not deployed yet.
+- Re-confirm the header count (2 → 1, already dry-run-confirmed above
+  against live notification/note data) reads correctly in the actual
+  running UI once the frontend ships.
+- Confirm no fact-check banner appears on a clean regenerated brief
+  (expected, but only verifiable once actually generated).
+
+### Acceptance (pending deploy)
+
+The brief is macro-only by construction (no holdings field exists to
+pass data through, not just a prompt instruction); the fact-checker's
+four new rules are proven against real injected bad text, including
+the stale-"this week" rule against today's actual stale data_as_of;
+trip-wire history correctly excludes the Nov 17 artifact (dry-run
+confirmed against live data). Nothing deployed. Say go and this phase
+— and the entire v3 spec — is done.

@@ -2,11 +2,9 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 import ProvenanceBadge from "./ProvenanceBadge";
-import { computeAllocationDeltas, ILLIQUID_KEYS, BW_ALLOC, SIMULATOR_KEYS } from "../lib/simulatorKeys";
 import { DALIO_BENCHMARKS } from "../lib/dalioBenchmarks";
+import { filterSupersededFirings } from "../lib/tripWireSupersession";
 import StageInfoIcon from "./StageInfoIcon";
-
-const KEY_LABEL = Object.fromEntries(SIMULATOR_KEYS.map((s) => [s.key, s.label]));
 
 const STAGE_META = {
   "MP1": { color: "text-gain", border: "border-gain/30", bg: "bg-gain/10" },
@@ -90,9 +88,9 @@ function fmtDateTime(d) {
 export default function DebtCyclePositionCheck({ metrics }) {
   const [audit, setAudit] = useState(null);
   const [stageNote, setStageNote] = useState(null);
-  const [firedCount, setFiredCount] = useState(0);
+  const [allNotes, setAllNotes] = useState([]);
+  const [firings, setFirings] = useState([]);
   const [openWireKey, setOpenWireKey] = useState(null);
-  const [holdings, setHoldings] = useState([]);
   const [brief, setBrief] = useState(null);
   const [loadingBrief, setLoadingBrief] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -115,27 +113,25 @@ export default function DebtCyclePositionCheck({ metrics }) {
       .limit(1)
       .maybeSingle();
     setStageNote(data ?? null);
+    // v3 Phase 3d: ALL notes (not just the latest) are needed to check
+    // supersession — a firing's matching recalibration note isn't
+    // necessarily the single most recent note in the table.
+    const { data: notes } = await supabase
+      .from("big_cycle_stage_notes")
+      .select("note, created_at")
+      .order("created_at", { ascending: false });
+    setAllNotes((notes ?? []).map((n) => ({ note: n.note, createdAt: n.created_at })));
   }
 
-  async function loadFiredCount() {
+  async function loadFirings() {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const { count } = await supabase
+    const { data } = await supabase
       .from("notifications")
-      .select("id", { count: "exact", head: true })
+      .select("metadata, created_at")
       .eq("category", "debt_cycle")
       .eq("type", "trip_wire")
       .gte("created_at", sevenDaysAgo);
-    setFiredCount(count ?? 0);
-  }
-
-  async function loadHoldings() {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    const { data } = await supabase
-      .from("holdings_valued")
-      .select("id, symbol, name, simulator_key, asset_type, current_value")
-      .eq("user_id", user.id);
-    setHoldings(data ?? []);
+    setFirings((data ?? []).map((r) => ({ tripWireKey: r.metadata?.trip_wire_key ?? "", firedAt: r.created_at })));
   }
 
   async function loadBrief(refresh = false) {
@@ -156,8 +152,7 @@ export default function DebtCyclePositionCheck({ metrics }) {
   useEffect(() => {
     loadAudit();
     loadStageNote();
-    loadFiredCount();
-    loadHoldings();
+    loadFirings();
     loadBrief(false);
   }, []);
 
@@ -169,8 +164,12 @@ export default function DebtCyclePositionCheck({ metrics }) {
 
   const metricByKey = Object.fromEntries((metrics ?? []).map((m) => [m.key, m]));
 
-  const { actionRows } = computeAllocationDeltas(holdings, BW_ALLOC, { illiquidKeys: ILLIQUID_KEYS });
-  const topGaps = [...actionRows].sort((a, b) => Math.abs(b.deltaVal) - Math.abs(a.deltaVal)).slice(0, 6);
+  // v3 Phase 3d: the header count and each wire's tooltip must agree on
+  // exactly which firings are superseded — one filter, not two.
+  const armedNow = Object.fromEntries(Object.entries(tripWires).map(([k, t]) => [k, Boolean(t?.armed)]));
+  const { kept: keptFirings, superseded: supersededFirings } = filterSupersededFirings(firings, allNotes, armedNow);
+  const firedCount = keptFirings.length;
+  const supersededByKey = Object.fromEntries(supersededFirings.map((f) => [f.tripWireKey, f]));
 
   return (
     <div className="card p-5 mb-6 border border-ink-line">
@@ -272,34 +271,14 @@ export default function DebtCyclePositionCheck({ metrics }) {
               <div className="mt-2 p-3 rounded-lg border border-ink-line bg-ink text-[11px] leading-relaxed">
                 <p className="text-paper font-semibold mb-1">{TRIP_WIRE_LABELS[openWireKey]}</p>
                 <p className="text-paper-dim">{TRIP_WIRE_DEFINITIONS[openWireKey]}</p>
+                {supersededByKey[openWireKey] && (
+                  <p className="text-brass-soft mt-2">
+                    fired {supersededByKey[openWireKey].firedAt.slice(0, 10)} — superseded by recalibration {supersededByKey[openWireKey].supersededBy}
+                  </p>
+                )}
               </div>
             )}
           </div>
-
-          {/* Portfolio gap */}
-          {topGaps.length > 0 && (
-            <div className="mb-5">
-              <p className="label text-[10px] mb-2">Portfolio Gap vs. BW Modified</p>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <tbody>
-                    {topGaps.map((r) => (
-                      <tr key={r.symbol} className="border-b border-ink-line/40 last:border-0">
-                        <td className="py-1 pr-2">
-                          <span className="font-medium">{r.symbol}</span>
-                          <span className="text-paper-dim/60 ml-1">{KEY_LABEL[r.key] ?? r.key}</span>
-                        </td>
-                        <td className="num text-right py-1 pr-2 text-paper-dim">{r.currentPct.toFixed(1)}%</td>
-                        <td className={`num text-right py-1 ${r.deltaVal > 0 ? "text-gain" : r.deltaVal < 0 ? "text-loss" : "text-paper-dim"}`}>
-                          {r.deltaVal >= 0 ? "+" : ""}{r.deltaVal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
 
           {/* Narrative */}
           <div className="border-t border-ink-line pt-4">
@@ -316,6 +295,14 @@ export default function DebtCyclePositionCheck({ metrics }) {
                 {refreshing ? "Refreshing…" : "↻ Refresh"}
               </button>
             </div>
+            {brief?.fact_check_flagged && (
+              <div className="mb-3 p-3 rounded-lg border border-loss/30 bg-loss/5 text-xs text-loss">
+                <p className="font-semibold mb-1">fact-check flagged:</p>
+                <ul className="list-disc pl-4 space-y-0.5">
+                  {(brief.fact_check_issues ?? []).map((issue, i) => <li key={i}>{issue}</li>)}
+                </ul>
+              </div>
+            )}
             {loadingBrief ? (
               <p className="text-paper-dim text-sm">Generating brief…</p>
             ) : brief?.narrative ? (
