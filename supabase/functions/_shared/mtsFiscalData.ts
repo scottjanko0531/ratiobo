@@ -124,7 +124,18 @@ export async function fetchMtsNetInterestTrailing12(asOf: Date = new Date()): Pr
   for (let i = 11; i >= 0; i--) monthEnds.push(addMonthsToMonthEnd(windowEnd, -i));
   const windowStart = monthEnds[0];
 
-  const url = `${FISCAL_DATA}/v1/accounting/mts/mts_table_9?filter=line_code_nbr:eq:320&sort=-record_date&page[size]=24&fields=record_date,current_month_rcpt_outly_amt`;
+  // v2 Phase 5: was `sort=-record_date&page[size]=24` (the latest 24 rows,
+  // full stop) -- correct for asOf=now (the 12 needed month-ends are always
+  // within the newest 24), but silently wrong for any asOf more than ~1
+  // year in the past, since the needed historical month-ends simply aren't
+  // in "the latest 24" at all (byDate.get(me) would be undefined and throw).
+  // Filtering by the exact month-end list instead (same approach
+  // fetchMtsTable1Trailing12 already used) fixes backfill without changing
+  // anything for the live/current-asOf case -- same 12 dates, same values,
+  // confirmed via Phase 5's live comparison before this was relied on for
+  // historical months.
+  const filterList = monthEnds.join(",");
+  const url = `${FISCAL_DATA}/v1/accounting/mts/mts_table_9?filter=line_code_nbr:eq:320,record_date:in:(${filterList})&page[size]=24&fields=record_date,current_month_rcpt_outly_amt`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`mtsFiscalData: MTS table 9 net interest fetch failed: HTTP ${res.status}`);
   const j = await res.json();
@@ -204,7 +215,17 @@ export async function fetchTrailingNominalGdp4Q(fredApiKey: string, asOf: Date =
   gdpB: number;
   quarters: { quarter: string; saarB: number }[];
 }> {
-  const url = `https://api.stlouisfed.org/fred/series/observations?series_id=GDP&api_key=${fredApiKey}&sort_order=desc&limit=6&file_type=json`;
+  // v2 Phase 5: was `sort_order=desc&limit=6` with NO date bound on the
+  // fetch itself -- correct for asOf=now (the 4 needed quarters are always
+  // in "the latest 6"), but the exact same silent-for-historical-asOf bug
+  // fetchMtsNetInterestTrailing12 had: for any asOf more than ~1.5 years in
+  // the past, "the latest 6" from TODAY doesn't contain any quarter <=
+  // asOf at all, so the old post-fetch `.filter(o => o.quarter <= asOf)`
+  // could leave zero usable quarters and throw. `observation_end` bounds
+  // the FETCH itself to asOf, matching the pattern fetch-macro-data's own
+  // output_gap case already uses for the same reason.
+  const asOfStr = asOf.toISOString().slice(0, 10);
+  const url = `https://api.stlouisfed.org/fred/series/observations?series_id=GDP&api_key=${fredApiKey}&sort_order=desc&observation_end=${asOfStr}&limit=6&file_type=json`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`mtsFiscalData: FRED GDP fetch failed: HTTP ${res.status}`);
   const j = await res.json();
@@ -212,11 +233,7 @@ export async function fetchTrailingNominalGdp4Q(fredApiKey: string, asOf: Date =
     .filter((o) => o.value !== "." && o.value !== "")
     .map((o) => ({ quarter: o.date, saarB: parseFloat(o.value) }))
     .filter((o) => !isNaN(o.saarB));
-  // Drop any quarter dated after `asOf` — FRED can return a quarter whose
-  // advance estimate was already published even if asOf predates its
-  // "typical" release date in other contexts; this just guards against
-  // using a not-yet-meaningful future-dated row if one ever appears.
-  const usable = obs.filter((o) => o.quarter <= asOf.toISOString().slice(0, 10)).slice(0, 4);
+  const usable = obs.slice(0, 4);
   if (usable.length < 4) throw new Error(`mtsFiscalData: fewer than 4 usable nominal-GDP quarters as of ${asOf.toISOString()}`);
   return { gdpB: usable.reduce((s, o) => s + o.saarB, 0) / 4, quarters: usable };
 }

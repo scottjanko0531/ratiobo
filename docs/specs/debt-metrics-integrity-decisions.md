@@ -2393,3 +2393,107 @@ whether fiscal-dominance conditions 2/4 update to different live numbers
 than Phase 3's report, and whether the Daily Summary's core CPI now
 matches the corrected card are all reported separately after deploy —
 confirmed live, not assumed, per the standing gate.
+
+### Phase 5: backfill net interest / receipts history
+
+**Found two more MTS/FRED "latest-N-unconditionally" bugs while building
+this, exactly the kind of sharp edge the standing rules warned about.**
+Before writing the backfill itself, tested `_shared/mtsFiscalData.ts`'s
+existing helpers against a genuinely historical `asOf` (2023-06-15) — both
+of these threw or would have silently misbehaved:
+
+- `fetchMtsNetInterestTrailing12`: fetched MTS Table 9 via
+  `sort=-record_date&page[size]=24` — unconditionally "the latest 24
+  rows," with NO date filter on the fetch itself. Correct for `asOf=now`
+  (the 12 needed month-ends are always within the newest 24), but for any
+  `asOf` more than ~1-1.5 years in the past, the needed historical
+  month-ends simply aren't in "the latest 24 as of today" — confirmed
+  live: calling it with `asOf = 2023-06-15` threw `"no net-interest row
+  found for 2022-06-30"`. **Fixed** by filtering the fetch itself via
+  `record_date:in:(<the 12 needed month-ends>)` — the same explicit-date
+  approach `fetchMtsTable1Trailing12` already used (that one was never
+  broken). Confirmed **bit-identical** for `asOf=now` against the old
+  implementation (ran both live, identical JSON), and confirmed it now
+  succeeds for the 2023-06-15 case that used to throw.
+- `fetchTrailingNominalGdp4Q`: same pattern — fetched FRED's `GDP` series
+  via `sort_order=desc&limit=6` with no date bound on the fetch, then
+  filtered post-hoc by `asOf`. For an old `asOf`, "the latest 6 quarters
+  from today" contains zero quarters `<= asOf`, so the post-hoc filter
+  would leave fewer than 4 usable quarters and throw. **Fixed** by adding
+  `observation_end=<asOf>` to the FRED request itself — the exact pattern
+  `fetch-macro-data`'s own `output_gap` case already uses for the same
+  reason. **Could not verify this one locally against live FRED data**
+  (the FRED API key is a Supabase secret, not available to this
+  sandbox's local network — confirmed via `supabase secrets list`, which
+  only returns hashed values, by design). High confidence by direct
+  analogy to the already-proven `output_gap` pattern, but genuinely
+  unverified until deployed — flagging this honestly rather than
+  claiming a confirmation I don't have.
+
+**5a implementation.** New one-off function
+`supabase/functions/backfill-interest-expense-history/index.ts`
+(matching this codebase's existing one-off-backfill convention, e.g.
+`backfill-asset-price-history`): for each of the last `months` (default
+48 — one year beyond the spec's 3-year minimum) trailing-12 windows
+ending each month back from the live card's own current `windowEnd`,
+computes net interest ÷ receipts (`REVENUE_PCT_INDICATOR`) and net
+interest ÷ nominal-GDP-4Q (`GDP_PCT_INDICATOR`) via the now-fixed shared
+helpers, and upserts both into `macro_snapshots` on
+`(indicator_name, snapshot_date)` — the table's actual unique
+constraint, confirmed via schema read — which **replaces** any existing
+NIPA-basis row for that date outright (rule 2.2), rather than adding a
+second row. Supports `?dryRun=true` (compute and report without
+writing) and `?months=N` for testing a smaller range first.
+
+**Vintage logic — logged as a real limitation, not a silent
+simplification (per the explicit instruction).** Checked whether the
+Fiscal Data API exposes any as-of/vintage parameter for `mts_table_1`/
+`mts_table_9`: it does not — both endpoints return exactly one value per
+historical `record_date`, with no way to ask "what did this report say
+about June 2023 as originally published, before any later revision."
+This backfill therefore uses the **latest revised figures** for every
+historical month, not true point-in-time vintages. In practice Treasury
+rarely revises MTS figures materially after publication, but this is a
+real data-source limitation, not a design choice, and is logged here
+explicitly per the spec's instruction.
+
+**`macro_snapshots` has no `metadata` column** (confirmed via
+`information_schema.columns`) — so 5a's "keep NIPA values in
+`metadata.nipa_pct_*` where they exist" can only ever apply to the LIVE
+`macro_indicators` card row (already true since v1 Phase 2, untouched by
+this backfill), never to a historical snapshot row — there's structurally
+nowhere to put it there. Not a gap introduced by this phase; the
+snapshot table was never going to carry per-row metadata.
+
+**Not yet deployed or run.** The backfill function is written and
+committed; running it (even in `dryRun=true` mode, since that still
+requires live network/secret access this sandbox doesn't have) requires
+deploying it first, per the standing gate. Plan once approved: deploy,
+run `?dryRun=true&months=48` first and review the full per-month report
+for sanity (row count, date range, any `gdpError`/mismatch entries)
+before running the real write; then re-evaluate `debtServiceStrained`
+and the fiscal-dominance trip-wire against the real backfilled history
+(5b) and report the actual numbers — not a projection — along with the
+backfill row-count/definition-check assertion (5c's "60-day data floor"
+caveat removal is explicitly held until 5b's result is confirmed, per
+the spec's own ordering).
+
+### Tests
+
+No new Vitest file — `_shared/mtsFiscalData.ts` has never had one (every
+function in it makes live HTTP calls to Treasury/FRED; there's no local
+fixture-replay harness for it in this codebase, unlike the pure
+`_shared/` modules this session built elsewhere). The two bug fixes were
+verified via live `tsx` scripts against the real Treasury API instead
+(Table 9's fix: bit-identical for `asOf=now`, and a successful historical
+call where the old code threw). The GDP fix is unverified pending deploy
+(no local FRED access) — flagged above. Phase 5's own required "backfill
+row-count and definition check" will be run as a direct SQL assertion
+against `macro_snapshots` after the real backfill write, not a Vitest
+file (no local DB to test against) — reported as an explicit pass/fail
+result in the post-deploy report, not eyeballed.
+
+Full suite re-run after these edits (confirms nothing else regressed):
+`npx vitest run tests/` → 754 passed (42 files, unchanged — this phase
+touched no `_shared/` module any existing test imports). `npx next
+build` → compiles clean.
