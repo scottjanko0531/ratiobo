@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { computeBucketGaps, BW_ALLOC, HoldingLike } from "../_shared/portfolioGap.ts";
+import { convergenceGapStatus } from "../_shared/statusThresholds.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -48,6 +49,17 @@ interface Conditions {
 
 interface TripWireState { armed: boolean; sinceDate: string | null; values: Record<string, number | null> }
 
+// v2 Phase 6c: the forward-looking "refinancing pressure ahead" signal
+// (Phase 6a/6b) -- informational, not a stage gate, same as the condition
+// lines above. null fields mean the underlying card hasn't got enough
+// data yet (e.g. rEff12moAgo before a year of history exists).
+interface RefinancingPressure {
+  rEff: number | null;
+  convergenceGap: number | null;
+  dgs10: number | null;
+  rEff12moAgo: number | null;
+}
+
 async function generateBrief(params: {
   stage: string;
   previousStage: string | null;
@@ -57,6 +69,7 @@ async function generateBrief(params: {
   tripWiresArmed: { label: string; sinceDate: string | null }[];
   tripWiresFiredThisWeek: { label: string; firedAt: string }[];
   portfolioGapLines: string[];
+  refinancingPressure: RefinancingPressure;
   correction?: string;
   methodologyNote?: string | null;
 }): Promise<string | null> {
@@ -64,8 +77,29 @@ async function generateBrief(params: {
   try {
     const {
       stage, previousStage, conditions, trendConfidence,
-      benchmarkLines, tripWiresArmed, tripWiresFiredThisWeek, portfolioGapLines, correction, methodologyNote,
+      benchmarkLines, tripWiresArmed, tripWiresFiredThisWeek, portfolioGapLines, refinancingPressure, correction, methodologyNote,
     } = params;
+
+    // v2 Phase 6c: built once here (not inline in the template literal)
+    // since the MP1-framing instruction below needs to branch on whether
+    // the gap is actually in the "danger" (large) band.
+    let refinancingPressureBlock = "REFINANCING PRESSURE AHEAD (forward signal, not a stage gate): not enough data yet.";
+    let largeGapMp1Instruction = "";
+    if (refinancingPressure.rEff != null && refinancingPressure.convergenceGap != null) {
+      const gapStatus = convergenceGapStatus(refinancingPressure.convergenceGap);
+      const trendLine = refinancingPressure.rEff12moAgo != null
+        ? `r_eff 12 months ago: ${refinancingPressure.rEff12moAgo.toFixed(2)}% (${(refinancingPressure.rEff - refinancingPressure.rEff12moAgo) >= 0 ? "up" : "down"} ${Math.abs(refinancingPressure.rEff - refinancingPressure.rEff12moAgo).toFixed(2)}pts over the trailing 12 months)`
+        : "12-month trend: not enough history yet";
+      refinancingPressureBlock = `REFINANCING PRESSURE AHEAD (forward signal, not a stage gate):
+  r_eff (blended effective rate on all outstanding federal debt): ${refinancingPressure.rEff.toFixed(2)}%
+  10Y Treasury yield: ${refinancingPressure.dgs10 != null ? refinancingPressure.dgs10.toFixed(2) : "n/a"}%
+  Convergence gap (10Y - r_eff): ${refinancingPressure.convergenceGap.toFixed(2)}pts (${gapStatus})
+  ${trendLine}
+  As maturing debt refinances at today's higher rate, r_eff converges upward toward the 10Y over time -- this gap is the amount of future repricing still ahead, not a current-period cost.`;
+      if (stage === "MP1" && gapStatus === "danger") {
+        largeGapMp1Instruction = `\nIMPORTANT FRAMING RULE: the stage is MP1 (no current gate is tripped) AND the convergence gap above is large (${gapStatus}). Describe this combination explicitly as "no current strain, rising pressure" -- NOT as "healthy" or "no concern." A large gap means a lot of outstanding debt is still priced well below today's rate and has yet to reprice as it matures; that is a real forward risk even though no stage condition is triggered today. Do not let the calm stage label imply the forward picture is calm too.\n`;
+      }
+    }
 
     const conditionLines = [
       `Debt service strained (interest expense > 20% of federal revenue): ${conditions.debtServiceStrained ? "TRUE" : "false"}`,
@@ -79,8 +113,7 @@ async function generateBrief(params: {
     const prompt = `You are Clio, macro analyst at RatioBo, writing the "Debt Cycle Position Check" — a sibling panel to your existing Clio Musings regime analysis, but scoped specifically to Ray Dalio's Big Debt Cycle framework (MP1 / MP1 (strained) / MP2 / MP3). Write direct, sharp analysis — no hedging language, no fluff, under 350 words total. No markdown headers, no bold, no title line.
 ${correction ? `\nCORRECTION REQUIRED — your previous draft was flagged for these factual/consistency problems; fix all of them in this rewrite:\n${correction}\n` : ""}
 HARD CONSTRAINT: the stage below is a computed, auditable classification, not your own judgment call. State it exactly as given and never contradict it or hedge it into a different stage. If trendConfidence is "low" or "unknown", say so explicitly rather than presenting the read with unwarranted certainty.
-${methodologyNote ? `\nMETHODOLOGY NOTE (mention this plainly if the stage changed from the prior run — this is a definition correction, not evidence that fundamentals improved): ${methodologyNote}\n` : ""}
-
+${methodologyNote ? `\nMETHODOLOGY NOTE (mention this plainly if the stage changed from the prior run — this is a definition correction, not evidence that fundamentals improved): ${methodologyNote}\n` : ""}${largeGapMp1Instruction}
 CURRENT STAGE: ${stage}${previousStage && previousStage !== stage ? ` (changed from ${previousStage} this run)` : ""}
 Trend confidence: ${trendConfidence}
 Conditions driving this classification:
@@ -88,6 +121,8 @@ Conditions driving this classification:
 
 DALIO'S PUBLISHED BENCHMARKS vs. LIVE READINGS (his own cited figures, not our model):
 ${benchmarkLines.map((l) => `  ${l}`).join("\n")}
+
+${refinancingPressureBlock}
 
 TRIP-WIRES — currently armed (early-warning signals, distinct from the stage classification above):
 ${tripWiresArmed.length ? tripWiresArmed.map((t) => `  - ${t.label}${t.sinceDate ? ` (since ${t.sinceDate})` : ""}`).join("\n") : "  None currently armed."}
@@ -98,13 +133,14 @@ ${tripWiresFiredThisWeek.length ? tripWiresFiredThisWeek.map((t) => `  - ${t.lab
 PORTFOLIO GAP vs. BW Modified (bucket-level, largest deltas first):
 ${portfolioGapLines.length ? portfolioGapLines.map((l) => `  ${l}`).join("\n") : "  No portfolio data available."}
 
-Structure your answer in four parts, separated by blank lines:
+Structure your answer in five parts, separated by blank lines:
 (1) A paragraph stating the current stage, which conditions drove it, and how that compares to the prior stage if it changed.
 (2) A paragraph comparing the live readings above to Dalio's own cited benchmarks — where do we stand relative to his stated checkpoints?
-(3) A paragraph on trip-wires: what's currently armed, what fired this week, and what a viewer should actually watch for next.
-(4) A "Concrete moves:" section: one short lead-in sentence, then 2-5 bullet points (each on its own line, starting with "- "), each a specific, actionable rebalancing suggestion grounded in the portfolio gap data above — name the actual bucket and direction, not vague advice.
+(3) A short paragraph on REFINANCING PRESSURE AHEAD above — mention r_eff, the 10Y, the convergence gap, and the 12-month trend if available. This is a forward signal, not part of today's stage classification; say so explicitly. If the IMPORTANT FRAMING RULE above applies, follow it exactly.
+(4) A paragraph on trip-wires: what's currently armed, what fired this week, and what a viewer should actually watch for next.
+(5) A "Concrete moves:" section: one short lead-in sentence, then 2-5 bullet points (each on its own line, starting with "- "), each a specific, actionable rebalancing suggestion grounded in the portfolio gap data above — name the actual bucket and direction, not vague advice.
 
-Parts 1-3 must be plain prose — no bullets, no bold, no headers. Part 4 must be lead-in sentence + bullets only.`;
+Parts 1-4 must be plain prose — no bullets, no bold, no headers. Part 5 must be lead-in sentence + bullets only.`;
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -128,7 +164,7 @@ Parts 1-3 must be plain prose — no bullets, no bold, no headers. Part 4 must b
 async function validateConsistency(narrative: string, reference: string): Promise<{ consistent: boolean; issues: string[] }> {
   if (!ANTHROPIC_KEY) return { consistent: true, issues: [] };
   try {
-    const prompt = `You are a fact-checker. Compare the NARRATIVE below against the REFERENCE DATA it must be consistent with. Flag ONLY clear, checkable contradictions with the stage, conditions, or trip-wire state — not stylistic quibbles.
+    const prompt = `You are a fact-checker. Compare the NARRATIVE below against the REFERENCE DATA it must be consistent with. Flag ONLY clear, checkable contradictions with the stage, conditions, trip-wire state, OR the refinancing-pressure numbers (r_eff, the 10Y, the convergence gap, the 12-month trend, and — when the reference data flags it — whether a large gap under an MP1 stage was framed as "no current strain, rising pressure" rather than as "healthy") — not stylistic quibbles.
 
 REFERENCE DATA:
 ${reference}
@@ -207,6 +243,17 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // v2 Phase 6c: refinancing-pressure inputs, read from the classifier's
+    // own rawInputs (Phase 6a) — already on this same audit row, no extra
+    // query needed.
+    const rawInputs = (audit.raw_inputs ?? {}) as Record<string, number | null>;
+    const refinancingPressure: RefinancingPressure = {
+      rEff: rawInputs.rEff ?? null,
+      convergenceGap: rawInputs.convergenceGap ?? null,
+      dgs10: rawInputs.dgs10 ?? null,
+      rEff12moAgo: rawInputs.rEff12moAgo ?? null,
+    };
+
     const conditions = audit.conditions as Conditions;
     const tripWires = (audit.trip_wires ?? {}) as Record<string, TripWireState>;
     const TRIP_WIRE_LABELS: Record<string, string> = {
@@ -267,6 +314,7 @@ Deno.serve(async (req: Request) => {
       tripWiresArmed,
       tripWiresFiredThisWeek,
       portfolioGapLines,
+      refinancingPressure,
       methodologyNote: stageNoteRow?.note ?? null,
     };
 
@@ -277,10 +325,24 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // v2 Phase 6c: the fact-check pass must verify the refinancing-pressure
+    // sentence's numbers too, not just the stage label — these three lines
+    // give it something concrete to check the narrative's r_eff/10Y/gap
+    // claims against, plus the exact MP1-large-gap framing rule so it can
+    // catch "healthy"/"no concern" language if the narrative used it when
+    // it shouldn't have.
+    const gapStatusForCheck = refinancingPressure.convergenceGap != null ? convergenceGapStatus(refinancingPressure.convergenceGap) : null;
     const referenceBlock = [
       `Stage: ${briefParams.stage}`,
       `Conditions: ${JSON.stringify(conditions)}`,
       `Trip-wires armed: ${tripWiresArmed.map((t) => t.label).join(", ") || "none"}`,
+      `r_eff: ${refinancingPressure.rEff != null ? refinancingPressure.rEff.toFixed(2) + "%" : "n/a"}`,
+      `10Y Treasury yield: ${refinancingPressure.dgs10 != null ? refinancingPressure.dgs10.toFixed(2) + "%" : "n/a"}`,
+      `Convergence gap (10Y - r_eff): ${refinancingPressure.convergenceGap != null ? refinancingPressure.convergenceGap.toFixed(2) + "pts" : "n/a"}${gapStatusForCheck ? ` (${gapStatusForCheck})` : ""}`,
+      `r_eff 12 months ago: ${refinancingPressure.rEff12moAgo != null ? refinancingPressure.rEff12moAgo.toFixed(2) + "%" : "not enough history yet"}`,
+      ...(briefParams.stage === "MP1" && gapStatusForCheck === "danger"
+        ? [`FRAMING RULE IN EFFECT: stage is MP1 with a large (danger-band) convergence gap — the narrative must describe this as "no current strain, rising pressure," not as "healthy" or "no concern." Flag it as a contradiction if the narrative calls this combination healthy or expresses no concern about it.`]
+        : []),
     ].join("\n");
     const check = await validateConsistency(narrativeFirstPass, referenceBlock);
 

@@ -89,3 +89,17 @@ export function indirectBidderIsWeak(z: number): boolean {
 // rule 6 -- a symmetric 1-point dead band around the Dalio 20% checkpoint,
 // not statistically fit.
 export const DEBT_SERVICE_STRAINED_GATE = { on: 20.5, off: 19.5, persistMonths: 2 };
+
+// v2 Phase 6b: status bands for the new "Effective Rate on Federal Debt
+// (r_eff)" Big Cycle card, based on the convergence gap (10Y - r_eff), not
+// r_eff's own level -- a large gap means a lot of the debt stock is still
+// priced well below today's rate and has yet to reprice as it matures and
+// refinances. Uncalibrated starting point, logged per rule 6 -- round
+// half/one-and-a-half-point bands, not statistically fit.
+export const CONVERGENCE_GAP_THRESHOLDS = { healthyBelow: 0.5, watchBelow: 1.5 };
+
+export function convergenceGapStatus(gap: number): ThresholdStatus {
+  if (gap < CONVERGENCE_GAP_THRESHOLDS.healthyBelow) return "healthy";
+  if (gap < CONVERGENCE_GAP_THRESHOLDS.watchBelow) return "watch";
+  return "danger";
+}

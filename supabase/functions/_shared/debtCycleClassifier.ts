@@ -30,6 +30,16 @@ export interface ClassifierInput {
   debtServiceStrainedGate: HysteresisGateResult;
   rateGrowthSpread: number; // r - g (DGS10 minus nominal GDP YoY; see debt-metrics-integrity spec Phase 1a)
   effectiveRateGrowthSpread: number | null; // r_eff - g; informational only, not a gate (Phase 1b)
+  // v2 Phase 6a: "refinancing pressure ahead" informational inputs --
+  // convergenceGap = dgs10 - rEff; NOT a stage gate, same as
+  // effectiveRateGrowthSpread above. All four read from the r_eff card's
+  // own metadata (fetch-macro-data's effective_rate_minus_nominal_yoy
+  // case); dgs10 here is DERIVED (rEff + convergenceGap), not a separate
+  // fetch.
+  rEff: number | null;
+  convergenceGap: number | null;
+  dgs10: number | null;
+  rEff12moAgo: number | null; // for the Position Check's trend arrow; null if insufficient history
   debtToTaxRevenueX: number | null; // informational only, not a gate
   walclPctGdpSeries: WeeklyPoint[]; // most-recent-first
   // Precomputed by the caller via _shared/indirectBidder.ts's
@@ -184,6 +194,10 @@ export function classifyDebtCycleStageV2(input: ClassifierInput): ClassifierResu
       interestExpenseRevenuePct: input.interestExpenseRevenuePct,
       rateGrowthSpread: input.rateGrowthSpread,
       effectiveRateGrowthSpread: input.effectiveRateGrowthSpread,
+      rEff: input.rEff,
+      convergenceGap: input.convergenceGap,
+      dgs10: input.dgs10,
+      rEff12moAgo: input.rEff12moAgo,
       debtToTaxRevenueX: input.debtToTaxRevenueX,
       indirectBidderShareAvg6: indirectBidderAvg6,
       indirectBidderShareZ: indirectBidderZ,

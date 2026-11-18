@@ -18,7 +18,7 @@ import {
   fetchDebtAddedTrailing,
 } from "../_shared/mtsFiscalData.ts";
 import { computeIndirectBidderSnapshot, computeIndirectBidderFullSeries, zScoreOf, evalAuctionDemandDeterioration, AuctionRow } from "../_shared/indirectBidder.ts";
-import { INDIRECT_BIDDER_THRESHOLDS, DEBT_SERVICE_STRAINED_GATE } from "../_shared/statusThresholds.ts";
+import { INDIRECT_BIDDER_THRESHOLDS, DEBT_SERVICE_STRAINED_GATE, convergenceGapStatus } from "../_shared/statusThresholds.ts";
 import { hysteresisGate } from "../_shared/hysteresisGate.ts";
 
 // v1 Phase 2b switched "Interest Expense % of Federal Revenue" from NIPA to
@@ -542,10 +542,14 @@ const MACRO_STATUS_MAP: Record<string, "good" | "warn" | "bad"> = { healthy: "go
 async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>): Promise<Update[]> {
   const updates: Update[] = [];
   try {
+    // v2 Phase 6b: metadata selected too -- the new "Effective Rate on
+    // Federal Debt (r_eff)" card reads r_eff/convergence_gap from "Effective
+    // Rate vs. Nominal Growth (r_eff − g)"'s own metadata, not its
+    // current_value (which is r_eff - g, not r_eff itself).
     const { data } = await sb
       .from("macro_indicators")
-      .select("name, current_value, status")
-      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread", "Fed SOMA Long-Duration Holdings (Δ)", "Foreign Official Share of UST Holdings (YoY Δ)", "Treasury Convenience Yield (10Y)", "Foreign Official Custody Holdings", "Interest Expense % of Federal Revenue", "Treasury Bid-to-Cover", "Indirect Bidder Share (10Y/30Y)", "Federal Debt / Tax Revenue"]);
+      .select("name, current_value, status, metadata")
+      .in("name", ["Total Debt / GDP", "Fed Balance Sheet % GDP", "Rate vs. GDP Growth Spread", "Fed SOMA Long-Duration Holdings (Δ)", "Foreign Official Share of UST Holdings (YoY Δ)", "Treasury Convenience Yield (10Y)", "Foreign Official Custody Holdings", "Interest Expense % of Federal Revenue", "Treasury Bid-to-Cover", "Indirect Bidder Share (10Y/30Y)", "Federal Debt / Tax Revenue", "Effective Rate vs. Nominal Growth (r_eff − g)"]);
     const byName = new Map((data ?? []).map((r: { name: string }) => [r.name, r]));
 
     const totalDebt = byName.get("Total Debt / GDP") as { current_value: number; status: string } | undefined;
@@ -682,6 +686,25 @@ async function computeMacroCrossRefUpdates(sb: ReturnType<typeof createClient>):
       });
     }
 
+    // v2 Phase 6b: "Effective Rate on Federal Debt (r_eff)" -- reads
+    // r_eff/convergence_gap from "Effective Rate vs. Nominal Growth (r_eff
+    // − g)"'s metadata (that card's own current_value is r_eff - g, not
+    // r_eff). Status is based on the CONVERGENCE GAP, not r_eff's own
+    // level -- a large gap means a lot of the debt stock is still priced
+    // well below today's rate and has yet to reprice as it matures.
+    const rEffRow = byName.get("Effective Rate vs. Nominal Growth (r_eff − g)") as
+      { metadata: { r_eff?: number; convergence_gap?: number } | null } | undefined;
+    const rEffMetaVal = rEffRow?.metadata?.r_eff;
+    const convergenceGapVal = rEffRow?.metadata?.convergence_gap;
+    if (rEffMetaVal != null && convergenceGapVal != null) {
+      const status = convergenceGapStatus(convergenceGapVal);
+      updates.push({
+        key: "effective_rate_on_debt", value_numeric: rEffMetaVal, value_display: pct1(rEffMetaVal),
+        status, status_label: status === "danger" ? "Large repricing gap ahead" : status === "watch" ? "Watch" : "Gap narrow",
+        note_suffix: `Blended effective rate on all outstanding federal debt (trailing-12mo net interest ÷ average debt held by the public) — sits ${convergenceGapVal.toFixed(2)} pts below the 10Y; as maturing debt refinances at today's rate, this converges upward. Status reflects the convergence gap (10Y − r_eff), not r_eff's own level — a large gap means more repricing is still ahead. Cross-referenced from Macro.`,
+      });
+    }
+
     const { data: gaugeRow } = await sb
       .from("dalio_gauge_readings")
       .select("year, gauge1, gauge5, gauge7")
@@ -778,7 +801,11 @@ async function updateDebtCycleStage(
     if (fedFundsMid == null) return null;
 
     const [{ data: macroRows }, { data: walclSnaps }, { data: somaSnaps }, { data: auctionRows }, { data: interestExpenseSnaps }] = await Promise.all([
-      sb.from("macro_indicators").select("name, current_value")
+      // v2 Phase 6a: metadata selected too -- r_eff/convergence_gap/
+      // r_eff_12mo_ago live in "Effective Rate vs. Nominal Growth (r_eff −
+      // g)"'s own metadata (set in fetch-macro-data's effective_rate_minus_
+      // nominal_yoy case), not as a separate indicator.
+      sb.from("macro_indicators").select("name, current_value, metadata")
         .in("name", ["Interest Expense % of Federal Revenue", "Rate vs. GDP Growth Spread", "Federal Debt / Tax Revenue", "Effective Rate vs. Nominal Growth (r_eff − g)"]),
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "Fed Balance Sheet % GDP").order("snapshot_date", { ascending: false }).limit(60),
@@ -807,6 +834,7 @@ async function updateDebtCycleStage(
     ]);
 
     const byName = new Map((macroRows ?? []).map((r: { name: string; current_value: number }) => [r.name, Number(r.current_value)]));
+    const metaByName = new Map((macroRows ?? []).map((r: { name: string; metadata: Record<string, unknown> | null }) => [r.name, r.metadata]));
     const interestExpenseRevenuePct = byName.get("Interest Expense % of Federal Revenue");
     const debtServiceStrainedGate = hysteresisGate(
       toWeeklyPointSeries(interestExpenseSnaps, "snapshot_date", "value"),
@@ -816,6 +844,20 @@ async function updateDebtCycleStage(
     const debtToTaxRevenueX = byName.get("Federal Debt / Tax Revenue") ?? null;
     const effectiveRateGrowthSpread = byName.get("Effective Rate vs. Nominal Growth (r_eff − g)") ?? null;
     if (interestExpenseRevenuePct == null || rateGrowthSpread == null) return null;
+
+    // v2 Phase 6a: "refinancing pressure ahead" informational inputs --
+    // r_eff, the convergence gap (DGS10 - r_eff), and r_eff's 12-month-ago
+    // reading (for the trend arrow), all read from the r_eff card's own
+    // metadata rather than a separate query. 10Y itself isn't fetched
+    // separately -- DGS10 = r_eff + convergence_gap is exact (that's
+    // literally how convergence_gap was defined when fetch-macro-data
+    // computed it), so deriving it avoids a redundant fetch.
+    const rEffMeta = metaByName.get("Effective Rate vs. Nominal Growth (r_eff − g)") as
+      { r_eff?: number; convergence_gap?: number; r_eff_12mo_ago?: number | null } | null | undefined;
+    const rEff = rEffMeta?.r_eff ?? null;
+    const convergenceGap = rEffMeta?.convergence_gap ?? null;
+    const dgs10Derived = rEff != null && convergenceGap != null ? Math.round((rEff + convergenceGap) * 1000) / 1000 : null;
+    const rEff12moAgo = rEffMeta?.r_eff_12mo_ago ?? null;
 
     const auctionRowsTyped = (auctionRows ?? []) as AuctionRow[];
     const indirectBidderShareAvg6 = computeIndirectBidderSnapshot(auctionRowsTyped, 0).value;
@@ -830,6 +872,10 @@ async function updateDebtCycleStage(
       debtServiceStrainedGate,
       rateGrowthSpread,
       effectiveRateGrowthSpread,
+      rEff,
+      convergenceGap,
+      dgs10: dgs10Derived,
+      rEff12moAgo,
       debtToTaxRevenueX,
       walclPctGdpSeries: toWeeklyPointSeries(walclSnaps, "snapshot_date", "value"),
       indirectBidderShareAvg6,

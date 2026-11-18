@@ -42,7 +42,7 @@ describe("classifyDebtCycleStageV2", () => {
       interestExpenseRevenuePct: 23.8,
       debtServiceStrainedGate: gate(true, { latest: 23.8 }),
       rateGrowthSpread: 2.548,
-      effectiveRateGrowthSpread: null,
+      effectiveRateGrowthSpread: null, rEff: null, convergenceGap: null, dgs10: null, rEff12moAgo: null,
       debtToTaxRevenueX: 7.46,
       // Falling: 20.8 down to 20.0 over 8 prints.
       walclPctGdpSeries: series([20.8, 20.9, 21.0, 21.1, 21.2, 21.3, 21.4, 21.5]),
@@ -65,7 +65,7 @@ describe("classifyDebtCycleStageV2", () => {
       interestExpenseRevenuePct: 15,
       debtServiceStrainedGate: gate(false, { latest: 15 }),
       rateGrowthSpread: -0.5,
-      effectiveRateGrowthSpread: null,
+      effectiveRateGrowthSpread: null, rEff: null, convergenceGap: null, dgs10: null, rEff12moAgo: null,
       debtToTaxRevenueX: 6,
       // Rising 8-of-8: 20.0 up to 23.5.
       walclPctGdpSeries: series([23.5, 23.0, 22.5, 22.0, 21.5, 21.0, 20.5, 20.0]),
@@ -86,7 +86,7 @@ describe("classifyDebtCycleStageV2", () => {
       interestExpenseRevenuePct: 25,
       debtServiceStrainedGate: gate(true, { latest: 25 }),
       rateGrowthSpread: 1.5,
-      effectiveRateGrowthSpread: null,
+      effectiveRateGrowthSpread: null, rEff: null, convergenceGap: null, dgs10: null, rEff12moAgo: null,
       debtToTaxRevenueX: 8,
       walclPctGdpSeries: series([30.0, 29.5, 29.0, 28.5, 28.0, 27.5, 27.0, 26.5]),
       // Weak: well under 57.5. bidToCoverAvg6 (1.825) alone already trips
@@ -125,7 +125,7 @@ describe("classifyDebtCycleStageV2", () => {
       interestExpenseRevenuePct: 24.593,
       debtServiceStrainedGate: gate(true, { latest: 24.593 }),
       rateGrowthSpread: -0.7676,
-      effectiveRateGrowthSpread: -2.491,
+      effectiveRateGrowthSpread: -2.491, rEff: null, convergenceGap: null, dgs10: null, rEff12moAgo: null,
       debtToTaxRevenueX: 7.303,
       walclPctGdpSeries: series([20.475, 20.5, 20.55, 20.6, 20.65, 20.7, 20.75, 20.8]),
       // Live per-term-then-mean value as of 2026-11-17 — now informational
@@ -161,7 +161,7 @@ describe("classifyDebtCycleStageV2", () => {
     const baseInput: Omit<ClassifierInput, "indirectBidderShareZ"> = {
       fedFundsMid: 0.1, interestExpenseRevenuePct: 15, debtServiceStrainedGate: gate(false, { latest: 15 }),
       rateGrowthSpread: -0.5,
-      effectiveRateGrowthSpread: null, debtToTaxRevenueX: null,
+      effectiveRateGrowthSpread: null, rEff: null, convergenceGap: null, dgs10: null, rEff12moAgo: null, debtToTaxRevenueX: null,
       walclPctGdpSeries: series([20, 20, 20, 20, 20, 20, 20, 20]),
       indirectBidderShareAvg6: 50, // informational only now; not part of the gate
       bidToCoverSeries: series([2.6, 2.6, 2.6, 2.6, 2.6, 2.6]),
@@ -197,7 +197,7 @@ describe("classifyDebtCycleStageV2", () => {
   describe("debtServiceStrained reads the gate, not a fresh raw check (v2 Phase 3b)", () => {
     const baseInput: Omit<ClassifierInput, "debtServiceStrainedGate" | "interestExpenseRevenuePct"> = {
       fedFundsMid: 0.1, rateGrowthSpread: -0.5,
-      effectiveRateGrowthSpread: null, debtToTaxRevenueX: null,
+      effectiveRateGrowthSpread: null, rEff: null, convergenceGap: null, dgs10: null, rEff12moAgo: null, debtToTaxRevenueX: null,
       walclPctGdpSeries: series([20, 20, 20, 20, 20, 20, 20, 20]),
       indirectBidderShareAvg6: 50, indirectBidderShareZ: 0,
       bidToCoverSeries: series([2.6, 2.6, 2.6, 2.6, 2.6, 2.6]),
@@ -235,6 +235,47 @@ describe("classifyDebtCycleStageV2", () => {
     });
   });
 
+  // v2 Phase 6a: rEff/convergenceGap/dgs10/rEff12moAgo are purely
+  // informational passthrough (no gate, same treatment as
+  // effectiveRateGrowthSpread) -- confirm rawInputs carries them exactly,
+  // including the null case (insufficient history for the 12mo-ago figure).
+  describe("refinancing-pressure rawInputs passthrough (v2 Phase 6a)", () => {
+    const baseInput: Omit<ClassifierInput, "rEff" | "convergenceGap" | "dgs10" | "rEff12moAgo"> = {
+      fedFundsMid: 0.1, interestExpenseRevenuePct: 15,
+      debtServiceStrainedGate: { armed: false, insufficientHistory: false, monthsAvailable: 10, latest: 15 },
+      rateGrowthSpread: -0.5, effectiveRateGrowthSpread: null, debtToTaxRevenueX: null,
+      walclPctGdpSeries: series([20, 20, 20, 20, 20, 20, 20, 20]),
+      indirectBidderShareAvg6: 50, indirectBidderShareZ: 0,
+      bidToCoverSeries: series([2.6, 2.6, 2.6, 2.6, 2.6, 2.6]),
+      somaLongDurationDeltaSeries: series([0, 0, 0, 0, 0, 0, 0, 0]),
+    };
+
+    it("carries rEff/convergenceGap/dgs10/rEff12moAgo through to rawInputs unchanged", () => {
+      const result = classifyDebtCycleStageV2({
+        ...baseInput, rEff: 3.376, convergenceGap: 1.744, dgs10: 5.12, rEff12moAgo: 3.1,
+      });
+      expect(result.rawInputs.rEff).toBe(3.376);
+      expect(result.rawInputs.convergenceGap).toBe(1.744);
+      expect(result.rawInputs.dgs10).toBe(5.12);
+      expect(result.rawInputs.rEff12moAgo).toBe(3.1);
+    });
+
+    it("passes through null when the 12-months-ago figure isn't available yet, without failing the rest", () => {
+      const result = classifyDebtCycleStageV2({
+        ...baseInput, rEff: 3.376, convergenceGap: 1.744, dgs10: 5.12, rEff12moAgo: null,
+      });
+      expect(result.rawInputs.rEff).toBe(3.376);
+      expect(result.rawInputs.rEff12moAgo).toBeNull();
+    });
+
+    it("is purely informational -- never affects the stage or any condition", () => {
+      const strained = classifyDebtCycleStageV2({ ...baseInput, rEff: 20, convergenceGap: 20, dgs10: 40, rEff12moAgo: null });
+      const calm = classifyDebtCycleStageV2({ ...baseInput, rEff: null, convergenceGap: null, dgs10: null, rEff12moAgo: null });
+      expect(strained.stage).toBe(calm.stage);
+      expect(strained.conditions).toEqual(calm.conditions);
+    });
+  });
+
   it("thin data never silently promotes the stage", () => {
     const input: ClassifierInput = {
       fedFundsMid: 0.1,
@@ -243,7 +284,7 @@ describe("classifyDebtCycleStageV2", () => {
       // gate itself hasn't seen enough history yet either.
       debtServiceStrainedGate: { armed: false, insufficientHistory: true, monthsAvailable: 0, latest: null },
       rateGrowthSpread: 1.5,
-      effectiveRateGrowthSpread: null,
+      effectiveRateGrowthSpread: null, rEff: null, convergenceGap: null, dgs10: null, rEff12moAgo: null,
       debtToTaxRevenueX: null,
       walclPctGdpSeries: series([25.0]), // only 1 distinct print
       indirectBidderShareAvg6: null,

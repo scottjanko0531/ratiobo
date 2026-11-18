@@ -2653,3 +2653,148 @@ real monthly observations (`insufficientHistory: 0`), not the Phase 3
 bootstrap fallback, and the fiscal-dominance trip-wire's condition 1
 reads that same real gate state rather than a stale/excluded one.
 Deployed and verified live, not projected.
+
+## v2 Phase 6 (2026-11-18) — make forward pressure visible
+
+**Live values confirmed before building anything** (queried
+`macro_indicators` for "Effective Rate vs. Nominal Growth (r_eff − g)"
+and "10Y Treasury Yield" directly):
+
+```
+r_eff:            3.376%
+10Y:               5.12%  (confirmed = r_eff + convergence_gap exactly)
+convergence_gap:   1.744 pts
+```
+
+These are the real numbers that will populate the new Position Check row
+and Big Cycle card — not the spec's illustrative "3.38% / 1.72 pts"
+figures, per the explicit instruction to substitute live numbers.
+
+**12-month r_eff trend, computed and verified live (not projected)**:
+the Phase 5 backfill itself only covers "Interest Expense %"
+indicators, not r_eff directly, so rather than assume a mechanism that
+doesn't exist, re-derived r_eff as of 12 months ago using the SAME
+methodology `fetch-macro-data`'s `effective_rate_minus_nominal_yoy` case
+already uses (trailing-12mo net interest ÷ trailing-12mo avg debt held
+by the public), shifted back 12 months. Ran this live against the real
+Treasury Fiscal Data API (no FRED key needed for this specific
+computation — MTS Table 9 and debt_to_penny are both unauthenticated):
+
+```
+r_eff (now, 2026-10-31 window):     3.3768% -- matches the live card's
+                                      stored metadata.r_eff (3.376)
+                                      exactly, confirming the new 12mo-ago
+                                      logic is built on the identical
+                                      calculation already in production.
+r_eff (12mo ago, 2025-10-31 window): 3.3587%
+12-month trend:                     +0.018 pts (essentially flat, a
+                                      slight rise)
+```
+
+**6a.** Added "Refinancing pressure ahead" to
+`DebtCyclePositionCheck.jsx`'s `CONDITION_ROWS`, informational only (same
+treatment as the existing r_eff > g row — no stage gate). The ✓/✗
+reflects the 12-month TREND direction (r_eff rising = gap narrowing =
+pressure easing), not the gap's raw sign, since the gap is structurally
+positive almost all the time and sign alone isn't the signal — a raw-sign
+check would show "✓" essentially forever, telling the reader nothing.
+Detail text follows the spec's copy template with live numbers
+substituted: "The average rate on outstanding debt (3.38%) sits 1.74 pts
+below the 10Y (5.12%); as maturing debt refinances, it converges upward.
+r_eff is up 0.02 pts over the trailing 12 months." Gracefully omits the
+trend sentence (not the whole row) when `rEff12moAgo` is null.
+
+Wired the underlying data: `fetch-macro-data`'s
+`effective_rate_minus_nominal_yoy` case widened its fetches (14→26
+months of net interest, 400→800 days of debt-held-by-public) to also
+cover the 12-months-ago window, and now emits
+`metadata.r_eff_12mo_ago`/`r_eff_12mo_ago_date` alongside the existing
+`r_eff`/`convergence_gap` — best-effort (null if there isn't enough
+history yet, which doesn't fail the rest of the card).
+`update-big-cycle-metrics` now selects `metadata` (not just
+`current_value`) for this card and passes `rEff`/`convergenceGap`/
+`dgs10` (derived: `rEff + convergenceGap`, no separate 10Y fetch needed)
+/`rEff12moAgo` into the classifier as new, purely informational
+`ClassifierInput` fields — `rawInputs` passthrough only, no new
+`conditions` gate, confirmed by a dedicated test
+(`classifyDebtCycleStageV2` produces identical `stage`/`conditions` for
+wildly different rEff/convergenceGap values).
+
+**6b.** New Big Cycle card "Effective Rate on Federal Debt (r_eff)" —
+migration `20261118_add_effective_rate_on_debt_card.sql` seeds the row
+identity (key `effective_rate_on_debt`, sort_order 20, after the
+existing `debt_tax_revenue_multiple` at 19); `computeMacroCrossRefUpdates`
+fills in value/status/note each run from the same r_eff card metadata.
+Status bands are on the **convergence gap**, not r_eff's own level (per
+the spec): `CONVERGENCE_GAP_THRESHOLDS = { healthyBelow: 0.5, watchBelow:
+1.5 }` in `_shared/statusThresholds.ts`, logged as uncalibrated per rule
+6 — today's live gap (1.744) lands in **danger** (status_label "Large
+repricing gap ahead"), confirmed directly by the threshold test
+(`convergenceGapStatus(1.744)` → `"danger"`). **Not yet applied** — the
+migration is committed, held for deploy approval same as every DB change
+this spec.
+
+**6c.** `generate-debt-cycle-brief`'s prompt gains a new REFINANCING
+PRESSURE AHEAD block (r_eff, 10Y, convergence gap + status band, 12-month
+trend), read from the classifier's own `rawInputs` already sitting on
+the audit row (no extra query). Restructured from four to five answer
+parts, inserting a dedicated short paragraph for this signal between the
+benchmarks and trip-wires paragraphs, explicit that it's forward-looking
+and not part of today's stage classification. Added the exact framing
+rule the spec asks for: when the stage is MP1 AND the gap is in the
+danger band, the prompt explicitly instructs "no current strain, rising
+pressure" — not "healthy" or "no concern" — and that same rule, with the
+same exact wording, is ALSO injected into the fact-check pass's
+reference data (not just the generation prompt) so a drift between what
+the generator was told and what the fact-checker verifies can't happen
+silently.
+
+**Fact-check pass extended to verify these numbers too** (not just the
+stage label, per the explicit instruction): `validateConsistency`'s
+reference block now includes r_eff, the 10Y, the convergence gap (with
+its status band), and the 12-month-ago figure as explicit checkable
+lines, and its own prompt text was widened to list these as things to
+flag contradictions against, alongside stage/conditions/trip-wires.
+**The deliberate-wrong-number test the spec asks for (confirm the
+fact-check pass actually catches a fabricated convergence-gap number) requires
+a live call to the Anthropic API** (Haiku), which needs
+`ANTHROPIC_API_KEY` — a Supabase secret not available to this sandbox
+(same constraint Phase 5 hit with `FRED_API_KEY`). This is logged
+explicitly as **not yet verified**, to be confirmed live immediately
+after deploy, not assumed from the prompt wording alone — same standard
+as every other live-dependent claim this phase.
+
+### Tests
+
+`tests/debtCycleClassifier.test.ts`: all existing fixtures gained the
+four new informational fields; added a dedicated describe block proving
+the passthrough (`rEff`/`convergenceGap`/`dgs10`/`rEff12moAgo` land in
+`rawInputs` exactly, the null case doesn't break anything else, and —
+the important negative test — these fields never affect `stage` or any
+`conditions` key, confirmed by running the classifier with wildly
+different values and asserting identical output).
+
+`tests/statusThresholds.test.ts`: `convergenceGapStatus` — healthy below
+0.5, watch 0.5-1.5, danger above 1.5 (today's live 1.744 pinned as a
+concrete danger-band example).
+
+No Vitest coverage for `generate-debt-cycle-brief`'s prompt/fact-check
+changes — this function has never had unit tests in this codebase
+(it's almost entirely live Anthropic-API calls, same reasoning as
+`_shared/mtsFiscalData.ts` having none); verified by code review here,
+live behavior to be confirmed post-deploy.
+
+Full suite: `npx vitest run tests/` → 760 passed (42 files). `npx next
+build` → compiles clean.
+
+### Acceptance (pending live confirmation)
+
+The Position Check shows the forward signal next to the stage (6a,
+code-complete, informational-only, confirmed non-gating by test); the
+brief's prompt now explicitly instructs mentioning it as its own
+paragraph (6c, code-complete). **Not yet deployed**: the new big_cycle_metrics
+row (migration), the fetch-macro-data/update-big-cycle-metrics/
+generate-debt-cycle-brief function changes are all committed, held for
+deploy approval. The one open verification (fact-check deliberate-wrong-
+number test) requires a live Anthropic API call and will be confirmed
+immediately after deploy.

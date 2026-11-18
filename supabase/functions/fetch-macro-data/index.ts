@@ -1370,9 +1370,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // trailing-12mo average debt held by the public (debt_to_penny,
         // daily). g = nominal GDP YoY. "Previous" shifts both trailing-12
         // windows back one month for a month-over-month change_value.
+        // v2 Phase 6a: widened from 14/400 to 26/800 so there's also enough
+        // history to compute r_eff as of 12 months ago (needs netInterest
+        // indices 12-23 and the matching daily debt window ~12-24 months
+        // back) for the Position Check's new "refinancing pressure" trend
+        // arrow -- the existing current/previous (month-over-month) figures
+        // only ever needed the first ~13/300.
         const [netInterest, debtDaily, gdpObs, dgs10] = await Promise.all([
-          fetchMtsNetInterestMonthly(14),
-          fetchDebtHeldPublicDaily(400),
+          fetchMtsNetInterestMonthly(26),
+          fetchDebtHeldPublicDaily(800),
           fetchFredObs(ind.series2!, 8),
           fetchFred(ind.series!, 2),
         ]);
@@ -1399,10 +1405,32 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
 
         current = rEffCurrent - gdpYoy.current;
         previous = rEffPrevious - gdpYoy.previous;
+
+        // v2 Phase 6a: r_eff as of 12 months ago, for the Position Check's
+        // "refinancing pressure" trend arrow. Best-effort -- if there isn't
+        // enough history yet (a thinner MTS/debt_to_penny pull than usual),
+        // this is just left null rather than failing the whole card over an
+        // informational-only trend figure.
+        let rEff12moAgo: number | null = null;
+        let rEff12moAgoDate: string | null = null;
+        if (netInterest.length >= 24) {
+          const ago12WindowEnd = netInterest[12].date;
+          const ago12WindowStart = addMonths(ago12WindowEnd, -11);
+          const netInterest12moAgo = sum(netInterest.slice(12, 24).map((o) => o.value));
+          const debtAgo12Window = debtDaily.filter((o) => o.date >= ago12WindowStart && o.date <= ago12WindowEnd);
+          if (debtAgo12Window.length > 0) {
+            const debtAvgAgo12 = sum(debtAgo12Window.map((o) => o.value)) / debtAgo12Window.length;
+            rEff12moAgo = Math.round((netInterest12moAgo / debtAvgAgo12) * 100 * 1000) / 1000;
+            rEff12moAgoDate = ago12WindowEnd;
+          }
+        }
+
         metadata = {
           r_eff: Math.round(rEffCurrent * 1000) / 1000,
           convergence_gap: Math.round((dgs10[0] - rEffCurrent) * 1000) / 1000,
           reference_period: netInterest[0].date,
+          r_eff_12mo_ago: rEff12moAgo,
+          r_eff_12mo_ago_date: rEff12moAgoDate,
         };
         break;
       }

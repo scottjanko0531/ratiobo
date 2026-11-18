@@ -35,6 +35,23 @@ const CONDITION_ROWS = [
     metFn: (r) => r?.effectiveRateGrowthSpread != null && r.effectiveRateGrowthSpread > 0,
     detail: (r) => r?.effectiveRateGrowthSpread != null ? `Blended effective rate on outstanding debt minus nominal GDP growth = ${r.effectiveRateGrowthSpread >= 0 ? "+" : ""}${r.effectiveRateGrowthSpread.toFixed(2)}pts — not a stage gate` : null,
   },
+  {
+    // v2 Phase 6a: forward-looking, informational only (same treatment as
+    // r_eff > g above) — NOT a stage gate. convergence_gap = 10Y - r_eff;
+    // a large gap means a lot of the debt stock is still priced well below
+    // today's rate and has yet to reprice as it matures and refinances.
+    // The ✓/✗ here reflects the 12-month TREND (r_eff rising = gap
+    // narrowing = pressure easing), not the raw gap's sign — the gap is
+    // structurally positive almost always, so sign alone isn't the signal.
+    key: "refinancingPressureAhead", label: "Refinancing pressure ahead",
+    metFn: (r) => (r?.rEff != null && r?.rEff12moAgo != null) ? (r.rEff - r.rEff12moAgo) > 0 : null,
+    detail: (r) => {
+      if (r?.rEff == null || r?.convergenceGap == null) return null;
+      const dgs10 = r.dgs10 != null ? r.dgs10 : r.rEff + r.convergenceGap;
+      const trend = r.rEff12moAgo != null ? r.rEff - r.rEff12moAgo : null;
+      return `The average rate on outstanding debt (${r.rEff.toFixed(2)}%) sits ${r.convergenceGap.toFixed(2)} pts below the 10Y (${dgs10.toFixed(2)}%); as maturing debt refinances, it converges upward.${trend != null ? ` r_eff is ${trend >= 0 ? "up" : "down"} ${Math.abs(trend).toFixed(2)} pts over the trailing 12 months.` : ""}`;
+    },
+  },
   { key: "fedPrintingRising", label: "Fed printing rising", detail: () => "Fed Balance Sheet % GDP in a sustained multi-week uptrend" },
   { key: "mp2Gate", label: "MP2 gate", detail: () => "Near-zero fed funds AND Fed printing rising, together" },
   { key: "mp3AuctionDemandWeak", label: "Auction demand weak", detail: (r) => r?.indirectBidderShareAvg6 != null ? `Trailing-6 indirect bidder share ${r.indirectBidderShareAvg6.toFixed(1)}%${r.indirectBidderShareZ != null ? ` (z ${r.indirectBidderShareZ >= 0 ? "+" : ""}${r.indirectBidderShareZ.toFixed(2)}σ vs. full history)` : ""}` : null },

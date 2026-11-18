@@ -4,6 +4,7 @@ import {
   goldPurchasesZScoreStatus,
   realFedFundsStance,
   convenienceYieldChangeStatus,
+  convergenceGapStatus,
 } from "../supabase/functions/_shared/statusThresholds.ts";
 
 // Phase 3 (debt-metrics-integrity spec) status-threshold logic, closing out
@@ -89,5 +90,26 @@ describe("convenienceYieldChangeStatus", () => {
 
   it("healthy: at or above the trailing average, regardless of the level's own sign", () => {
     expect(convenienceYieldChangeStatus(-5, -10)).toBe("healthy"); // delta = +5bp, level still negative
+  });
+});
+
+// v2 Phase 6b (debt-metrics-integrity-v2 spec): status bands for the new
+// "Effective Rate on Federal Debt (r_eff)" card, based on the convergence
+// gap (10Y - r_eff), not r_eff's own level. Uncalibrated starting point
+// (logged per rule 6), not statistically fit.
+describe("convergenceGapStatus", () => {
+  it("healthy: gap below 0.5pts", () => {
+    expect(convergenceGapStatus(0.1)).toBe("healthy");
+    expect(convergenceGapStatus(0.49)).toBe("healthy");
+  });
+
+  it("watch: 0.5-1.5pts", () => {
+    expect(convergenceGapStatus(0.5)).toBe("watch");
+    expect(convergenceGapStatus(1.49)).toBe("watch");
+  });
+
+  it("danger: above 1.5pts (today's live gap, 1.744, lands here)", () => {
+    expect(convergenceGapStatus(1.5)).toBe("danger");
+    expect(convergenceGapStatus(1.744)).toBe("danger");
   });
 });
