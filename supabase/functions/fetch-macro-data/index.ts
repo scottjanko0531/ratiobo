@@ -11,6 +11,9 @@ import {
 import { findYearAgo, yoyPair, yoyPairWithFallback } from "../_shared/yoyMath.ts";
 import { computeIndirectBidderSnapshot, computeIndirectBidderFullSeries, zScoreOf, AuctionRow } from "../_shared/indirectBidder.ts";
 import { goldTrendStatus, goldPurchasesZScoreStatus, realFedFundsStance, convenienceYieldChangeStatus, indirectBidderCardStatus } from "../_shared/statusThresholds.ts";
+import { annualized3mMonthly } from "../_shared/annualizedMath.ts";
+import { ratioTwoSeries } from "../_shared/ratioTwoSeries.ts";
+import { diffMonthlyMinusQuarterlyCarryForward } from "../_shared/diffTwoSeries.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -239,7 +242,10 @@ interface Indicator {
     | "supabase_gold_real_corr"
     | "supabase_stock_bond_corr"
     | "supabase_bid_to_cover"
-    | "output_gap";
+    | "output_gap"
+    | "annualized_3m_monthly"
+    | "ratio_two_series"
+    | "diff_two_series";
   series?: string;
   series2?: string;
   zscore?: boolean;
@@ -863,6 +869,165 @@ const INDICATORS: Indicator[] = [
     series: "GDPNOW", type: "level",
     statusFn: v => v > 2.5 ? "healthy" : v > 1.0 ? "watch" : "danger",
   },
+  // ── growth-inflation-indicator-gaps spec, Phase 1: FRED-sourced additions ──
+  // (display only — no regime-score weight change; see Phase 0's confirmed
+  // mirror sync and the baseline fixture this phase must leave untouched).
+  //
+  // "Growth — Supply Side" (layer 5, new): capital investment, productivity,
+  // and labor supply had nothing on this dashboard before this phase. These
+  // four are explicitly descriptive per the spec's rule 11 ("use the v1
+  // stance family, or neutral styling, for descriptive series") — "neutral"
+  // is a real member of the Status union already (added for Real Fed Funds
+  // Rate's stance family), and app/macro/page.jsx's StatusBadge renders it
+  // without a risk color, same precedent.
+  {
+    name: "Labor Force Participation Rate",
+    layer: 5, layer_name: "Growth — Supply Side",
+    description: "Share of the civilian population working or seeking work — a supply-side growth input, not scored in any regime composite. Descriptive: rising or falling participation reflects demographic/structural shifts (retirements, return-to-work), not acute stress, so this never carries a risk-style status.",
+    fred_series_id: "CIVPART", unit: "%", data_source: "fred", sort_order: 400,
+    series: "CIVPART", type: "level",
+    statusFn: () => "neutral",
+  },
+  {
+    name: "Labor Force Growth (YoY)",
+    layer: 5, layer_name: "Growth — Supply Side",
+    description: "Year-over-year growth in the civilian labor force — the other half of potential-GDP capacity alongside productivity. A leading, years-scale signal (immigration/demographic shifts), not scored. Descriptive, no risk-style status.",
+    fred_series_id: "CLF16OV", unit: "% YoY", data_source: "fred", sort_order: 401,
+    series: "CLF16OV", type: "yoy_monthly",
+    statusFn: () => "neutral",
+  },
+  {
+    name: "Nonfarm Labor Productivity (YoY)",
+    layer: 5, layer_name: "Growth — Supply Side",
+    description: "Output per hour, nonfarm business sector — the other driver of potential GDP and the empirical evidence (or lack of it) behind the \"AI productivity\" question. Lagging, quarterly, descriptive; no risk-style status.",
+    fred_series_id: "OPHNFB", unit: "% YoY", data_source: "fred", sort_order: 402,
+    series: "OPHNFB", type: "yoy_quarterly",
+    statusFn: () => "neutral",
+  },
+  {
+    name: "Real Nonresidential Fixed Investment (YoY)",
+    layer: 5, layer_name: "Growth — Supply Side",
+    description: "Real private nonresidential fixed investment, YoY — the broad capital-investment counterpart to core capex orders below, coincident rather than leading. Descriptive; no risk-style status.",
+    fred_series_id: "PNFIC1", unit: "% YoY", data_source: "fred", sort_order: 403,
+    series: "PNFIC1", type: "yoy_quarterly",
+    statusFn: () => "neutral",
+  },
+  {
+    name: "Core Capex Orders (3M Annualized)",
+    layer: 5, layer_name: "Growth — Supply Side",
+    description: "Nondefense capital goods orders excluding aircraft, 3-month annualized — a 3-6 month leading business-investment signal, the Phase 4 growth-score candidate this group exists to surface. Thresholds are a starting point, not calibrated (logged per rule 6).",
+    fred_series_id: "NEWORDER", unit: "% ann.", data_source: "fred", sort_order: 404,
+    series: "NEWORDER", type: "annualized_3m_monthly",
+    statusFn: v => v > 2 ? "healthy" : v >= -2 ? "watch" : "danger",
+  },
+  // Inflation/growth additions to "Business Cycle" (layer 3), ordered leading
+  // → coincident → measured/lagging per the spec. ISM Prices Paid and GSCPI
+  // are Phase 2 (non-FRED sources) — this phase leaves room in the ordering
+  // (sort_order gap) but doesn't add their cards yet.
+  {
+    name: "Real Retail Sales (YoY)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Retail sales deflated by CPI — the real-growth counterpart to \"Retail Sales (YoY)\" next to it, which is nominal and overstates real growth whenever inflation is elevated (currently running close to 4%). That nominal series stays as the scored regime input for now; any swap to this real series happens only in Phase 4, with its own backtest.",
+    fred_series_id: "RRSFS", unit: "% YoY", data_source: "fred", sort_order: 37,
+    series: "RRSFS", type: "yoy_monthly",
+    statusFn: v => v > 1 ? "healthy" : v >= 0 ? "watch" : "danger",
+  },
+  {
+    name: "Import Price Index (YoY)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "BLS import price index, all commodities, YoY — a 1-3 month leading inflation-pipeline signal, imported goods' direct contribution ahead of it showing up in CPI/PPI.",
+    fred_series_id: "IR", unit: "% YoY", data_source: "fred", sort_order: 38,
+    series: "IR", type: "yoy_monthly",
+    statusFn: v => v <= 3 ? "healthy" : v <= 6 ? "watch" : "danger",
+  },
+  {
+    name: "5-Year, 5-Year Forward Inflation Expectation",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Market-implied average expected inflation over the five-year period beginning five years from now — the Fed's own preferred long-run inflation-anchoring gauge. De-anchoring risk runs both directions (too low signals disinflation/deflation fear, too high signals credibility loss), so the status band is two-sided. Thresholds are a starting point, not calibrated.",
+    fred_series_id: "T5YIFR", unit: "%", data_source: "fred", sort_order: 39,
+    series: "T5YIFR", type: "level",
+    statusFn: v => (v >= 2.0 && v <= 2.6) ? "healthy" : (v > 2.6 && v <= 3.0) ? "watch" : (v < 1.7) ? "danger" : (v > 3.0) ? "danger" : "watch",
+  },
+  {
+    name: "Unemployment Gap (UNRATE − NAIRU)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Unemployment rate minus CBO's noncyclical rate of unemployment (NROU, carried forward from its own quarterly release to monthly UNRATE dates — logged in the Phase 1 decisions log). A negative gap means the labor market is running tighter than CBO's estimate of \"normal,\" the classic 6-12 month leading path to wage-driven inflation. Deliberately NEUTRAL styling, not a risk band: which direction is \"bad\" depends on the prevailing regime (tight-and-inflationary vs. loose-and-recessionary read very differently), so this is descriptive context, not a calibrated threshold.",
+    fred_series_id: "UNRATE", unit: "pts", data_source: "fred", sort_order: 40,
+    series: "UNRATE", series2: "NROU", type: "diff_two_series",
+    statusFn: () => "neutral",
+  },
+  {
+    name: "Job Openings per Unemployed Worker",
+    layer: 3, layer_name: "Business Cycle",
+    description: "JOLTS job openings divided by the unemployment level — the standard labor-tightness ratio (>1 means more open jobs than job-seekers). A 6-12 month leading path to wage inflation. Thresholds are a starting point, not calibrated.",
+    fred_series_id: "JTSJOL", unit: "ratio", data_source: "fred", sort_order: 41,
+    series: "JTSJOL", series2: "UNEMPLOY", type: "ratio_two_series",
+    statusFn: v => (v >= 0.8 && v <= 1.2) ? "healthy" : "watch",
+  },
+  {
+    name: "Case-Shiller National Home Price Index (YoY)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "S&P Cotality (formerly CoreLogic) Case-Shiller U.S. National Home Price Index, YoY — a 12-18 month leading indicator for Shelter CPI, which alone is roughly a third of headline CPI. Thresholds are an uncalibrated starting point, not fit to history.",
+    fred_series_id: "CSUSHPINSA", unit: "% YoY", data_source: "fred", sort_order: 42,
+    series: "CSUSHPINSA", type: "yoy_monthly",
+    statusFn: v => v <= 4 ? "healthy" : v <= 7 ? "watch" : "danger",
+  },
+  {
+    name: "Real PCE (YoY)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Real personal consumption expenditures, YoY — the consumption-side counterpart to Real Retail Sales above, broader (services included, not just goods). Coincident growth context, not scored.",
+    fred_series_id: "PCEC96", unit: "% YoY", data_source: "fred", sort_order: 43,
+    series: "PCEC96", type: "yoy_monthly",
+    statusFn: v => v >= 2 ? "healthy" : v >= 0 ? "watch" : "danger",
+  },
+  {
+    name: "Atlanta Fed Wage Growth Tracker",
+    layer: 3, layer_name: "Business Cycle",
+    description: "3-month moving average of median hourly wage growth (unweighted, overall), YoY — a coincident wage-inflation read, confirmed on FRED in Phase 0 rather than needing a separate scrape/ingest function. Thresholds borrowed from this dashboard's existing wage-cost-inflation framing (Unit Labor Costs), logged as uncalibrated.",
+    fred_series_id: "FRBATLWGT3MMAUMHWGO", unit: "% YoY", data_source: "fred", sort_order: 44,
+    series: "FRBATLWGT3MMAUMHWGO", type: "level",
+    statusFn: v => v <= 3 ? "healthy" : v <= 4.5 ? "watch" : "danger",
+  },
+  {
+    name: "Core PCE (YoY)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Personal Consumption Expenditures price index excluding food and energy — the Fed's own preferred 2% inflation target measure, the one measure this dashboard could not previously say \"is inflation the kind the Fed reacts to\" with at all. 3-month annualized rate (the Phase 4 inflation-score candidate framing) shown as a secondary figure alongside the scored YoY headline.",
+    fred_series_id: "PCEPILFE", unit: "% YoY", data_source: "fred", sort_order: 45,
+    series: "PCEPILFE", type: "yoy_monthly",
+    statusFn: v => v <= 2.5 ? "healthy" : v <= 3.5 ? "watch" : "danger",
+  },
+  {
+    name: "Supercore CPI (3M Annualized)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "CPI services less rent of shelter, 3-month annualized — the Fed's own closely-watched \"supercore\" measure, isolating services inflation from the shelter-lag distortion and from goods/energy noise. Thresholds are a starting point, not calibrated.",
+    fred_series_id: "CUSR0000SASL2RS", unit: "% ann.", data_source: "fred", sort_order: 46,
+    series: "CUSR0000SASL2RS", type: "annualized_3m_monthly",
+    statusFn: v => v <= 3 ? "healthy" : v <= 4.5 ? "watch" : "danger",
+  },
+  {
+    name: "Shelter CPI (YoY)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "CPI shelter component, YoY — roughly a third of headline CPI and the main reason core CPI has stayed sticky even as goods disinflated; see Case-Shiller above for its ~12-18 month lead into this. Thresholds borrowed from headline CPI's existing band, logged as uncalibrated.",
+    fred_series_id: "CUSR0000SAH1", unit: "% YoY", data_source: "fred", sort_order: 47,
+    series: "CUSR0000SAH1", type: "yoy_monthly",
+    statusFn: v => (v >= 1 && v <= 3) ? "healthy" : v <= 5 ? "watch" : "danger",
+  },
+  {
+    name: "Sticky-Price Core CPI (YoY)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Atlanta Fed's sticky-price CPI less food and energy — a basket weighted toward slow-to-reprice items, a read on how entrenched current inflation actually is versus how much is fast-moving/transitory. Already published YoY by the source, no transform needed. Thresholds borrowed from Core CPI's existing band, logged as uncalibrated.",
+    fred_series_id: "CORESTICKM159SFRBATL", unit: "% YoY", data_source: "fred", sort_order: 48,
+    series: "CORESTICKM159SFRBATL", type: "level",
+    statusFn: v => (v >= 1 && v <= 3) ? "healthy" : v <= 4.5 ? "watch" : "danger",
+  },
+  {
+    name: "Employment Cost Index (YoY)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Total compensation, all civilian workers, YoY — the lagging, broadest wage-cost-inflation confirmation, BLS's own preferred compensation measure (includes benefits, not just wages, unlike Unit Labor Costs). Thresholds borrowed from this dashboard's existing wage-cost framing, logged as uncalibrated.",
+    fred_series_id: "ECIALLCIV", unit: "% YoY", data_source: "fred", sort_order: 49,
+    series: "ECIALLCIV", type: "yoy_quarterly",
+    statusFn: v => v <= 3 ? "healthy" : v <= 4.5 ? "watch" : "danger",
+  },
 ];
 
 interface ProcessedRow {
@@ -1003,6 +1168,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         if (ind.name === "Core CPI (YoY)") {
           const z = await computeFixedWindowZScore(ind.series!, yoy.current);
           if (z) metadata = { ...metadata, zscore: z.zscore, window_mean: z.window_mean, window_min: z.window_min, window_max: z.window_max };
+        }
+        // growth-inflation-indicator-gaps spec, Phase 1: Core PCE's own
+        // inventory row is "YoY, plus 3M annualized" -- the SCORED/headline
+        // number is YoY (matching the starting-statuses table's threshold,
+        // which is explicitly "Core PCE YoY"), with the 3M-annualized rate
+        // as a secondary metadata figure, same obs already fetched above.
+        if (ind.name === "Core PCE (YoY)") {
+          const ann = annualized3mMonthly(obs);
+          if (ann) metadata = { ...metadata, annualized_3m_pct: Math.round(ann.current * 100) / 100 };
         }
         break;
       }
@@ -1482,6 +1656,53 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         if (gdpObs.length < 2 || potObs.length < 2) return null;
         current = (gdpObs[0].value - potObs[0].value) / potObs[0].value * 100;
         previous = (gdpObs[1].value - potObs[1].value) / potObs[1].value * 100;
+        break;
+      }
+      case "annualized_3m_monthly": {
+        // 20 months of history: 2 recent points + up to 3 months back from
+        // each for the date-matched 3-month-ago comparator, plus headroom
+        // for annualizedMath.ts's single-month gap-fill.
+        const obs = await fetchFredObs(ind.series!, 20);
+        const ann = annualized3mMonthly(obs);
+        if (!ann) return null;
+        current = ann.current; previous = ann.previous;
+        metadata = { reference_period: obs[0]?.date };
+        if (ann.usedInterpolatedMonth) metadata = { ...metadata, used_interpolated_month: ann.usedInterpolatedMonth };
+        break;
+      }
+      case "ratio_two_series": {
+        const [numObs, denObs] = await Promise.all([fetchFredObs(ind.series!, 14), fetchFredObs(ind.series2!, 14)]);
+        const ratio = ratioTwoSeries(numObs, denObs);
+        if (!ratio) return null;
+        current = ratio.current; previous = ratio.previous;
+        metadata = { reference_period: numObs[0]?.date };
+        break;
+      }
+      case "diff_two_series": {
+        // series2 (the quarterly comparator, e.g. NROU) is capped at
+        // observation_end=today, same technique output_gap already uses for
+        // GDPPOT above -- NROU is confirmed (Phase 0) to be CBO's own
+        // ~10-year-FORWARD projection, so an uncapped sort_order=desc fetch
+        // would return only far-future quarters and never reach "today's"
+        // one at all. The pure diff function itself needs no special-casing
+        // for this (it already picks "latest quarter at or before the
+        // monthly date"); the cap just keeps the FETCH from being crowded
+        // out by rows the diff would discard anyway.
+        const today = new Date().toISOString().slice(0, 10);
+        const [monthlyObs, quarterlyObs] = await Promise.all([
+          fetchFredObs(ind.series!, 14),
+          fetch(`${FRED}?series_id=${ind.series2}&api_key=${apiKey}&sort_order=desc&observation_end=${today}&limit=60&file_type=json`)
+            .then((r) => r.json())
+            .then((j: { observations: { date: string; value: string }[] }) =>
+              (j.observations ?? []).filter((o) => o.value !== "." && o.value !== "")
+                .map((o) => ({ date: o.date, value: parseFloat(o.value) }))
+                .filter((o) => !isNaN(o.value))
+            ),
+        ]);
+        const diff = diffMonthlyMinusQuarterlyCarryForward(monthlyObs, quarterlyObs);
+        if (!diff) return null;
+        current = diff.current; previous = diff.previous;
+        metadata = { reference_period: monthlyObs[0]?.date, carried_forward_quarter: diff.carriedForwardQuarter };
         break;
       }
       case "m2_minus_gdp": {
@@ -3346,6 +3567,122 @@ async function checkCpiCoreDivergence(rows: ProcessedRow[]): Promise<void> {
   } catch (e) { console.error("[cpi_core_divergence]", e); }
 }
 
+// growth-inflation-indicator-gaps spec, Phase 1: one-time deep backfill of
+// macro_snapshots history for the new FRED-sourced indicators (at least 10
+// years where available) -- the live per-day snapshot loop at the bottom of
+// this function only ever writes TODAY's reading, so a brand-new indicator
+// would otherwise have zero history (no trend chart, nothing for Phase 4's
+// backtests) until it had been live for years. Self-gated the same way
+// backfillRegimeHistory is (skip once we already have old data), so this
+// never re-runs its FRED calls on every single invocation.
+const INDICATOR_GAPS_PHASE1_NAMES = [
+  "Labor Force Participation Rate", "Labor Force Growth (YoY)", "Nonfarm Labor Productivity (YoY)",
+  "Real Nonresidential Fixed Investment (YoY)", "Core Capex Orders (3M Annualized)",
+  "Real Retail Sales (YoY)", "Import Price Index (YoY)", "5-Year, 5-Year Forward Inflation Expectation",
+  "Unemployment Gap (UNRATE − NAIRU)", "Job Openings per Unemployed Worker",
+  "Case-Shiller National Home Price Index (YoY)", "Real PCE (YoY)", "Atlanta Fed Wage Growth Tracker",
+  "Core PCE (YoY)", "Supercore CPI (3M Annualized)", "Shelter CPI (YoY)", "Sticky-Price Core CPI (YoY)",
+  "Employment Cost Index (YoY)",
+];
+
+// Walks every historical point an already-built pure point-in-time function
+// (yoyPair / annualized3mMonthly, both shaped { current, ... }) can resolve,
+// by re-slicing the DESC-sorted series at each offset and re-running the
+// SAME function -- the identical "offset walk" pattern computeIndirectBidder
+// FullSeries already uses elsewhere in this codebase, reused here instead of
+// a parallel historical-math implementation.
+function walkPureTransform(
+  obsDesc: { date: string; value: number }[],
+  computeAt: (windowDesc: { date: string; value: number }[]) => { current: number } | null,
+): { date: string; value: number }[] {
+  const out: { date: string; value: number }[] = [];
+  for (let i = 0; i < obsDesc.length - 1; i++) {
+    const r = computeAt(obsDesc.slice(i));
+    if (r) out.push({ date: obsDesc[i].date, value: r.current });
+  }
+  return out;
+}
+
+async function computeIndicatorGapsHistoricalSeries(ind: Indicator): Promise<{ date: string; value: number }[]> {
+  switch (ind.type) {
+    case "level": {
+      const obs = await fetchFredObs(ind.series!, 150); // ~12.5 years monthly
+      return obs.map((o) => ({ date: o.date, value: o.value }));
+    }
+    case "yoy_monthly": {
+      const obs = await fetchFredObs(ind.series!, 290); // ~24 years -- 12y of YoY output needs 12y of lookback behind it
+      return walkPureTransform(obs, (w) => yoyPair(w));
+    }
+    case "yoy_quarterly": {
+      const obs = await fetchFredObs(ind.series!, 100); // ~25 years quarterly
+      return walkPureTransform(obs, (w) => yoyPair(w));
+    }
+    case "annualized_3m_monthly": {
+      const obs = await fetchFredObs(ind.series!, 160); // ~13 years + 3mo lookback headroom
+      return walkPureTransform(obs, (w) => annualized3mMonthly(w));
+    }
+    case "ratio_two_series": {
+      const [numObs, denObs] = await Promise.all([fetchFredObs(ind.series!, 150), fetchFredObs(ind.series2!, 150)]);
+      const out: { date: string; value: number }[] = [];
+      for (let i = 0; i < numObs.length; i++) {
+        const r = ratioTwoSeries(numObs.slice(i), denObs);
+        if (r) out.push({ date: numObs[i].date, value: r.current });
+      }
+      return out;
+    }
+    case "diff_two_series": {
+      const today = new Date().toISOString().slice(0, 10);
+      const [monthlyObs, quarterlyObs] = await Promise.all([
+        fetchFredObs(ind.series!, 150),
+        fetch(`${FRED}?series_id=${ind.series2}&api_key=${apiKey}&sort_order=desc&observation_end=${today}&limit=150&file_type=json`)
+          .then((r) => r.json())
+          .then((j: { observations: { date: string; value: string }[] }) =>
+            (j.observations ?? []).filter((o) => o.value !== "." && o.value !== "")
+              .map((o) => ({ date: o.date, value: parseFloat(o.value) }))
+              .filter((o) => !isNaN(o.value))
+          ),
+      ]);
+      const out: { date: string; value: number }[] = [];
+      for (let i = 0; i < monthlyObs.length; i++) {
+        const r = diffMonthlyMinusQuarterlyCarryForward(monthlyObs.slice(i), quarterlyObs);
+        if (r) out.push({ date: monthlyObs[i].date, value: r.current });
+      }
+      return out;
+    }
+    default:
+      return [];
+  }
+}
+
+async function backfillIndicatorGapsHistory(): Promise<void> {
+  try {
+    const { data: already } = await supabase
+      .from("macro_snapshots")
+      .select("snapshot_date")
+      .eq("indicator_name", "Labor Force Participation Rate")
+      .lt("snapshot_date", "2020-01-01")
+      .limit(1);
+    if ((already?.length ?? 0) > 0) return;
+
+    for (const ind of INDICATORS) {
+      if (!INDICATOR_GAPS_PHASE1_NAMES.includes(ind.name)) continue;
+      try {
+        const series = await computeIndicatorGapsHistoricalSeries(ind);
+        const snapRows = series.map((p) => ({
+          indicator_name: ind.name,
+          snapshot_date: p.date,
+          value: Math.round(p.value * 1000) / 1000,
+          status: ind.statusFn(p.value),
+        }));
+        for (let i = 0; i < snapRows.length; i += 500) {
+          await supabase.from("macro_snapshots").upsert(snapRows.slice(i, i + 500), { onConflict: "indicator_name,snapshot_date", ignoreDuplicates: false });
+        }
+        console.log(`[indicator_gaps_backfill] ${ind.name}: ${snapRows.length} rows`);
+      } catch (e) { console.error(`[indicator_gaps_backfill] ${ind.name}:`, e); }
+    }
+  } catch (e) { console.error("[indicator_gaps_backfill]", e); }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (!apiKey) return new Response(JSON.stringify({ error: "FRED_API_KEY not set" }), { status: 500, headers: { ...CORS, "Content-Type": "application/json" } });
@@ -3397,6 +3734,7 @@ Deno.serve(async (req: Request) => {
     await generateNotifications();
     await generateSovereignRiskNotifications();
     await checkCpiCoreDivergence(rows);
+    await backfillIndicatorGapsHistory();
   })());
   return new Response(
     JSON.stringify({

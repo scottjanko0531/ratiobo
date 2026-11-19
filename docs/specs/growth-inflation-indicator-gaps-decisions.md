@@ -243,3 +243,181 @@ instruction; both mirrors and harnesses read and documented; baseline
 fixture committed. Two real, pre-existing conditions surfaced and
 logged (not fixed, out of scope): ISM Services scrape is 3 months
 stale, and `fetch-cofer-data`'s source isn't tracked in this repo.
+
+## Phase 1 (2026-11-19) — FRED-sourced additions, display-only, NOT deployed
+
+All 18 FRED-sourced Tier A/B indicators (Atlanta Fed Wage Tracker
+included, confirmed-on-FRED in Phase 0; ISM Prices Paid/GSCPI excluded,
+Phase 2). No touch to `lib/simulatorKeys.js`, `get-regime-analysis/
+index.ts`, or `fetch-macro-data`'s own `NEARTERM_*`/`MEDTERM_*` arrays
+— confirmed via `git diff`, zero matches for any of those names outside
+this phase's own new code. This is the main proof the baseline fixture
+is unaffected (see Acceptance below).
+
+### New processor types
+
+Three new pure `_shared/` modules, each with its own test file:
+- `_shared/annualizedMath.ts` (`annualized3mMonthly`): `((x_t/x_t-3)^4-1)*100`,
+  date-matched 3 months back. Reuses `yoyMath.ts`'s `addMonths`/
+  `monthlyGapFill` for the single-month gap-fill rather than duplicating
+  it — logged per rule 6 as extending rule 10's "one gap rule" intent to
+  a 3-month lag, not inventing a second parallel rule.
+- `_shared/ratioTwoSeries.ts` (`ratioTwoSeries`): date-matched (by
+  calendar month) ratio; skips a month if either side is missing or the
+  denominator is zero, never guesses.
+- `_shared/diffTwoSeries.ts` (`diffMonthlyMinusQuarterlyCarryForward`):
+  monthly minus quarterly, quarterly carried forward to every month
+  until a newer quarter publishes.
+
+`tests/annualizedMath.test.ts` (4 tests), `tests/ratioTwoSeries.test.ts`
+(4 tests), `tests/diffTwoSeries.test.ts` (4 tests) — one covers the
+real Oct 2025 gap via the shared gap-fill rule, one covers the
+quarterly carry-forward, one covers the annualization formula itself
+against a hand-worked expected value, plus 2+ null/edge-case tests
+each. All 12 passing.
+
+**NROU-as-projection-series handling — confirmed sane, not just
+assumed.** Added a DEDICATED test
+(`diffTwoSeries.test.ts`, "handles NROU's real shape") using exactly
+the scenario Phase 0 found: a quarterly series with a row dated a
+decade in the future (2036). The carry-forward logic ("latest quarter
+AT OR BEFORE the monthly date") correctly skips the 2036 row and picks
+the real current quarter — confirmed by assertion, not by inspection.
+At the fetch layer (in `fetch-macro-data`'s new `diff_two_series`
+case), the quarterly series' FRED call is capped with
+`observation_end=today`, the SAME technique `output_gap`'s existing
+case already uses for GDPPOT (also a CBO forward-projection series) —
+without this cap, a plain `sort_order=desc&limit=N` fetch would return
+ONLY far-future rows for a series shaped like NROU/GDPPOT and never
+reach "today's" quarter at all. Not a new technique, reused the
+existing precedent.
+
+### 18 indicator placements, sort_order, and status thresholds
+
+**Layer 5, new, "Growth — Supply Side"** (sort_order 400-404): Labor
+Force Participation Rate (`CIVPART`), Labor Force Growth YoY
+(`CLF16OV`), Nonfarm Labor Productivity YoY (`OPHNFB`), Real
+Nonresidential Fixed Investment YoY (`PNFIC1`), Core Capex Orders (3M
+Annualized) (`NEWORDER`). First four are explicitly descriptive per
+rule 11 — `statusFn: () => "neutral"` (a real member of the `Status`
+union already, same styling `app/macro/page.jsx`'s `StatusBadge`
+already gives Real Fed Funds Rate's stance family). Core Capex gets the
+spec's own stated band (>2 healthy / -2 to 2 watch / <-2 danger).
+
+**Layer decision, logged per the spec's own instruction to log it:**
+added a genuine new layer (5) rather than a sub-heading inside an
+existing one. Grepped the whole frontend first — `layer`/`layer_name`
+is referenced ONLY in `app/macro/page.jsx`, nowhere else (not
+`/macro/grid`, not any other component) — so the actual ripple is 3
+small edits in ONE file (`LAYER_NAMES` map + two `[1,2,3,4]` array
+literals → `[1,2,3,4,5]`), not the broad change the spec's own
+sub-heading fallback was hedging against. `DalioGauges` needs no
+change (its four `layer === N` conditionals simply don't match 5, no
+gauge is specified for supply-side growth, which is correct — there
+isn't one). The circled layer-badge sequence already skips numbers
+(jumps 4 → 7 for the pre-existing Sovereign Risk section, which uses a
+hardcoded "7" rather than a computed layer number) — logged as a
+pre-existing cosmetic quirk, not something this phase introduces or
+needs to fix.
+
+**Layer 3, "Business Cycle" additions** (sort_order 37-49, a
+previously-unused gap between the existing 36 and 91), ordered
+leading→coincident→measured per the spec:
+
+| sort_order | Indicator | FRED ID | Status band | Band source |
+|---|---|---|---|---|
+| 37 | Real Retail Sales (YoY) | `RRSFS` | >1 healthy / 0-1 watch / <0 danger | Spec's own table |
+| 38 | Import Price Index (YoY) | `IR` | ≤3/≤6/>6 | Spec's own table |
+| 39 | 5y5y Forward Inflation | `T5YIFR` | 2.0-2.6 healthy / 2.6-3.0 watch / >3.0 or <1.7 danger (two-sided) | Spec's own table |
+| 40 | Unemployment Gap (UNRATE−NAIRU) | `UNRATE`−`NROU` | neutral | **Judgment call** — direction's "goodness" depends on the prevailing regime (tight-and-inflationary vs. loose-and-recessionary read oppositely), not clear-cut per rule 11, so neutral rather than inventing a band |
+| 41 | Job Openings per Unemployed Worker | `JTSJOL`÷`UNEMPLOY` | 0.8-1.2 healthy / else watch (no danger tier) | Spec's own table, implemented exactly — no danger tier was specified |
+| 42 | Case-Shiller National HPI (YoY) | `CSUSHPINSA` | ≤4/≤7/>7 | **Judgment call**, not in the spec's starting-statuses table — borrowed a CPI-like shape for home-price YoY, logged as uncalibrated |
+| 43 | Real PCE (YoY) | `PCEC96` | >=2/>=0/else | **Judgment call** — borrowed Real GDP Growth's existing band (same growth-coincident framing) |
+| 44 | Atlanta Fed Wage Growth Tracker | `FRBATLWGT3MMAUMHWGO` | ≤3/≤4.5/>4.5 | **Judgment call** — borrowed from this dashboard's existing wage-cost framing (Unit Labor Costs' implicit magnitude) |
+| 45 | Core PCE (YoY) | `PCEPILFE` | ≤2.5/≤3.5/>3.5 | Spec's own table (headline = YoY; 3M-annualized is a secondary `metadata.annualized_3m_pct` field on the SAME card, not a separate card — see below) |
+| 46 | Supercore CPI (3M Annualized) | `CUSR0000SASL2RS` | ≤3/≤4.5/>4.5 | Spec's own table |
+| 47 | Shelter CPI (YoY) | `CUSR0000SAH1` | 1-3 healthy/≤5 watch/>5 danger | **Judgment call** — borrowed headline CPI's existing band |
+| 48 | Sticky-Price Core CPI (YoY) | `CORESTICKM159SFRBATL` | 1-3/≤4.5/>4.5 | **Judgment call** — borrowed Core CPI's existing band |
+| 49 | Employment Cost Index (YoY) | `ECIALLCIV` | ≤3/≤4.5/>4.5 | **Judgment call** — same wage-cost framing as Atlanta Fed Wage Tracker |
+
+**Core PCE's "YoY, plus 3M annualized" instruction**, resolved: the
+spec's own starting-statuses table gives a threshold for "Core PCE
+YoY" specifically (not 3M annualized), so the scored/headline figure
+on this card is YoY (type `yoy_monthly`, gets the existing gap-rule
+fallback for free), with the 3M-annualized rate computed via the SAME
+`annualized3mMonthly` function and stashed in `metadata.
+annualized_3m_pct` — one indicator card, two numbers, not two cards.
+Logged as a judgment call resolving an ambiguity in how the spec's
+inventory table ("YoY, plus 3M annualized") and its starting-statuses
+table (YoY only) relate to each other.
+
+### Backfill
+
+New `backfillIndicatorGapsHistory()`, wired into the existing
+background `EdgeRuntime.waitUntil` block alongside
+`backfillRegimeHistory`/`backfillForwardSignals`, self-gated the same
+way (checks for an old `macro_snapshots` row before doing any FRED
+calls, so it only actually runs once). Reuses a generic
+`walkPureTransform` helper — re-slicing the already-fetched DESC
+series at each offset and re-running the SAME pure function
+(`yoyPair`/`annualized3mMonthly`) already built for the live card —
+the identical "offset walk" pattern `computeIndirectBidderFullSeries`
+already uses elsewhere in this codebase, not a parallel historical-math
+implementation. Fetch depths (150-290 observations depending on
+frequency) target "at least 10 years where available" plus enough
+lookback headroom for each transform's own date-matching.
+
+### Live sanity check against real data (no deploy needed)
+
+Per the report-before-deploy ask, ran the ACTUAL new pure functions
+(not a reimplementation) against real FRED values pulled live via
+`WebFetch` (same technique Phase 0 used), proving the new processor
+types work correctly without needing to deploy first:
+
+- **Core PCE, 3M annualized** (real Sep 2026 index values, May-Sep
+  2026): **2.90%** — would read "watch" under the spec's own band if
+  it were the headline (it isn't; see above). Plausible given CPI YoY
+  is running at 3.95% elsewhere on this dashboard.
+- **Openings/Unemployed ratio** (real JTSJOL/UNEMPLOY values, Sep
+  2026, the latest month both series actually share): **1.058** —
+  "healthy" per the spec's band (0.8-1.2), a roughly balanced labor
+  market read.
+- **5y5y** (already a direct FRED level, no new transform involved):
+  real value confirmed in Phase 0, **2.15%** (Nov 18, 2026) —
+  "healthy" per the spec's band (2.0-2.6).
+
+The exact live YoY headline for Core PCE (vs. just its 3M-annualized
+secondary figure) and the other 15 indicators' live values need the
+authenticated server-side FRED pull — reported once deployed, same
+gate as every other phase in this effort.
+
+### Tests
+
+`tests/annualizedMath.test.ts`, `tests/ratioTwoSeries.test.ts`,
+`tests/diffTwoSeries.test.ts` (4 each, 12 total) — processor-type math,
+the Oct 2025 gap, and the quarterly carry-forward/NROU-projection
+shape. `tests/indicatorGapsDefinitions.test.ts` (20 tests) — the
+definition-sanity check: since `fetch-macro-data/index.ts` can't be
+imported under Vitest (module-scope `Deno.env.get(...)!`, same
+constraint as every other `_shared/` split), this reads the file as
+TEXT and asserts each of the 18 new indicator blocks has a unit,
+status function, FRED source, series ID, and description — a
+source-text check, logged as such, not a live-object check.
+
+`npx vitest run tests/` — 51 files, **855 tests, all passing** (32
+new). `npx next build` — clean.
+
+### Acceptance
+
+All 18 verified FRED Tier A/B indicators are defined with history
+backfill wired in; `/macro` will show the new "Growth — Supply Side"
+group (layer 5) alongside the existing four. **Baseline fixture
+unchanged, confirmed by code review**: `git diff` shows zero touches
+to `lib/simulatorKeys.js`, `get-regime-analysis/index.ts`, or
+`fetch-macro-data`'s `NEARTERM_*`/`MEDTERM_*` arrays — the only code
+path that produces `tests/fixtures/indicator-gaps-baseline-2026-11-18.
+json`'s `aggregate_scores`. The exact value-for-value fixture
+comparison (re-invoking `fetch-macro-data` and diffing
+`macro_regime_history`'s new row against the frozen fixture) happens
+once deployed, same gate as every other phase — reported there, not
+asserted here. Nothing deployed.

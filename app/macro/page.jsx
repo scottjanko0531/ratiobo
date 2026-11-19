@@ -50,6 +50,12 @@ const LAYER_NAMES = {
   2: "Short-Term Debt Cycle",
   3: "Business Cycle",
   4: "Tail Risk",
+  // growth-inflation-indicator-gaps spec, Phase 1: a genuine new layer, not
+  // a sub-heading within an existing one -- confirmed via grep that `layer`
+  // is referenced ONLY in this file (no other page/component depends on
+  // exactly 4 layers), so the ripple is contained to the two `[1,2,3,4]`
+  // arrays below, not worth working around with a sub-heading hack.
+  5: "Growth — Supply Side",
 };
 
 // Cards that live under layer 1/2 in the data model (for cross-referencing
@@ -7918,7 +7924,7 @@ export default function MacroDashboard() {
     }
   }
 
-  const byLayer = [1, 2, 3, 4].reduce((acc, l) => {
+  const byLayer = [1, 2, 3, 4, 5].reduce((acc, l) => {
     acc[l] = (indicators ?? []).filter((i) => i.layer === l && !SOVEREIGN_RISK_NAMES.includes(i.name));
     return acc;
   }, {});
@@ -8020,7 +8026,7 @@ export default function MacroDashboard() {
             ))}
           </div>
 
-          {[1, 2, 3, 4].map((layer) => (
+          {[1, 2, 3, 4, 5].map((layer) => (
             <div key={layer} className="mb-10">
               <div className="flex items-center gap-3 mb-3">
                 <span className="w-6 h-6 rounded-full bg-ink-soft flex items-center justify-center text-xs font-bold text-paper-dim">
