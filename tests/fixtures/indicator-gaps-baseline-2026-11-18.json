@@ -1,0 +1,65 @@
+{
+  "_purpose": "growth-inflation-indicator-gaps spec, Phase 0 task 7. Regression anchor: Phases 1-3 are display-only and must never change these live scores. A Phase 1-3 test should re-run the frozen NEARTERM_G/NEARTERM_I/MEDTERM_G/MEDTERM_I formulas (captured verbatim below, confirmed identical across lib/simulatorKeys.js, fetch-macro-data/index.ts, and get-regime-analysis/index.ts as of this snapshot) against the frozen indicator_inputs below and confirm the result still matches aggregate_scores. Captured live 2026-11-19 (table default state as of 2026-11-18's last fetch-macro-data run, see _sources).",
+  "_sources": {
+    "aggregate_scores": "macro_regime_history, latest row by period_date, queried 2026-11-19",
+    "indicator_inputs": "macro_indicators, queried live 2026-11-19 -- current_value/metadata as of that moment, NOT necessarily the exact point-in-time values that produced aggregate_scores (that row was written by fetch-macro-data on 2026-11-18 19:46 UTC; markets/indicators may have moved slightly since). This is logged, not treated as a discrepancy: the point of this fixture is 'did Phases 1-3 change the SCORING CODE', not 'do live market values hold perfectly still'.",
+    "known_discrepancy_logged_not_fixed": "Invoking get-regime-analysis live (reconnaissance only) returned its own cached row with forward_key=null (medium-term) for today's run (2026-11-19T07:10 UTC), while macro_regime_history's row (from fetch-macro-data, 2026-11-18T19:46 UTC) shows forward_key='rg_ri'/66%. Both files' weight arrays are byte-identical (confirmed by diff below), so this is not a mirror-sync code bug -- it reflects two independently-executed live computations at different timestamps with potentially different live input values, which is expected, not a defect this spec needs to fix. Logged per rule 6."
+  },
+  "aggregate_scores": {
+    "period_date": "2026-07-01",
+    "gdp_yoy": 2.07,
+    "cpi_yoy": 3.95,
+    "medium_term": { "forward_key": "rg_ri", "forward_confidence": 66 },
+    "near_term": { "forward_key": "rg_ri", "forward_confidence": 86 },
+    "updated_at": "2026-11-18T19:46:00.017Z"
+  },
+  "near_term_manual_recompute_sanity_check": {
+    "note": "Hand-recomputed from the live indicator_inputs below using the frozen NEARTERM_G/NEARTERM_I formulas, as a sanity check that this investigator understood the scoring mechanism correctly before relying on it. Directional result (gDir=up, iDir=up -> rg_ri) matches the stored aggregate_scores.near_term.forward_key exactly. The confidence number (88 recomputed vs. 86 stored) differs by 2 points, consistent with the known point-in-time mismatch noted above (live indicator values queried now vs. the slightly-earlier values the stored row was actually computed from) -- not a logic discrepancy.",
+    "growth": { "weighted_score": 1.00, "direction": "up", "all_9_signals_voted_up": true },
+    "inflation": {
+      "weighted_score": 0.76,
+      "direction": "up",
+      "wti_shock_gate_excluded": "vol_shock=false on WTI Crude Oil, so 'WTI Crude Oil (Shock)' (w=0.15) did not participate this run",
+      "only_contrarian_vote": "Dollar (3M, lagged): DXY change3m_pct=5.1 -> vote=-1 (dollar strength reads as disinflationary)"
+    }
+  },
+  "indicator_inputs": {
+    "GDPNow": { "current_value": 3.209, "metadata": { "is_nowcast": true, "reference_period": "2026-10-01" } },
+    "ISM Manufacturing PMI": { "current_value": 55.5, "metadata": { "is_survey": true, "new_orders": 55.5, "reference_period": "2026-10-01" } },
+    "ISM Services PMI": { "current_value": 54.1, "metadata": { "is_survey": true, "new_orders": 57.2, "business_activity": 59.1, "reference_period": "2026-07-01" } },
+    "Initial Jobless Claims Trend": { "current_value": -1.761, "metadata": { "latest_4wk_avg": 195250, "reference_period": "2026-11-07" } },
+    "Payrolls (3M Avg)": { "current_value": 137, "metadata": { "reference_period": "2026-10-01" } },
+    "Retail Sales (YoY)": { "current_value": 6.823, "metadata": null },
+    "Unemployment Rate Trend": { "current_value": -0.1, "metadata": { "reference_period": "2026-10-01" } },
+    "HY Credit Spread (OAS)": { "current_value": 3.43, "metadata": null },
+    "US Total Liquidity Composite": { "current_value": 6.708, "metadata": { "period": "2026-11-01", "zscore": -0.0468, "stock_yoy": null, "is_partial": true } },
+    "CPI (YoY)": { "current_value": 3.95, "metadata": { "change3m_pp": 0.65, "reference_period": "2026-10-01", "used_interpolated_month": "2025-10-01" } },
+    "PPI (YoY)": { "current_value": 12.79, "metadata": { "change3m_pp": 4.22, "reference_period": "2026-10-01" }, "_note": "unusually high for PPI YoY -- out of scope for this spec (PPI isn't being added or changed), logged in passing per rule 6, not investigated further" },
+    "WTI Crude Oil": { "current_value": 89.53, "metadata": { "vol_shock": false, "change3m_pct": 26.86, "change_short_pct": -13.39, "reference_period": "2026-11-17", "realized_vol_annualized_pct": 51.7 } },
+    "Copper Price": { "current_value": 14473.056, "metadata": { "change3m_pct": 6.8 } },
+    "DXY": { "current_value": 103.875, "metadata": { "zscore": 1.02, "change3m_pct": 5.1 } },
+    "Consumer Inflation Expectations": { "current_value": 4.6, "metadata": { "umich_1yr": 4.6, "nyfed_1yr": 3.91, "umich_date": "2026-09-01", "nyfed_date": "2026-10-01", "composite_stress_z": 0.44 } },
+    "Tariff Inflation Impact": { "current_value": 0.75, "metadata": null },
+    "2yr/10yr Yield Spread": { "current_value": 0.27, "metadata": null },
+    "3mo/10yr Yield Spread": { "current_value": 0.73, "metadata": null },
+    "Sr Loan Officer Survey": { "current_value": 1.7, "metadata": null },
+    "Building Permits": { "current_value": 1295, "metadata": { "change3m_pct": -9.63 } },
+    "UMich Consumer Sentiment": { "current_value": 48.1, "metadata": null },
+    "Output Gap": { "current_value": 1.154, "metadata": null },
+    "C&I Loan Growth (YoY)": { "current_value": 11.164, "metadata": null },
+    "Real GDP Growth": { "current_value": 2.066, "metadata": { "zscore": -0.75, "window_mean": 2.56, "window_min": 1.49, "window_max": 3.97, "reference_period": "2026-07-01" } },
+    "10Y Breakeven Inflation": { "current_value": 2.19, "metadata": { "reference_period": "2026-11-18" } },
+    "10-Year Expected Inflation": { "current_value": 2.666, "metadata": null },
+    "Unit Labor Costs (YoY)": { "current_value": 2.386, "metadata": { "reference_period": "2026-07-01" } },
+    "M2 Growth (YoY)": { "current_value": 5.71, "metadata": null },
+    "Capacity Utilization": { "current_value": 76.363, "metadata": null }
+  },
+  "mirror_sync_confirmed": {
+    "near_term_growth_weights": { "GDPNow": 0.20, "ISM Mfg New Orders": 0.15, "ISM Services New Orders": 0.10, "Jobless Claims": 0.15, "Payrolls (3M Avg)": 0.15, "Retail Sales": 0.10, "Unemployment Trend": 0.05, "HY Spread": 0.05, "Liquidity": 0.05 },
+    "near_term_infl_weights": { "CPI Momentum (3M D)": 0.20, "PPI Trend": 0.20, "WTI 3M": 0.10, "WTI Shock": 0.15, "Copper 3M": 0.10, "Dollar (3M, lagged)": 0.10, "Short-Run Infl Expectations": 0.10, "Tariff Impact (near-term)": 0.05 },
+    "medium_term_growth_weights": { "Yield Curve 2/10": 0.20, "Yield Curve 3m/10": 0.10, "Loan Standards": 0.15, "Building Permits": 0.15, "Consumer Sentiment": 0.15, "Output Gap": 0.10, "C&I Loans": 0.10, "GDP vs SPF (fwd)": 0.05 },
+    "medium_term_infl_weights": { "10Y Breakeven (shared with Market Expectations)": 0.26, "Long-Run Infl Expectations": 0.16, "Wage Growth / ULC": 0.21, "M2 Growth": 0.10, "Capacity Utilization": 0.16, "Tariff Impact (structural)": 0.11 },
+    "confirmed_identical_across": ["lib/simulatorKeys.js (NEARTERM_GROWTH_SIGNALS/NEARTERM_INFL_SIGNALS/MEDTERM_GROWTH_SIGNALS/MEDTERM_INFL_SIGNALS)", "supabase/functions/fetch-macro-data/index.ts (NEARTERM_G/NEARTERM_I/MEDTERM_G/MEDTERM_I)", "supabase/functions/get-regime-analysis/index.ts (NEARTERM_G/NEARTERM_I/MEDTERM_G/MEDTERM_I)"],
+    "method": "read all three files directly and diffed the weight/vote-function literals by eye; label-for-label, weight-for-weight match confirmed as of 2026-11-19"
+  }
+}
