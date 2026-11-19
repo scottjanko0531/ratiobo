@@ -3606,7 +3606,11 @@ function walkPureTransform(
 async function computeIndicatorGapsHistoricalSeries(ind: Indicator): Promise<{ date: string; value: number }[]> {
   switch (ind.type) {
     case "level": {
-      const obs = await fetchFredObs(ind.series!, 150); // ~12.5 years monthly
+      // 150 covers ~12.5 years for a monthly series, but T5YIFR (5-5 forward
+      // inflation) is daily -- 150 obs there is only ~7 months. Over-fetching
+      // for a monthly series is harmless (FRED just returns its full history,
+      // capped naturally), so use a limit sized for daily data everywhere.
+      const obs = await fetchFredObs(ind.series!, 3700); // ~10+ years daily, or full history if shorter
       return obs.map((o) => ({ date: o.date, value: o.value }));
     }
     case "yoy_monthly": {
@@ -3654,38 +3658,29 @@ async function computeIndicatorGapsHistoricalSeries(ind: Indicator): Promise<{ d
   }
 }
 
-async function backfillIndicatorGapsHistory(): Promise<void> {
-  try {
-    const { data: already } = await supabase
-      .from("macro_snapshots")
-      .select("snapshot_date")
-      .eq("indicator_name", "Labor Force Participation Rate")
-      .lt("snapshot_date", "2020-01-01")
-      .limit(1);
-    if ((already?.length ?? 0) > 0) return;
-
-    for (const ind of INDICATORS) {
-      if (!INDICATOR_GAPS_PHASE1_NAMES.includes(ind.name)) continue;
-      try {
-        const series = await computeIndicatorGapsHistoricalSeries(ind);
-        const snapRows = series.map((p) => ({
-          indicator_name: ind.name,
-          snapshot_date: p.date,
-          value: Math.round(p.value * 1000) / 1000,
-          status: ind.statusFn(p.value),
-        }));
-        for (let i = 0; i < snapRows.length; i += 500) {
-          await supabase.from("macro_snapshots").upsert(snapRows.slice(i, i + 500), { onConflict: "indicator_name,snapshot_date", ignoreDuplicates: false });
-        }
-        console.log(`[indicator_gaps_backfill] ${ind.name}: ${snapRows.length} rows`);
-      } catch (e) { console.error(`[indicator_gaps_backfill] ${ind.name}:`, e); }
-    }
-  } catch (e) { console.error("[indicator_gaps_backfill]", e); }
-}
-
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (!apiKey) return new Response(JSON.stringify({ error: "FRED_API_KEY not set" }), { status: 500, headers: { ...CORS, "Content-Type": "application/json" } });
+  const backfillName = new URL(req.url).searchParams.get("backfillIndicator");
+  if (backfillName) {
+    const ind = INDICATORS.find((i) => i.name === backfillName && INDICATOR_GAPS_PHASE1_NAMES.includes(i.name));
+    if (!ind) return new Response(JSON.stringify({ error: "unknown backfill indicator" }), { status: 400, headers: { ...CORS, "Content-Type": "application/json" } });
+    try {
+      const series = await computeIndicatorGapsHistoricalSeries(ind);
+      const snapRows = series.map((p) => ({
+        indicator_name: ind.name,
+        snapshot_date: p.date,
+        value: Math.round(p.value * 1000) / 1000,
+        status: ind.statusFn(p.value),
+      }));
+      for (let i = 0; i < snapRows.length; i += 500) {
+        await supabase.from("macro_snapshots").upsert(snapRows.slice(i, i + 500), { onConflict: "indicator_name,snapshot_date", ignoreDuplicates: false });
+      }
+      return new Response(JSON.stringify({ indicator: ind.name, rows: snapRows.length }), { headers: { ...CORS, "Content-Type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { ...CORS, "Content-Type": "application/json" } });
+    }
+  }
   try {
   const fredIndicators = INDICATORS.filter(i => i.type !== "gpr_website");
   const externalIndicators = INDICATORS.filter(i => i.type === "gpr_website");
@@ -3734,7 +3729,6 @@ Deno.serve(async (req: Request) => {
     await generateNotifications();
     await generateSovereignRiskNotifications();
     await checkCpiCoreDivergence(rows);
-    await backfillIndicatorGapsHistory();
   })());
   return new Response(
     JSON.stringify({
