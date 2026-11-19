@@ -3778,3 +3778,84 @@ the stale-"this week" rule against today's actual stale data_as_of;
 trip-wire history correctly excludes the Nov 17 artifact (dry-run
 confirmed against live data). Nothing deployed. Say go and this phase
 — and the entire v3 spec — is done.
+
+## v3 Phase 3 deploy (2026-11-19) — live, confirmed. v3 spec complete.
+
+Scott approved. `generate-debt-cycle-brief` redeployed (v18,
+`verify_jwt: false` preserved — no `[functions.generate-debt-cycle-
+brief]` entry exists in `supabase/config.toml` at all, since that file
+only pins cron-invoked functions per its own header comment; confirmed
+the correct value from the function's live pre-deploy state via
+`list_edge_functions` rather than trusting the deploy tool's own
+`true` default). Frontend pushed to `origin/main`
+(`b56b2f6..37ba9dd`); Vercel auto-deployed from the GitHub push
+(`dpl_29vh453XyJo2eHTbCzbak1G6Rzq6`, READY, aliased to
+`www.ratiobo.com`).
+
+**The actual regenerated brief, in full** (invoked live with
+`?refresh=true`, 2026-11-19):
+
+> The U.S. debt cycle is currently staged at MP1 with normal trend confidence. No gate is tripped: debt service has not yet exceeded 20% of federal revenue (live 19.8%), real rates remain negative, the Fed balance sheet is not in sustained expansion, and Treasury auction demand shows no structural breakdown. This represents no change from the prior stage classification.
+>
+> Against Dalio's own published benchmarks, the economy is riding the edge. Interest expense sits 20 basis points below his danger threshold of 20%, while the debt-to-revenue ratio has already climbed to 7.30x against his reference of 6x and is tracking toward his projected 10-year endpoint of 7x. The deficit stands at 6.6% of GDP, more than double his soft-landing target of 3%. On all three counts, we are closer to strain than to comfort, even though no stage gate has formally closed.
+>
+> Refinancing pressure ahead remains significant and unmistakable. The effective rate on outstanding federal debt stands at 3.38%, while the 10-year Treasury yield sits at 5.10%, opening a convergence gap of 1.72 percentage points. This gap represents the amount of future interest-cost repricing still embedded in maturing debt that will refinance at today's higher rates—a forward signal distinct from today's stage classification. The 12-month trend shows r_eff rising only 2 basis points, indicating repricing is still in early innings; the full climb from 3.38% toward 5.10% remains ahead, no current strain, rising pressure.
+>
+> Two trip-wires are live. Positive stock-bond correlation has been armed since 20 February 2026 and fired again this week (17 November 2026), signaling deterioration in portfolio diversification and a regime shift away from the traditional hedge of bonds in equity selloffs. Watch for sustained positive correlation above 0.3 and any break in Treasury demand structure—particularly indirect bidder participation or bid-to-cover ratios moving materially below their own trailing averages.
+>
+> Duration remains vulnerable as r_eff converges upward and the terminal rate implied by deficit dynamics stays sticky above consensus expectations. Real asset yields and cash equivalents continue to offer genuine return compensation. Equities face dual headwinds: the loss of bond diversification benefits in drawdowns and the structural subordination of equity returns to rising debt-service costs in a regime where growth remains below the refinancing rate. The calm stage label masks a cycle in transition, not a cycle at rest.
+
+**Confirmed clean, reading the actual text above:** no holdings/
+balance/percentage reference anywhere (no `$`, no "your portfolio");
+no "Concrete moves" section; `auction_demand_deterioration` is never
+mentioned at all (only "Positive stock-bond correlation" and a
+forward-looking, non-claim mention of "indirect bidder participation
+or bid-to-cover ratios" as something to *watch for*, not something
+that fired). `trip_wires_fired` in the response is exactly
+`[{"label":"Positive stock-bond correlation regime","firedAt":"2026-11-17"}]`
+— one entry, the real signal, with the superseded auction-demand
+firing correctly excluded.
+
+**Fact-checker: confirmed it actually ran and passed, not just a
+trusted self-report.** The live response returned
+`fact_check_flagged: false, fact_check_issues: []`. Independently
+re-ran `runDeterministicFactChecks` locally against this EXACT
+returned narrative text (not a synthetic example) — zero issues,
+confirming the live flag honestly reflects a real clean pass rather
+than a default.
+
+**Header count — confirmed live, not just dry-run.** Re-queried
+`notifications` post-deploy: still exactly 2 raw rows in the trailing
+7 days (both 2026-11-17: `auction_demand_deterioration` and
+`stock_bond_corr_positive`), and the current audit row (run_at
+2026-11-19 06:30 UTC) still shows `auction_demand_deterioration:
+armed=false` / `stock_bond_corr_positive: armed=true` — the same
+inputs the dry run used. Filtered count: **1**. The same shared
+`filterSupersededFirings`/`lib/tripWireSupersession.js` logic
+computes this identically in the brief and the frontend header, so
+this is the real number the live page will show.
+
+**Portfolio Gap panel removal — confirmed from the actual deployed
+JS bundle, not just that the source file no longer contains it.**
+Fetched `https://www.ratiobo.com/_next/static/chunks/app/big-cycle/
+page-53fcdaf248d77093.js` (the live, shipped production bundle) and
+grepped it directly:
+- `"Portfolio Gap"` — 0 occurrences.
+- `"BW Modified"` — 0 occurrences.
+- `"superseded by recalibration"` — 1 occurrence (new tooltip code
+  shipped).
+- `"fact-check flagged"` — 1 occurrence (new banner code shipped).
+- `"Debt Cycle Position Check"` — 1 occurrence (component itself is
+  still there, not accidentally deleted).
+
+**Re-ran tests/build against deployed state:** `npx vitest run
+tests/` — 47 files, 823 tests, all passing. `npx next build` — clean.
+
+### Acceptance
+
+The brief is macro-only in the actual live output (verbatim capture
+above), the fact-checker ran and passed (independently re-confirmed,
+not just trusted), the trip-wire header excludes the Nov 17 artifact
+(confirmed against live post-deploy data), and the Portfolio Gap panel
+is verifiably absent from the production bundle itself. **v3 Phase 3
+complete — the entire debt-metrics-integrity-v3 spec is now done.**
