@@ -224,38 +224,46 @@ describe("evalAuctionDemandDeterioration (v2 Phase 1 hysteresis rewrite)", () =>
     expect(result.armed).toBe(true);
   });
 
-  it("today's live numbers (regression anchor): real NOMINAL-ONLY 2010-2026 auction history reads disarmed", () => {
-    // TIPS-contamination fix (Scott, 2026-11-20): this test originally
-    // pinned tests/fixtures/indirect-bidder-auction-history-2026-11-17.json
-    // (185 raw rows) -- that file is CONTAMINATED: 51 of its 185 rows
-    // (27.6%) are real TIPS auctions, confirmed live against Fiscal Data's
-    // own inflation_index_security field for each (auction_date,
-    // original_tenor) pair. TIPS share security_type "Note"/"Bond" with
-    // nominal securities, so the OLD code's security_type filter never
-    // caught them -- this is the exact bug class the repo-wide fix
-    // addresses (_shared/indirectBidder.ts's cleanRows now also requires
-    // inflation_indexed === false).
+  it("today's live numbers (regression anchor): real NOMINAL-ONLY, CORRECT-DENOMINATOR 2010-2026 auction history reads disarmed", () => {
+    // This regression anchor has now been corrected TWICE in one day, both
+    // times by Scott catching a real bug in the live numbers:
+    //
+    // 1. TIPS-contamination fix: the original fixture (tests/fixtures/
+    //    indirect-bidder-auction-history-2026-11-17.json, 185 rows) had 51
+    //    real TIPS auctions (27.6%) mixed in -- security_type "Note"/"Bond"
+    //    never distinguished them from nominal. Fixed by filtering
+    //    inflation_indexed=false (_shared/indirectBidder.ts's cleanRows).
+    // 2. Share-denominator fix: indirect_share_pct/dealer_share_pct were
+    //    dividing by total_accepted_bn (includes SOMA + noncompetitive
+    //    add-ons never competed for), not the sum of the three COMPETITIVE
+    //    bidder categories. Validated against Scott's published-result
+    //    checks before trusting it: 2026-11-10 10Y -> 61.39% (expected
+    //    ~61.4%), 2026-10-07 10Y -> 80.34% (expected ~80.4%) -- both landed
+    //    almost exactly, confirming the fix.
     //
     // tests/fixtures/indirect-bidder-auction-history-nominal-only-
-    // 2026-11-20.json is the SAME 185-row pull with those 51 TIPS rows
-    // removed (134 genuinely nominal rows remain) -- not a new fetch, the
-    // real history minus the contamination.
+    // 2026-11-20.json now reflects BOTH corrections (134 genuinely nominal
+    // rows, each with the correct competitive-total-denominator share) --
+    // not a new fetch, the real history with both bugs removed.
     //
-    // RETROACTIVE IMPACT, reported explicitly (old contaminated vs. new
-    // corrected, both computed with the real evalAuctionDemandDeterioration/
+    // FULL RETROACTIVE IMPACT CHAIN, reported explicitly at every stage
+    // (all computed with the real evalAuctionDemandDeterioration/
     // computeIndirectBidderFullSeries functions):
-    //   latest:  57.55% (contaminated) -> 52.57% (corrected) -- a real ~5pp
-    //            difference, not noise. TIPS auctions structurally run a
-    //            higher indirect-bidder share than nominal ones, so mixing
-    //            them in overstated the trailing-6 average.
-    //   mean2y:  56.83 -> 53.66   sd2y: 2.02 -> 2.35   windowReadingCount: 12 -> 8
-    //   z-score of latest: +1.16 -> +0.86 -- still clearly "healthy" either
-    //            way (threshold is z < -1 for watch), but meaningfully lower.
-    //   trip-wire armed state: false -> false (UNCHANGED) -- the
-    //            contamination did not flip the trip-wire's live
-    //            armed/disarmed conclusion as of today, though the
-    //            DISPLAYED percentage was wrong by ~5 points for however
-    //            long this bug was live.
+    //                          latest    mean2y   sd2y   windowN   z       status   armed
+    //   original (both bugs):  57.55%    56.83    2.02   12        +1.16   healthy  false
+    //   TIPS fixed only:       52.57%    53.66    2.35    8        +0.86   healthy  false
+    //   BOTH fixed (final):    66.70%    65.93    0.61    8        +0.92   healthy  false
+    //
+    // The denominator fix alone moved "latest" up ~14pp (52.57% -> 66.70%)
+    // -- removing SOMA/noncompetitive from the denominator always INCREASES
+    // the computed competitive share for the same numerator. Across the
+    // full chain (both bugs), the DISPLAYED number swung by double digits
+    // (57.55% -> 66.70%), and sd2y dropped sharply (2.02 -> 0.61 -- the old
+    // formula's SOMA-add-on noise was inflating the metric's apparent
+    // volatility). But the qualitative, actionable conclusions are
+    // UNCHANGED at every stage: status "healthy", trip-wire disarmed,
+    // z-score comfortably positive and nowhere near the -1/-1.5/-2
+    // thresholds that would flip anything live.
     const raw = JSON.parse(
       readFileSync(
         new URL("./fixtures/indirect-bidder-auction-history-nominal-only-2026-11-20.json", import.meta.url),
@@ -267,18 +275,16 @@ describe("evalAuctionDemandDeterioration (v2 Phase 1 hysteresis rewrite)", () =>
     const result = evalAuctionDemandDeterioration(rows, INDIRECT_BIDDER_THRESHOLDS.tripWire);
     expect(result.armed).toBe(false);
     expect(result.sinceDate).toBeNull();
-    expect(result.values.latest).toBeCloseTo(52.57, 1);
-    expect(result.values.mean2y).toBeCloseTo(53.66, 1);
-    expect(result.values.sd2y).toBeCloseTo(2.35, 1);
+    expect(result.values.latest).toBeCloseTo(66.70, 1);
+    expect(result.values.mean2y).toBeCloseTo(65.93, 1);
+    expect(result.values.sd2y).toBeCloseTo(0.61, 1);
     expect(result.values.windowReadingCount).toBe(8);
 
     // The card/classifier's full-history z-score for the same latest
-    // reading: +0.86 — healthy (z > -1), not weak (z > -1.5). (Was +1.16
-    // under the contaminated history — see the retroactive-impact note
-    // above; the qualitative conclusion doesn't change, the number does.)
+    // reading: +0.92 — healthy (z > -1), not weak (z > -1.5).
     const fullSeries = computeIndirectBidderFullSeries(rows);
     const z = zScoreOf(fullSeries[fullSeries.length - 1].value, fullSeries.map((s) => s.value));
-    expect(z).toBeCloseTo(0.86, 1);
+    expect(z).toBeCloseTo(0.92, 1);
     expect(indirectBidderCardStatus(z!)).toBe("healthy");
     expect(indirectBidderIsWeak(z!)).toBe(false);
   });

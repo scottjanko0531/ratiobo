@@ -156,7 +156,15 @@ Deno.serve(async (req: Request) => {
       const dealerBn = num(a.primary_dealer_accepted) != null ? num(a.primary_dealer_accepted)! / 1e9 : null;
       const highYield = num(a.high_yield);
       const avgMedYield = num(a.avg_med_yield);
-      const totalAccepted = num(a.total_accepted);
+      // Share-denominator fix (Scott, 2026-11-20): indirect/dealer share
+      // must divide by the sum of the three COMPETITIVE bidder categories
+      // (indirect + direct + primary dealer), not total_accepted -- which
+      // includes SOMA add-ons and noncompetitive bids that were never
+      // competed for and inflate the denominator, understating every
+      // competitive category's share. Validated live against Scott's
+      // published-result checks (2026-11-10 10Y ~61.4%, 2026-10-07 10Y
+      // ~80.4%) before trusting this.
+      const competitiveTotalBn = (indirectBn ?? 0) + (directBn ?? 0) + (dealerBn ?? 0);
       return {
         auction_date: a.auction_date,
         cusip: a.cusip,
@@ -168,8 +176,8 @@ Deno.serve(async (req: Request) => {
         indirect_accepted_bn: indirectBn,
         direct_accepted_bn: directBn,
         primary_dealer_accepted_bn: dealerBn,
-        indirect_share_pct: indirectBn != null && totalAccepted ? Math.round((num(a.indirect_bidder_accepted)! / totalAccepted) * 10000) / 100 : null,
-        dealer_share_pct: dealerBn != null && totalAccepted ? Math.round((num(a.primary_dealer_accepted)! / totalAccepted) * 10000) / 100 : null,
+        indirect_share_pct: indirectBn != null && competitiveTotalBn > 0 ? Math.round((indirectBn / competitiveTotalBn) * 10000) / 100 : null,
+        dealer_share_pct: dealerBn != null && competitiveTotalBn > 0 ? Math.round((dealerBn / competitiveTotalBn) * 10000) / 100 : null,
         bid_to_cover_ratio: num(a.bid_to_cover_ratio),
         high_yield_pct: highYield,
         avg_med_yield_pct: avgMedYield,

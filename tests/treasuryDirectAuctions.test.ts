@@ -83,11 +83,23 @@ describe("mapTreasuryDirectRecord", () => {
     expect(row.primary_dealer_accepted_bn).toBeCloseTo(4.0805135, 5);
   });
 
-  it("computes indirect/dealer share pct against the grand total awarded", () => {
+  it("computes indirect/dealer share pct against the COMPETITIVE total (indirect+direct+dealer), not grand total awarded", () => {
+    // Share-denominator fix (Scott, 2026-11-20): grandTotalParAwarded
+    // (50,519,618,200) includes SOMA/noncompetitive add-ons -- using it
+    // as the denominator understates every competitive category's real
+    // share. The correct denominator is the sum of the three competitive
+    // categories themselves.
     const row = mapTreasuryDirectRecord(REAL_10Y_NOV10, tenorMap);
-    const totalAwarded = 50519618200;
     const indirectTotal = 25566955000 + 172823000;
-    expect(row.indirect_share_pct).toBeCloseTo(Math.round((indirectTotal / totalAwarded) * 10000) / 100, 2);
+    const directTotal = 12109950200 + 0;
+    const dealerTotal = 4080513500 + 0;
+    const competitiveTotal = indirectTotal + directTotal + dealerTotal;
+    const expectedPct = Math.round((indirectTotal / competitiveTotal) * 10000) / 100;
+    expect(row.indirect_share_pct).toBeCloseTo(expectedPct, 2);
+    // Validated against Scott's published-result check: real 2026-11-10
+    // 10Y indirect share should be ~61.4% -- confirms the fix, not just
+    // that the formula looks right.
+    expect(row.indirect_share_pct).toBeCloseTo(61.4, 0);
   });
 
   it("computes dispersion_bp as (highYield - medianYield) in basis points", () => {
@@ -145,5 +157,45 @@ describe("mapTreasuryDirectRecord", () => {
     expect(row.indirect_accepted_bn).toBeNull();
     expect(row.direct_accepted_bn).toBeNull();
     expect(row.indirect_share_pct).toBeNull();
+  });
+
+  it("a large SOMA/noncompetitive add-on does NOT lower the computed indirect share (the specific regression this fix addresses)", () => {
+    // grandTotalParAwarded includes SOMA + noncompetitive add-ons that
+    // were never competed for. Holding the three competitive categories
+    // fixed and varying ONLY the add-on baked into grandTotalParAwarded
+    // must leave indirect_share_pct completely unchanged -- if it moved,
+    // the add-on would still be leaking into the denominator.
+    const competitiveOnly: TreasuryDirectRecord = {
+      ...REAL_10Y_NOV10,
+      // Same three competitive categories as the real record (no
+      // noncompetitive component this time, to isolate the add-on
+      // variable to grandTotalParAwarded alone).
+      indirectBiddersCompetitiveParAwarded: "25000000000",
+      indirectBiddersNoncompetitiveParAwarded: "0",
+      directBiddersCompetitiveParAwarded: "12000000000",
+      directBiddersNoncompetitiveParAwarded: "0",
+      primaryDealersCompetitiveParAwarded: "4000000000",
+      primaryDealersNoncompetitiveParAwarded: "0",
+      // competitive total = 41,000,000,000 -- grandTotalParAwarded below
+      // is deliberately set much larger via a large SOMA-style add-on.
+      grandTotalParAwarded: "41000000000",
+    };
+    const noAddOn = mapTreasuryDirectRecord(competitiveOnly, tenorMap);
+
+    const withHugeSomaAddOn: TreasuryDirectRecord = {
+      ...competitiveOnly,
+      // +15bn SOMA/noncompetitive add-on baked into the grand total only
+      // -- the competitive categories above are untouched.
+      grandTotalParAwarded: "56000000000",
+    };
+    const withAddOn = mapTreasuryDirectRecord(withHugeSomaAddOn, tenorMap);
+
+    expect(noAddOn.indirect_share_pct).toBe(withAddOn.indirect_share_pct);
+    expect(withAddOn.indirect_share_pct).toBeCloseTo((25000000000 / 41000000000) * 100, 2);
+    // Prove the OLD (buggy) formula WOULD have moved -- this is what
+    // confirms the fix actually fixes something, not just that the new
+    // formula is invariant by coincidence.
+    const oldBuggyShare = (25000000000 / 56000000000) * 100;
+    expect(withAddOn.indirect_share_pct).not.toBeCloseTo(oldBuggyShare, 2);
   });
 });

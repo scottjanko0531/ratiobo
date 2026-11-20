@@ -84,6 +84,12 @@ export function mapTreasuryDirectRecord(
   const dealerTotal = sumNum(r.primaryDealersCompetitiveParAwarded, r.primaryDealersNoncompetitiveParAwarded);
   const highYield = num(r.highYield);
   const avgMedYield = num(r.medianYield);
+  // Share-denominator fix (Scott, 2026-11-20): same fix as
+  // ingest-auction-results -- divide by the sum of the three COMPETITIVE
+  // bidder categories, not total_accepted (which includes SOMA/
+  // noncompetitive add-ons). A ratio of raw dollar totals is scale-
+  // independent, so this doesn't need the /1e9 conversion first.
+  const competitiveTotal = (indirectTotal ?? 0) + (directTotal ?? 0) + (dealerTotal ?? 0);
 
   return {
     auction_date: r.competitiveAuctionCloseDate.slice(0, 10),
@@ -96,8 +102,8 @@ export function mapTreasuryDirectRecord(
     indirect_accepted_bn: indirectTotal != null ? indirectTotal / 1e9 : null,
     direct_accepted_bn: directTotal != null ? directTotal / 1e9 : null,
     primary_dealer_accepted_bn: dealerTotal != null ? dealerTotal / 1e9 : null,
-    indirect_share_pct: indirectTotal != null && totalAccepted ? Math.round((indirectTotal / totalAccepted) * 10000) / 100 : null,
-    dealer_share_pct: dealerTotal != null && totalAccepted ? Math.round((dealerTotal / totalAccepted) * 10000) / 100 : null,
+    indirect_share_pct: indirectTotal != null && competitiveTotal > 0 ? Math.round((indirectTotal / competitiveTotal) * 10000) / 100 : null,
+    dealer_share_pct: dealerTotal != null && competitiveTotal > 0 ? Math.round((dealerTotal / competitiveTotal) * 10000) / 100 : null,
     bid_to_cover_ratio: num(r.bidToCoverRatio),
     high_yield_pct: highYield,
     avg_med_yield_pct: avgMedYield,

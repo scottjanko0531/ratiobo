@@ -1279,3 +1279,49 @@ All three committed. 892/892 tests pass (14 new: 9 `z1Bridge`, 5 `treasuryDirect
 ## Build status
 
 All committed. 902/902 tests pass (8 new this round: `percentileStatus`, plus the TIPS-detection additions to `treasuryDirectAuctions`/`indirectBidder`). `next build` clean. Held for deploy approval — nothing deployed. The `macro_snapshots` backfill for the 1952+ history and the renamed/percentile-banded indicator will run via the existing `?backfillParadigmXref=` endpoint once `fetch-macro-data` and `update-big-cycle-paradigm-metrics` are actually deployed — not run yet.
+
+---
+
+# Third auction bug: indirect/dealer share denominator (Scott, 2026-11-20)
+
+## Root cause, confirmed
+
+`indirect_share_pct`/`dealer_share_pct` divided by `total_accepted_bn`, which includes SOMA add-ons and noncompetitive bids — amounts that were never competed for. The correct denominator is the sum of the three COMPETITIVE bidder categories themselves (`indirect + direct + primary_dealer`). Checked `_shared/indirectBidder.ts` before assuming: it only READS the stored `indirect_share_pct` column (via `AuctionRow`/`windowOf`/`avgOfWindow`) — it never computes its own share, so no fix was needed there, only in the two places that actually compute and store the percentage.
+
+## Fix, validated before trusting it
+
+Fixed both ingest paths (`ingest-auction-results/index.ts`'s Fiscal Data row-builder, `_shared/treasuryDirectAuctions.ts`'s `mapTreasuryDirectRecord`) to divide by `indirect + direct + dealer` instead of `total_accepted`.
+
+**Validated directly against Scott's two published-result checks before backfilling anything:**
+- 2026-11-10 10Y: corrected formula gives **61.39%** (expected ~61.4%) ✓
+- 2026-10-07 10Y: corrected formula gives **80.34%** (expected ~80.4%) ✓
+
+Both landed almost exactly — confirmed the fix, not a coincidence (the real stored dollar amounts for both auctions were used directly, no synthetic data).
+
+## Backfill — what was actually available, checked rather than assumed
+
+5,788 total rows; 5,783 have all three competitive-category columns populated. The 5 missing rows (`2026-10-19/20/21/22` — three Bills, one 5-Year Note, one 20-Year Bond reopening) have NULL across `indirect_accepted_bn`/`direct_accepted_bn`/`primary_dealer_accepted_bn`/`total_accepted_bn` alike (an unrelated prior gap, not something this fix could repair) — none are tagged 10Y/30Y nominal, so they don't touch the card/trip-wire's consumer queries at all. Backfilled the other 5,783 rows' `indirect_share_pct`/`dealer_share_pct` via a direct SQL `UPDATE` using the stored per-row dollar columns (no re-fetch needed).
+
+## Downstream recompute — full three-stage retroactive-impact chain
+
+Rebuilt the (already TIPS-corrected, from this morning) regression fixture with the corrected share formula too, and recomputed the real `evalAuctionDemandDeterioration`/`computeIndirectBidderFullSeries` functions at each stage:
+
+| Stage | latest | mean2y | sd2y | windowN | z-score | status | armed |
+|---|---|---|---|---|---|---|---|
+| Original (TIPS + wrong denominator) | 57.55% | 56.83 | 2.02 | 12 | +1.16 | healthy | false |
+| TIPS fixed only (this morning) | 52.57% | 53.66 | 2.35 | 8 | +0.86 | healthy | false |
+| **Both fixed (final)** | **66.70%** | 65.93 | 0.61 | 8 | +0.92 | healthy | false |
+
+The denominator fix alone moved "latest" up ~14pp (52.57%→66.70% — removing SOMA/noncompetitive from the denominator always *increases* the computed competitive share for the same numerator) and cut `sd2y` sharply (2.02→0.61 — the old formula's SOMA-add-on size was itself a source of noise the new formula doesn't have). **Across the full chain, the displayed number swung by double digits (57.55%→66.70%), but the qualitative conclusion never changed at any stage: status "healthy," trip-wire disarmed, z-score comfortably positive and nowhere near the -1/-1.5/-2 thresholds.**
+
+**Live card, old (currently cached, stale, reflects neither fix) vs. new (computed from the live corrected data, what it will read once `fetch-macro-data` is redeployed and re-run):**
+- Old cached: 67.51%, z=+1.59, status healthy
+- New (once deployed): **70.79%**, z=+1.20, status healthy, armed false — unchanged conclusion, different number, consistent with the fixture-based chain above.
+
+## Test added (the specific case Scott named)
+
+`tests/treasuryDirectAuctions.test.ts`: a synthetic record holds the three competitive categories fixed and varies ONLY a large SOMA-style add-on baked into `grandTotalParAwarded` (+15bn) — proves `indirect_share_pct` is completely unchanged by the add-on, and explicitly proves the OLD formula *would* have moved (computing what the old buggy result would have been and asserting the new result does NOT match it) — confirming the fix fixes something real, not just that the new formula looks right on paper.
+
+## Build status
+
+Committed. All tests pass (new SOMA-invariance test + corrected fixture/regression numbers). Held for deploy approval — nothing deployed. Both the `inflation_indexed` migration (this morning) and the `indirect_share_pct`/`dealer_share_pct` backfill (this fix) have already been applied directly to the live database (data corrections, not code deploys) — only the edge function CODE changes (both ingest paths, and `fetch-macro-data`/`update-big-cycle-metrics`/`compute-gauge7`'s consumer queries from this morning) remain undeployed.
