@@ -245,7 +245,8 @@ interface Indicator {
     | "output_gap"
     | "annualized_3m_monthly"
     | "ratio_two_series"
-    | "diff_two_series";
+    | "diff_two_series"
+    | "supabase_gscpi";
   series?: string;
   series2?: string;
   zscore?: boolean;
@@ -933,10 +934,18 @@ const INDICATORS: Indicator[] = [
     statusFn: v => v > 1 ? "healthy" : v >= 0 ? "watch" : "danger",
   },
   {
+    name: "NY Fed Global Supply Chain Pressure Index (GSCPI)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "NY Fed's Global Supply Chain Pressure Index — a composite of transportation costs and manufacturing supply-chain survey components, standardized so that 0 is the historical (1998-2019) average and the units are standard deviations from it. A 3-6 month leading inflation-pipeline signal, ahead of ISM Prices Paid and import prices. Sourced from the NY Fed's own downloadable file, not FRED. Thresholds are a starting point, not calibrated.",
+    fred_series_id: null, unit: "SD", data_source: "nyfed", sort_order: 38,
+    type: "supabase_gscpi",
+    statusFn: v => v < 0 ? "healthy" : v <= 1 ? "watch" : "danger",
+  },
+  {
     name: "Import Price Index (YoY)",
     layer: 3, layer_name: "Business Cycle",
     description: "BLS import price index, all commodities, YoY — a 1-3 month leading inflation-pipeline signal, imported goods' direct contribution ahead of it showing up in CPI/PPI.",
-    fred_series_id: "IR", unit: "% YoY", data_source: "fred", sort_order: 38,
+    fred_series_id: "IR", unit: "% YoY", data_source: "fred", sort_order: 39,
     series: "IR", type: "yoy_monthly",
     statusFn: v => v <= 3 ? "healthy" : v <= 6 ? "watch" : "danger",
   },
@@ -944,7 +953,7 @@ const INDICATORS: Indicator[] = [
     name: "5-Year, 5-Year Forward Inflation Expectation",
     layer: 3, layer_name: "Business Cycle",
     description: "Market-implied average expected inflation over the five-year period beginning five years from now — the Fed's own preferred long-run inflation-anchoring gauge. De-anchoring risk runs both directions (too low signals disinflation/deflation fear, too high signals credibility loss), so the status band is two-sided. Thresholds are a starting point, not calibrated.",
-    fred_series_id: "T5YIFR", unit: "%", data_source: "fred", sort_order: 39,
+    fred_series_id: "T5YIFR", unit: "%", data_source: "fred", sort_order: 40,
     series: "T5YIFR", type: "level",
     statusFn: v => (v >= 2.0 && v <= 2.6) ? "healthy" : (v > 2.6 && v <= 3.0) ? "watch" : (v < 1.7) ? "danger" : (v > 3.0) ? "danger" : "watch",
   },
@@ -952,7 +961,7 @@ const INDICATORS: Indicator[] = [
     name: "Unemployment Gap (UNRATE − NAIRU)",
     layer: 3, layer_name: "Business Cycle",
     description: "Unemployment rate minus CBO's noncyclical rate of unemployment (NROU, carried forward from its own quarterly release to monthly UNRATE dates — logged in the Phase 1 decisions log). A negative gap means the labor market is running tighter than CBO's estimate of \"normal,\" the classic 6-12 month leading path to wage-driven inflation. Deliberately NEUTRAL styling, not a risk band: which direction is \"bad\" depends on the prevailing regime (tight-and-inflationary vs. loose-and-recessionary read very differently), so this is descriptive context, not a calibrated threshold.",
-    fred_series_id: "UNRATE", unit: "pts", data_source: "fred", sort_order: 40,
+    fred_series_id: "UNRATE", unit: "pts", data_source: "fred", sort_order: 41,
     series: "UNRATE", series2: "NROU", type: "diff_two_series",
     statusFn: () => "neutral",
   },
@@ -960,7 +969,7 @@ const INDICATORS: Indicator[] = [
     name: "Job Openings per Unemployed Worker",
     layer: 3, layer_name: "Business Cycle",
     description: "JOLTS job openings divided by the unemployment level — the standard labor-tightness ratio (>1 means more open jobs than job-seekers). A 6-12 month leading path to wage inflation. Thresholds are a starting point, not calibrated.",
-    fred_series_id: "JTSJOL", unit: "ratio", data_source: "fred", sort_order: 41,
+    fred_series_id: "JTSJOL", unit: "ratio", data_source: "fred", sort_order: 42,
     series: "JTSJOL", series2: "UNEMPLOY", type: "ratio_two_series",
     statusFn: v => (v >= 0.8 && v <= 1.2) ? "healthy" : "watch",
   },
@@ -968,7 +977,7 @@ const INDICATORS: Indicator[] = [
     name: "Case-Shiller National Home Price Index (YoY)",
     layer: 3, layer_name: "Business Cycle",
     description: "S&P Cotality (formerly CoreLogic) Case-Shiller U.S. National Home Price Index, YoY — a 12-18 month leading indicator for Shelter CPI, which alone is roughly a third of headline CPI. Thresholds are an uncalibrated starting point, not fit to history.",
-    fred_series_id: "CSUSHPINSA", unit: "% YoY", data_source: "fred", sort_order: 42,
+    fred_series_id: "CSUSHPINSA", unit: "% YoY", data_source: "fred", sort_order: 43,
     series: "CSUSHPINSA", type: "yoy_monthly",
     statusFn: v => v <= 4 ? "healthy" : v <= 7 ? "watch" : "danger",
   },
@@ -976,7 +985,7 @@ const INDICATORS: Indicator[] = [
     name: "Real PCE (YoY)",
     layer: 3, layer_name: "Business Cycle",
     description: "Real personal consumption expenditures, YoY — the consumption-side counterpart to Real Retail Sales above, broader (services included, not just goods). Coincident growth context, not scored.",
-    fred_series_id: "PCEC96", unit: "% YoY", data_source: "fred", sort_order: 43,
+    fred_series_id: "PCEC96", unit: "% YoY", data_source: "fred", sort_order: 44,
     series: "PCEC96", type: "yoy_monthly",
     statusFn: v => v >= 2 ? "healthy" : v >= 0 ? "watch" : "danger",
   },
@@ -984,7 +993,7 @@ const INDICATORS: Indicator[] = [
     name: "Atlanta Fed Wage Growth Tracker",
     layer: 3, layer_name: "Business Cycle",
     description: "3-month moving average of median hourly wage growth (unweighted, overall), YoY — a coincident wage-inflation read, confirmed on FRED in Phase 0 rather than needing a separate scrape/ingest function. Thresholds borrowed from this dashboard's existing wage-cost-inflation framing (Unit Labor Costs), logged as uncalibrated.",
-    fred_series_id: "FRBATLWGT3MMAUMHWGO", unit: "% YoY", data_source: "fred", sort_order: 44,
+    fred_series_id: "FRBATLWGT3MMAUMHWGO", unit: "% YoY", data_source: "fred", sort_order: 45,
     series: "FRBATLWGT3MMAUMHWGO", type: "level",
     statusFn: v => v <= 3 ? "healthy" : v <= 4.5 ? "watch" : "danger",
   },
@@ -992,7 +1001,7 @@ const INDICATORS: Indicator[] = [
     name: "Core PCE (YoY)",
     layer: 3, layer_name: "Business Cycle",
     description: "Personal Consumption Expenditures price index excluding food and energy — the Fed's own preferred 2% inflation target measure, the one measure this dashboard could not previously say \"is inflation the kind the Fed reacts to\" with at all. 3-month annualized rate (the Phase 4 inflation-score candidate framing) shown as a secondary figure alongside the scored YoY headline.",
-    fred_series_id: "PCEPILFE", unit: "% YoY", data_source: "fred", sort_order: 45,
+    fred_series_id: "PCEPILFE", unit: "% YoY", data_source: "fred", sort_order: 46,
     series: "PCEPILFE", type: "yoy_monthly",
     statusFn: v => v <= 2.5 ? "healthy" : v <= 3.5 ? "watch" : "danger",
   },
@@ -1000,7 +1009,7 @@ const INDICATORS: Indicator[] = [
     name: "Supercore CPI (3M Annualized)",
     layer: 3, layer_name: "Business Cycle",
     description: "CPI services less rent of shelter, 3-month annualized — the Fed's own closely-watched \"supercore\" measure, isolating services inflation from the shelter-lag distortion and from goods/energy noise. Thresholds are a starting point, not calibrated.",
-    fred_series_id: "CUSR0000SASL2RS", unit: "% ann.", data_source: "fred", sort_order: 46,
+    fred_series_id: "CUSR0000SASL2RS", unit: "% ann.", data_source: "fred", sort_order: 47,
     series: "CUSR0000SASL2RS", type: "annualized_3m_monthly",
     statusFn: v => v <= 3 ? "healthy" : v <= 4.5 ? "watch" : "danger",
   },
@@ -1008,7 +1017,7 @@ const INDICATORS: Indicator[] = [
     name: "Shelter CPI (YoY)",
     layer: 3, layer_name: "Business Cycle",
     description: "CPI shelter component, YoY — roughly a third of headline CPI and the main reason core CPI has stayed sticky even as goods disinflated; see Case-Shiller above for its ~12-18 month lead into this. Thresholds borrowed from headline CPI's existing band, logged as uncalibrated.",
-    fred_series_id: "CUSR0000SAH1", unit: "% YoY", data_source: "fred", sort_order: 47,
+    fred_series_id: "CUSR0000SAH1", unit: "% YoY", data_source: "fred", sort_order: 48,
     series: "CUSR0000SAH1", type: "yoy_monthly",
     statusFn: v => (v >= 1 && v <= 3) ? "healthy" : v <= 5 ? "watch" : "danger",
   },
@@ -1016,7 +1025,7 @@ const INDICATORS: Indicator[] = [
     name: "Sticky-Price Core CPI (YoY)",
     layer: 3, layer_name: "Business Cycle",
     description: "Atlanta Fed's sticky-price CPI less food and energy — a basket weighted toward slow-to-reprice items, a read on how entrenched current inflation actually is versus how much is fast-moving/transitory. Already published YoY by the source, no transform needed. Thresholds borrowed from Core CPI's existing band, logged as uncalibrated.",
-    fred_series_id: "CORESTICKM159SFRBATL", unit: "% YoY", data_source: "fred", sort_order: 48,
+    fred_series_id: "CORESTICKM159SFRBATL", unit: "% YoY", data_source: "fred", sort_order: 49,
     series: "CORESTICKM159SFRBATL", type: "level",
     statusFn: v => (v >= 1 && v <= 3) ? "healthy" : v <= 4.5 ? "watch" : "danger",
   },
@@ -1024,7 +1033,7 @@ const INDICATORS: Indicator[] = [
     name: "Employment Cost Index (YoY)",
     layer: 3, layer_name: "Business Cycle",
     description: "Total compensation, all civilian workers, YoY — the lagging, broadest wage-cost-inflation confirmation, BLS's own preferred compensation measure (includes benefits, not just wages, unlike Unit Labor Costs). Thresholds borrowed from this dashboard's existing wage-cost framing, logged as uncalibrated.",
-    fred_series_id: "ECIALLCIV", unit: "% YoY", data_source: "fred", sort_order: 49,
+    fred_series_id: "ECIALLCIV", unit: "% YoY", data_source: "fred", sort_order: 50,
     series: "ECIALLCIV", type: "yoy_quarterly",
     statusFn: v => v <= 3 ? "healthy" : v <= 4.5 ? "watch" : "danger",
   },
@@ -1820,7 +1829,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // Read latest 2 rows from ism_history (written by scrape-ism edge function)
         const { data: ismRows, error: ismErr } = await supabase
           .from("ism_history")
-          .select("period_date, pmi, new_orders")
+          .select("period_date, pmi, new_orders, prices")
           .order("period_date", { ascending: false })
           .limit(2);
         if (ismErr || !ismRows || ismRows.length < 2) return null;
@@ -1833,6 +1842,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // number). See the identical note on supabase_lei above.
         metadata = {
           new_orders: ismRows[0].new_orders != null ? Number(ismRows[0].new_orders) : null,
+          prices_paid: ismRows[0].prices != null ? Number(ismRows[0].prices) : null,
           reference_period: ismRows[0].period_date, is_survey: true,
         };
         break;
@@ -1842,7 +1852,7 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // scrape-ism-services) — mirrors supabase_ism (Manufacturing) above.
         const { data: ismsRows, error: ismsErr } = await supabase
           .from("ism_services_history")
-          .select("period_date, pmi, business_activity, new_orders")
+          .select("period_date, pmi, business_activity, new_orders, prices")
           .order("period_date", { ascending: false })
           .limit(2);
         if (ismsErr || !ismsRows || ismsRows.length < 2) return null;
@@ -1851,8 +1861,24 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         metadata = {
           business_activity: ismsRows[0].business_activity != null ? Number(ismsRows[0].business_activity) : null,
           new_orders: ismsRows[0].new_orders != null ? Number(ismsRows[0].new_orders) : null,
+          prices_paid: ismsRows[0].prices != null ? Number(ismsRows[0].prices) : null,
           reference_period: ismsRows[0].period_date, is_survey: true,
         };
+        break;
+      }
+      case "supabase_gscpi": {
+        // Read latest 2 rows from gscpi_history (written by ingest-gscpi
+        // edge function, one ingest path — this function never re-fetches
+        // the NY Fed file itself).
+        const { data: gscpiRows, error: gscpiErr } = await supabase
+          .from("gscpi_history")
+          .select("period_date, value")
+          .order("period_date", { ascending: false })
+          .limit(2);
+        if (gscpiErr || !gscpiRows || gscpiRows.length < 2) return null;
+        current  = Number(gscpiRows[0].value);
+        previous = Number(gscpiRows[1].value);
+        metadata = { reference_period: gscpiRows[0].period_date };
         break;
       }
       case "supabase_liquidity": {

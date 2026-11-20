@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { extractIndexValue } from "../_shared/ismIndexExtract.ts";
 
 // Mirrors scrape-ism (Manufacturing) almost exactly — see that function for
 // the general design rationale. Built for the forward-signal two-horizon
@@ -56,6 +57,7 @@ async function upsertRows(rows: {
   pmi: number;
   business_activity: number | null;
   new_orders: number | null;
+  prices: number | null;
   published_at: string | null;
   scraped_at: string;
 }[]): Promise<void> {
@@ -76,28 +78,18 @@ async function upsertRows(rows: {
   }
 }
 
-// Best-effort extras from the article body — Business Activity + New Orders
-// sub-indices and publish date. The headline PMI (from the URL slug) is what
-// matters most; this is non-fatal on failure, same as scrape-ism.
-//
-// The regex requires "percent" NOT followed by "age" — services reports
-// commonly phrase the sub-index sentence as e.g. "increasing 3.7 percentage
-// points to 59.1 percent from June's reading", and a naive /(\d+)\s+percent/
-// would grab the "3.7 percentage points" change instead of the actual index
-// value. The (?!age) guard skips that false match and finds the real one.
-function extractIndexValue(text: string, label: string, anchorIdx: number): number | null {
-  const idx = text.indexOf(label, anchorIdx);
-  if (idx === -1) return null;
-  const window = text.slice(idx, idx + 250);
-  const m = window.match(/([\d.]+)\s+percent(?!age)/i);
-  return m ? parseFloat(m[1]) : null;
-}
-
-function parseReportExtras(text: string): { businessActivity: number | null; newOrders: number | null; publishedAt: string | null } {
+// Best-effort extras from the article body — Business Activity, New
+// Orders and Prices sub-indices, plus publish date. The headline PMI
+// (from the URL slug) is what matters most; this is non-fatal on
+// failure, same as scrape-ism. extractIndexValue is now shared
+// (_shared/ismIndexExtract.ts) with scrape-ism's own New Orders/Prices
+// extraction — see that module for the (?!age) false-match note.
+function parseReportExtras(text: string): { businessActivity: number | null; newOrders: number | null; prices: number | null; publishedAt: string | null } {
   const anchorIdx = text.search(/SERVICES INDEX SUMMARIES/i);
   const from = anchorIdx !== -1 ? anchorIdx : 0;
   const businessActivity = extractIndexValue(text, "Business Activity Index", from);
   const newOrders = extractIndexValue(text, "New Orders Index", from);
+  const prices = extractIndexValue(text, "Prices Index", from);
 
   // Dateline sits right before the "/PRNewswire/" wire marker, e.g. "Aug. 5, 2026 /PRNewswire/ --"
   let publishedAt: string | null = null;
@@ -109,7 +101,7 @@ function parseReportExtras(text: string): { businessActivity: number | null; new
     }
   }
 
-  return { businessActivity, newOrders, publishedAt };
+  return { businessActivity, newOrders, prices, publishedAt };
 }
 
 function periodDateFromSlug(monthSlug: string, yearSlug: string): string | null {
@@ -136,17 +128,19 @@ async function findReleaseLinks(): Promise<{ url: string; period_date: string; p
 async function scrapeOne(url: string, period_date: string, pmi: number, now: string) {
   let businessActivity: number | null = null;
   let newOrders: number | null = null;
+  let prices: number | null = null;
   let publishedAt: string | null = null;
   try {
     const html = await fetchText(url);
     const extras = parseReportExtras(stripHtml(html));
     businessActivity = extras.businessActivity;
     newOrders = extras.newOrders;
+    prices = extras.prices;
     publishedAt = extras.publishedAt;
   } catch {
     // Non-fatal — the headline PMI (from the URL slug) is what matters most.
   }
-  return { period_date, pmi, business_activity: businessActivity, new_orders: newOrders, published_at: publishedAt, scraped_at: now };
+  return { period_date, pmi, business_activity: businessActivity, new_orders: newOrders, prices, published_at: publishedAt, scraped_at: now };
 }
 
 Deno.serve(async (req: Request) => {

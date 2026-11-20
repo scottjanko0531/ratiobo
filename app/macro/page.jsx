@@ -346,6 +346,15 @@ function IndicatorCard({ ind, onSave, onClick, note }) {
           stale — newest print not yet pairable
         </p>
       )}
+      {/* Growth & Inflation Indicator Gaps spec, Phase 2a: Prices Paid
+          sub-index, stamped onto the ISM Manufacturing/Services PMI cards'
+          own metadata (same pattern as new_orders/business_activity, which
+          aren't surfaced in the UI today) rather than a standalone card. */}
+      {ind.metadata?.prices_paid != null && (
+        <p className="text-paper-dim text-xs">
+          Prices Paid <span className="num text-paper">{Number(ind.metadata.prices_paid).toFixed(1)}</span>
+        </p>
+      )}
       <p className="text-paper-dim text-xs leading-snug line-clamp-2">{ind.description}</p>
     </div>
   );

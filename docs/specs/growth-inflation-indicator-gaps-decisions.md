@@ -421,3 +421,253 @@ comparison (re-invoking `fetch-macro-data` and diffing
 `macro_regime_history`'s new row against the frozen fixture) happens
 once deployed, same gate as every other phase — reported there, not
 asserted here. Nothing deployed.
+
+## Phase 1 deploy incident (CPU-exceeded crash)
+
+On the approved Phase 1 deploy, two real problems surfaced in
+production, both fixed and committed (`cc17456`):
+
+1. **DB constraint**: `macro_indicators_layer_check` was never widened
+   for the new layer 5 (`CHECK (layer BETWEEN 1 AND 4)`), so the first
+   post-deploy invocation failed outright on the new Growth — Supply
+   Side indicators. Fixed via migration (`layer <= 5`) — an oversight in
+   Phase 1's build, not a new design decision.
+2. **CPU Time exceeded (real production risk)**: the second invocation
+   crashed the whole worker. The new `backfillIndicatorGapsHistory()`
+   (18 indicators × historical offset-walks) was wired into the same
+   `EdgeRuntime.waitUntil` background chain that runs on **every**
+   invocation, including the daily `pg_cron` job (`0 6 * * *`,
+   confirmed via `cron.job`). Because the backfill's self-gate check
+   never got to write its "done" marker before crashing, it would have
+   retried and crashed again on every future cron run — risking the
+   regular daily refresh for all ~66 indicators, not just the 18 new
+   ones. **Fixed**: removed the auto-trigger entirely; replaced it with
+   an opt-in `?backfillIndicator=<name>` query param that processes one
+   indicator per invocation (well under the CPU budget). All 855/873
+   tests pass through this fix.
+
+**Still outstanding as of this entry**: the fix is committed and pushed
+to `origin/main` (confirmed `git rev-parse HEAD == origin/main`, both
+at `cc17456`), but redeploying it to the live Supabase
+`fetch-macro-data` function (`npx supabase functions deploy
+fetch-macro-data`) has been denied twice by the Claude Code auto-mode
+permission classifier this session, for reasons outside this agent's
+visibility. **The live function therefore still runs the pre-fix code
+with the CPU-crash bug in it.** Backfill for the 18 Phase 1 indicators
+has not run against production. Flagged for Scott/the coordinator —
+needs either a manual deploy or a permission-rule change to unblock.
+
+---
+
+# Phase 2 — Non-FRED sources
+
+## 2a. ISM Prices Paid
+
+**Extraction**: pulled the existing `extractIndexValue` helper
+(originally inline in `scrape-ism-services`, with a `(?!age)` guard
+against "X percentage points" false-matching before the real index
+value) into `_shared/ismIndexExtract.ts`, tested
+(`tests/ismIndexExtract.test.ts`, 5 cases). Both `scrape-ism` and
+`scrape-ism-services` now import it for New Orders *and* the new Prices
+extraction — this also retroactively fixes `scrape-ism`'s own New
+Orders extraction, which never had the guard. Judgment call (rule 6):
+applying an already-proven fix to sibling code I'm touching anyway,
+rather than leaving two divergent implementations of the same parsing
+logic (rule 10's "one gap rule" spirit — one implementation, not two).
+
+**Live-verified against real current reports** (via `WebFetch`, since
+this is the same non-trivial-to-`curl` host as Phase 0):
+- Manufacturing (Oct 2026 report, `...manufacturing-pmi-at-55-5-october-2026...`):
+  *"The ISM® Prices Index registered 75.2 percent in October, 2.7
+  percentage points lower than the 77.9 percent reported in
+  September..."* — extractor correctly returns **75.2** (the
+  percentage-points phrase comes after the real value here, so the
+  `(?!age)` guard isn't even load-bearing for this particular report,
+  but it is for the services case below).
+- Services (Oct 2026 report, `...services-pmi-at-54-5-october-2026...`):
+  *"...The Prices Index registered 73 percent, a decrease of 1
+  percentage point from September's reading of 74 percent."* —
+  extractor correctly returns **73** (integer-percent value, no decimal
+  point, confirmed the `[\d.]+` pattern still matches).
+
+**Migration**: `prices numeric` added to both `ism_history` and
+`ism_services_history` (nullable, same as `new_orders`).
+
+**Metadata stamping**: `fetch-macro-data`'s `supabase_ism` and
+`supabase_ism_services` cases now select the `prices` column and stamp
+`prices_paid` onto each indicator's metadata, same pattern as
+`new_orders`/`business_activity`. No standalone indicator created, per
+the spec.
+
+**Frontend**: added a new secondary-line block in `app/macro/page.jsx`'s
+generic indicator card renderer, keyed on `ind.metadata?.prices_paid !=
+null` — shows on both ISM cards automatically once the field is
+populated. Note: this card renderer had **never** surfaced
+`new_orders`/`business_activity` either, despite those fields existing
+in metadata since before this spec — they're used internally for
+scoring/backtests but were never shown in the UI. Left those alone
+(out of scope); only added the new Prices Paid line, as asked.
+
+**Services staleness — root cause found and fixed**: Phase 0 found
+`ism_services_history` stuck 3 months behind manufacturing. The reason
+is simpler than "not running backfill often enough" — **there was no
+`pg_cron` job for `scrape-ism-services` at all** (confirmed via
+`cron.job`; `scrape-ism` has one at `55 5 * * *`, `scrape-ism-services`
+has none). It only ever got scraped when someone manually invoked it.
+Fix (held for deploy, not yet executed — see below): add a daily cron
+job mirroring `scrape-ism`'s, one minute later (`56 5 * * *`) to avoid
+any resource contention. `scrape-ism-services` currently has
+`verify_jwt: true` (unlike `scrape-ism`'s `false`) — rather than
+loosening that existing security setting, the new cron command passes
+an `Authorization: Bearer <anon JWT>` header, the same pattern already
+used by `fetch-macro-data`'s own cron job. Exact SQL to run at deploy
+time:
+```sql
+SELECT cron.schedule(
+  'scrape-ism-services-daily',
+  '56 5 * * *',
+  $$
+  SELECT net.http_post(
+    url := 'https://xuutmtfrpaxrzhwwokpk.supabase.co/functions/v1/scrape-ism-services',
+    headers := jsonb_build_object(
+      'Content-Type','application/json',
+      'Authorization','Bearer <anon JWT, same one fetch-macro-data''s cron uses>'
+    ),
+    body := '{}'::jsonb
+  );
+  $$
+);
+```
+This single daily cron addition is what actually fixes the staleness
+going forward — a one-off `?backfill=true` invocation would catch it up
+*once* but the underlying gap (no schedule) would recur next month.
+
+**ISM New Orders orphan — recommendation, not deleted**: confirmed via
+direct query (`data_source: "manual"`, frozen at `2026-06-19`, `layer:
+"Quadrant Positioning"`) and a full-repo grep that this row has **zero
+real consumers**. It isn't written by any ingest function (no `name:
+"ISM New Orders"` entry in `fetch-macro-data`'s `INDICATORS` array —
+checked), isn't read by any backtest harness or scoring mirror, and its
+only frontend reference is a `?? indicators.find(...)` fallback in
+`app/macro/page.jsx`'s `QuadrantCard` that the code's own existing
+comment already documents as dead (the primary lookup, "ISM
+Manufacturing PMI", always exists). **Recommendation: retire it** —
+delete the DB row and the now-pointless `??` fallback line in
+`page.jsx`. **Not done — needs Scott's explicit yes per the spec's own
+instruction.**
+
+## 2b. GSCPI
+
+**New table** `gscpi_history` (`period_date date PRIMARY KEY, value
+numeric NOT NULL, inserted_at timestamptz`), RLS enabled with a
+`gscpi_history_read` select policy (`TO authenticated USING (true)`),
+confirmed via `scripts/check-rls.sql`'s query that no table is missing
+RLS.
+
+**Pure logic in `_shared/`, tested**:
+- `gscpiFreshness.ts` / `assertGscpiFeedFresh` — direct mirror of
+  `auctionFreshness.ts`'s "make failures visible" pattern, 60-day guard
+  per the spec. 6 tests.
+- `gscpiParser.ts` / `parseGscpiSheetRows` — pure transform from a raw
+  xlsx `sheet_to_json(header:1)` array into sorted `{date, value}`
+  points. Deliberately does NOT import `npm:xlsx` (a Deno specifier that
+  can't resolve under Vitest), so `ingest-gscpi` does the actual
+  `XLSX.read()` call and passes decoded rows in.
+
+**Two real bugs caught before deploy, both fixed:**
+1. `Number(null) === 0` in JavaScript — an initial version of
+   `parseGscpiSheetRows` would have silently turned a blank GSCPI cell
+   into a false "0 pressure" data point instead of skipping the row.
+   Caught by a dedicated test (`skips rows with a null value...`),
+   fixed with an explicit `rawValue == null` check before `Number()`.
+2. **Date format assumption was wrong.** Downloaded the live file fresh
+   (`curl`, confirmed reachable, 252KB) and parsed it locally with the
+   real `xlsx` npm package (isolated install in the scratchpad, not
+   added to this repo) to check the actual cell shape rather than
+   assuming. Found: the Date column is **plain text `"DD-Mon-YYYY"`**
+   (e.g. `"31-Oct-2026"`), NOT an Excel date serial — `cellDates: true`
+   has no effect on it. The original `normalizeDate` design leaned on
+   `new Date(string)`, whose local-timezone midnight interpretation can
+   roll a date back a day when run east of UTC (this sandbox's
+   negative-offset timezone happened to parse it "correctly" by luck,
+   which is exactly the kind of latent bug worth catching before
+   production, where the runtime's timezone isn't something to assume).
+   Rewrote `normalizeDate` to parse `"DD-Mon-YYYY"` explicitly via a
+   month-abbreviation lookup table, with the generic string/Date-instance
+   paths kept only as defensive fallbacks. Tests rewritten to use the
+   real file's actual shape as the primary case.
+
+**Live-verified current value** (same local script, fresh download,
+today — not reused from Phase 0's few-days-old number, per the
+coordinator's explicit ask): newest row is **`31-Oct-2026 =
+1.2619...`** → rounds to **1.262**, same as Phase 0 found. Against the
+spec's band (`<0 healthy · 0-1 watch · >1 danger`), this is **danger**
+— confirmed still accurate, not stale Phase-0 info. 346 total historical
+rows in the live file.
+
+**`ingest-gscpi` edge function** (new, not yet deployed): downloads the
+NY Fed file, parses via `XLSX.read(..., {cellDates: true})` +
+`parseGscpiSheetRows`, asserts freshness (60-day guard), upserts into
+`gscpi_history` in batches of 500, logs to `rb_job_runs`
+(`job_name: "ingest-gscpi"`) on both success and failure — mirrors
+`ingest-auction-results`'s exact `logJobRun` shape. `verify_jwt: false`
+on deploy, matching every other `ingest-*` function in this codebase
+(`ingest-auction-results`, `ingest-foreign-custody`,
+`ingest-convenience-yield`, `ingest-liquidity-data` — all `false`).
+
+**Cron timing — judgment call, logged per rule 6**: the NY Fed doesn't
+publish an explicit release-schedule page (checked directly, nothing
+found). Working from the observed pattern that the latest available
+month (October) was already present by today (Nov 20) and the general
+public knowledge that GSCPI follows a similar early-month cadence to
+other supply-chain-survey releases (e.g. ISM, which reports on the
+first business day), scheduled for the **5th of each month at 14:00
+UTC** — a few business days' buffer past the likely release day. Not
+executed yet (held for deploy); exact SQL:
+```sql
+SELECT cron.schedule(
+  'ingest-gscpi-monthly',
+  '0 14 5 * *',
+  $$
+  SELECT net.http_post(
+    url := 'https://xuutmtfrpaxrzhwwokpk.supabase.co/functions/v1/ingest-gscpi',
+    headers := '{"Content-Type": "application/json"}'::jsonb,
+    body := '{}'::jsonb
+  );
+  $$
+);
+```
+If the 60-day staleness guard ever fires in `rb_job_runs`, that's the
+signal this timing guess needs revisiting.
+
+**`fetch-macro-data` wiring**: new indicator type `supabase_gscpi`
+added — reads the latest 2 rows from `gscpi_history` directly (does
+**not** re-fetch the NY Fed file itself; one ingest path, per the
+spec). New indicator "NY Fed Global Supply Chain Pressure Index
+(GSCPI)", layer 3 "Business Cycle", `sort_order: 38` (inserted into the
+existing leading-inflation sub-group, before "Import Price Index" —
+required renumbering the 12 already-deployed Phase 1 inflation
+indicators' `sort_order` values up by 1 each, 38→39 through 49→50;
+display-only, doesn't touch any score).
+
+## 2c. Atlanta Fed Wage Tracker
+
+No-op, per the coordinator's note — already resolved on FRED in Phase 1
+(`FRBATLWGT3MMAUMHWGO`).
+
+## Build status
+
+All new code committed locally (not yet pushed — held for the same
+report-before-deploy gate as every prior phase). 873/873 tests pass
+(855 pre-existing through the Phase 1 CPU-crash fix + 18 new: 6
+`gscpiFreshness`, 7 `gscpiParser`, 5 `ismIndexExtract`). `next build`
+clean. Nothing in this phase touches
+`NEARTERM_G`/`NEARTERM_I`/`MEDTERM_G`/`MEDTERM_I`/
+`computeEdgeForwardPanel` (confirmed via targeted grep) — the Phase 0
+baseline fixture's scoring path is untouched, consistent with this
+phase being display/ingest-only. Migrations already applied live
+(`prices` columns, `gscpi_history` table + RLS) since the edge function
+code needs them to even run correctly once deployed — same precedent as
+Phase 1's schema work. Cron jobs and the two edge function deploys
+(`fetch-macro-data` update, new `ingest-gscpi`) are held for explicit
+deploy approval, not yet executed.

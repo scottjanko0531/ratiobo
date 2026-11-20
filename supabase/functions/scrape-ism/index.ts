@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { extractIndexValue } from "../_shared/ismIndexExtract.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -51,6 +52,7 @@ async function upsertRows(rows: {
   period_date: string;
   pmi: number;
   new_orders: number | null;
+  prices: number | null;
   published_at: string | null;
   scraped_at: string;
 }[]): Promise<void> {
@@ -71,19 +73,26 @@ async function upsertRows(rows: {
   }
 }
 
-// Best-effort extras from the article body — New Orders sub-index and publish date.
-// The headline PMI itself comes from the URL slug (see findReleaseLinks), not from here,
-// since the body's sentence phrasing ("registered" vs "reading of" vs parenthetical) varies
-// month to month and isn't worth chasing for a value we already have reliably.
-function parseReportExtras(text: string): { newOrders: number | null; publishedAt: string | null } {
-  let newOrders: number | null = null;
+// Best-effort extras from the article body — New Orders and Prices
+// sub-indices, plus publish date. The headline PMI itself comes from the
+// URL slug (see findReleaseLinks), not from here, since the body's
+// sentence phrasing ("registered" vs "reading of" vs parenthetical)
+// varies month to month and isn't worth chasing for a value we already
+// have reliably.
+//
+// Both now go through the shared extractIndexValue (_shared/
+// ismIndexExtract.ts), originally written for scrape-ism-services's
+// Business Activity/New Orders extraction with a (?!age) guard against
+// "X percentage points" false matches. Phase 2a (Growth & Inflation
+// Indicator Gaps spec) pulled it into _shared/ so this file's own New
+// Orders extraction gets that same fix too, instead of staying on the
+// older, unguarded inline regex.
+function parseReportExtras(text: string): { newOrders: number | null; prices: number | null; publishedAt: string | null } {
   const anchorIdx = text.search(/MANUFACTURING INDEX SUMMARIES/i);
-  const noIdx = text.indexOf("New Orders Index", anchorIdx !== -1 ? anchorIdx : 0);
-  if (noIdx !== -1) {
-    const window = text.slice(noIdx, noIdx + 250);
-    const noM = window.match(/([\d.]+)\s+percent/i);
-    if (noM) newOrders = parseFloat(noM[1]);
-  }
+  const from = anchorIdx !== -1 ? anchorIdx : 0;
+
+  const newOrders = extractIndexValue(text, "New Orders Index", from);
+  const prices = extractIndexValue(text, "Prices Index", from);
 
   // Dateline sits right before the "/PRNewswire/" wire marker, e.g. "Aug. 3, 2026 /PRNewswire/ --"
   let publishedAt: string | null = null;
@@ -95,7 +104,7 @@ function parseReportExtras(text: string): { newOrders: number | null; publishedA
     }
   }
 
-  return { newOrders, publishedAt };
+  return { newOrders, prices, publishedAt };
 }
 
 function periodDateFromSlug(monthSlug: string, yearSlug: string): string | null {
@@ -121,16 +130,18 @@ async function findReleaseLinks(): Promise<{ url: string; period_date: string; p
 
 async function scrapeOne(url: string, period_date: string, pmi: number, now: string) {
   let newOrders: number | null = null;
+  let prices: number | null = null;
   let publishedAt: string | null = null;
   try {
     const html = await fetchText(url);
     const extras = parseReportExtras(stripHtml(html));
     newOrders = extras.newOrders;
+    prices = extras.prices;
     publishedAt = extras.publishedAt;
   } catch {
     // Non-fatal — the headline PMI (from the URL slug) is what matters most.
   }
-  return { period_date, pmi, new_orders: newOrders, published_at: publishedAt, scraped_at: now };
+  return { period_date, pmi, new_orders: newOrders, prices, published_at: publishedAt, scraped_at: now };
 }
 
 Deno.serve(async (req: Request) => {
