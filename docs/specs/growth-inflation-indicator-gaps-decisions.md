@@ -1232,3 +1232,50 @@ Re-confirmed, unchanged from the Phase 2 finding: `data_source: "manual"`, froze
 ## Build status
 
 All three committed. 892/892 tests pass (14 new: 9 `z1Bridge`, 5 `treasuryDirectAuctions`). `next build` clean. Held for deploy approval — nothing deployed yet. Item 1 in particular needs Scott's explicit sign-off given it's a real Paradigm C score change, not cosmetic.
+
+---
+
+# TIPS contamination fix + Buffett Indicator refinement (Scott, 2026-11-20)
+
+## Task 1: TIPS contamination — real scope, measured before fixing
+
+**Root cause confirmed, not assumed**: both Fiscal Data (`inflation_index_security`) and TreasuryDirect (`inflationProtected`) have always had a real, reliable TIPS field — it was simply never requested. `auctionTenor.ts`'s own prior comment ("security_type IN ('Note','Bond') keeps TIPS separate") was checked against a live record and found **definitively wrong**: TIPS use the exact same `security_type` values as nominal securities. Confirmed directly via a live TA_WS call for CUSIP 91282CRE3: `inflationProtected: "Yes"`, `securityDescription: "9-Year 8-Month TIPS"`.
+
+**The Nov 19, 2026 auction check, specifically**: confirmed TIPS. My own earlier report characterizing it as a real nominal auction was looking at contaminated data — corrected.
+
+**Real scope, measured directly against the full history** (not assumed to be "recent" or "edge case"):
+- **143 of 550 rows (26.0%)** ever tagged `original_tenor IN ('10Y','30Y')` are genuine TIPS, across **51 distinct CUSIPs**, spanning **2010-01-11 through 2026-11-19 — the entire history**, not just "from 2024 on" as the term-string pattern alone would have suggested.
+- Term-string pattern matching alone is provably unreliable in EITHER direction: "9-Year 8/10-Month" is used by both nominal 10Y reopenings AND TIPS reopenings in different years — confirmed via the real CUSIP 91282CRE3 example (pure term matching would classify it correctly as "10Y" tenor, but can't distinguish nominal from TIPS).
+- Confirmed Scott's second named CUSIP (`912810US5`) is in the real TIPS set too.
+- **Newest true nominal dates, confirmed exactly against Scott's expectation**: 10Y = **2026-11-10** (CUSIP 91282CRX1, bid-to-cover **2.46**); 30Y = **2026-11-12** (CUSIP 912810UY2, bid-to-cover **2.36**).
+
+**Retroactive impact on v1-v3's work — measured, not assumed**: rebuilt the committed v2 Phase 0 regression fixture (`tests/fixtures/indirect-bidder-auction-history-2026-11-17.json`, 185 rows) with its 51 TIPS rows removed (27.6% of that specific fixture — consistent with the overall rate) and recomputed the SAME real functions (`evalAuctionDemandDeterioration`, `computeIndirectBidderFullSeries`) against both versions:
+
+| | Contaminated (185 rows) | Corrected (134 rows) |
+|---|---|---|
+| Latest reading | 57.55% | **52.57%** |
+| Trailing-2yr mean | 56.83 | 53.66 |
+| Trailing-2yr stdev | 2.02 | 2.35 |
+| Window reading count | 12 | 8 |
+| Full-history z-score | +1.16 | **+0.86** |
+| Card/classifier status | healthy | healthy (unchanged) |
+| Trip-wire armed? | false | **false (unchanged)** |
+
+**Answer to "does this warrant revisiting v1-v3's conclusions": the qualitative conclusions do NOT change** (trip-wire stays disarmed, card status stays "healthy" either way, today) — **but the actual displayed number was wrong by a real ~5 percentage points** for as long as this bug was live, and the z-score shifted from +1.16 to +0.86 (both comfortably above the -1 watch threshold, so no near-miss). This is reported as a real, measured finding, not a reassurance — the magnitude of the number was wrong even though the conclusion happened to survive it.
+
+**Fix, built and tested:**
+- `inflation_indexed boolean NOT NULL DEFAULT false` added to `treasury_auction_results`, backfilled against the real, verified 51-CUSIP ground truth (143 rows set `true`).
+- Both ingest paths populate it from each feed's real field: Fiscal Data's `inflation_index_security` (added to the `FIELDS` request, which it always supported) and TreasuryDirect's `inflationProtected` (`_shared/treasuryDirectAuctions.ts`).
+- **Every consumer fixed** (full grep, 7 call sites across 5 files): `ingest-auction-results` (`newest10y30yAuctionDate`), `_shared/indirectBidder.ts` (`cleanRows`, the one shared filter every downstream snapshot/full-series/trip-wire call routes through), `compute-gauge7`, `update-big-cycle-metrics` (2 sites), `fetch-macro-data` (`supabase_bid_to_cover`, `supabase_indirect_bidder`, and a previously-unlisted 3rd site — the "indirect bidder share below 50%" live notification trigger, which could have false-fired on a TIPS auction's structurally different demand composition).
+- `auctionTenor.ts`'s misleading comment corrected in place (both the false "security_type excludes TIPS" claim and the false "no TIPS rows exist in this repo's data" claim, which was never re-verified after being written).
+- **Test added**: a TIPS reopening sharing the real CUSIP shape (`security_type: "Note"`, matching term patterns a nominal reopening also uses) is proven never selected as the latest nominal 10Y — both in `tests/treasuryDirectAuctions.test.ts` (mapping-level) and `tests/indirectBidder.test.ts` (consumer-level, replacing an old test that asserted exclusion via a fictional `security_type: "TIPS"` value that never occurs in real data).
+
+## Task 2: Buffett Indicator refinement
+
+- **Backfill extended to 1952+**: `BOGZ1LM893064105Q`'s real history starts 1945 (annual until 1952, genuinely quarterly from 1952-01-01), matching GDP's own quarterly coverage (starts 1947). Bounded the Z.1 fetch to `observation_start=1952-01-01` specifically — bridging a pre-1952 ANNUAL point with the quarterly-cadence `quarterEndDate` math would misalign it, so those 6 years are excluded rather than silently mishandled, exactly matching Scott's own "1952+" instruction.
+- **Percentile-of-own-history status bands** (`_shared/percentileStatus.ts`, pure, tested — 8 tests): `<50th percentile = healthy, 50-85th = watch, >85th = danger`, replacing the fixed `<120%/120-180%/>180%` bands. Computed against the metric's full stored history (not a 10-year window) via a new `usePercentileStatus` indicator flag, scoped to this one indicator only (Corporate Profits/GDI and Trade/GDP keep their existing neutral styling, unaffected). The percentile itself is shown on the card (not just the resulting color) per the explicit instruction.
+- **Relabeled** "Market Cap / GDP (Buffett Indicator)" → **"Z.1 all-equity / GDP"**, in both the Macro card (`macro_indicators`/`macro_snapshots`, migration) and the Paradigm framework's own label (`_shared/paradigmMetrics.ts` + `lib/paradigmMetrics.js`, kept in sync). Repo-wide grep confirms zero remaining references to the old name outside an explanatory code comment that names it on purpose. Description text explicitly says this does NOT match other public Buffett Indicator calculations (e.g. Wilshire-5000-based), rather than leaving that caveat buried in a tooltip.
+
+## Build status
+
+All committed. 902/902 tests pass (8 new this round: `percentileStatus`, plus the TIPS-detection additions to `treasuryDirectAuctions`/`indirectBidder`). `next build` clean. Held for deploy approval — nothing deployed. The `macro_snapshots` backfill for the 1952+ history and the renamed/percentile-banded indicator will run via the existing `?backfillParadigmXref=` endpoint once `fetch-macro-data` and `update-big-cycle-paradigm-metrics` are actually deployed — not run yet.

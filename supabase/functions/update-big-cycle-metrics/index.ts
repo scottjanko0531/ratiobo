@@ -848,8 +848,12 @@ async function updateDebtCycleStage(
       // this metric's own full history, same basis as the macro card.
       // v3 Phase 1c: filter on original_tenor + security_type instead of
       // exact-matching security_term, so reopenings are included.
-      sb.from("treasury_auction_results").select("auction_date, security_term, original_tenor, security_type, indirect_share_pct, bid_to_cover_ratio")
-        .in("original_tenor", ["10Y", "30Y"]).in("security_type", ["Note", "Bond"]).order("auction_date", { ascending: false }).limit(1000),
+      // TIPS-contamination fix (Scott, 2026-11-20): security_type alone
+      // does not exclude TIPS (same security_type as nominal) -- must
+      // both SELECT and filter inflation_indexed, since indirectBidder.ts's
+      // own cleanRows() can only filter a field it was actually given.
+      sb.from("treasury_auction_results").select("auction_date, security_term, original_tenor, security_type, indirect_share_pct, bid_to_cover_ratio, inflation_indexed")
+        .in("original_tenor", ["10Y", "30Y"]).in("security_type", ["Note", "Bond"]).eq("inflation_indexed", false).order("auction_date", { ascending: false }).limit(1000),
       // v2 Phase 3b: history for the debt-service-strained hysteresis gate.
       // v2 Phase 5 backfilled ~4 years of consistent MTS-basis history for
       // this indicator (no date filter needed any more -- see the comment
@@ -985,8 +989,9 @@ async function evaluateTripWires(
       // that state actually began (see _shared/indirectBidder.ts).
       // v3 Phase 1c: filter on original_tenor + security_type instead of
       // exact-matching security_term, so reopenings are included.
-      sb.from("treasury_auction_results").select("auction_date, security_term, original_tenor, security_type, indirect_share_pct")
-        .in("original_tenor", ["10Y", "30Y"]).in("security_type", ["Note", "Bond"]).order("auction_date", { ascending: false }).limit(1000),
+      // TIPS-contamination fix (Scott, 2026-11-20): same reasoning as above.
+      sb.from("treasury_auction_results").select("auction_date, security_term, original_tenor, security_type, indirect_share_pct, inflation_indexed")
+        .in("original_tenor", ["10Y", "30Y"]).in("security_type", ["Note", "Bond"]).eq("inflation_indexed", false).order("auction_date", { ascending: false }).limit(1000),
       sb.from("macro_snapshots").select("snapshot_date, value")
         .eq("indicator_name", "30Y Treasury Yield").order("snapshot_date", { ascending: false }).limit(260),
       sb.from("macro_indicators").select("metadata").eq("name", "DXY").maybeSingle(),

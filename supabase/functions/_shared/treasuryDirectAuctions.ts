@@ -26,6 +26,15 @@ export interface TreasuryDirectRecord {
   bidToCoverRatio: string;
   highYield: string;
   medianYield: string;
+  // TIPS-contamination fix (Scott, 2026-11-20): confirmed live via a direct
+  // TA_WS call for CUSIP 91282CRE3 ("9-Year 8-Month TIPS",
+  // inflationProtected: "Yes") -- this field is real and reliable, it was
+  // just never read before. TIPS share securityType "Note"/"Bond" with
+  // nominal notes/bonds, same reopening term shapes ("9-Year 8/10-Month"
+  // is used by BOTH nominal and TIPS 10Y reopenings in different years) --
+  // term-string pattern matching alone cannot tell them apart; this field
+  // can.
+  inflationProtected: string;
 }
 
 export interface MappedAuctionRow {
@@ -46,6 +55,7 @@ export interface MappedAuctionRow {
   avg_med_yield_pct: number | null;
   dispersion_bp: number | null;
   source: string;
+  inflation_indexed: boolean;
 }
 
 function num(v: string | undefined): number | null {
@@ -93,5 +103,6 @@ export function mapTreasuryDirectRecord(
     avg_med_yield_pct: avgMedYield,
     dispersion_bp: highYield != null && avgMedYield != null ? Math.round((highYield - avgMedYield) * 10000) / 100 : null,
     source: "treasurydirect",
+    inflation_indexed: r.inflationProtected === "Yes",
   };
 }

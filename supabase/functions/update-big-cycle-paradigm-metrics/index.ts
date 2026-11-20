@@ -62,9 +62,10 @@ interface FredObs { date: string; value: number; }
 // series (needed for z-score trailing windows) instead of just the latest
 // point. A discontinued/renamed series, a rate-limit response, or a
 // network error all land here as an empty array, never a crash.
-async function fetchFredHistory(seriesId: string): Promise<FredObs[]> {
+async function fetchFredHistory(seriesId: string, observationStart?: string): Promise<FredObs[]> {
   try {
-    const res = await fetch(`${FRED}?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json&sort_order=asc`);
+    const startParam = observationStart ? `&observation_start=${observationStart}` : "";
+    const res = await fetch(`${FRED}?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json&sort_order=asc${startParam}`);
     if (!res.ok) return [];
     const j = await res.json();
     const obs = (j.observations ?? []) as { date: string; value: string }[];
@@ -164,7 +165,15 @@ async function computeMetricRawSeries(def: ParadigmMetricDef): Promise<{ series:
       // between Z.1 releases without changing the trailing-window z-score's
       // sampling cadence (still one point per real quarterly release, plus
       // the one live point being scored against that history).
-      const z1Series = await fetchFredHistory(def.fredSeriesId!);
+      // Backfill fix (Scott, 2026-11-20): bounded to 1952-01-01 -- where
+      // BOGZ1LM893064105Q transitions from annual to real quarterly
+      // cadence (confirmed live: 1945-1951 are October-dated annual
+      // points, 1952-01-01 onward is genuinely quarterly), and GDP's own
+      // quarterly history (starts 1947-01-01) already covers it. Bridging
+      // an annual point with quarterEndDate's quarterly-cadence math
+      // would misalign the pre-1952 years, so they're excluded rather
+      // than silently mishandled.
+      const z1Series = await fetchFredHistory(def.fredSeriesId!, "1952-01-01");
       const marketSeries = await fetchFredHistory(def.bridgeMarketSeriesId!);
       const denomSeries = await fetchFredHistory(def.denominatorSeriesId!);
       if (!z1Series.length) return { series: null, reason: `${def.fredSeriesId}: no observations returned` };

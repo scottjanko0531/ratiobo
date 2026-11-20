@@ -24,18 +24,30 @@
 // 11-Month" -> 20Y (20Y family, reference only, out of scope for this
 // phase's consumers).
 //
-// Deliberately does NOT look at `security_type` here -- "TIPS/FRN handled
-// via security_type, kept separate from nominal" (the spec's own
-// instruction) means tenor mapping and nominal-vs-inflation-protected are
-// two SEPARATE, independently-checked conditions at the CONSUMER level
-// (`original_tenor IN (...) AND security_type IN ('Note','Bond')`), not
-// one fused into this function. A TIPS note auctioned under a "10-Year"
-// term string genuinely does have original tenor 10Y; it's the caller's
-// job to also require security_type = 'Note'/'Bond' when nominal-only
-// matters (confirmed live, 2026-11-18: this repo's ingested data has no
-// TIPS/FRN rows at all right now -- only Bill/Note/Bond -- but the
-// function is written to be correct if that ever changes, not just
-// correct for today's data).
+// Deliberately does NOT look at `security_type` here -- tenor mapping and
+// nominal-vs-inflation-protected are two SEPARATE, independently-checked
+// conditions at the CONSUMER level. A TIPS note auctioned under a
+// "10-Year" term string genuinely does have original tenor 10Y; it's the
+// caller's job to also exclude TIPS when nominal-only matters.
+//
+// CORRECTION (Scott, 2026-11-20): the claim that used to sit here --
+// "security_type = 'Note'/'Bond' is how callers exclude TIPS, and this
+// repo's data has no TIPS rows right now anyway" -- was wrong on BOTH
+// counts, not just untested. security_type does NOT distinguish TIPS
+// from nominal; TIPS share the exact same security_type values. And this
+// repo's ingested data was never actually re-checked after that claim
+// was written -- confirmed live: 143 of 550 rows (26%) ever tagged
+// original_tenor IN ("10Y","30Y") going back to 2010 are real TIPS,
+// across 51 distinct CUSIPs, including several using the SAME reopening
+// term shapes ("9-Year 8/10-Month") this file's own general rule above
+// maps for nominal 10Y reopenings too -- the term string alone cannot
+// tell them apart in either direction. The real fix is a dedicated
+// `inflation_indexed` column (treasury_auction_results), populated from
+// each feed's actual reliable field (Fiscal Data's
+// `inflation_index_security`, TreasuryDirect's `inflationProtected` --
+// both real and always available, simply never requested before this),
+// which every consumer now filters on directly instead of relying on
+// security_type as a proxy.
 //
 // Bills (13-Week, 4-Week, 150-Day, ...) and CMBs never match either
 // pattern -- they fall through to `null` by construction, never a wrong

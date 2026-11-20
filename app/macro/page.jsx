@@ -364,6 +364,15 @@ function IndicatorCard({ ind, onSave, onClick, note }) {
           Prices Paid <span className="num text-paper">{Number(ind.metadata.prices_paid).toFixed(1)}</span>
         </p>
       )}
+      {/* Market Cap/GDP refinement (Scott, 2026-11-20): percentile-of-own-
+          history status band -- show the actual percentile, not just the
+          resulting color, so "why is this watch/danger" is visible at a
+          glance rather than buried in a tooltip someone has to find. */}
+      {ind.metadata?.percentile != null && (
+        <p className="text-paper-dim text-xs" title="Percentile rank of today's reading within this metric's own full history">
+          {Number(ind.metadata.percentile).toFixed(0)}th percentile of own history
+        </p>
+      )}
       <p className="text-paper-dim text-xs leading-snug line-clamp-2">{ind.description}</p>
     </div>
   );

@@ -20,9 +20,44 @@ const REAL_10Y_NOV10: TreasuryDirectRecord = {
   bidToCoverRatio: "2.46",
   highYield: "5.020",
   medianYield: "4.961",
+  inflationProtected: "No",
 };
 
-const tenorMap = (term: string) => (term === "10-Year" ? "10Y" : term === "30-Year" ? "30Y" : null);
+// Real record confirmed live via TA_WS for CUSIP 91282CRE3 -- the actual
+// Nov 19, 2026 "9-Year 8-Month" reopening, confirmed TIPS
+// (inflationProtected: "Yes", securityDescription "9-Year 8-Month TIPS").
+// This is the exact scope of the contamination bug: the SAME term shape
+// ("9-Year 8-Month") is also used by nominal 10Y reopenings in other
+// years -- the string alone can't distinguish them, only this field can.
+const REAL_TIPS_NOV19: TreasuryDirectRecord = {
+  cusip: "91282CRE3",
+  securityType: "Note",
+  securityTerm: "9-Year 8-Month",
+  competitiveAuctionCloseDate: "2026-11-19T00:00:00",
+  grandTotalParRecognized: "50000000000",
+  grandTotalParAwarded: "20000000000",
+  directBiddersCompetitiveParAwarded: "2000000000",
+  directBiddersNoncompetitiveParAwarded: "0",
+  indirectBiddersCompetitiveParAwarded: "10000000000",
+  indirectBiddersNoncompetitiveParAwarded: "0",
+  primaryDealersCompetitiveParAwarded: "8000000000",
+  primaryDealersNoncompetitiveParAwarded: "0",
+  bidToCoverRatio: "2.43",
+  highYield: "2.100",
+  medianYield: "2.050",
+  inflationProtected: "Yes",
+};
+
+const tenorMap = (term: string) => {
+  const newIssue = term.match(/^(\d+)-Year$/);
+  if (newIssue) return `${newIssue[1]}Y`;
+  const reopening = term.match(/^(\d+)-Year (\d{1,2})-Month$/);
+  if (reopening) {
+    const months = parseInt(reopening[2], 10);
+    if (months >= 1 && months <= 11) return `${parseInt(reopening[1], 10) + 1}Y`;
+  }
+  return null;
+};
 
 describe("mapTreasuryDirectRecord", () => {
   it("maps the real Nov 10, 2026 10-Year Note record correctly", () => {
@@ -58,6 +93,43 @@ describe("mapTreasuryDirectRecord", () => {
   it("computes dispersion_bp as (highYield - medianYield) in basis points", () => {
     const row = mapTreasuryDirectRecord(REAL_10Y_NOV10, tenorMap);
     expect(row.dispersion_bp).toBeCloseTo((5.020 - 4.961) * 100, 2);
+  });
+
+  it("flags inflation_indexed from the real inflationProtected field, not the term string", () => {
+    const nominal = mapTreasuryDirectRecord(REAL_10Y_NOV10, tenorMap);
+    expect(nominal.inflation_indexed).toBe(false);
+    const tips = mapTreasuryDirectRecord(REAL_TIPS_NOV19, tenorMap);
+    expect(tips.inflation_indexed).toBe(true);
+    // Both map to original_tenor "10Y" by term shape alone -- the term
+    // string genuinely cannot distinguish them; only inflation_indexed can.
+    expect(tips.original_tenor).toBe("10Y");
+  });
+
+  it("a TIPS reopening sharing a CUSIP with a prior nominal '10-Year' auction is never selected as the latest nominal 10Y", () => {
+    // CUSIP 91282CRE3's own real history: issued as a genuine "10-Year"
+    // TIPS on 2026-07-23, reopened as TIPS again on 2026-09-17 and
+    // 2026-11-19 -- every single row for this CUSIP is TIPS, confirmed
+    // live. The REGRESSION this guards: picking "newest row where
+    // original_tenor=10Y" without ALSO filtering inflation_indexed=false
+    // would select this CUSIP's Nov 19 row as the "latest nominal 10Y",
+    // silently reporting a TIPS auction's bid-to-cover/yields as if they
+    // were the nominal market's.
+    const originalIssue: TreasuryDirectRecord = { ...REAL_TIPS_NOV19, securityTerm: "10-Year", competitiveAuctionCloseDate: "2026-07-23T00:00:00" };
+    const rows = [
+      mapTreasuryDirectRecord(REAL_10Y_NOV10, tenorMap),      // real nominal 10Y, 2026-11-10
+      mapTreasuryDirectRecord(REAL_TIPS_NOV19, tenorMap),     // TIPS reopening, 2026-11-19 -- LATER than the real nominal row
+      mapTreasuryDirectRecord(originalIssue, tenorMap),       // same CUSIP's original TIPS issue, 2026-07-23
+    ];
+    const latestNominal10y = rows
+      .filter((r) => r.original_tenor === "10Y" && !r.inflation_indexed)
+      .sort((a, b) => b.auction_date.localeCompare(a.auction_date))[0];
+    expect(latestNominal10y.cusip).toBe("91282CRX1");
+    expect(latestNominal10y.auction_date).toBe("2026-11-10");
+    // Without the inflation_indexed filter, the TIPS row (later date) would win instead:
+    const latestUnfiltered = rows
+      .filter((r) => r.original_tenor === "10Y")
+      .sort((a, b) => b.auction_date.localeCompare(a.auction_date))[0];
+    expect(latestUnfiltered.cusip).toBe("91282CRE3"); // confirms the bug this test guards against is real
   });
 
   it("returns null fields gracefully for a Bill-type record with no bidder breakdown", () => {

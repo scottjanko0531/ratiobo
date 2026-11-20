@@ -44,11 +44,18 @@ function json(body: unknown, status = 200): Response {
 // shared mapSecurityTermToTenor() function -- this is what lets consumers
 // match reopenings ("9-Year 10-Month" etc.), not just new-issue labels.
 const BASE_URL = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query";
+// TIPS-contamination fix (Scott, 2026-11-20): inflation_index_security is
+// a real, reliable field Fiscal Data has always returned -- confirmed
+// live for CUSIP 91282CRE3 ("Yes"). It was simply never requested here.
+// TIPS share security_type "Note"/"Bond" with nominal securities and use
+// the SAME reopening term shapes ("9-Year 8/10-Month" is used by both
+// nominal and TIPS 10Y reopenings in different years) -- the term string
+// alone cannot distinguish them; this field can.
 const FIELDS = [
   "auction_date", "cusip", "security_type", "security_term",
   "total_tendered", "total_accepted", "indirect_bidder_accepted",
   "direct_bidder_accepted", "primary_dealer_accepted", "bid_to_cover_ratio",
-  "high_yield", "avg_med_yield",
+  "high_yield", "avg_med_yield", "inflation_index_security",
 ].join(",");
 const FULL_BACKFILL_START = "2010-01-01";
 const INCREMENTAL_LOOKBACK_DAYS = 30;
@@ -58,7 +65,7 @@ interface AuctionRow {
   auction_date: string; cusip: string; security_type: string; security_term: string;
   total_tendered: string; total_accepted: string; indirect_bidder_accepted: string;
   direct_bidder_accepted: string; primary_dealer_accepted: string; bid_to_cover_ratio: string;
-  high_yield: string; avg_med_yield: string;
+  high_yield: string; avg_med_yield: string; inflation_index_security: string;
 }
 
 function num(v: string): number | null {
@@ -168,6 +175,7 @@ Deno.serve(async (req: Request) => {
         avg_med_yield_pct: avgMedYield,
         dispersion_bp: highYield != null && avgMedYield != null ? Math.round((highYield - avgMedYield) * 10000) / 100 : null,
         source: "fiscal_data",
+        inflation_indexed: a.inflation_index_security === "Yes",
       };
     });
 
@@ -182,6 +190,13 @@ Deno.serve(async (req: Request) => {
         .select("auction_date")
         .in("original_tenor", ["10Y", "30Y"])
         .in("security_type", ["Note", "Bond"])
+        // TIPS-contamination fix (Scott, 2026-11-20): without this, a TIPS
+        // reopening's later auction_date would make the staleness guard
+        // (and every other "newest 10Y/30Y" read) think the NOMINAL feed
+        // was current when it wasn't -- confirmed live, this exact bug is
+        // why CUSIP 91282CRE3's 2026-11-19 TIPS reopening looked like the
+        // newest 10Y result.
+        .eq("inflation_indexed", false)
         .order("auction_date", { ascending: false })
         .limit(1)
         .maybeSingle();

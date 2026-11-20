@@ -128,7 +128,7 @@ export const PARADIGM_METRICS: ParadigmMetricDef[] = [
     // (WILL5000PRFC, discontinued by FRED June 2024) when Wilshire data
     // is unavailable -- genuinely comparable to the real indicator now,
     // not a renamed same-mismatch.
-    key: "valuation_proxy", label: "Market Cap / GDP (Buffett Indicator)",
+    key: "valuation_proxy", label: "Z.1 all-equity / GDP",
     paradigms: ["C"], formula: "bridged_ratio",
     fredSeriesId: "BOGZ1LM893064105Q", bridgeMarketSeriesId: "SP500", denominatorSeriesId: "GDP",
     orientationSign: 1,

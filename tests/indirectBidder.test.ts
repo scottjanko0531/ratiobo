@@ -23,20 +23,20 @@ const ROWS: AuctionRow[] = [
   // Real live data (desc by auction_date), as pulled in the Phase 4
   // decisions log — 6 most-recent 10-Year and 6 most-recent 30-Year
   // auctions as of 2026-11-17.
-  { auction_date: "2026-08-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 60.98 },
-  { auction_date: "2026-07-23", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 58.29 },
-  { auction_date: "2026-05-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 51.52 },
-  { auction_date: "2026-02-11", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 50.1 },
-  { auction_date: "2026-01-22", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 66.99 },
-  { auction_date: "2025-11-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 57.77 },
-  { auction_date: "2025-08-06", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 47.79 },
-  { auction_date: "2026-08-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 53.15 },
-  { auction_date: "2026-05-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 53.69 },
-  { auction_date: "2026-02-19", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 77.99 },
-  { auction_date: "2026-02-12", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 54.41 },
-  { auction_date: "2025-11-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 61.29 },
-  { auction_date: "2025-08-07", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 44.37 },
-  { auction_date: "2025-02-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 50.96 },
+  { auction_date: "2026-08-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 60.98, inflation_indexed: false },
+  { auction_date: "2026-07-23", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 58.29, inflation_indexed: false },
+  { auction_date: "2026-05-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 51.52, inflation_indexed: false },
+  { auction_date: "2026-02-11", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 50.1, inflation_indexed: false },
+  { auction_date: "2026-01-22", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 66.99, inflation_indexed: false },
+  { auction_date: "2025-11-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 57.77, inflation_indexed: false },
+  { auction_date: "2025-08-06", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 47.79, inflation_indexed: false },
+  { auction_date: "2026-08-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 53.15, inflation_indexed: false },
+  { auction_date: "2026-05-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 53.69, inflation_indexed: false },
+  { auction_date: "2026-02-19", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 77.99, inflation_indexed: false },
+  { auction_date: "2026-02-12", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 54.41, inflation_indexed: false },
+  { auction_date: "2025-11-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 61.29, inflation_indexed: false },
+  { auction_date: "2025-08-07", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 44.37, inflation_indexed: false },
+  { auction_date: "2025-02-13", security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: 50.96, inflation_indexed: false },
 ].sort((a, b) => b.auction_date.localeCompare(a.auction_date));
 
 describe("computeIndirectBidderSnapshot", () => {
@@ -86,9 +86,9 @@ describe("computeIndirectBidderSnapshot", () => {
 // check never would have.
 describe("computeIndirectBidderSnapshot — reopenings included (v3 fix)", () => {
   const withReopenings: AuctionRow[] = [
-    { auction_date: "2026-08-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 60 },
-    { auction_date: "2026-07-12", security_term: "9-Year 11-Month", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 58 },
-    { auction_date: "2026-06-12", security_term: "9-Year 10-Month", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 56 },
+    { auction_date: "2026-08-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 60, inflation_indexed: false },
+    { auction_date: "2026-07-12", security_term: "9-Year 11-Month", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 58, inflation_indexed: false },
+    { auction_date: "2026-06-12", security_term: "9-Year 10-Month", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 56, inflation_indexed: false },
   ];
 
   it("a reopening's non-'N-Year' security_term label still counts toward the 10Y window", () => {
@@ -103,15 +103,12 @@ describe("computeIndirectBidderSnapshot — reopenings included (v3 fix)", () =>
     expect(oldStyleFiltered.length).toBe(1); // only the new-issue row survives the old check
   });
 
-  it("TIPS/FRN are excluded even with a matching original_tenor (security_type gate)", () => {
-    const withTips: AuctionRow[] = [
-      ...withReopenings,
-      { auction_date: "2026-08-01", security_term: "9-Year 10-Month", original_tenor: "10Y", security_type: "TIPS", indirect_share_pct: 99 },
-    ];
-    const snap = computeIndirectBidderSnapshot(withTips, 0);
-    // The TIPS row's 99% would skew the average if it weren't excluded.
-    expect(snap.avg10).toBeCloseTo((60 + 58 + 56) / 3, 2);
-  });
+  // The old "TIPS/FRN excluded via security_type" test here used a
+  // fictional security_type: "TIPS" value that never actually occurs in
+  // real data (confirmed live: TIPS use security_type "Note"/"Bond", same
+  // as nominal) -- see the real-shape version of this test in the
+  // evalAuctionDemandDeterioration describe block below, using
+  // inflation_indexed instead.
 });
 
 describe("meanAndStdev / zScoreOf", () => {
@@ -165,8 +162,8 @@ function daysAgo(n: number, anchor = "2026-08-21T00:00:00Z"): string {
 function buildAuctionRounds(roundValues: { y10: number; y30: number }[]): AuctionRow[] {
   const rows: AuctionRow[] = [];
   roundValues.forEach(({ y10, y30 }, round) => {
-    rows.push({ auction_date: daysAgo(round * 14), security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: y10 });
-    rows.push({ auction_date: daysAgo(round * 14 + 1), security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: y30 });
+    rows.push({ auction_date: daysAgo(round * 14), security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: y10, inflation_indexed: false });
+    rows.push({ auction_date: daysAgo(round * 14 + 1), security_term: "30-Year", original_tenor: "30Y", security_type: "Bond", indirect_share_pct: y30, inflation_indexed: false });
   });
   return rows;
 }
@@ -227,17 +224,41 @@ describe("evalAuctionDemandDeterioration (v2 Phase 1 hysteresis rewrite)", () =>
     expect(result.armed).toBe(true);
   });
 
-  it("today's live numbers (regression anchor): real 2010-2026 auction history reads disarmed", () => {
-    // tests/fixtures/indirect-bidder-auction-history-2026-11-17.json is the
-    // full real Treasury auction history pulled live for the v2 Phase 0
-    // reconnaissance (185 raw rows, 2010-01-11 through 2026-08-13; see
-    // docs/specs/debt-metrics-integrity-decisions.md's v2 Phase 0 section).
-    // This is a committed snapshot, not a live fetch — it pins today's real
-    // answer so a future change to the hysteresis logic has to justify
-    // disagreeing with it.
+  it("today's live numbers (regression anchor): real NOMINAL-ONLY 2010-2026 auction history reads disarmed", () => {
+    // TIPS-contamination fix (Scott, 2026-11-20): this test originally
+    // pinned tests/fixtures/indirect-bidder-auction-history-2026-11-17.json
+    // (185 raw rows) -- that file is CONTAMINATED: 51 of its 185 rows
+    // (27.6%) are real TIPS auctions, confirmed live against Fiscal Data's
+    // own inflation_index_security field for each (auction_date,
+    // original_tenor) pair. TIPS share security_type "Note"/"Bond" with
+    // nominal securities, so the OLD code's security_type filter never
+    // caught them -- this is the exact bug class the repo-wide fix
+    // addresses (_shared/indirectBidder.ts's cleanRows now also requires
+    // inflation_indexed === false).
+    //
+    // tests/fixtures/indirect-bidder-auction-history-nominal-only-
+    // 2026-11-20.json is the SAME 185-row pull with those 51 TIPS rows
+    // removed (134 genuinely nominal rows remain) -- not a new fetch, the
+    // real history minus the contamination.
+    //
+    // RETROACTIVE IMPACT, reported explicitly (old contaminated vs. new
+    // corrected, both computed with the real evalAuctionDemandDeterioration/
+    // computeIndirectBidderFullSeries functions):
+    //   latest:  57.55% (contaminated) -> 52.57% (corrected) -- a real ~5pp
+    //            difference, not noise. TIPS auctions structurally run a
+    //            higher indirect-bidder share than nominal ones, so mixing
+    //            them in overstated the trailing-6 average.
+    //   mean2y:  56.83 -> 53.66   sd2y: 2.02 -> 2.35   windowReadingCount: 12 -> 8
+    //   z-score of latest: +1.16 -> +0.86 -- still clearly "healthy" either
+    //            way (threshold is z < -1 for watch), but meaningfully lower.
+    //   trip-wire armed state: false -> false (UNCHANGED) -- the
+    //            contamination did not flip the trip-wire's live
+    //            armed/disarmed conclusion as of today, though the
+    //            DISPLAYED percentage was wrong by ~5 points for however
+    //            long this bug was live.
     const raw = JSON.parse(
       readFileSync(
-        new URL("./fixtures/indirect-bidder-auction-history-2026-11-17.json", import.meta.url),
+        new URL("./fixtures/indirect-bidder-auction-history-nominal-only-2026-11-20.json", import.meta.url),
         "utf8",
       ),
     ) as AuctionRow[];
@@ -246,17 +267,36 @@ describe("evalAuctionDemandDeterioration (v2 Phase 1 hysteresis rewrite)", () =>
     const result = evalAuctionDemandDeterioration(rows, INDIRECT_BIDDER_THRESHOLDS.tripWire);
     expect(result.armed).toBe(false);
     expect(result.sinceDate).toBeNull();
-    expect(result.values.latest).toBeCloseTo(57.55, 1);
-    expect(result.values.mean2y).toBeCloseTo(56.83, 1);
-    expect(result.values.sd2y).toBeCloseTo(2.02, 1);
-    expect(result.values.windowReadingCount).toBe(12);
+    expect(result.values.latest).toBeCloseTo(52.57, 1);
+    expect(result.values.mean2y).toBeCloseTo(53.66, 1);
+    expect(result.values.sd2y).toBeCloseTo(2.35, 1);
+    expect(result.values.windowReadingCount).toBe(8);
 
     // The card/classifier's full-history z-score for the same latest
-    // reading: +1.16 — healthy (z > -1), not weak (z > -1.5).
+    // reading: +0.86 — healthy (z > -1), not weak (z > -1.5). (Was +1.16
+    // under the contaminated history — see the retroactive-impact note
+    // above; the qualitative conclusion doesn't change, the number does.)
     const fullSeries = computeIndirectBidderFullSeries(rows);
     const z = zScoreOf(fullSeries[fullSeries.length - 1].value, fullSeries.map((s) => s.value));
-    expect(z).toBeCloseTo(1.16, 1);
+    expect(z).toBeCloseTo(0.86, 1);
     expect(indirectBidderCardStatus(z!)).toBe("healthy");
     expect(indirectBidderIsWeak(z!)).toBe(false);
+  });
+
+  it("a TIPS row mixed into otherwise-clean nominal rows is excluded even though security_type matches 'Note'/'Bond' (the real contamination shape)", () => {
+    // Confirmed live: real TIPS auctions have security_type "Note"/"Bond",
+    // the SAME values NOMINAL_TYPES already checked -- that check alone
+    // was never sufficient. Only inflation_indexed actually distinguishes
+    // them, which is why this fixture row has security_type "Note" (not
+    // the fictional "TIPS" value the old, now-removed test used).
+    const withRealShapeTips: AuctionRow[] = [
+      { auction_date: "2026-08-12", security_term: "10-Year", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 60, inflation_indexed: false },
+      { auction_date: "2026-07-12", security_term: "9-Year 11-Month", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 58, inflation_indexed: false },
+      { auction_date: "2026-06-12", security_term: "9-Year 10-Month", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 56, inflation_indexed: false },
+      { auction_date: "2026-08-01", security_term: "9-Year 10-Month", original_tenor: "10Y", security_type: "Note", indirect_share_pct: 99, inflation_indexed: true },
+    ];
+    const snap = computeIndirectBidderSnapshot(withRealShapeTips, 0);
+    // The TIPS row's 99% would skew the average if it weren't excluded.
+    expect(snap.avg10).toBeCloseTo((60 + 58 + 56) / 3, 2);
   });
 });

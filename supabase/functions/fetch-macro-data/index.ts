@@ -9,6 +9,7 @@ import {
   assertPeriodAligned,
 } from "../_shared/mtsFiscalData.ts";
 import { findYearAgo, yoyPair, yoyPairWithFallback } from "../_shared/yoyMath.ts";
+import { percentileRank, percentileStatus } from "../_shared/percentileStatus.ts";
 import { computeIndirectBidderSnapshot, computeIndirectBidderFullSeries, zScoreOf, AuctionRow } from "../_shared/indirectBidder.ts";
 import { goldTrendStatus, goldPurchasesZScoreStatus, realFedFundsStance, convenienceYieldChangeStatus, indirectBidderCardStatus } from "../_shared/statusThresholds.ts";
 import { annualized3mMonthly } from "../_shared/annualizedMath.ts";
@@ -261,12 +262,17 @@ interface Indicator {
   series2?: string;
   zscore?: boolean;
   // supabase_paradigm_xref only: multiply the Paradigm's stored raw value
-  // by this before display. 100 for genuine ratios of same-unit nominal
-  // dollar series (Corporate Profits/GDI, Trade/GDP -- real percentages),
-  // left at 1 (the default) for valuation_proxy (S&P 500 index points /
-  // GDP $bn -- not a true percentage, displayed as the Paradigm's own
-  // unscaled number).
+  // by this before display. 100 for genuine ratios of same-unit dollar
+  // series (Corporate Profits/GDI, Trade/GDP, and -- since the Market
+  // Cap/GDP fix -- valuation_proxy too, now a real dollar/dollar ratio).
   scale?: number;
+  // supabase_paradigm_xref only (Market Cap/GDP refinement, Scott
+  // 2026-11-20): use a percentile-of-own-history status band instead of
+  // ind.statusFn's fixed thresholds. Fetches the metric's full stored
+  // history from big_cycle_paradigm_raw_series to rank today's reading
+  // against it -- see the case body for why this needs its own fetch
+  // beyond the usual latest-2-rows read.
+  usePercentileStatus?: boolean;
   statusFn: StatusFn;
 }
 
@@ -1077,7 +1083,13 @@ const INDICATORS: Indicator[] = [
     statusFn: () => "neutral",
   },
   {
-    name: "Market Cap / GDP (Buffett Indicator)",
+    // Relabel (Scott, 2026-11-20): "Market Cap / GDP (Buffett Indicator)"
+    // read as implying direct comparability to OTHER public "Buffett
+    // Indicator" calculations (commonly Wilshire-5000-based), which use a
+    // different numerator and will not match this one's exact level.
+    // "Z.1 all-equity / GDP" names the actual series this is, so the
+    // scope is explicit, not just buried in a tooltip.
+    name: "Z.1 all-equity / GDP",
     layer: 3, layer_name: "Business Cycle",
     // Live-site fix (Scott, 2026-11-20): the prior "S&P 500 / GDP" framing
     // divided an index LEVEL (dimensionless points) by GDP in $bn, reading
@@ -1090,9 +1102,17 @@ const INDICATORS: Indicator[] = [
     // the S&P 500's own % change since that quarter's end (_shared/
     // z1Bridge.ts) so this card updates daily/live rather than stepping
     // once a quarter.
-    description: "Cross-referenced from Fiscal Policy Paradigm. Total US corporate equity market value (Fed Z.1, all sectors) divided by nominal GDP — the real Buffett Indicator, substituted for the discontinued Wilshire 5000 series in Paradigm C (Grow). Bridged daily between quarterly Z.1 releases using the S&P 500's own change since the last release. Status thresholds are a starting point, not calibrated.",
+    //
+    // Refinement (Scott, 2026-11-20): fixed <120/120-180/>180 bands
+    // replaced with percentile-of-own-history (usePercentileStatus,
+    // <50th healthy, 50-85th watch, >85th danger) now that real history
+    // back to 1952 is backfilled -- a level reads as "elevated" because
+    // it's historically rare for THIS series specifically, not because
+    // it crossed an arbitrary absolute line. The statusFn below is only
+    // the defensive fallback if history is ever unavailable.
+    description: "Cross-referenced from Fiscal Policy Paradigm. Total US corporate equity market value (Fed Z.1, all sectors) divided by nominal GDP, back to 1952 — NOT the same calculation as other public \"Buffett Indicator\" figures (commonly Wilshire-5000-based), which use a different numerator and will not match this exact level. Bridged daily between quarterly Z.1 releases using the S&P 500's own change since the last release. Status reflects this metric's own historical percentile (shown below), not a fixed threshold.",
     fred_series_id: null, unit: "%", data_source: "supabase", sort_order: 52,
-    series: "valuation_proxy", scale: 100, type: "supabase_paradigm_xref",
+    series: "valuation_proxy", scale: 100, type: "supabase_paradigm_xref", usePercentileStatus: true,
     statusFn: v => v < 120 ? "healthy" : v <= 180 ? "watch" : "danger",
   },
 ];
@@ -1464,11 +1484,16 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // same auction.
         // v3 Phase 1c: original_tenor + security_type instead of exact-
         // matching security_term, so 10Y reopenings are included.
+        // TIPS-contamination fix (Scott, 2026-11-20): security_type alone
+        // does not exclude TIPS -- confirmed live, 2026-11-19's "9-Year
+        // 8-Month" reopening (CUSIP 91282CRE3) is real TIPS, and without
+        // this filter it would read as the newest 10Y nominal result.
         const { data: rows, error: btcErr } = await supabase
           .from("treasury_auction_results")
           .select("auction_date, bid_to_cover_ratio")
           .eq("original_tenor", "10Y")
           .in("security_type", ["Note", "Bond"])
+          .eq("inflation_indexed", false)
           .not("bid_to_cover_ratio", "is", null)
           .order("auction_date", { ascending: false })
           .limit(2);
@@ -1966,6 +1991,26 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         current  = Number(pxRows[0].value) * scale;
         previous = Number(pxRows[1].value) * scale;
         metadata = { reference_period: pxRows[0].obs_date };
+        // Market Cap/GDP refinement (Scott, 2026-11-20): a percentile-of-
+        // own-history band instead of a fixed threshold -- needs the full
+        // stored series (not just the latest 2 rows already fetched
+        // above) to rank today's reading against. The daily live-bridged
+        // row (today's non-quarter-aligned date) is part of this
+        // metric's own real history by construction, same as every other
+        // stored point, so it's included in the ranking set, not
+        // excluded as a special case.
+        if (ind.usePercentileStatus) {
+          const { data: fullHistory } = await supabase
+            .from("big_cycle_paradigm_raw_series")
+            .select("value")
+            .eq("metric_key", ind.series!);
+          const historyValues = (fullHistory ?? []).map((r) => Number(r.value) * scale);
+          const pct = percentileRank(current, historyValues);
+          if (pct != null) {
+            metadata = { ...metadata, percentile: pct };
+            statusOverride = percentileStatus(pct);
+          }
+        }
         break;
       }
       case "supabase_liquidity": {
@@ -2135,11 +2180,15 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // headroom), not just enough for one trailing-6 window.
         // v3 Phase 1c: original_tenor + security_type instead of exact-
         // matching security_term, so reopenings are included.
+        // TIPS-contamination fix (Scott, 2026-11-20): same reasoning as
+        // supabase_bid_to_cover above -- must SELECT and filter
+        // inflation_indexed, not rely on security_type alone.
         const { data: rows, error: auErr } = await supabase
           .from("treasury_auction_results")
-          .select("auction_date, security_term, original_tenor, security_type, indirect_share_pct")
+          .select("auction_date, security_term, original_tenor, security_type, indirect_share_pct, inflation_indexed")
           .in("original_tenor", ["10Y", "30Y"])
           .in("security_type", ["Note", "Bond"])
+          .eq("inflation_indexed", false)
           .not("indirect_share_pct", "is", null)
           .order("auction_date", { ascending: false })
           .limit(1000);
@@ -3571,9 +3620,12 @@ async function generateSovereignRiskNotifications(): Promise<void> {
     // v3 Phase 1c: original_tenor + security_type instead of exact-matching
     // security_term, so reopenings are included.
     {
+      // TIPS-contamination fix (Scott, 2026-11-20): without this, a TIPS
+      // auction's own (structurally different) indirect-bidder share could
+      // false-trigger this nominal-market alert.
       const { data: rows } = await supabase.from("treasury_auction_results")
         .select("auction_date, security_term, indirect_share_pct")
-        .in("original_tenor", ["10Y", "30Y"]).in("security_type", ["Note", "Bond"]).not("indirect_share_pct", "is", null)
+        .in("original_tenor", ["10Y", "30Y"]).in("security_type", ["Note", "Bond"]).eq("inflation_indexed", false).not("indirect_share_pct", "is", null)
         .order("auction_date", { ascending: false }).limit(2);
       for (const r of rows ?? []) {
         if (Number(r.indirect_share_pct) < 50) {

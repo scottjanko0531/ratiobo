@@ -97,7 +97,9 @@ Deno.serve(async (req: Request) => {
       // v3 Phase 1c (debt-metrics-integrity-v3 spec): original_tenor +
       // security_type instead of exact-matching security_term, so 10Y
       // reopenings (e.g. "9-Year 10-Month") are included, not just new issues.
-      sb.from("treasury_auction_results").select("auction_date, indirect_share_pct").eq("original_tenor", "10Y").in("security_type", ["Note", "Bond"]).not("indirect_share_pct", "is", null).order("auction_date"),
+      // TIPS-contamination fix (Scott, 2026-11-20): security_type alone
+      // does not exclude TIPS -- inflation_indexed=false does.
+      sb.from("treasury_auction_results").select("auction_date, indirect_share_pct").eq("original_tenor", "10Y").in("security_type", ["Note", "Bond"]).eq("inflation_indexed", false).not("indirect_share_pct", "is", null).order("auction_date"),
       sb.from("gold_rate_correlation").select("obs_date, corr_90d").not("corr_90d", "is", null).order("obs_date"),
       fetchFredSeries(TERM_PREMIUM_SERIES),
     ]);

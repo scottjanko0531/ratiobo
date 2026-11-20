@@ -29,15 +29,25 @@
 // security_term === "10-Year"/"30-Year" (which silently excluded every
 // reopening -- confirmed live in v3 Phase 0 to be most 10Y/30Y auctions,
 // not an edge case) to original_tenor IN ("10Y","30Y") + security_type IN
-// ("Note","Bond") -- tenor and nominal-vs-inflation-protected are two
-// independently-checked conditions, per the spec.
-
+// ("Note","Bond").
+//
+// TIPS-contamination fix (Scott, 2026-11-20): that comment's claim --
+// "tenor and nominal-vs-inflation-protected are two independently-checked
+// conditions" -- was aspirational, not actually enforced. security_type
+// "Note"/"Bond" does NOT exclude TIPS; TIPS share that exact security_type,
+// just with a separate inflation-indexed characteristic. Confirmed live:
+// 143 of 550 rows (26%) ever tagged original_tenor IN ("10Y","30Y") going
+// back to 2010 are real TIPS auctions, across 51 distinct CUSIPs -- not a
+// recent or edge-case problem. The real, reliable field now exists
+// (inflation_indexed, backfilled from Fiscal Data's inflation_index_
+// security / TreasuryDirect's inflationProtected) and is filtered here.
 export interface AuctionRow {
   auction_date: string;
   security_term: string;
   original_tenor: string | null;
   security_type: string;
   indirect_share_pct: number | null;
+  inflation_indexed: boolean;
 }
 
 export interface IndirectBidderSnapshot {
@@ -57,7 +67,8 @@ function cleanRows(rows: AuctionRow[]): AuctionRow[] {
     (r) =>
       r.indirect_share_pct != null &&
       (r.original_tenor === "10Y" || r.original_tenor === "30Y") &&
-      NOMINAL_TYPES.includes(r.security_type)
+      NOMINAL_TYPES.includes(r.security_type) &&
+      !r.inflation_indexed
   );
 }
 
