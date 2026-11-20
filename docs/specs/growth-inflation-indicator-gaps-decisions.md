@@ -1060,3 +1060,125 @@ medium-term inflation's confidence (53%→48%) without flipping the
 call. This is consistent with — not contradicting — the backtest
 findings above: these are genuinely marginal candidates whose
 real-world effect, when it exists at all, is small.
+
+---
+
+# Phase 4 — CLOSED: all seven candidates rejected, no score changes (Scott's decision)
+
+**This is logged as a successful, valid outcome of the process, not a
+failure.** The backtest/robustness/live-effect pipeline did exactly
+what it exists to do: stopped a set of weak signals from adding noise
+to the live regime engine before they ever touched production.
+
+## All seven candidates: explicitly rejected
+
+| Candidate | Lens | Disposition |
+|---|---|---|
+| Real Retail Sales (swap) | Near-term growth | **REJECTED** |
+| Core Capex Orders (add) | Near-term growth | **REJECTED** |
+| Growth A+B combined | Near-term growth | **REJECTED** |
+| GSCPI (add) | Near-term inflation | **REJECTED** |
+| ISM Prices Paid (add) | Near-term inflation | **REJECTED** (never had real data to test in the first place) |
+| 5y5y (add) | Medium-term inflation | **REJECTED** |
+| Openings/Unemployed (add) | Medium-term inflation | **REJECTED** |
+| Case-Shiller YoY (add) | Medium-term inflation | **REJECTED** |
+| Medium-term all-three combined | Medium-term inflation | **REJECTED** |
+
+**Citing, specifically:**
+- The HAC-adjusted (Newey-West) confidence intervals showed **zero
+  statistical separation from baseline** for every medium-term
+  candidate, and near-identical overlap for near-term GSCPI — the
+  original point-estimate "PASS" verdicts were real under the
+  mechanical rule as literally specified, but not statistically
+  meaningful once the overlapping-window autocorrelation the naive
+  Wilson interval ignored is properly accounted for.
+- The 6-combination horizon × CPI-measure robustness grid showed
+  **Case-Shiller's apparent improvement was cherry-picked, not
+  robust** — it improved hit rate in only 3 of 6 combinations and was
+  worse in the other 3, passing only at the single combination
+  (12-month horizon, headline CPI) that happened to be reported
+  first. 5y5y and Openings/Unemployed were, respectively, even less
+  robust and no more robust across the same grid.
+- **Zero live effect today** for every candidate actually checked
+  against live current data (Real Retail Sales, GSCPI, Case-Shiller,
+  Openings/Unemployed) — three were exact mathematical no-ops on
+  today's real values, and the fourth (Case-Shiller) would only have
+  shaved confidence points without flipping any call.
+
+**This null result is recorded explicitly so that nobody re-tests 5y5y
+or Openings/Unemployed later without genuinely new evidence — the
+rejection stands** unless something materially changes (e.g., a
+methodology that addresses the autocorrelation/robustness problems
+found here, or a different candidate design entirely — not a re-run
+of the same test hoping for a different draw).
+
+## Two lasting improvements kept from this work
+
+Independent of the rejected candidates, two real, durable additions to
+this codebase's testing infrastructure came out of Phase 4 and stay:
+
+1. **The Newey-West HAC confidence-interval fix** (`_shared`-style pure
+   logic duplicated into both `nearterm-signal-backtest` and
+   `mediumterm-signal-backtest` per this codebase's existing Deno/
+   Vitest-split convention) — corrects a real blind spot the naive
+   Wilson interval had for any overlapping-window backtest design.
+   Includes the double-scaling bug caught and fixed while building it
+   (`r1()` already converts fraction→percentage; the code was also
+   pre-multiplying by 100, producing CIs like `[1018.9, 2849]` before
+   the fix). Available for any future backtest on this codebase's
+   overlapping-window pattern, not single-use.
+2. **`mediumterm-signal-backtest` itself** — the first harness in this
+   repo that actually tests the medium-term forward-signal composite's
+   (`MEDTERM_I`) own directional hit rate, resolving the Phase 0/4
+   finding that none of the four pre-existing harnesses could do this.
+   Parameterized by horizon and CPI target (headline/core), reusable
+   for any future medium-term candidate test.
+
+## Two deferred items — logged, NOT built now
+
+1. **Real Retail Sales: pre-registered high-inflation-only test.**
+   Scott's reasoning: the case for this swap was never "predicts
+   better on average" — it's that the nominal series is specifically
+   biased when inflation is high, and a full-history backtest is
+   mostly low-inflation years, so it couldn't show that effect even if
+   real. **If revisited**: score only months where CPI YoY was above
+   3%, at ONE horizon fixed in advance before running, run once — no
+   browsing multiple horizons after seeing results (the exact
+   discipline this phase's own Case-Shiller finding shows is
+   necessary). Not urgent — it's a live no-op today (2.385% real
+   still clears the >1% "up" threshold, same vote as nominal).
+2. **Forward-signal hysteresis/persistence rule — a separate future
+   spec.** Scott's reasoning: Case-Shiller's only consistent effect
+   across the entire robustness grid was fewer flips/year — a
+   smoothing side-effect of averaging in a slow-moving series, not
+   predictive content. If whipsaw/flips on the forward signal actually
+   matter (recent near-term back-and-forth suggests they might), the
+   right fix is a buffer/persistence rule applied directly to the
+   forward signal itself — the same approach already used for the 20%
+   debt-service hysteresis gate in the debt-metrics-integrity v2 spec
+   — not indirectly, by adding a slow-moving variable that happens to
+   reduce flips as a side effect of its own sluggishness. Not scoped
+   or built here; a separate spec if Scott wants to pursue it.
+
+## Phases 1-3: unaffected, confirmed
+
+Nothing about Phases 1-3's deploy status changes. The ~20 new Tier A/B
+FRED indicators (Phase 1), ISM Prices Paid + GSCPI (Phase 2), and the
+three Paradigm cross-references (Phase 3) all stay live as **display-
+only context** on `/macro`, exactly as they were before this phase —
+they were never wired into the regime score, and Phase 4's rejection
+means they never will be via any of these seven candidates. Quick
+sanity check (not a full re-verification): confirmed no code in this
+phase touched `NEARTERM_G`/`NEARTERM_I`/`MEDTERM_G`/`MEDTERM_I`/
+`fetch-macro-data`'s `INDICATORS` array — every edit this phase lived
+entirely inside the two standalone backtest tools.
+
+## Spec closed
+
+**Growth & Inflation Indicator Gaps spec (Phases 0-4): CLOSED.**
+Phases 0-3 shipped as approved (indicators live, display-only). Phase
+4 ran its full course (candidate definition → backtest → robustness
+follow-up) and correctly rejected every candidate — a valid, intended
+outcome of the process, not a shortfall. Two durable testing-
+infrastructure improvements and two logged-for-later items are the
+phase's lasting output beyond the rejections themselves.
