@@ -763,3 +763,142 @@ Fiscal Policy Paradigm." appears verbatim). 878/878 tests pass total.
 
 **Build status**: committed, not deployed — held for the same
 report-before-deploy gate as every prior phase.
+
+---
+
+# Phase 4a/4b — Candidate definition and backtest (4a+4b only; NOT shadow/live)
+
+## Harness-mismatch resolution (the question posed before building anything)
+
+Confirmed the Phase 0 finding is real, not papered over: `growth-axis-
+backtest` scores the STRUCTURAL fast/slow crossover (a different model
+from the forward-signal composite entirely), `run-backtest` scores
+PORTFOLIO RETURNS (not forecast accuracy at all — confirmed by
+`growth-axis-backtest`'s own header comment distinguishing the two),
+and `cpi-core-measures-backtest` is a named hypothesis test about
+specific core-CPI measures, not this composite. None of the three near-
+term growth/inflation candidates' outcome axis is a clean fit for any
+of them. **Genuinely nothing in this repo had ever backtested the
+MEDIUM-TERM forward-signal composite's (`MEDTERM_I`) own directional
+hit rate** — not an adaptation problem, an actual gap.
+
+**Resolution: built a new standalone tool, `mediumterm-signal-
+backtest`**, mirroring `nearterm-signal-backtest`'s exact point-in-time/
+dead-band methodology (same `asOf`/`scoreGroup`/`confidenceFor`/
+`wilsonCI` shapes — not reinvented) but scoring `MEDTERM_I` against a
+12-month-ahead CPI YoY outcome. **Horizon is a logged judgment call**:
+the spec frames medium-term as "6-18mo" without a single number; 12
+months is the midpoint. `MEDTERM_G` (growth side) was NOT built — no
+Phase 4a candidate touches medium-term growth, so there's nothing to
+backtest there.
+
+Both tools are temporary, curl-invoked research tools (same category
+as `growth-axis-backtest`/`cpi-core-measures-backtest`), not shipped
+features — deploying them does not touch live regime scoring.
+
+## 4a. Candidate definitions (every basket verified to sum to 1.00)
+
+All seven candidates, with the **proposed full weight set** (the one
+that would actually go to Phase 4d) verified summing to exactly 1.00:
+
+| Candidate | Weights (proposed, full) | Sum |
+|---|---|---|
+| Near-term growth A: swap Retail Sales → Real Retail Sales | GDPNow .20, ISM Mfg .15, ISM Svc .10, Jobless .15, Payrolls .15, **Real Retail Sales .10**, Unemployment .05, HY .05, Liquidity .05 | 1.00 |
+| Near-term growth B: add Core Capex | GDPNow **.15**, ISM Mfg .15, ISM Svc .10, Jobless .15, Payrolls **.10**, Retail .10, Unemployment .05, HY .05, Liquidity .05, **Core Capex .10** | 1.00 |
+| Near-term growth A+B combined | GDPNow .15, ISM Mfg .15, ISM Svc .10, Jobless .15, Payrolls .10, Real Retail Sales .10, Unemployment .05, HY .05, Liquidity .05, Core Capex .10 | 1.00 |
+| Near-term inflation: add ISM Prices Paid | CPI **.15**, PPI **.15**, WTI .10, WTI Shock .15, Copper .10, DXY .10, Consumer Infl Exp .10, Tariff .05, **ISM Prices Paid .10** | 1.00 |
+| Near-term inflation: add GSCPI | CPI .20, PPI .20, WTI .10, WTI Shock .15, Copper **.05**, DXY .10, Consumer Infl Exp .10, Tariff .05, **GSCPI .05** | 1.00 |
+| Medium-term inflation: add 5y5y | Breakeven **.16**, 10Y Expected .16, ULC .21, M2 .10, CapUtil .16, Tariff .11, **5y5y .10** | 1.00 |
+| Medium-term inflation: add Openings/Unemployed | Breakeven .26, 10Y Expected .16, ULC .21, M2 **.05**, CapUtil **.11**, Tariff .11, **Openings/Unemployed .10** | 1.00 |
+| Medium-term inflation: add Case-Shiller | Breakeven .26, 10Y Expected .16, ULC .21, M2 .10, CapUtil .16, Tariff **.06**, **Case-Shiller .05** | 1.00 |
+| Medium-term inflation: all three combined | Breakeven .16, 10Y Expected .16, ULC .21, M2 .05, CapUtil .11, Tariff .06, 5y5y .10, Openings .10, Case-Shiller .05 | 1.00 |
+
+**Vote thresholds proposed** (every one a logged judgment call — no
+spec-given threshold except where noted — chosen to keep sign
+conventions consistent with the neighboring signal each one most
+resembles):
+- Real Retail Sales (near-term vote): `v > 1 ? 1 : v >= 0 ? 0 : -1` — reuses Phase 1's own logged status band for this exact series.
+- Core Capex (near-term vote): `v > 2 ? 1 : v >= -2 ? 0 : -1` — reuses Phase 1's own logged status band.
+- ISM Prices Paid (mfg/services blend, near-term vote): `v > 55 ? 1 : v >= 50 ? 0 : -1` — mirrors ISM PMI's own existing vote shape (diffusion index, same 50/55 convention). **Not backtestable — see below.**
+- GSCPI (near-term vote): `v > 1 ? 1 : v >= 0 ? 0 : -1` — mirrors the Phase 2 status band's own direction, applied to a genuine forward-vote use (logged as a distinct judgment call from that status-badge use).
+- 5y5y (medium-term vote): `v > 2.0 ? 1 : v >= 1.5 ? 0 : -1` — mirrors 10Y Breakeven's own exact vote function (`FED_INFLATION_TARGET`/1.5), same instrument family.
+- Openings/Unemployed (medium-term vote): `v > 1.2 ? 1 : v >= 0.8 ? 0 : -1` — tight labor market (>1.2) is inflationary per the spec's own framing.
+- Case-Shiller (medium-term vote): `v > 5 ? 1 : v >= 0 ? 0 : -1` — a NEW judgment call, distinct from Phase 1's status band (which answers "how hot is home-price appreciation," not "which direction does this point future inflation").
+
+## ISM Prices Paid — data-availability caveat, applied honestly
+
+Checked live before building anything: **zero rows** have a populated
+`prices` column in either `ism_history` (0 of 11) or
+`ism_services_history` (0 of 8) — the PRNewswire block confirmed in the
+Phase 2 deploy report is still in effect. **ISM Prices Paid is NOT
+backtested, solo or in any combined basket.** Its weight design is
+fully specified above for when real data exists, but no hit rate,
+flip count, or regime-agreement number is reported for it — not
+approximated on a zero-length or synthetic series, per the
+coordinator's explicit instruction. This means the near-term inflation
+"combined" candidate is really just GSCPI alone right now — there is
+nothing else testable to combine it with.
+
+## 4b. Backtest results (real numbers, both harnesses deployed and invoked live)
+
+**Near-term growth** (window: 2012-01-01 to ~2026-07, quarterly, 1Q-
+ahead GDP YoY outcome, same dead band as the Structural axis):
+
+| Candidate | Hit rate | Baseline (same window) | Flips/yr | Baseline flips/yr | Regime agreement | Mechanical rule | Verdict |
+|---|---|---|---|---|---|---|---|
+| A: Real Retail Sales | 15.7% (n=51) | 14.5% (n=55) | 0.75 | 0.61 | 93.2% | Improves (+1.2pp) but flips +23.0% (>~20% allowance) | **FAIL** (borderline — 23% is just over the ~20% line) |
+| B: Core Capex | 15.1% (n=53) | 14.5% (n=55) | 0.88 | 0.61 | 89.8% | Improves (+0.6pp) but flips +44.3% | **FAIL** |
+| A+B combined | 16.0% (n=50) | 14.5% (n=55) | 0.81 | 0.61 | 88.1% | Improves (+1.5pp) but flips +32.8% | **FAIL** |
+
+**Near-term inflation** (window: 2000-01-01 to ~2026-06, monthly, 3mo-
+ahead CPI YoY outcome):
+
+| Candidate | Hit rate | Baseline (same window) | Flips/yr | Baseline flips/yr | Regime agreement | Mechanical rule | Verdict |
+|---|---|---|---|---|---|---|---|
+| GSCPI | 22.8% (n=228) | 22.5% (n=227) | 4.08 | 4.30 | 92.8% | Neutral on hit rate (+0.3pp, within noise) AND cuts flips (−4.9%) | **PASS** |
+| ISM Prices Paid | — | — | — | — | — | Not backtestable (0 real data points) | **NOT EVALUATED** |
+
+**Medium-term inflation** (window: 2000-01-01 to 2025-06, monthly, 12mo-
+ahead CPI YoY outcome — new `mediumterm-signal-backtest` tool):
+
+| Candidate | Hit rate | Baseline (same window) | Flips/yr | Baseline flips/yr | Regime agreement | Mechanical rule | Verdict |
+|---|---|---|---|---|---|---|---|
+| 5y5y | 16.2% (n=222) | 16.7% (n=209) | 2.55 | 2.24 | 95.1% | Worse hit rate (−0.5pp) AND flips +13.8% | **FAIL** |
+| Openings/Unemployed | 15.7% (n=217) | 16.7% (n=209) | 2.08 | 2.24 | 80.4% | Hit rate −1.0pp (CIs overlap almost entirely — arguably neutral) AND cuts flips (−7.1%) | **BORDERLINE PASS** (only qualifies if the −1.0pp dip is treated as noise, not a real decline) |
+| Case-Shiller | 17.9% (n=240) | 16.7% (n=209) | 2.04 | 2.24 | 86.6% | Improves (+1.2pp) AND cuts flips (−8.9%) | **PASS** |
+| All three combined | 17.7% (n=226) | 16.7% (n=209) | 2.12 | 2.24 | 80.7% | Improves (+1.0pp) AND cuts flips (−5.4%) | **PASS** |
+
+**Sample-size caveat, logged honestly**: near-term growth's n (~50-55,
+quarterly) is thin — confidence intervals are wide (roughly ±13-20
+points) and overlap heavily between baseline and every candidate there.
+Near-term/medium-term inflation's larger monthly samples (n≈210-240)
+give tighter CIs, but all CIs across both inflation lenses still
+overlap substantially between baseline and candidates — none of these
+differences would read as statistically decisive on their own; the
+mechanical pass/fail rule was still applied exactly as specified,
+point estimates only, per the coordinator's explicit "apply this
+mechanically... not qualitative judgment" instruction.
+
+## Summary: which candidates pass the mechanical rule
+
+**Pass**: GSCPI (near-term inflation), Case-Shiller (medium-term
+inflation), all-three-combined (medium-term inflation).
+**Borderline pass**: Openings/Unemployed (medium-term inflation) — only
+if a 1.0pp hit-rate dip is treated as within noise rather than a real
+decline.
+**Fail**: both near-term growth candidates and their combination
+(Real Retail Sales swap, Core Capex add), 5y5y (medium-term inflation).
+**Not evaluated**: ISM Prices Paid (near-term inflation) — no real
+data to test.
+
+## Build status
+
+`nearterm-signal-backtest` extended (candidate baskets added, see
+code comments for exact weight/vote definitions) and redeployed.
+New `mediumterm-signal-backtest` built and deployed. Neither touches
+`fetch-macro-data`'s live `NEARTERM_*`/`MEDTERM_*` mirrors, `lib/
+simulatorKeys.js`, or `get-regime-analysis` — confirmed via `git diff
+--stat` (only `nearterm-signal-backtest/index.ts` modified, plus the
+new `mediumterm-signal-backtest/index.ts` file). No shadow lane, no
+live weight change — per the coordinator's explicit "ONLY through 4a+
+4b right now."

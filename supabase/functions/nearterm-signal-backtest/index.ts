@@ -135,6 +135,7 @@ Deno.serve(async (req: Request) => {
     const [
       gdpnow, payems, icsa, rsafs, unrate, hyOas,
       cpiRaw, ppiRaw, wtiRaw, copperRaw, dxyRaw, gdpRaw,
+      rrsfsRaw, neworderRaw,
     ] = await Promise.all([
       // Extended from 2024-06 (growth series only had ~6 quarters, too few
       // for a confidence-bucket analysis — see growthResultsLong) back to
@@ -152,19 +153,33 @@ Deno.serve(async (req: Request) => {
       fredSeries("PCOPPUSDM", "1990-01-01"),
       fredSeries("DTWEXBGS", "2006-01-01"), // DTWEXBGS itself only starts Jan 2006 — earlier months just drop Dollar's weight and renormalize (scoreGroup already does this for any null signal)
       fredSeries("GDPC1", "2010-01-01"), // extended to cover growthResultsLong's warmup + earliest issue dates
+      // growth-inflation-indicator-gaps spec, Phase 4a candidates:
+      fredSeries("RRSFS", "2010-01-01"),  // Real Retail Sales (YoY) — near-term growth candidate A
+      fredSeries("NEWORDER", "2010-01-01"), // Core Capex Orders 3M-annualized — near-term growth candidate B
     ]);
 
     const { data: ismMfg } = await supabase.from("ism_history").select("period_date, new_orders").order("period_date");
     const { data: ismSvc } = await supabase.from("ism_services_history").select("period_date, new_orders").order("period_date");
     const { data: umich } = await supabase.from("consumer_expectations").select("survey_date, michigan_inf_exp_1yr").not("michigan_inf_exp_1yr", "is", null).order("survey_date");
     const { data: liq } = await supabase.from("liquidity_monthly").select("month, total_composite_yoy").not("total_composite_yoy", "is", null).order("month");
+    // Phase 4a near-term inflation candidate: GSCPI (ingest-gscpi, Phase 2b) — real history since ~1998.
+    const { data: gscpi } = await supabase.from("gscpi_history").select("period_date, value").order("period_date");
+    // Phase 4a: ISM Prices Paid data-availability check — NOT backtested (see note below).
+    const { data: ismMfgPrices } = await supabase.from("ism_history").select("prices").not("prices", "is", null);
+    const { data: ismSvcPrices } = await supabase.from("ism_services_history").select("prices").not("prices", "is", null);
 
     const ismMfgObs: Obs[] = (ismMfg ?? []).filter((r) => r.new_orders != null).map((r) => ({ date: r.period_date, value: Number(r.new_orders) }));
     const ismSvcObs: Obs[] = (ismSvc ?? []).filter((r) => r.new_orders != null).map((r) => ({ date: r.period_date, value: Number(r.new_orders) }));
     const umichObs: Obs[] = (umich ?? []).map((r) => ({ date: r.survey_date, value: Number(r.michigan_inf_exp_1yr) }));
     const liqObs: Obs[] = (liq ?? []).map((r) => ({ date: r.month, value: Number(r.total_composite_yoy) }));
+    const gscpiObs: Obs[] = (gscpi ?? []).map((r) => ({ date: r.period_date, value: Number(r.value) }));
+    const ismPricesPaidAvailability = {
+      manufacturing_rows_with_prices: ismMfgPrices?.length ?? 0,
+      services_rows_with_prices: ismSvcPrices?.length ?? 0,
+      note: "PRNewswire is currently blocking both ISM scrapers (confirmed in the Phase 2 deploy report, unrelated to this spec's own code). Zero rows have a populated `prices` column in either table as of this backtest run. ISM Prices Paid is therefore NOT backtested — solo or in any combined basket — rather than approximated on a zero-length or synthetic series.",
+    };
 
-    const cpiYoyMap = yoyMap(cpiRaw), ppiYoyMap = yoyMap(ppiRaw), rsafsYoyMap = yoyMap(rsafs);
+    const cpiYoyMap = yoyMap(cpiRaw), ppiYoyMap = yoyMap(ppiRaw), rsafsYoyMap = yoyMap(rsafs), rrsfsYoyMap = yoyMap(rrsfsRaw);
     const cpiYoyByDate = new Map(cpiRaw.map((o) => [o.date, o.value])); // for change3m_pp we need YoY at obs[3]-months-ago too
     const gdpYoyMap = yoyMap(gdpRaw);
 
@@ -221,6 +236,20 @@ Deno.serve(async (req: Request) => {
       const cur = asOf(raw, asOfDate);
       return cur ? cur.value : null;
     }
+    // Phase 4a: 3-month annualized change, exact-port shape of
+    // _shared/annualizedMath.ts's formula ((x_t/x_t-3)^4 - 1) * 100, but
+    // using this tool's existing simple asOf() lookup (no single-month
+    // gap-fill) — consistent with how pp3m/pct3m above are already
+    // "exact ports" of the production formula without importing _shared,
+    // this tool's established convention.
+    function annualized3mAt(raw: Obs[], asOfDate: string): number | null {
+      const cur = asOf(raw, asOfDate);
+      if (!cur) return null;
+      const threeAgoDate = dateNPeriodsAhead(cur.date, -3, "month");
+      const prior = asOf(raw, threeAgoDate);
+      if (!prior || prior.value === 0) return null;
+      return (Math.pow(cur.value / prior.value, 4) - 1) * 100;
+    }
 
     // ── NEARTERM_G / NEARTERM_I, exact weights/votes from lib/simulatorKeys.js, ──
     // ISM new_orders and Tariff Inflation Impact DROPPED (see file-header note),
@@ -262,6 +291,76 @@ Deno.serve(async (req: Request) => {
       { label: "Short-Run Infl Expectations", w: 0.10, get: (d) => levelAt(umichObs, d), vote: (v) => v > 4 ? 1 : v >= 2.5 ? 0 : -1 },
     ];
 
+    // ── growth-inflation-indicator-gaps spec, Phase 4a candidates ──────────
+    // Growth candidate A: swap nominal Retail Sales → Real Retail Sales,
+    // same 10% weight. Threshold per the spec's own text ("≥1% real");
+    // reused verbatim as a three-tier vote shape (reusing Phase 1's own
+    // logged starting-status band for "Real Retail Sales (YoY)": >1
+    // healthy / 0-1 watch / <0 danger) rather than inventing a new shape,
+    // per rule "keep sign conventions consistent with neighboring signals."
+    const NEARTERM_G_CAND_A: Sig[] = [
+      { label: "GDPNow", w: 0.20, get: (d) => levelAt(gdpnow, d), vote: (v) => v > 2.5 ? 1 : v >= 1.0 ? 0 : -1 },
+      { label: "Jobless Claims", w: 0.15, get: joblessClaimsTrend, vote: (v) => v < 0 ? 1 : v <= 5 ? 0 : -1 },
+      { label: "Payrolls (3M Avg)", w: 0.15, get: payrolls3mAvg, vote: (v) => v > 100 ? 1 : v >= 0 ? 0 : -1 },
+      { label: "Real Retail Sales (YoY)", w: 0.10, get: (d) => yoyAt(rrsfsYoyMap, rrsfsRaw, d), vote: (v) => v > 1 ? 1 : v >= 0 ? 0 : -1 },
+      { label: "Unemployment Trend", w: 0.05, get: unemploymentTrend, vote: (v) => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
+      { label: "HY Spread", w: 0.05, get: (d) => levelAt(hyOas, d), vote: (v) => v < 4 ? 1 : v <= 6 ? 0 : -1 },
+      { label: "Liquidity", w: 0.05, get: (d) => levelAt(liqObs, d), vote: (v) => v > 0 ? 1 : v > -3 ? 0 : -1 },
+    ];
+    // Growth candidate B: add Core Capex Orders (3M annualized) at 10%,
+    // 5pts each from GDPNow (20→15) and Payrolls (15→10). Vote threshold
+    // reuses Phase 1's own logged band for this exact series (>2 healthy /
+    // -2..2 watch / <-2 danger), same sign convention (rising capex =
+    // pro-growth = +1).
+    const NEARTERM_G_CAND_B: Sig[] = [
+      { label: "GDPNow", w: 0.15, get: (d) => levelAt(gdpnow, d), vote: (v) => v > 2.5 ? 1 : v >= 1.0 ? 0 : -1 },
+      { label: "Jobless Claims", w: 0.15, get: joblessClaimsTrend, vote: (v) => v < 0 ? 1 : v <= 5 ? 0 : -1 },
+      { label: "Payrolls (3M Avg)", w: 0.10, get: payrolls3mAvg, vote: (v) => v > 100 ? 1 : v >= 0 ? 0 : -1 },
+      { label: "Retail Sales", w: 0.10, get: (d) => yoyAt(rsafsYoyMap, rsafs, d), vote: (v) => v >= 2 ? 1 : v >= 0 ? 0 : -1 },
+      { label: "Unemployment Trend", w: 0.05, get: unemploymentTrend, vote: (v) => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
+      { label: "HY Spread", w: 0.05, get: (d) => levelAt(hyOas, d), vote: (v) => v < 4 ? 1 : v <= 6 ? 0 : -1 },
+      { label: "Liquidity", w: 0.05, get: (d) => levelAt(liqObs, d), vote: (v) => v > 0 ? 1 : v > -3 ? 0 : -1 },
+      { label: "Core Capex Orders (3M Ann.)", w: 0.10, get: (d) => annualized3mAt(neworderRaw, d), vote: (v) => v > 2 ? 1 : v >= -2 ? 0 : -1 },
+    ];
+    // Combined growth candidate (A + B together).
+    const NEARTERM_G_CAND_AB: Sig[] = [
+      { label: "GDPNow", w: 0.15, get: (d) => levelAt(gdpnow, d), vote: (v) => v > 2.5 ? 1 : v >= 1.0 ? 0 : -1 },
+      { label: "Jobless Claims", w: 0.15, get: joblessClaimsTrend, vote: (v) => v < 0 ? 1 : v <= 5 ? 0 : -1 },
+      { label: "Payrolls (3M Avg)", w: 0.10, get: payrolls3mAvg, vote: (v) => v > 100 ? 1 : v >= 0 ? 0 : -1 },
+      { label: "Real Retail Sales (YoY)", w: 0.10, get: (d) => yoyAt(rrsfsYoyMap, rrsfsRaw, d), vote: (v) => v > 1 ? 1 : v >= 0 ? 0 : -1 },
+      { label: "Unemployment Trend", w: 0.05, get: unemploymentTrend, vote: (v) => v < -0.05 ? 1 : v <= 0.05 ? 0 : -1 },
+      { label: "HY Spread", w: 0.05, get: (d) => levelAt(hyOas, d), vote: (v) => v < 4 ? 1 : v <= 6 ? 0 : -1 },
+      { label: "Liquidity", w: 0.05, get: (d) => levelAt(liqObs, d), vote: (v) => v > 0 ? 1 : v > -3 ? 0 : -1 },
+      { label: "Core Capex Orders (3M Ann.)", w: 0.10, get: (d) => annualized3mAt(neworderRaw, d), vote: (v) => v > 2 ? 1 : v >= -2 ? 0 : -1 },
+    ];
+    // NOTE: NEARTERM_G above kept the ISM Manufacturing/Services weights
+    // (0.25 combined) DROPPED for the whole window (file-header note) --
+    // all three growth candidate baskets above inherit that same drop,
+    // for a like-for-like comparison against the existing growthResults/
+    // growthResultsLong baseline runs.
+
+    // Inflation candidate: add GSCPI at 5%, from Copper (10→5). Vote
+    // mirrors the Phase 2 status band's own direction (elevated pressure
+    // = more inflation evidence = +1), applied to a genuine forward-vote
+    // use rather than a risk-badge use — logged as a distinct judgment
+    // call from that status threshold.
+    const NEARTERM_I_CAND_GSCPI: Sig[] = [
+      { label: "CPI Momentum (3M pp)", w: 0.20, get: (d) => pp3m(cpiYoyMap, d), vote: (v) => v < -0.5 ? -1 : v > 0.5 ? 1 : 0 },
+      { label: "PPI Trend (3M pp)", w: 0.20, get: (d) => pp3m(ppiYoyMap, d), vote: (v) => v < -1.0 ? -1 : v > 1.0 ? 1 : 0 },
+      { label: "WTI 3M", w: 0.10, get: (d) => pct3m(wtiRaw, d), vote: (v) => v > 5 ? 1 : v >= -5 ? 0 : -1 },
+      { label: "Copper 3M", w: 0.05, get: (d) => pct3m(copperRaw, d), vote: (v) => v > 5 ? 1 : v >= -5 ? 0 : -1 },
+      { label: "Dollar (3M, DTWEXBGS proxy)", w: 0.10, get: (d) => pct3m(dxyRaw, d), vote: (v) => v > 5 ? -1 : v < -5 ? 1 : 0 },
+      { label: "Short-Run Infl Expectations", w: 0.10, get: (d) => levelAt(umichObs, d), vote: (v) => v > 4 ? 1 : v >= 2.5 ? 0 : -1 },
+      { label: "GSCPI", w: 0.05, get: (d) => levelAt(gscpiObs, d), vote: (v) => v > 1 ? 1 : v >= 0 ? 0 : -1 },
+    ];
+    // NOTE: this candidate basket omits "Tariff Inflation Impact" (0.05)
+    // the same way the baseline NEARTERM_I does in this tool (file-header
+    // note: no historical table exists for it) -- so its weights sum to
+    // 0.80 of the full 0.85 (ex-Tariff) basket here, identical rescale
+    // treatment to the baseline, via scoreGroup's own totalW normalize.
+    // ISM Prices Paid candidate is NOT built here at all -- see
+    // ismPricesPaidAvailability above; zero real data, not backtested.
+
     function callFor(score: number | null): "up" | "down" | null {
       if (score == null) return null;
       if (score > NEARTERM_THRESH) return "up";
@@ -276,14 +375,14 @@ Deno.serve(async (req: Request) => {
       const yoyArr = [...gdpYoyMap.entries()].map(([date, value]) => ({ date, value })).sort((a, b) => a.date < b.date ? -1 : 1);
       for (let i = 1; i < yoyArr.length; i++) gdpFastByDate.set(yoyArr[i].date, (yoyArr[i].value + yoyArr[i - 1].value) / 2);
     }
-    function runGrowth(fromDate: string, toDate: string): any[] {
+    function runGrowth(fromDate: string, toDate: string, sigs: Sig[] = NEARTERM_G): any[] {
       const out: any[] = [];
       const [fy, fm] = fromDate.split("-").map(Number);
       let year = fy, q = Math.floor((fm - 1) / 3);
       for (;;) {
         const issueDate = `${year}-${String(q * 3 + 1).padStart(2, "0")}-01`;
         if (issueDate > toDate) break;
-        const g = scoreGroup(NEARTERM_G, issueDate);
+        const g = scoreGroup(sigs, issueDate);
         const call = callFor(g.score);
         const confidence = confidenceFor(g.detail, call);
         const naive = asOf([...gdpFastByDate.entries()].map(([date, value]) => ({ date, value })), issueDate);
@@ -313,6 +412,43 @@ Deno.serve(async (req: Request) => {
     // threshold-sweep analysis below has a real sample.
     const growthLongStart = url.searchParams.get("growthLongStart") ?? "2012-01-01";
     const growthResultsLong = runGrowth(growthLongStart, "2026-07-01");
+    // Phase 4a/4b candidates, run over the SAME long window as the
+    // baseline for a like-for-like comparison (real sample size, not the
+    // short default window).
+    const growthCandA_Long = runGrowth(growthLongStart, "2026-07-01", NEARTERM_G_CAND_A);
+    const growthCandB_Long = runGrowth(growthLongStart, "2026-07-01", NEARTERM_G_CAND_B);
+    const growthCandAB_Long = runGrowth(growthLongStart, "2026-07-01", NEARTERM_G_CAND_AB);
+
+    // "Regime agreement with the current live engine" (per the coordinator's
+    // ask, log the definition): % of issue dates where the candidate's call
+    // matches the BASELINE composite's call at that same date — i.e. how
+    // often swapping in the candidate would have changed what the engine
+    // actually said, vs the production composite as it exists today.
+    function regimeAgreement(baseline: any[], candidate: any[]): { n: number; agree: number; agreePct: number | null } {
+      const byDate = new Map(baseline.map((r) => [r.issueDate, r.call]));
+      let n = 0, agree = 0;
+      for (const c of candidate) {
+        if (!byDate.has(c.issueDate)) continue;
+        n++;
+        if (byDate.get(c.issueDate) === c.call) agree++;
+      }
+      return { n, agree, agreePct: n ? Math.round((agree / n) * 1000) / 10 : null };
+    }
+    // "Quadrant flips per year" (per the coordinator's ask, log the
+    // definition): for a single-axis signal (not the full 2-axis
+    // quadrant), this counts how often the CALL itself changes from one
+    // issue date to the next (up→down, down→up, into/out of persistence
+    // both count as a flip), normalized to flips/year by the window's
+    // actual span — a direct whipsaw measure for this signal's own call
+    // sequence.
+    function flipsPerYear(results: any[], periodsPerYear: number): number | null {
+      const calls = results.map((r) => r.call);
+      if (calls.length < 2) return null;
+      let flips = 0;
+      for (let i = 1; i < calls.length; i++) if (calls[i] !== calls[i - 1]) flips++;
+      const years = calls.length / periodsPerYear;
+      return years > 0 ? Math.round((flips / years) * 100) / 100 : null;
+    }
 
     // ── Inflation: monthly issue dates, 3M-ahead CPI outcome, same dead band ──
     const cpiFastByDate = new Map<string, number>();
@@ -406,6 +542,10 @@ Deno.serve(async (req: Request) => {
     const longWindowStart = url.searchParams.get("longStart") ?? "2000-01-01";
     const inflResultsCurrent = runInflation(NEARTERM_I, longWindowStart);
     const inflResultsReweighted = runInflation(NEARTERM_I_REWEIGHTED, longWindowStart);
+    // Phase 4a/4b: GSCPI candidate, same long window as the baseline for a
+    // like-for-like comparison. GSCPI's own real history starts ~1998, so
+    // it fully covers longWindowStart (2000-01-01 default) — no truncation.
+    const inflCandGSCPI_Long = runInflation(NEARTERM_I_CAND_GSCPI, longWindowStart);
     function summarizeHitRate(results: any[]) {
       const calls = results.filter((r) => r.call != null && r.hit !== null);
       const hits = calls.filter((r) => r.hit === true).length;
@@ -436,11 +576,38 @@ Deno.serve(async (req: Request) => {
       };
     }
 
+    // ── growth-inflation-indicator-gaps spec, Phase 4a/4b report ───────────
+    function candidateReport(label: string, baseline: any[], candidate: any[], periodsPerYear: number) {
+      return {
+        label,
+        hitRate: summarizeHitRate(candidate),
+        baselineHitRateSameWindow: summarizeHitRate(baseline),
+        flipsPerYear: flipsPerYear(candidate, periodsPerYear),
+        baselineFlipsPerYearSameWindow: flipsPerYear(baseline, periodsPerYear),
+        regimeAgreementWithBaseline: regimeAgreement(baseline, candidate),
+      };
+    }
+    const phase4 = {
+      window: `${growthLongStart} to ~2026-07 (growth), ${longWindowStart} to ~2026-06 (inflation)`,
+      ismPricesPaidAvailability,
+      nearTermGrowth: {
+        candidateA_realRetailSales: candidateReport("Swap Retail Sales → Real Retail Sales (10%)", growthResultsLong, growthCandA_Long, 4),
+        candidateB_coreCapex: candidateReport("Add Core Capex Orders 3M-Ann. (10%, -5 GDPNow, -5 Payrolls)", growthResultsLong, growthCandB_Long, 4),
+        candidateAB_combined: candidateReport("A+B combined", growthResultsLong, growthCandAB_Long, 4),
+      },
+      nearTermInflation: {
+        candidateGSCPI: candidateReport("Add GSCPI (5%, -5 Copper)", inflResultsCurrent, inflCandGSCPI_Long, 12),
+        candidateISMPricesPaid: "NOT BACKTESTED — zero real data (see ismPricesPaidAvailability above).",
+        candidateCombined: "Combined basket not run — ISM Prices Paid has no data to combine; candidateGSCPI above IS the only testable near-term-inflation candidate right now.",
+      },
+    };
+
     return new Response(JSON.stringify({
       note: "Research tool, not a shipped feature. ISM new-orders (growth, 0.25 wt) and Tariff Inflation Impact (inflation, 0.05 wt) dropped for the whole window — no usable point-in-time history in the DB. DXY approximated with FRED DTWEXBGS (broad trade-weighted dollar), not the real Yahoo DX-Y.NYB series.",
       growth: { summary: summarize(growthResults), results: growthResults },
       inflation: { summary: summarize(inflResults), results: inflResults },
       inflationCurrentVsReweighted_longWindow: inflCompare,
+      phase4CandidatesReport: phase4,
       // Answers "what confidence level is the optimal trigger for the
       // near-term signal": bucketed accuracy by confidence band, plus a
       // cumulative threshold sweep, for both axes independently (growth
