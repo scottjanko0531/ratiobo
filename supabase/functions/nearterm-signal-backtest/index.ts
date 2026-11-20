@@ -467,6 +467,53 @@ Deno.serve(async (req: Request) => {
       const r1 = (x: number) => Math.round(x * 1000) / 10;
       return { low: r1((center - margin) / denom), high: r1((center + margin) / denom) };
     }
+    // Scott's follow-up (Phase 4a/4b review): the INFLATION axis here is
+    // monthly issue dates with a 3-month-ahead outcome, so consecutive
+    // months' target windows overlap (share 2 of 3 months) — wilsonCI's
+    // independence assumption is wrong for that axis, same issue the
+    // medium-term tool has at 12 months. The GROWTH axis does NOT have
+    // this problem: it's quarterly issue with a 1-quarter-ahead outcome,
+    // so consecutive outcome windows are distinct, non-overlapping
+    // quarters — no HAC correction needed there, logged explicitly rather
+    // than silently applying (or silently skipping) the same fix to both.
+    // Newey-West HAC SE for the hit-rate mean, Bartlett kernel, maxLag =
+    // horizon-1 (here 2, for the 3-month inflation horizon) — exact same
+    // method as mediumterm-signal-backtest's own neweyWestHitRateCI.
+    function neweyWestHitRateCI(results: any[], maxLag: number): { mean: number; seHac: number; ciLow: number; ciHigh: number; n: number; naiveWilsonWidth: number; hacWidth: number; widthRatio: number | null } | null {
+      const calls = results.filter((r: any) => r.call != null && r.hit !== null);
+      const n = calls.length;
+      if (n === 0) return null;
+      const h = calls.map((r: any) => (r.hit ? 1 : 0));
+      const mean = h.reduce((a: number, b: number) => a + b, 0) / n;
+      const e = h.map((x: number) => x - mean);
+      let gamma0 = 0;
+      for (let t = 0; t < n; t++) gamma0 += e[t] * e[t];
+      gamma0 /= n;
+      let longRunVar = gamma0;
+      const L = Math.min(maxLag, n - 1);
+      for (let k = 1; k <= L; k++) {
+        let gammaK = 0;
+        for (let t = k; t < n; t++) gammaK += e[t] * e[t - k];
+        gammaK /= n;
+        const w = 1 - k / (L + 1);
+        longRunVar += 2 * w * gammaK;
+      }
+      const varMean = Math.max(longRunVar, 0) / n;
+      const seHac = Math.sqrt(varMean);
+      const z = 1.96;
+      const r1 = (x: number) => Math.round(x * 1000) / 10;
+      const ciLow = r1(mean - z * seHac);
+      const ciHigh = r1(mean + z * seHac);
+      const naive = wilsonCI(h.reduce((a: number, b: number) => a + b, 0), n);
+      const naiveWidth = naive ? naive.high - naive.low : 0;
+      const hacWidth = ciHigh - ciLow;
+      return {
+        mean: r1(mean), seHac: Math.round(seHac * 1000) / 10, ciLow, ciHigh, n,
+        naiveWilsonWidth: Math.round(naiveWidth * 10) / 10,
+        hacWidth: Math.round(hacWidth * 10) / 10,
+        widthRatio: naiveWidth > 0 ? Math.round((hacWidth / naiveWidth) * 100) / 100 : null,
+      };
+    }
     function round1(x: number): number { return Math.round(x * 10) / 10; }
     // Buckets real calls (call != null) by their own confidence score into
     // fixed bands — answers "does accuracy actually rise with confidence,
@@ -577,11 +624,18 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── growth-inflation-indicator-gaps spec, Phase 4a/4b report ───────────
-    function candidateReport(label: string, baseline: any[], candidate: any[], periodsPerYear: number) {
+    // hacMaxLag: pass a lag for axes with an overlapping-window design
+    // (inflation: monthly issue, 3mo-ahead outcome, lag=2); omit for
+    // growth (quarterly issue, 1-quarter-ahead outcome — non-overlapping,
+    // no HAC correction needed, explicitly noted rather than silently
+    // applied or silently skipped without comment).
+    function candidateReport(label: string, baseline: any[], candidate: any[], periodsPerYear: number, hacMaxLag?: number) {
       return {
         label,
         hitRate: summarizeHitRate(candidate),
+        hitRateCI_neweyWestHAC: hacMaxLag != null ? neweyWestHitRateCI(candidate, hacMaxLag) : "N/A — non-overlapping quarterly design, naive Wilson CI is already valid here",
         baselineHitRateSameWindow: summarizeHitRate(baseline),
+        baselineHitRateCI_neweyWestHAC: hacMaxLag != null ? neweyWestHitRateCI(baseline, hacMaxLag) : "N/A — non-overlapping quarterly design",
         flipsPerYear: flipsPerYear(candidate, periodsPerYear),
         baselineFlipsPerYearSameWindow: flipsPerYear(baseline, periodsPerYear),
         regimeAgreementWithBaseline: regimeAgreement(baseline, candidate),
@@ -591,12 +645,14 @@ Deno.serve(async (req: Request) => {
       window: `${growthLongStart} to ~2026-07 (growth), ${longWindowStart} to ~2026-06 (inflation)`,
       ismPricesPaidAvailability,
       nearTermGrowth: {
+        note: "Growth axis is quarterly issue dates with a 1-quarter-ahead outcome -- consecutive outcome windows are distinct, non-overlapping quarters, so no Newey-West correction is needed here (unlike inflation below and the medium-term tool).",
         candidateA_realRetailSales: candidateReport("Swap Retail Sales → Real Retail Sales (10%)", growthResultsLong, growthCandA_Long, 4),
         candidateB_coreCapex: candidateReport("Add Core Capex Orders 3M-Ann. (10%, -5 GDPNow, -5 Payrolls)", growthResultsLong, growthCandB_Long, 4),
         candidateAB_combined: candidateReport("A+B combined", growthResultsLong, growthCandAB_Long, 4),
       },
       nearTermInflation: {
-        candidateGSCPI: candidateReport("Add GSCPI (5%, -5 Copper)", inflResultsCurrent, inflCandGSCPI_Long, 12),
+        note: "Monthly issue dates with a 3mo-ahead outcome DO overlap -- Newey-West HAC CI (maxLag=2) reported alongside the naive Wilson interval.",
+        candidateGSCPI: candidateReport("Add GSCPI (5%, -5 Copper)", inflResultsCurrent, inflCandGSCPI_Long, 12, 2),
         candidateISMPricesPaid: "NOT BACKTESTED — zero real data (see ismPricesPaidAvailability above).",
         candidateCombined: "Combined basket not run — ISM Prices Paid has no data to combine; candidateGSCPI above IS the only testable near-term-inflation candidate right now.",
       },

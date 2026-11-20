@@ -902,3 +902,161 @@ simulatorKeys.js`, or `get-regime-analysis` — confirmed via `git diff
 new `mediumterm-signal-backtest/index.ts` file). No shadow lane, no
 live weight change — per the coordinator's explicit "ONLY through 4a+
 4b right now."
+
+---
+
+# Phase 4a/4b follow-up — Scott's three robustness questions
+
+## 1. Overlapping-window autocorrelation — real bug caught and fixed
+
+Confirmed Scott's suspicion: the originally-reported Wilson CIs assumed
+independent draws, which is wrong for a design where consecutive
+monthly issue dates share most of their target window (11/12 months
+for medium-term, 2/3 for near-term inflation). Added a Newey-West HAC
+standard error for the hit-rate mean (Bartlett kernel, maxLag =
+horizon−1) to both backtest tools, reported alongside the naive Wilson
+interval rather than replacing it.
+
+**Caught and fixed a real implementation bug while building this**: the
+first version double-scaled the CI bounds (`r1()` already converts a
+fraction to a percentage; the code also pre-multiplied by 100 before
+calling it), producing nonsensical CIs like `[1018.9, 2849]`. Fixed by
+removing the redundant `*100`; verified the corrected output is
+sane-shaped before using any of it.
+
+**Real result — the corrected (HAC) CIs are roughly 2x wider than the
+naive ones at the 12-month horizon** (width ratio ~2.0-2.2x across
+baseline and all four medium-term candidates), and this is NOT cosmetic
+— **every medium-term candidate's HAC CI overlaps baseline's HAC CI
+almost completely**:
+
+| | Baseline | 5y5y | Openings | Case-Shiller | Combined |
+|---|---|---|---|---|---|
+| 12mo/headline HAC CI | [6.3, 27.2] | [6.4, 26.0] | [6.0, 25.3] | [7.9, 28.0] | [6.6, 28.8] |
+
+None of these four candidate ranges sit outside baseline's range at
+all — every "PASS" from the original report survives the MECHANICAL
+point-estimate rule exactly as before (the rule was always specified on
+point estimates, not CIs), but **none of them represent a
+statistically distinguishable improvement** once overlap is accounted
+for. Near-term GSCPI's CI widened by a smaller 1.41x (shorter 3-month
+horizon, less severe overlap) — baseline [14.8, 30.1] vs candidate
+[15.1, 30.5], already near-identical even before the correction.
+
+**Bottom line on question 1: zero of the original PASS verdicts survive
+as statistically distinguishable from baseline.** They still pass the
+literal mechanical rule (which was always about point estimates), but
+the "improvement" in every case is well within noise once the real
+overlapping-window uncertainty is accounted for.
+
+## 2. Case-Shiller horizon/target robustness grid — fragile, not robust
+
+Parameterized `mediumterm-signal-backtest` with `?horizon=` (6/12/18)
+and `?target=` (headline/core CPI) query params and ran the full 3×2
+grid for all four medium-term candidates (not just Case-Shiller, since
+the harness already supported it generically once parameterized):
+
+| Horizon / Target | Baseline hit% | Case-Shiller hit% | Δ | Flips: baseline → CS |
+|---|---|---|---|---|
+| 6mo / headline | 19.3% | 17.7% | **−1.6pp** | 2.23 → 2.04 |
+| 6mo / core | 5.7% | 4.9% | **−0.8pp** | 2.23 → 2.04 |
+| 12mo / headline | 16.7% | 17.9% | +1.2pp | 2.24 → 2.04 |
+| 12mo / core | 8.1% | 9.2% | +1.1pp | 2.24 → 2.04 |
+| 18mo / headline | 9.7% | 11.0% | +1.3pp | 2.20 → 2.00 |
+| 18mo / core | 9.2% | 8.4% | **−0.8pp** | 2.20 → 2.00 |
+
+**Case-Shiller improves hit rate in 3 of 6 combinations and is WORSE in
+the other 3** — it only "passes" at the one combination (12mo/headline)
+that happened to be reported first. **This is exactly the fragile,
+cherry-pickable pattern Scott was checking for — reported plainly, not
+defended.** Every one of these deltas (±0.8 to ±1.6pp) is tiny relative
+to the HAC-corrected CI widths (~15-20 points) from question 1 — i.e.
+even the "improvements" are indistinguishable from the "declines,"
+which is itself consistent with the true effect being approximately
+zero and these numbers just being noise around it.
+
+**The one genuinely robust finding**: Case-Shiller cuts flips/year in
+**all six** combinations, consistently (adding a smoother signal
+dampens the composite's volatility regardless of horizon/target — a
+structural property of averaging in a slow-moving series, not
+something specific to Case-Shiller's predictive content). This means
+Case-Shiller would pass the mechanical rule's "neutral on hit rate
+while cutting flips" clause in every combination IF the hit-rate
+deltas are treated as statistically indistinguishable from zero (which
+the HAC CIs support) — but that is a materially weaker claim than "an
+hit-rate-improving candidate," and should be represented to Scott as
+such.
+
+Ran the same grid for 5y5y, Openings/Unemployed, and Combined for
+comparison (same six combinations, extracted from the same API calls —
+no extra runs needed):
+- **5y5y**: worse hit rate in 5 of 6 combinations (only 18mo/headline
+  improves, +1.3pp) — the least robust of the four, consistent with its
+  outright FAIL in the original report.
+- **Openings/Unemployed**: mixed, roughly a coin flip (worse in 3 of 6,
+  better in 2, ~flat in 1) — consistent with its "borderline" original
+  verdict; not more robust than Case-Shiller.
+- **Combined**: improves in 4 of 6, worse in 2 — directionally the
+  steadiest of the four, but still not uniformly robust, and it
+  inherits 5y5y's weaker signal alongside Case-Shiller's.
+
+**None of the four medium-term candidates clears a genuinely robust
+bar.** Case-Shiller and Combined are the least-bad; 5y5y is the
+weakest.
+
+## 3. Live today-effect for the four named candidates
+
+Computed by hand from live current values (`macro_indicators`, queried
+directly — not from `macro_regime_history`'s latest row, which is
+dated 2026-07-01 and reflects stale underlying inputs, not today's).
+Cross-checked the methodology against `get-regime-analysis`'s own live
+output (`nearterm_forward_key: "rg_ri"`, confidence 86% today,
+`forward_key: null` for medium-term today — the combined medium-term
+regime currently has no confident call because the GROWTH axis isn't
+clearing its own threshold right now, unrelated to anything below).
+
+**Real Retail Sales (near-term growth) — Scott's hypothesis CONFIRMED,
+with the real number**: live value is **2.385%** (not ~2.9% as
+guessed, but same conclusion) — above the candidate's >1% "up"
+threshold, same as nominal Retail Sales (6.823%, above its own ≥2%
+threshold) also votes "up" today. **Because both the baseline and
+candidate signal vote identically (+1) today, the swap is
+mathematically a no-op on today's score — not just "probably no
+change," the weighted sum is literally identical regardless of every
+other signal's value.** No quadrant change today, confirmed exactly.
+
+**GSCPI (near-term inflation)**: live value 1.262 → vote +1 (>1
+threshold). Copper (the signal GSCPI's weight is taken from) is at
++6.8% 3-month change → also votes +1 today. Swapping 5pts of weight
+between two signals that both currently vote the same direction is
+again a mathematical no-op: baseline score 0.75/0.85 = 88.2%-weighted
+"up"; candidate score is identical, 0.75/0.85. **No change today.**
+
+**Case-Shiller (medium-term inflation)**: live YoY is **2.091%** → vote
+0 (neutral — below the candidate's >5% "up" threshold). Baseline
+medium-term inflation axis today (hand-computed, all 6 real signals
+present): weighted 0.53/1.00 = 53% → call "up" (above the 0.10
+threshold). Under the Case-Shiller candidate, Tariff's weight drops
+11%→6% (Tariff still votes +1, so this purely dilutes its
+contribution) and Case-Shiller itself contributes 0 (neutral vote):
+weighted drops to 0.48/1.00 = 48%. **Call stays "up" either way — no
+flip — but confidence would read 5 points lower (53%→48%) under this
+candidate today.**
+
+**Openings/Unemployed (medium-term inflation)**: live ratio is
+**1.058** → vote 0 (between the 0.8-1.2 neutral band). The weight this
+candidate takes from (CapUtil, M2) BOTH already vote 0 in the baseline
+today (CapUtil 76.363, below its >80 threshold; M2 5.71%, below its >8
+threshold) — so reallocating weight away from two zero-voting signals
+toward another zero-voting signal changes nothing: weighted stays
+0.53/1.00 = 53%, identical to baseline. **No change at all today** —
+not even a confidence shift, unlike Case-Shiller above.
+
+**Summary: none of the four candidates would change today's actual
+live call or quadrant placement.** GSCPI and Openings/Unemployed are
+exact no-ops today (down to the decimal). Real Retail Sales is an
+exact no-op on the growth axis. Case-Shiller would shave 5 points off
+medium-term inflation's confidence (53%→48%) without flipping the
+call. This is consistent with — not contradicting — the backtest
+findings above: these are genuinely marginal candidates whose
+real-world effect, when it exists at all, is small.

@@ -111,28 +111,86 @@ function wilsonCI(hits: number, n: number): { low: number; high: number } | null
   return { low: r1((center - margin) / denom), high: r1((center + margin) / denom) };
 }
 
+// Scott's follow-up: monthly issue dates with an N-month-ahead outcome
+// mean consecutive observations' target windows overlap by (N-1)/N of
+// their span — classic overlapping-returns-style serial correlation
+// (Hansen-Hodrick / Newey-West territory), NOT independent Bernoulli
+// draws. wilsonCI above silently assumes independence, understating
+// uncertainty. This computes a Newey-West HAC standard error for the
+// hit-rate MEAN of a 0/1 series, Bartlett kernel, maxLag = the horizon
+// minus one (the standard choice for a horizon-N overlapping design —
+// it exactly spans the known-induced MA(N-1) structure from the
+// overlap). Operates on the TEMPORALLY-ORDERED sequence of SCORED
+// calls only (nulls/no-real-call periods filtered out first, in their
+// original order) — a standard simplification, logged here rather than
+// silently assumed: it loses exact calendar-adjacency for calls with a
+// gap between them, but since real calls are frequent (most months
+// produce one), it still captures the dominant overlap-driven
+// autocorrelation the Wilson interval misses entirely.
+function neweyWestHitRateCI(results: any[], maxLag: number): { mean: number; seHac: number; ciLow: number; ciHigh: number; n: number; naiveWilsonWidth: number; hacWidth: number; widthRatio: number } | null {
+  const calls = results.filter((r) => r.call != null && r.hit !== null);
+  const n = calls.length;
+  if (n === 0) return null;
+  const h = calls.map((r) => (r.hit ? 1 : 0));
+  const mean = h.reduce((a, b) => a + b, 0) / n;
+  const e = h.map((x) => x - mean);
+  let gamma0 = 0;
+  for (let t = 0; t < n; t++) gamma0 += e[t] * e[t];
+  gamma0 /= n;
+  let longRunVar = gamma0;
+  const L = Math.min(maxLag, n - 1);
+  for (let k = 1; k <= L; k++) {
+    let gammaK = 0;
+    for (let t = k; t < n; t++) gammaK += e[t] * e[t - k];
+    gammaK /= n;
+    const w = 1 - k / (L + 1); // Bartlett kernel
+    longRunVar += 2 * w * gammaK;
+  }
+  const varMean = Math.max(longRunVar, 0) / n;
+  const seHac = Math.sqrt(varMean);
+  const z = 1.96;
+  const r1 = (x: number) => Math.round(x * 1000) / 10;
+  const ciLow = r1(mean - z * seHac);
+  const ciHigh = r1(mean + z * seHac);
+  const naive = wilsonCI(h.reduce((a, b) => a + b, 0), n);
+  const naiveWidth = naive ? naive.high - naive.low : 0;
+  const hacWidth = ciHigh - ciLow;
+  return {
+    mean: r1(mean), seHac: Math.round(seHac * 1000) / 10, ciLow, ciHigh, n,
+    naiveWilsonWidth: Math.round(naiveWidth * 10) / 10,
+    hacWidth: Math.round(hacWidth * 10) / 10,
+    widthRatio: naiveWidth > 0 ? Math.round((hacWidth / naiveWidth) * 100) / 100 : null,
+  };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
     const url = new URL(req.url);
     const MEDTERM_THRESH = 0.10; // production's own threshold, reused directly
     const CPI_MIN_GAP = 1.00; // same dead band as nearterm-signal-backtest's CPI outcome
-    const HORIZON_MONTHS = 12; // midpoint of the spec's "Medium-term (6-18mo)" framing — logged judgment call
+    // Scott's follow-up (robustness check): horizon and outcome-target series
+    // are now query-parameterized so the SAME harness can run the 3-horizon
+    // x 2-target grid, not hardcoded to the one combination already reported.
+    const HORIZON_MONTHS = Number(url.searchParams.get("horizon") ?? "12"); // midpoint of the spec's "Medium-term (6-18mo)" framing — logged judgment call
+    const TARGET = (url.searchParams.get("target") ?? "headline") as "headline" | "core";
     const FED_INFLATION_TARGET = 2.0; // same constant fetch-macro-data uses
 
-    const [t10yie, expinf10yr, ulcRaw, m2Raw, tcuRaw, cpiRaw, t5yifr, jtsjol, unemploy, csushpinsa] = await Promise.all([
+    const [t10yie, expinf10yr, ulcRaw, m2Raw, tcuRaw, cpiHeadlineRaw, cpiCoreRaw, t5yifr, jtsjol, unemploy, csushpinsa] = await Promise.all([
       fredSeries("T10YIE", "1998-01-01"),
       fredSeries("EXPINF10YR", "1998-01-01"),
       fredSeries("ULCNFB", "1998-01-01"),
       fredSeries("M2SL", "1998-01-01"),
       fredSeries("TCU", "1998-01-01"),
       fredSeries("CPIAUCSL", "1990-01-01"),
+      fredSeries("CPILFESL", "1990-01-01"), // core CPI (ex food/energy) — robustness-check target option
       fredSeries("T5YIFR", "1998-01-01"),   // Phase 4a candidate: 5y5y
       fredSeries("JTSJOL", "1998-01-01"),   // Phase 4a candidate: Openings/Unemployed (numerator)
       fredSeries("UNEMPLOY", "1998-01-01"), // Phase 4a candidate: Openings/Unemployed (denominator)
       fredSeries("CSUSHPINSA", "1998-01-01"), // Phase 4a candidate: Case-Shiller YoY
     ]);
 
+    const cpiRaw = TARGET === "core" ? cpiCoreRaw : cpiHeadlineRaw;
     const ulcYoyMap = yoyMap(ulcRaw), m2YoyMap = yoyMap(m2Raw), cpiYoyMap = yoyMap(cpiRaw), caseShillerYoyMap = yoyMap(csushpinsa);
 
     function levelAt(raw: Obs[], asOfDate: string): number | null {
@@ -264,7 +322,11 @@ Deno.serve(async (req: Request) => {
       const calls = results.filter((r) => r.call != null && r.hit !== null);
       const hits = calls.filter((r) => r.hit === true).length;
       const r1 = (x: number) => Math.round(x * 1000) / 10;
-      return { n: calls.length, nHits: hits, hitRatePct: calls.length ? r1(hits / calls.length) : null, hitRateCI: calls.length ? wilsonCI(hits, calls.length) : null };
+      return {
+        n: calls.length, nHits: hits, hitRatePct: calls.length ? r1(hits / calls.length) : null,
+        hitRateCI_naiveIID: calls.length ? wilsonCI(hits, calls.length) : null,
+        hitRateCI_neweyWestHAC: neweyWestHitRateCI(results, Math.max(HORIZON_MONTHS - 1, 1)),
+      };
     }
     function flipsPerYear(results: any[]): number | null {
       const calls = results.map((r) => r.call);
@@ -286,7 +348,11 @@ Deno.serve(async (req: Request) => {
     }
 
     const startMonth = url.searchParams.get("start") ?? "2000-01-01";
-    const endMonth = "2025-06-01"; // leaves a full 12mo horizon resolvable against real CPI data through ~2026-06
+    // Leaves a full HORIZON_MONTHS resolvable against real CPI data through
+    // ~2026-06 (the latest CPI print this tool can reliably expect).
+    const latestResolvable = new Date(Date.UTC(2026, 5, 1));
+    latestResolvable.setUTCMonth(latestResolvable.getUTCMonth() - HORIZON_MONTHS);
+    const endMonth = latestResolvable.toISOString().slice(0, 10);
 
     const baseline = run(MEDTERM_I, startMonth, endMonth);
     const cand5y5y = run(MEDTERM_I_CAND_5Y5Y, startMonth, endMonth);
@@ -313,8 +379,9 @@ Deno.serve(async (req: Request) => {
     }
 
     return new Response(JSON.stringify({
-      note: "Research tool, not a shipped feature. NEW for Phase 4b (the near-term composite already had nearterm-signal-backtest; this medium-term one didn't exist — see file header for why growth-axis-backtest/run-backtest/cpi-core-measures-backtest aren't adaptable). Tariff Inflation Impact (0.11 of MEDTERM_I) dropped for the whole window — no historical table — so every array below sums to less than 1.00 by exactly Tariff's weight in that basket; scoreGroup's totalW divide renormalizes this automatically during scoring, same convention nearterm-signal-backtest already uses for its own data gaps. See proposedFullWeightSum_withTariff per candidate for the number that actually must equal 1.00. MEDTERM_G (growth side) not built — no Phase 4a candidates touch it. Horizon: 12 months ahead (midpoint of the spec's 6-18mo framing, a logged judgment call, not a spec-given number).",
-      window: `${startMonth} to ${endMonth}, 12mo-ahead CPI YoY outcome`,
+      note: `Research tool, not a shipped feature. NEW for Phase 4b (the near-term composite already had nearterm-signal-backtest; this medium-term one didn't exist — see file header for why growth-axis-backtest/run-backtest/cpi-core-measures-backtest aren't adaptable). Tariff Inflation Impact (0.11 of MEDTERM_I) dropped for the whole window — no historical table — so every array below sums to less than 1.00 by exactly Tariff's weight in that basket; scoreGroup's totalW divide renormalizes this automatically during scoring, same convention nearterm-signal-backtest already uses for its own data gaps. See proposedFullWeightSum_withTariff per candidate for the number that actually must equal 1.00. MEDTERM_G (growth side) not built — no Phase 4a candidates touch it. hitRateCI_naiveIID assumes independent draws -- WRONG for an overlapping-window design (consecutive monthly issue dates share (horizon-1)/horizon of their target window). hitRateCI_neweyWestHAC is the autocorrelation-robust correction (Newey-West, Bartlett kernel, maxLag=horizon-1) -- use that one, not the naive Wilson interval, per Scott's follow-up.`,
+      horizonMonths: HORIZON_MONTHS, target: TARGET,
+      window: `${startMonth} to ${endMonth}, ${HORIZON_MONTHS}mo-ahead ${TARGET === "core" ? "core" : "headline"} CPI YoY outcome`,
       baseline: { arrayWeightSum_TariffExcluded: weightSum(MEDTERM_I), proposedFullWeightSum_withTariff: 1.00, hitRate: summarizeHitRate(baseline), flipsPerYear: flipsPerYear(baseline) },
       candidates: {
         cand_5y5y: candidateReport("Add 5y5y (10%, -10 from 10Y Breakeven)", MEDTERM_I_CAND_5Y5Y, cand5y5y, 1.00),
