@@ -1182,3 +1182,53 @@ follow-up) and correctly rejected every candidate — a valid, intended
 outcome of the process, not a shortfall. Two durable testing-
 infrastructure improvements and two logged-for-later items are the
 phase's lasting output beyond the rejections themselves.
+
+---
+
+# Live-site fixes (Scott, 2026-11-20): Buffett Indicator, auction staleness, ISM New Orders retirement
+
+Three issues Scott found live. All three built, tested, committed — held for deploy approval per the standing gate. Item 1 is treated with the same seriousness as a regime-score change (it touches Paradigm C's actual composite, not just a display card).
+
+## 1. "S&P 500 / GDP" → real Buffett Indicator (Market Cap / GDP)
+
+**Root cause, confirmed by direct FRED calls, not assumed**: NOT a units bug. SP500 (~7,176, confirmed live) is a dimensionless index level; GDP ($33,010bn, confirmed live) is a real dollar figure. Scaling GDP to trillions makes the ratio worse (217x), not better — there is no units fix. The real problem: an index level can never be comparable to the real Buffett Indicator (total market cap / GDP, both in $) regardless of scaling, because it isn't denominated in dollars at all.
+
+**Real fix found, not just a rename**: `BOGZ1LM893064105Q` ("All Sectors; Corporate Equities; Asset, Market Value Levels," Fed Z.1) confirmed to exist via a direct FRED call — $123,687,233M ($123.69tn) as of Q2 2026, genuinely dollar-denominated. This is the standard practitioner substitute for the Buffett Indicator's original Wilshire 5000 numerator when Wilshire data is unavailable (same substitution category as the existing WILL5000PRFC-discontinued note already in this codebase).
+
+**Surprising finding, flagged plainly rather than silently accepted**: the resulting ratio is ~358-380% today, well above the ~2.0-2.3x Scott's reference sheet expected. Checked the series' own 10-year history directly (2016-2026): it was genuinely 1.9-2.4x in 2016-2019 (matching that expectation) and has trended up since, hitting new highs in 2024-2026 — this is a real, legitimate reading of an elevated market, not a bug. Logged for Scott's own judgment, not overridden.
+
+**Bridging** (`_shared/z1Bridge.ts`, pure, tested — 9 tests): `bridgeQuarterlyByMarketChange(z1ObsDate, z1Value, marketObs, asOfDate)` scales the most recent real Z.1 print forward by the S&P 500's own % change since that print's quarter-end. For a historical point evaluated AT its own quarter-end, the bridge factor is exactly 1 by construction (not a special case — the same formula, applied retroactively). A real implementation bug was caught and fixed before shipping: the Z.1 series is in millions, GDP in billions — dividing them directly without a ×1000 conversion would have been off by exactly 1000x (verified by hand against the real numbers before writing the fix).
+
+**Design choice, logged**: the historical backfill stays at the real quarterly-release cadence (one point per actual Z.1 print, trivially bridged) rather than daily-bridging every historical date — this preserves Paradigm C's z-score trailing-window statistical character exactly as before (same ~40-point quarterly sample over 10 years, not a 2,500-point daily one). Only ONE extra point is appended per `update-big-cycle-paradigm-metrics` run: TODAY, real-bridged by the actual S&P move since the last release — this is what makes the card update daily/live, dated by calendar day (not quarter-start), so each day's run adds a new row rather than overwriting.
+
+**Paradigm C composite — the critical number, before/after**:
+- Before: valuation_proxy z-score 2.2615, Paradigm C composite **1.4089** ("Active")
+- After (hand-computed from the real bridged value, 3.5853 ≈ 358.5%, against the new 10-year trailing window mean=2.6875/stddev=0.4484): valuation_proxy z-score **2.0022**, Paradigm C composite **1.3224** ("Active" — same label)
+- Paradigm C remains the dominant paradigm either way (B=-0.1968, D=-0.9843, both far behind in both scenarios).
+- **Consumer grep** (explicit, not assumed): only `update-big-cycle-paradigm-metrics` (writes it) and `components/FiscalParadigmSection.jsx` (displays it, confirmed read-only/no gates) touch Paradigm C's composite. A third hit (`update-big-cycle-metrics`) only reads **Paradigm A**, unrelated. No trip-wire or other scoring path is affected.
+
+**Rename**: `macro_indicators` and `macro_snapshots` renamed "S&P 500 / GDP (\"Buffett Indicator\" proxy)" → "Market Cap / GDP (Buffett Indicator)" (a FK from macro_snapshots→macro_indicators.name required an insert-new/repoint/delete-old sequence, not a plain two-table rename — logged since it's a reusable pattern). Repo-wide grep confirmed zero remaining references outside historical spec/decisions-log text (left untouched, by convention) and an explanatory code comment that names the old framing on purpose. Fixed one real stale reference: `tests/paradigmXrefDefinitions.test.ts` still searched for the old name — updated.
+
+**Status bands** (uncalibrated, logged): `<120% healthy · 120-180% watch · >180% danger`. Today's real reading (~358%) reads **danger**.
+
+**Backfill**: `update-big-cycle-paradigm-metrics`'s own full-history recompute (already runs this way every day) backfills `big_cycle_paradigm_raw_series` under the new definition automatically on next deploy+run. Added a new opt-in `?backfillParadigmXref=<name>` endpoint on `fetch-macro-data` to backfill `macro_snapshots` from that already-computed table (no FRED re-fetch, no offset-walk math — deliberately trivial-CPU, the lesson from the Phase 1 backfill-crash incident). Only one real snapshot row existed before this (today's, under the broken definition) — it gets overwritten by the backfill, so there is no mixed-definition history left in the series.
+
+## 2. Auction staleness — root cause corrected, real fix built
+
+**New finding, correcting the prior investigation**: Fiscal Data's own API genuinely has nothing past 2026-10-22 (confirmed again). But a direct check of **TreasuryDirect's** TA_WS API found real results Fiscal Data is missing: a 10-Year Note auctioned 2026-11-10 (CUSIP 91282CRX1) and a 30-Year Bond auctioned 2026-11-12 (CUSIP 912810UY2) — both with full results (bid-to-cover 2.46, high yield 5.020%, etc.), confirmed live. **This means the prior conclusion ("Treasury's whole calendar went dark") was wrong** — Treasury kept auctioning on schedule; it's specifically Fiscal Data's feed that stopped reflecting reality. TreasuryDirect has been current all along.
+
+**Fix built**: `_shared/treasuryDirectAuctions.ts` (pure, tested — 5 tests, using the real confirmed record for CUSIP 91282CRX1) maps TreasuryDirect's raw fields to the exact same row shape `ingest-auction-results` already writes (same $bn scale, same share-pct/dispersion formulas — a second real source, not a parallel definition). `ingest-auction-results` now attempts this fallback **only when the 35-day staleness guard would otherwise fire** (not a second primary source queried every day) — fetches TreasuryDirect's `/auctioned` endpoint (confirmed: ignores a cusip filter and just returns its ~250 most recent securities across all types with full detail, spanning well over a year — one call, no pagination needed), filters to Note/Bond with a 10Y/30Y tenor, upserts, then re-checks the guard with the refreshed data. A fallback failure never masks the original staleness error.
+
+**`source` column** added to `treasury_auction_results` (migration: `ALTER TABLE ... ADD COLUMN source text NOT NULL DEFAULT 'fiscal_data'`), backfilling every existing row as `'fiscal_data'`. New Fiscal Data rows are tagged `'fiscal_data'`; new TreasuryDirect fallback rows are tagged `'treasurydirect'`.
+
+**Backfill result**: checked both sources directly for the Oct 22-today gap before building anything. There is no 10Y/30Y auction missing between Oct 8 and Nov 10/12 in EITHER source — the real auction calendar simply hadn't produced a new one yet when the 35-day guard first fired; Nov 10/12 are genuinely the next ones. Once deployed, the fallback will pick these two up automatically on its next run (not run yet — held for deploy approval).
+
+**Staleness UI fix**: confirmed the problem — the only existing signal was a quiet `text-paper-dim/70 text-[10px]` "data as of" subtitle, with the card's own status BADGE still showing a normal healthy/watch/danger read computed from stale data. Added a `staleByDataAsOf()` check (same 35-day threshold as the ingest guard) to both `supabase_bid_to_cover` and `supabase_indirect_bidder`, overriding the badge itself to a new, bold `stale` status (`text-loss`/`bg-loss/20`/`border-loss/50` — deliberately more saturated than `danger`'s existing style, distinct from `watch`'s milder amber) when the feed is actually stale. This reads at a glance now, not just in a subtitle someone has to notice.
+
+## 3. ISM New Orders orphan — retired
+
+Re-confirmed, unchanged from the Phase 2 finding: `data_source: "manual"`, frozen since 2026-06-19, zero real consumers (the only reference anywhere in the repo was the dead `?? indicators.find(...)` fallback in `app/macro/page.jsx`'s `QuadrantCard`, whose own comment already documented it as dead code). Zero `macro_snapshots` history existed for this name (nothing to preserve). Removed the `macro_indicators` row and the dead fallback line. Grep after removal: zero remaining references anywhere in the repo.
+
+## Build status
+
+All three committed. 892/892 tests pass (14 new: 9 `z1Bridge`, 5 `treasuryDirectAuctions`). `next build` clean. Held for deploy approval — nothing deployed yet. Item 1 in particular needs Scott's explicit sign-off given it's a real Paradigm C score change, not cosmetic.

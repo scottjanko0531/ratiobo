@@ -22,7 +22,7 @@
 //     market), full 3-metric coverage kept for Paradigm C.
 
 export type Paradigm = "A" | "B" | "C" | "D" | "E";
-export type FormulaType = "direct" | "yoy" | "ratio" | "ratio_yoy";
+export type FormulaType = "direct" | "yoy" | "ratio" | "ratio_yoy" | "bridged_ratio";
 
 export interface ParadigmMetricDef {
   key: string;
@@ -38,6 +38,13 @@ export interface ParadigmMetricDef {
   // only metric needing more than one numerator is trade_gdp: EXPGS+IMPGS).
   numeratorSeriesIds?: string[];
   denominatorSeriesId?: string;
+  // bridged_ratio only (valuation_proxy): a quarterly dollar-denominated
+  // numerator (fredSeriesId) scaled forward between its own releases by
+  // a daily market index's (bridgeMarketSeriesId) own % change since that
+  // quarter's end — see _shared/z1Bridge.ts. denominatorSeriesId is still
+  // GDP, read at whatever's most recently known as of each date (same
+  // "latest known as of" convention every other ratio here already uses).
+  bridgeMarketSeriesId?: string;
   // Fixed in code, never adjustable at runtime (spec 2 "no hand-picked
   // weights" / "fixed thresholds") — +1 if a rising oriented_z means more
   // evidence for the paradigm as-is, -1 if the raw metric's natural
@@ -102,12 +109,31 @@ export const PARADIGM_METRICS: ParadigmMetricDef[] = [
     formulaDescription: "CP / GDI (both nominal), quarterly",
   },
   {
-    key: "valuation_proxy", label: "S&P 500 / GDP (\"Buffett Indicator\" proxy)",
-    paradigms: ["C"], formula: "ratio",
-    numeratorSeriesIds: ["SP500"], denominatorSeriesId: "GDP",
+    // Live-site issue (Scott, 2026-11-20): the original SP500/GDP
+    // substitution read ~0.23, roughly 10x off the real Buffett
+    // Indicator's normal range -- confirmed NOT a units bug (GDP is
+    // correctly in $bn; scaling it to $tn would make the ratio WORSE,
+    // not better). The real problem: SP500 is a dimensionless INDEX
+    // LEVEL, not a dollar figure, so dividing it by GDP can never be
+    // comparable to the real indicator (total market cap / GDP, both in
+    // $) regardless of units. Fixed by switching the numerator to
+    // BOGZ1LM893064105Q (Fed Z.1, "All Sectors; Corporate Equities;
+    // Asset, Market Value Levels" -- confirmed to exist and be
+    // dollar-denominated via a direct FRED call before using it,
+    // $123.69tn as of Q2 2026), bridged forward between its quarterly
+    // releases by SP500's own % change since that quarter's end (see
+    // _shared/z1Bridge.ts) so the card still updates daily/live. This
+    // is the standard practitioner substitute for the Buffett
+    // Indicator's original Wilshire 5000 total-market numerator
+    // (WILL5000PRFC, discontinued by FRED June 2024) when Wilshire data
+    // is unavailable -- genuinely comparable to the real indicator now,
+    // not a renamed same-mismatch.
+    key: "valuation_proxy", label: "Market Cap / GDP (Buffett Indicator)",
+    paradigms: ["C"], formula: "bridged_ratio",
+    fredSeriesId: "BOGZ1LM893064105Q", bridgeMarketSeriesId: "SP500", denominatorSeriesId: "GDP",
     orientationSign: 1,
     orientationDescription: "elevated relative to its own trailing history confirms Paradigm C",
-    formulaDescription: "SP500 / GDP — substituted for the spec's original Wilshire 5000 proxy (WILL5000PRFC), discontinued by FRED June 2024; narrower breadth (500 large-caps vs. total market), same spirit",
+    formulaDescription: "BOGZ1LM893064105Q (all-sectors corporate equities, market value) / GDP, bridged forward between quarterly Z.1 releases by SP500's own % change since that quarter's end",
   },
 
   // ── Paradigm D: Print ───────────────────────────────────────────────────

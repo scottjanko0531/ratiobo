@@ -77,6 +77,15 @@ const STATUS_STYLE = {
   watch:   { text: "text-brass", bg: "bg-brass/10", border: "border-brass/20" },
   danger:  { text: "text-loss", bg: "bg-loss/10", border: "border-loss/20" },
   unknown: { text: "text-paper-dim", bg: "bg-ink-soft", border: "border-ink-line" },
+  // Live-site fix (Scott, 2026-11-20): a stale upstream feed (Indirect
+  // Bidder / Bid-to-Cover, when Fiscal Data's own 10Y/30Y result is past
+  // the 35-day staleness guard) used to show only a quiet, easy-to-miss
+  // "data as of" subtitle while the badge itself kept showing a normal
+  // healthy/watch/danger read computed from stale data. This overrides
+  // the badge itself -- bold/saturated on purpose, distinct from
+  // "watch"'s milder amber, so staleness reads at a glance rather than
+  // blending in as just another status level.
+  stale:   { text: "text-loss", bg: "bg-loss/20", border: "border-loss/50" },
 };
 
 function formatValue(v, unit) {
@@ -1969,13 +1978,7 @@ function addDaysUTC(dateStr, days) {
 function QuadrantCard({ indicators, holdings, assetData, bigCycleArmedCount }) {
   const gdp        = indicators.find((i) => i.name === "Real GDP Growth");
   const cpi        = indicators.find((i) => i.name === "CPI (YoY)");
-  // Prefer the real, currently-updated indicator over a legacy/orphaned
-  // "ISM New Orders" row with no metadata (a stale name from before ISM
-  // New Orders was folded into "ISM Manufacturing PMI"'s own metadata) —
-  // .find()'s array-order fallback was silently picking the metadata-less
-  // one, which also meant the #6 vintage/nowcast tag never had data to show.
-  const ism        = indicators.find((i) => i.name === "ISM Manufacturing PMI")
-                   ?? indicators.find((i) => i.name === "ISM New Orders");
+  const ism        = indicators.find((i) => i.name === "ISM Manufacturing PMI");
   const breakeven  = indicators.find((i) => i.name === "10Y Breakeven Inflation");
   const gdp3yAvg   = indicators.find((i) => i.name === "GDP Growth (4Q Avg)");
   const gdpFastInd = indicators.find((i) => i.name === "GDP Growth (2Q Avg)");

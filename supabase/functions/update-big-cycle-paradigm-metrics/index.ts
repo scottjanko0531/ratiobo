@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { PARADIGM_METRICS, LOW_COVERAGE_PARADIGMS, ParadigmMetricDef, Paradigm } from "../_shared/paradigmMetrics.ts";
+import { bridgeQuarterlyByMarketChange, quarterEndDate } from "../_shared/z1Bridge.ts";
 import {
   zScore, orientedZ, renormalizeWeights, compositeScore,
   classify, classifyParadigmA, selectDominant,
@@ -150,6 +151,52 @@ async function computeMetricRawSeries(def: ParadigmMetricDef): Promise<{ series:
       const yoy = yoySeries(ratio);
       return yoy.length ? { series: yoy } : { series: null, reason: "insufficient ratio history for YoY" };
     }
+    if (def.formula === "bridged_ratio") {
+      // valuation_proxy only (the real Buffett Indicator fix). fredSeriesId
+      // is a quarterly, dollar-denominated series (Z.1); bridgeMarketSeriesId
+      // is a daily market index used to scale the most recent real print
+      // forward between releases (see _shared/z1Bridge.ts). Historical
+      // points are each evaluated AT their own quarter's end (bridge factor
+      // exactly 1 -- "the same methodology applied retroactively", not the
+      // raw print re-labeled); exactly one extra point is appended for
+      // TODAY, bridged by the market's real move since the latest print's
+      // quarter end -- this is what makes the card update daily/live
+      // between Z.1 releases without changing the trailing-window z-score's
+      // sampling cadence (still one point per real quarterly release, plus
+      // the one live point being scored against that history).
+      const z1Series = await fetchFredHistory(def.fredSeriesId!);
+      const marketSeries = await fetchFredHistory(def.bridgeMarketSeriesId!);
+      const denomSeries = await fetchFredHistory(def.denominatorSeriesId!);
+      if (!z1Series.length) return { series: null, reason: `${def.fredSeriesId}: no observations returned` };
+      if (!marketSeries.length) return { series: null, reason: `${def.bridgeMarketSeriesId}: no observations returned` };
+      if (!denomSeries.length) return { series: null, reason: `${def.denominatorSeriesId}: no observations returned` };
+
+      // BOGZ1LM893064105Q is in MILLIONS of dollars; GDP is in BILLIONS —
+      // ×1000 converts GDP to millions so the ratio is dimensionless
+      // (verified against the real numbers by hand before writing this:
+      // 123,687,233 / (32,563.030 × 1000) = 3.798, matching a direct
+      // independent calculation).
+      const GDP_BILLIONS_TO_MILLIONS = 1000;
+      const out: FredObs[] = [];
+      for (const z1Obs of z1Series) {
+        const qEnd = quarterEndDate(z1Obs.date);
+        const bridged = bridgeQuarterlyByMarketChange(z1Obs.date, z1Obs.value, marketSeries, qEnd);
+        const denom = latestOnOrBefore(denomSeries, qEnd);
+        if (!bridged || !denom || denom.value === 0) continue;
+        out.push({ date: z1Obs.date, value: bridged.bridgedValue / (denom.value * GDP_BILLIONS_TO_MILLIONS) });
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const latestZ1 = z1Series[z1Series.length - 1];
+      const liveBridged = bridgeQuarterlyByMarketChange(latestZ1.date, latestZ1.value, marketSeries, today);
+      const liveDenom = latestOnOrBefore(denomSeries, today);
+      if (liveBridged && liveDenom && liveDenom.value !== 0) {
+        // Dated today (not the quarter-start convention the historical
+        // points use) -- this is what lets this row refresh daily:
+        // tomorrow's run upserts a DIFFERENT obs_date, not an overwrite.
+        out.push({ date: today, value: liveBridged.bridgedValue / (liveDenom.value * GDP_BILLIONS_TO_MILLIONS) });
+      }
+      return out.length ? { series: out } : { series: null, reason: "bridged ratio produced no usable points" };
+    }
     return { series: null, reason: "unknown formula type" };
   } catch (e) {
     return { series: null, reason: String(e) };
@@ -183,7 +230,9 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      const fredSeriesLabel = def.fredSeriesId
+      const fredSeriesLabel = def.formula === "bridged_ratio"
+        ? [def.fredSeriesId, def.bridgeMarketSeriesId, def.denominatorSeriesId].filter(Boolean).join("+")
+        : def.fredSeriesId
         ?? [...(def.numeratorSeriesIds ?? []), def.denominatorSeriesId].filter(Boolean).join("+");
       const rawRows = series.map((o) => ({
         metric_key: def.key, fred_series_id: fredSeriesLabel, obs_date: o.date, value: o.value,

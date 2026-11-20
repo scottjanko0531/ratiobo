@@ -16,7 +16,7 @@ const SOURCE = readFileSync(
 
 const NEW_XREF_INDICATORS: { name: string; metricKey: string; layer: number }[] = [
   { name: "Corporate Profits / GDI", metricKey: "corp_profits_gdi", layer: 3 },
-  { name: "S&P 500 / GDP (\"Buffett Indicator\" proxy)", metricKey: "valuation_proxy", layer: 3 },
+  { name: "Market Cap / GDP (Buffett Indicator)", metricKey: "valuation_proxy", layer: 3 },
   { name: "Trade / GDP Ratio", metricKey: "trade_gdp", layer: 5 },
 ];
 

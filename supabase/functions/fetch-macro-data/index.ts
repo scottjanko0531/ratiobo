@@ -182,8 +182,17 @@ async function computeFixedWindowZScore(
 // app/macro/page.jsx's StatusBadge, which renders any status it doesn't
 // recognize with neutral styling — exactly the "use neutral styling" the
 // spec asks for, with no frontend change required.
-type Status = "healthy" | "watch" | "danger" | "unknown" | "accommodative" | "neutral" | "restrictive";
+type Status = "healthy" | "watch" | "danger" | "unknown" | "accommodative" | "neutral" | "restrictive" | "stale";
 type StatusFn = (v: number) => Status;
+
+// Live-site fix (Scott, 2026-11-20): same 35-day threshold as
+// assertAuctionFeedFresh's own guard (ingest-auction-results/_shared/
+// auctionFreshness.ts) -- a boolean check, not the throwing assert
+// version, since this is a display-time override, not a job failure.
+function staleByDataAsOf(dataAsOfDate: string, maxDays = 35): boolean {
+  const ageDays = Math.floor((Date.now() - new Date(dataAsOfDate + "T00:00:00Z").getTime()) / (24 * 60 * 60 * 1000));
+  return ageDays > maxDays;
+}
 
 interface Indicator {
   name: string;
@@ -1068,12 +1077,23 @@ const INDICATORS: Indicator[] = [
     statusFn: () => "neutral",
   },
   {
-    name: "S&P 500 / GDP (\"Buffett Indicator\" proxy)",
+    name: "Market Cap / GDP (Buffett Indicator)",
     layer: 3, layer_name: "Business Cycle",
-    description: "Cross-referenced from Fiscal Policy Paradigm. S&P 500 index level divided by nominal GDP — a market-valuation-relative-to-the-economy proxy used in Paradigm C (Grow); substituted there for the original Wilshire 5000 series (discontinued by FRED June 2024). Not a literal percentage (index points over GDP in $bn don't share units) — read for its own trend, not an absolute level. Descriptive context, not a calibrated threshold.",
-    fred_series_id: null, unit: "ratio", data_source: "supabase", sort_order: 52,
-    series: "valuation_proxy", type: "supabase_paradigm_xref",
-    statusFn: () => "neutral",
+    // Live-site fix (Scott, 2026-11-20): the prior "S&P 500 / GDP" framing
+    // divided an index LEVEL (dimensionless points) by GDP in $bn, reading
+    // ~0.23 — roughly 10x off the real Buffett Indicator's normal range,
+    // and inherently so (not a units bug — an index level isn't a dollar
+    // figure, so no unit fix could make it comparable). Now a genuine
+    // dollar-for-dollar ratio: BOGZ1LM893064105Q (Fed Z.1, all-sectors
+    // corporate equities market value, confirmed real/dollar-denominated
+    // via FRED) / GDP, bridged forward between quarterly Z.1 releases by
+    // the S&P 500's own % change since that quarter's end (_shared/
+    // z1Bridge.ts) so this card updates daily/live rather than stepping
+    // once a quarter.
+    description: "Cross-referenced from Fiscal Policy Paradigm. Total US corporate equity market value (Fed Z.1, all sectors) divided by nominal GDP — the real Buffett Indicator, substituted for the discontinued Wilshire 5000 series in Paradigm C (Grow). Bridged daily between quarterly Z.1 releases using the S&P 500's own change since the last release. Status thresholds are a starting point, not calibrated.",
+    fred_series_id: null, unit: "%", data_source: "supabase", sort_order: 52,
+    series: "valuation_proxy", scale: 100, type: "supabase_paradigm_xref",
+    statusFn: v => v < 120 ? "healthy" : v <= 180 ? "watch" : "danger",
   },
 ];
 
@@ -1459,6 +1479,13 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         // from -- without it the card reads as "live today" even when the
         // feed has gone stale (see assertAuctionFeedFresh).
         metadata = { data_as_of: rows[0].auction_date };
+        // Live-site fix (Scott, 2026-11-20): the data_as_of subtitle alone
+        // was too quiet -- a stale feed still showed a normal healthy/
+        // watch/danger badge computed from an old reading. Same 35-day
+        // threshold as assertAuctionFeedFresh's own staleness guard
+        // (ingest-auction-results), overriding the badge itself rather
+        // than adding a second, easy-to-miss text element.
+        if (staleByDataAsOf(rows[0].auction_date)) statusOverride = "stale";
         break;
       }
       case "supabase_debt_cycle": {
@@ -2136,6 +2163,10 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
           zscore: z != null ? Math.round(z * 100) / 100 : null,
           full_history_readings: fullSeries.length,
         };
+        // Live-site fix (Scott, 2026-11-20): override the z-score-derived
+        // status with a visible "stale" badge once the feed is actually
+        // stale -- same reasoning as supabase_bid_to_cover above.
+        if (staleByDataAsOf(rows[0].auction_date)) statusOverride = "stale";
         break;
       }
       case "supabase_gold_real_corr": {
@@ -3759,6 +3790,39 @@ Deno.serve(async (req: Request) => {
         value: Math.round(p.value * 1000) / 1000,
         status: ind.statusFn(p.value),
       }));
+      for (let i = 0; i < snapRows.length; i += 500) {
+        await supabase.from("macro_snapshots").upsert(snapRows.slice(i, i + 500), { onConflict: "indicator_name,snapshot_date", ignoreDuplicates: false });
+      }
+      return new Response(JSON.stringify({ indicator: ind.name, rows: snapRows.length }), { headers: { ...CORS, "Content-Type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { ...CORS, "Content-Type": "application/json" } });
+    }
+  }
+  // Live-site fix (Scott, 2026-11-20): backfill macro_snapshots for a
+  // supabase_paradigm_xref indicator directly from big_cycle_paradigm_
+  // raw_series's already-computed history -- no FRED re-fetch, no
+  // offset-walk math, deliberately trivial-CPU (same lesson as the Phase
+  // 1 backfill-CPU-crash incident: keep any self-triggered backfill out
+  // of the automatic hot path and opt-in only).
+  const backfillXrefName = new URL(req.url).searchParams.get("backfillParadigmXref");
+  if (backfillXrefName) {
+    const ind = INDICATORS.find((i) => i.name === backfillXrefName && i.type === "supabase_paradigm_xref");
+    if (!ind) return new Response(JSON.stringify({ error: "unknown paradigm xref indicator" }), { status: 400, headers: { ...CORS, "Content-Type": "application/json" } });
+    try {
+      const { data: rawRows, error: rawErr } = await supabase
+        .from("big_cycle_paradigm_raw_series")
+        .select("obs_date, value")
+        .eq("metric_key", ind.series!)
+        .order("obs_date", { ascending: true });
+      if (rawErr) throw new Error(rawErr.message);
+      const scale = ind.scale ?? 1;
+      const snapRows = (rawRows ?? []).map((r) => {
+        const scaled = Number(r.value) * scale;
+        return {
+          indicator_name: ind.name, snapshot_date: r.obs_date,
+          value: Math.round(scaled * 1000) / 1000, status: ind.statusFn(scaled),
+        };
+      });
       for (let i = 0; i < snapRows.length; i += 500) {
         await supabase.from("macro_snapshots").upsert(snapRows.slice(i, i + 500), { onConflict: "indicator_name,snapshot_date", ignoreDuplicates: false });
       }

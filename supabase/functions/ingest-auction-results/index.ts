@@ -3,6 +3,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { fetchAllPages } from "../_shared/fiscalDataPagination.ts";
 import { mapSecurityTermToTenor } from "../_shared/auctionTenor.ts";
 import { assertAuctionFeedFresh, AuctionFeedStaleError } from "../_shared/auctionFreshness.ts";
+import { mapTreasuryDirectRecord, TreasuryDirectRecord } from "../_shared/treasuryDirectAuctions.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -87,6 +88,29 @@ async function logJobRun(
   });
 }
 
+// Live-site issue fallback (Scott, 2026-11-20): TreasuryDirect's TA_WS
+// /auctioned endpoint ignores a cusip filter and just returns its most
+// recent ~250 auctioned securities across every type (confirmed live --
+// spans well over a year of history, no pagination needed), already
+// carrying full results (bid-to-cover, yields, bidder breakdown), not
+// just calendar info. Used ONLY when Fiscal Data's own feed is stale
+// (the exact condition the 35-day guard already detects) -- this is a
+// fallback for a confirmed real gap in Fiscal Data specifically, not a
+// second primary source running every day. Never throws: a fallback
+// failing should not mask the original staleness error, just mean the
+// guard still fires.
+async function fetchTreasuryDirectFallback10y30y(): Promise<ReturnType<typeof mapTreasuryDirectRecord>[]> {
+  const res = await fetch("https://www.treasurydirect.gov/TA_WS/securities/auctioned?format=json", {
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) throw new Error(`TreasuryDirect TA_WS: HTTP ${res.status}`);
+  const records = (await res.json()) as TreasuryDirectRecord[];
+  return records
+    .filter((r) => r.securityType === "Note" || r.securityType === "Bond")
+    .map((r) => mapTreasuryDirectRecord(r, mapSecurityTermToTenor))
+    .filter((r) => r.original_tenor === "10Y" || r.original_tenor === "30Y");
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -143,6 +167,7 @@ Deno.serve(async (req: Request) => {
         high_yield_pct: highYield,
         avg_med_yield_pct: avgMedYield,
         dispersion_bp: highYield != null && avgMedYield != null ? Math.round((highYield - avgMedYield) * 10000) / 100 : null,
+        source: "fiscal_data",
       };
     });
 
@@ -151,16 +176,47 @@ Deno.serve(async (req: Request) => {
       if (error) throw new Error(`upsert: ${error.message}`);
     }
 
-    const { data: newest1030, error: newestErr } = await sb
-      .from("treasury_auction_results")
-      .select("auction_date")
-      .in("original_tenor", ["10Y", "30Y"])
-      .in("security_type", ["Note", "Bond"])
-      .order("auction_date", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (newestErr) throw new Error(`reading newest 10Y/30Y auction_date: ${newestErr.message}`);
-    const newest10y30yDate = (newest1030?.auction_date as string | undefined) ?? null;
+    async function newest10y30yAuctionDate(): Promise<string | null> {
+      const { data, error } = await sb
+        .from("treasury_auction_results")
+        .select("auction_date")
+        .in("original_tenor", ["10Y", "30Y"])
+        .in("security_type", ["Note", "Bond"])
+        .order("auction_date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw new Error(`reading newest 10Y/30Y auction_date: ${error.message}`);
+      return (data?.auction_date as string | undefined) ?? null;
+    }
+
+    let newest10y30yDate = await newest10y30yAuctionDate();
+
+    // Fallback: only attempted when Fiscal Data's own 10Y/30Y feed is
+    // ALREADY past the staleness guard -- not a second primary source
+    // queried every day.
+    let treasuryDirectFallback: { attempted: boolean; rowsUpserted: number; error?: string } = { attempted: false, rowsUpserted: 0 };
+    const preCheckIsStale = (() => {
+      try { assertAuctionFeedFresh(newest10y30yDate, new Date(), STALENESS_MAX_DAYS); return false; }
+      catch { return true; }
+    })();
+    if (preCheckIsStale) {
+      treasuryDirectFallback.attempted = true;
+      try {
+        const tdRows = await fetchTreasuryDirectFallback10y30y();
+        if (tdRows.length) {
+          for (let i = 0; i < tdRows.length; i += 500) {
+            const { error } = await sb.from("treasury_auction_results").upsert(tdRows.slice(i, i + 500), { onConflict: "auction_date,cusip" });
+            if (error) throw new Error(`TreasuryDirect upsert: ${error.message}`);
+          }
+          treasuryDirectFallback.rowsUpserted = tdRows.length;
+          newest10y30yDate = await newest10y30yAuctionDate();
+        }
+      } catch (e) {
+        // Never let the fallback's own failure mask the original
+        // staleness error -- just means the guard still fires below.
+        treasuryDirectFallback.error = e instanceof Error ? e.message : String(e);
+      }
+    }
 
     const detail = {
       mode: full ? "full" : "incremental",
@@ -171,6 +227,7 @@ Deno.serve(async (req: Request) => {
       totalCount,
       newestAuctionDate: rows[0]?.auction_date ?? null,
       newest10y30yAuctionDate: newest10y30yDate,
+      treasuryDirectFallback,
     };
 
     try {
