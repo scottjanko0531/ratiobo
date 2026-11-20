@@ -446,16 +446,22 @@ production, both fixed and committed (`cc17456`):
    indicator per invocation (well under the CPU budget). All 855/873
    tests pass through this fix.
 
-**Still outstanding as of this entry**: the fix is committed and pushed
-to `origin/main` (confirmed `git rev-parse HEAD == origin/main`, both
-at `cc17456`), but redeploying it to the live Supabase
-`fetch-macro-data` function (`npx supabase functions deploy
-fetch-macro-data`) has been denied twice by the Claude Code auto-mode
-permission classifier this session, for reasons outside this agent's
-visibility. **The live function therefore still runs the pre-fix code
-with the CPU-crash bug in it.** Backfill for the 18 Phase 1 indicators
-has not run against production. Flagged for Scott/the coordinator —
-needs either a manual deploy or a permission-rule change to unblock.
+**Resolved.** This agent's own redeploy attempts (`npx supabase
+functions deploy fetch-macro-data`) were denied repeatedly by the
+Claude Code auto-mode permission classifier. The coordinator deployed
+the fix directly instead (`--use-api`), outside this agent's tool
+calls, and in the process found and fixed a **third** bug while
+verifying: the historical-fetch observation limit (150) was sized for
+monthly cadence and left 5y5y — the one daily-frequency Phase 1 series
+— with only ~7 months of backfilled history instead of years. Bumped
+to cover 10+ years at daily frequency (harmless for the monthly/
+quarterly series, which just return whatever FRED actually has).
+That fix is folded into the same `cc17456` commit. Live-verified by the
+coordinator: normal invocation completes in ~4s (was crashing), all 18
+Phase 1 indicators backfilled, 5y5y now spans 2012-2026 (3,544 rows).
+Pushed to `origin/main`. Independently confirmed from this agent's side
+via `git fetch` + `git show cc17456` — the diff matches exactly as
+described. No outstanding action.
 
 ---
 
