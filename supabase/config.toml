@@ -29,6 +29,9 @@ verify_jwt = true
 [functions.refresh-asset-returns]
 verify_jwt = false
 
+[functions.scr-onboard-company]
+verify_jwt = false
+
 [functions.fetch-cofer-data]
 verify_jwt = false
 
@@ -72,6 +75,9 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.ingest-auction-results]
+verify_jwt = false
+
+[functions.ingest-gscpi]
 verify_jwt = false
 
 [functions.compute-market-correlations]
