@@ -677,3 +677,89 @@ code needs them to even run correctly once deployed — same precedent as
 Phase 1's schema work. Cron jobs and the two edge function deploys
 (`fetch-macro-data` update, new `ingest-gscpi`) are held for explicit
 deploy approval, not yet executed.
+
+---
+
+# Phase 3 — Cross-reference existing data
+
+**New indicator type** `supabase_paradigm_xref`: reads the latest 2 rows
+from `big_cycle_paradigm_raw_series` filtered by `metric_key` (the
+`series` field, repurposed — no FRED fetch for this type, confirmed via
+a dedicated test that the case block contains no `fetch(`). An optional
+`scale` field (default 1) multiplies the Paradigm's raw stored value
+before display — 100 for the two genuine same-unit ratios (Corporate
+Profits/GDI, Trade/GDP: both numerator and denominator are nominal
+dollar series, so the ratio is a real percentage), left at 1 for
+`valuation_proxy` (S&P 500 index points ÷ GDP in $bn — not a true
+percentage; displayed as the Paradigm's own unscaled number, unit
+`"ratio"`, per `_shared/paradigmMetrics.ts`'s own comment that this is
+read for its own trend, not an absolute level).
+
+**"YoY or 3M change where meaningful"**: since all three series are
+quarterly in `big_cycle_paradigm_raw_series`, `previous` is simply the
+prior quarter's row — a genuine 3-month change via the *existing*
+current/previous → `change_value`/`ChangeArrow` mechanism, with zero
+new frontend code. Chose this over a true YoY (4-quarters-back) lookup
+specifically to reuse the established mechanism rather than inventing a
+new metadata-rendering block for what the spec itself frames as
+optional ("where meaningful") in the smallest phase of this spec.
+
+**Placement (both logged per the coordinator's explicit "use
+judgment"):**
+- **Corporate Profits / GDI** → layer 3 "Business Cycle", per the
+  spec's direct instruction ("business-activity area").
+- **S&P 500 / GDP ("Buffett Indicator" proxy)** → layer 3 "Business
+  Cycle" also (spec didn't specify). Judgment call: it's the other
+  Paradigm-C ("Grow") cross-reference landing in this phase, same
+  business-activity flavor as Corporate Profits/GDI, and grouping two
+  related Paradigm cross-references together beat scattering them.
+- **Trade / GDP Ratio** → layer 5 "Growth — Supply Side". Judgment
+  call, explicitly not a clean fit: layer 5 was built in Phase 1 for
+  *supply-side growth capacity* drivers (labor force, productivity,
+  capex) — Trade/GDP is an economic-openness/structural ratio, a
+  different kind of "structural" than that group's original intent.
+  Checked layer 1 ("Long-term Debt Cycle") as the dashboard's other
+  candidate "structural" bucket first — rejected, since every existing
+  layer-1 indicator is specifically about debt-cycle sustainability
+  (debt/GDP, interest expense, foreign UST holdings, gold/reserve
+  status), not trade structure. Layer 5 was the closest available fit
+  and a new single-indicator layer would be disproportionate for "the
+  smallest phase in this spec" — if this reads oddly on `/macro` once
+  live, worth Scott's eye, but not worth a new layer for one indicator.
+
+**Acceptance check — hand-computed from the live raw rows queried
+directly** (the literal post-deploy diff against the live
+`fetch-macro-data` output is still the final confirmation, same gate
+as every phase, but this is the pre-deploy proof the read/scale logic
+is correct, not just "should work"):
+
+| Indicator | Raw latest (Paradigm) | Raw prior quarter | scale | → current_value (3dp round, same global convention every indicator already gets) | → previous_value | → change_value |
+|---|---|---|---|---|---|---|
+| Corporate Profits / GDI | 0.13067501232271292 (2026-04-01) | 0.12316003213104756 (2026-01-01) | 100 | 13.068 | 12.316 | 0.751 |
+| S&P 500 / GDP (Buffett proxy) | 0.2266956025131266 (2026-07-01) | 0.20192592642637985 (2026-04-01) | 1 | 0.227 | 0.202 | 0.025 |
+| Trade / GDP Ratio | 0.2641996815756275 (2026-07-01) | 0.2600972022566696 (2026-04-01) | 100 | 26.42 | 26.01 | 0.41 |
+
+The only expected discrepancy between the stored `current_value` and
+the Paradigm's raw fraction × scale is the existing global 3-decimal
+rounding every indicator in this function already gets (`round = n =>
+Math.round(n*1000)/1000`, unconditional, not new to this phase) — not
+a cross-reference bug. Will re-pull both post-deploy and confirm this
+exact relationship holds live, per the acceptance criterion.
+
+**Baseline fixture**: confirmed untouched. `git diff --stat` shows only
+`fetch-macro-data/index.ts` changed (62 lines) among this agent's own
+files; `NEARTERM_G`/`NEARTERM_I`/`MEDTERM_G`/`MEDTERM_I`/
+`computeEdgeForwardPanel` all sit at lines 2519-2674, nowhere near this
+phase's edits (896-1060 for the new indicator entries, ~1877-1900 for
+the new processor case).
+
+**Tests**: `tests/paradigmXrefDefinitions.test.ts` (5 cases) — mirrors
+Phase 1's `indicatorGapsDefinitions.test.ts` text-slicing approach,
+separate file since the required shape differs (no `fred_series_id`,
+`data_source: "supabase"` instead of `"fred"`, and an explicit check
+that the exact spec-required description text "Cross-referenced from
+Fiscal Policy Paradigm." appears verbatim). 878/878 tests pass total.
+`next build` clean.
+
+**Build status**: committed, not deployed — held for the same
+report-before-deploy gate as every prior phase.

@@ -246,10 +246,18 @@ interface Indicator {
     | "annualized_3m_monthly"
     | "ratio_two_series"
     | "diff_two_series"
-    | "supabase_gscpi";
+    | "supabase_gscpi"
+    | "supabase_paradigm_xref";
   series?: string;
   series2?: string;
   zscore?: boolean;
+  // supabase_paradigm_xref only: multiply the Paradigm's stored raw value
+  // by this before display. 100 for genuine ratios of same-unit nominal
+  // dollar series (Corporate Profits/GDI, Trade/GDP -- real percentages),
+  // left at 1 (the default) for valuation_proxy (S&P 500 index points /
+  // GDP $bn -- not a true percentage, displayed as the Paradigm's own
+  // unscaled number).
+  scale?: number;
   statusFn: StatusFn;
 }
 
@@ -921,6 +929,20 @@ const INDICATORS: Indicator[] = [
     series: "NEWORDER", type: "annualized_3m_monthly",
     statusFn: v => v > 2 ? "healthy" : v >= -2 ? "watch" : "danger",
   },
+  {
+    name: "Trade / GDP Ratio",
+    layer: 5, layer_name: "Growth — Supply Side",
+    // Phase 3 placement judgment call (logged in the decisions log): not a
+    // perfect thematic fit for a "growth supply drivers" group (labor,
+    // productivity, capex) -- it's an economic-openness/structural ratio,
+    // not a potential-growth input -- but it's the closest existing layer
+    // to the spec's "structural/supply area" instruction, and a new
+    // single-indicator layer would be disproportionate for this phase.
+    description: "Cross-referenced from Fiscal Policy Paradigm. (Exports + Imports) / GDP, nominal — an economic-openness/trade-exposure ratio already computed for the Paradigm A-E framework (reused unmodified in both Paradigm B/Cut and Paradigm E/Total War there). Descriptive context, not a calibrated threshold.",
+    fred_series_id: null, unit: "%", data_source: "supabase", sort_order: 405,
+    series: "trade_gdp", scale: 100, type: "supabase_paradigm_xref",
+    statusFn: () => "neutral",
+  },
   // Inflation/growth additions to "Business Cycle" (layer 3), ordered leading
   // → coincident → measured/lagging per the spec. ISM Prices Paid and GSCPI
   // are Phase 2 (non-FRED sources) — this phase leaves room in the ordering
@@ -1036,6 +1058,22 @@ const INDICATORS: Indicator[] = [
     fred_series_id: "ECIALLCIV", unit: "% YoY", data_source: "fred", sort_order: 50,
     series: "ECIALLCIV", type: "yoy_quarterly",
     statusFn: v => v <= 3 ? "healthy" : v <= 4.5 ? "watch" : "danger",
+  },
+  {
+    name: "Corporate Profits / GDI",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Cross-referenced from Fiscal Policy Paradigm. Corporate profits as a share of gross domestic income (CP / GDI, both nominal) — a business-activity read already computed for the Paradigm A-E framework's Paradigm C (Grow), not re-fetched here. Descriptive context, not a calibrated threshold.",
+    fred_series_id: null, unit: "%", data_source: "supabase", sort_order: 51,
+    series: "corp_profits_gdi", scale: 100, type: "supabase_paradigm_xref",
+    statusFn: () => "neutral",
+  },
+  {
+    name: "S&P 500 / GDP (\"Buffett Indicator\" proxy)",
+    layer: 3, layer_name: "Business Cycle",
+    description: "Cross-referenced from Fiscal Policy Paradigm. S&P 500 index level divided by nominal GDP — a market-valuation-relative-to-the-economy proxy used in Paradigm C (Grow); substituted there for the original Wilshire 5000 series (discontinued by FRED June 2024). Not a literal percentage (index points over GDP in $bn don't share units) — read for its own trend, not an absolute level. Descriptive context, not a calibrated threshold.",
+    fred_series_id: null, unit: "ratio", data_source: "supabase", sort_order: 52,
+    series: "valuation_proxy", type: "supabase_paradigm_xref",
+    statusFn: () => "neutral",
   },
 ];
 
@@ -1879,6 +1917,28 @@ async function processIndicator(ind: Indicator): Promise<ProcessedRow | null> {
         current  = Number(gscpiRows[0].value);
         previous = Number(gscpiRows[1].value);
         metadata = { reference_period: gscpiRows[0].period_date };
+        break;
+      }
+      case "supabase_paradigm_xref": {
+        // Growth & Inflation Indicator Gaps spec, Phase 3. Cross-reference
+        // from big_cycle_paradigm_raw_series (written by
+        // update-big-cycle-paradigm-metrics) -- no second fetch, same
+        // pattern as supabase_bigcycle_xref above. `previous` is the prior
+        // quarter's row, giving a natural 3-month change via the existing
+        // current/previous change-arrow mechanism (the spec's own "YoY or
+        // 3M change where meaningful" alternative, with no new frontend
+        // code needed).
+        const { data: pxRows, error: pxErr } = await supabase
+          .from("big_cycle_paradigm_raw_series")
+          .select("obs_date, value")
+          .eq("metric_key", ind.series!)
+          .order("obs_date", { ascending: false })
+          .limit(2);
+        if (pxErr || !pxRows || pxRows.length < 2) return null;
+        const scale = ind.scale ?? 1;
+        current  = Number(pxRows[0].value) * scale;
+        previous = Number(pxRows[1].value) * scale;
+        metadata = { reference_period: pxRows[0].obs_date };
         break;
       }
       case "supabase_liquidity": {
